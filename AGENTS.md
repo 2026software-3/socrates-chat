@@ -43,11 +43,13 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - OpenAI 具體模型（S-03.4 評估後決定）
   - 正式環境的部署方式（S-09）
   - 各套件版本
-  - 其他尚未決定的規格（見 `docs/specs/decisions.md` 的「待定」清單）
+  - 其他尚未決定的規格（見 `docs/specs/decisions.md` 的「尚未決定」清單）
 - 不引入 Supabase、Redis 或其他未列出的基礎設施。
 - 只在 Issue 需要時才加入依賴，例如 SQLx 與 reqwest 等到對應功能實作時才加入。
 
 遇到未定案事項時，停下來詢問或在 PR 中標示為待確認，不要把假設寫成規格或驗收條件。
+
+需求方確認了一項規格決策時，必須以 PR 更新 `docs/specs/`（`decisions.md`，必要時另寫詳細規格），並關閉對應的規格 Issue；不要只把決策寫在 Issue 或對話裡。流程見 [CONTRIBUTING.md](CONTRIBUTING.md#規格決策流程)。
 
 ## 產品範圍前提
 
