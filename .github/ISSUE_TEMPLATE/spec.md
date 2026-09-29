@@ -2,9 +2,11 @@
 name: 規格決策
 about: 需要需求方確認的規格決策（規格父 Issue S-xx，或決策 sub-issue S-xx.n）
 title: "[S-xx.n] "
+type: Spec
 ---
 
 <!--
+Issue Type：Spec（需 org 已建立 Spec 類型；尚未建立時請手動選擇）。
 Labels：規格父 Issue 只標 `spec`；決策 sub-issue 標所需的面向（frontend / backend / ai / database / security）＋ `testing`。
 層級：決策 sub-issue 請用 GitHub 的 sub-issue 功能掛在規格父 Issue 底下。
 規則：決定後的內容寫進 `docs/specs/`，本 Issue 不保存規則細節。

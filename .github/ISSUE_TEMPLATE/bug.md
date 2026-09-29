@@ -3,6 +3,7 @@ name: 錯誤回報
 about: 回報與規格或預期不符的行為
 title: "[Bug] "
 labels: [bug]
+type: Bug
 ---
 
 <!--

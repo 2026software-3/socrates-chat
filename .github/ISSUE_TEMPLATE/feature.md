@@ -5,6 +5,7 @@ title: "[F-xx.n] "
 ---
 
 <!--
+Issue Type（建立後手動選擇）：功能父 Issue 與再往下拆的核心功能切片選 Feature；實際被指派的葉節點（面向任務、其他功能切片）選 Task。
 Labels：
 - 功能父 Issue，以及再往下拆的核心功能切片：只標 `feature`。
 - 面向任務：只標 1 個面向（frontend / backend / ai / database / security）＋ `testing`。
