@@ -1,3 +1,5 @@
+pub mod auth_store;
+
 use axum::{Json, Router, routing::get};
 use serde::Serialize;
 

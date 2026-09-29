@@ -1,0 +1,15 @@
+# 開發與 CI 用的 PostgreSQL（S-09.1）。僅供本機，不含真實資料。
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: socrates
+      POSTGRES_PASSWORD: socrates
+      POSTGRES_DB: socrates
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U socrates"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

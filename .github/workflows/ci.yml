@@ -27,6 +27,21 @@ jobs:
         working-directory: backend
     env:
       CARGO_TERM_COLOR: always
+      DATABASE_URL: postgres://socrates:socrates@localhost:5432/socrates
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: socrates
+          POSTGRES_PASSWORD: socrates
+          POSTGRES_DB: socrates
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U socrates"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v7
       # rustup installs the toolchain pinned in backend/rust-toolchain.toml

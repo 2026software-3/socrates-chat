@@ -58,7 +58,15 @@
 5. **（建議）安裝 GitHub CLI**：[cli.github.com](https://cli.github.com/)，安裝後執行 `gh auth login`，之後可以用指令開 PR、看 Issue。
 6. **（選用）Node.js**：只用來在本機檢查 commit 格式（見 [Commit 規範](#commit-規範)）。
 
-> 前端工具鏈與本機資料庫（Docker Compose 的 PostgreSQL）會在對應的 Issue 完成後補進本節。
+> 前端工具鏈會在對應的 Issue 完成後補進本節。
+
+**本機資料庫**：資料庫整合測試需要 PostgreSQL（`sqlx::test` 會為每個測試建立獨立資料庫）。
+
+```bash
+docker compose up -d --wait
+export DATABASE_URL=postgres://socrates:socrates@127.0.0.1:5432/socrates   # 或複製 backend/.env.example
+cd backend && cargo test
+```
 
 ## 從領任務到合併：完整流程
 
