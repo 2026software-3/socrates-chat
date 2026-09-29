@@ -1,7 +1,7 @@
 # 開發與 CI 用的 PostgreSQL（S-09.1）。僅供本機，不含真實資料。
 services:
   db:
-    image: postgres:17
+    image: postgres:16
     environment:
       POSTGRES_USER: socrates
       POSTGRES_PASSWORD: socrates

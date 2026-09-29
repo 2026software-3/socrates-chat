@@ -30,7 +30,7 @@ jobs:
       DATABASE_URL: postgres://socrates:socrates@localhost:5432/socrates
     services:
       postgres:
-        image: postgres:17
+        image: postgres:16
         env:
           POSTGRES_USER: socrates
           POSTGRES_PASSWORD: socrates
