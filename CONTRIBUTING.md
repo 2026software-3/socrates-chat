@@ -244,14 +244,14 @@ npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint --fro
 
 需求以 Issue 管理，並使用 GitHub 原生的 sub-issue 分層：
 
-| 層級 | 範例 | 說明 | Issue Type | Labels |
+| 層級 | 範例 | 說明 | Issue Type | 面向 Labels |
 | --- | --- | --- | --- | --- |
-| 規格父 Issue | `S-02` | 一組相關的規格決策 | `Spec` | `spec` |
-| 規格決策 | `S-02.4` | 單一決策主題 | `Spec` | 面向 + `testing` |
-| 功能父 Issue | `F-06` | 使用者情境與整體驗收 | `Feature` | `feature` |
-| 功能切片（核心功能） | `F-06.1` | 再往下拆成面向任務 | `Feature` | `feature` |
-| 面向任務 | `F-06.1-BE` | 核心功能切片中單一面向的工作 | `Task` | 單一面向 + `testing` |
-| 功能切片（其他功能） | `F-11.1` | 本身就是要做的工作 | `Task` | 涉及的面向 + `testing` |
+| 規格父 Issue | `S-02` | 一組相關的規格決策 | `Spec` | 無 |
+| 規格決策 | `S-02.4` | 單一決策主題 | `Spec` | 涉及的面向 |
+| 功能父 Issue | `F-06` | 使用者情境與整體驗收 | `Feature` | 無 |
+| 功能切片（核心功能） | `F-06.1` | 再往下拆成面向任務 | `Feature` | 無 |
+| 面向任務 | `F-06.1-BE` | 核心功能切片中單一面向的工作 | `Task` | 恰好 1 個 |
+| 功能切片（其他功能） | `F-11.1` | 本身就是要做的工作 | `Task` | 涉及的面向 |
 
 - **實際開發與 PR 都針對葉節點**，PR 以 `Closes #<葉節點>` 關閉；父 Issue 在所有 sub-issue 完成、且整體驗收通過後關閉。
 - **面向任務的順序**：`DB`／`AI` → `BE`（先定 API 契約）→ `SEC`、`FE`。前端任務另外要等前端技術選型（S-11）完成。
@@ -270,21 +270,21 @@ npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint --fro
 
 ### Labels
 
-GitHub labels 一律使用英文。類型 label 只用在父 Issue 與中間層；面向 label 採多選，依葉節點實際涉及的工作面向套用，每張葉節點都加上 `testing`：
+**類型看 Issue Type，label 只標工作面向。** 不另外用 label 標示規格、功能或錯誤（`Spec`／`Feature`／`Task`／`Bug` 由 Issue Type 表示）。
+
+Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節點與錯誤回報）上，依實際涉及的工作面向套用：
 
 | Label | 使用範圍 |
 | --- | --- |
-| `spec` | 規格父 Issue |
-| `feature` | 功能父 Issue，以及再往下拆的功能切片 |
 | `frontend` | 頁面、互動、狀態呈現、響應式介面 |
 | `backend` | API、商業規則、權限判斷及服務流程 |
 | `ai` | 模型提示、生成、分類、分析、推薦及評估 |
 | `database` | 資料模型、保存、查詢、交易及資料生命週期 |
 | `security` | 身分驗證、授權、個資、去識別化、日誌及外部服務資料流 |
-| `testing` | 測試設計與自動化；所有 Issue 都包含測試先行工作 |
-| `bug` | 錯誤回報 |
 
 `ai`、`database`、`security` 是後端工作的細分面向。在面向任務中各自獨立成一張；在其他功能切片中，依需要與 `backend` 一併套用。
+
+不另設 `testing` label：所有任務都必須測試先行（見 [SDD + TDD 工作流程](#sdd--tdd-工作流程)），標上去也無法區分。
 
 ## GitHub Project
 

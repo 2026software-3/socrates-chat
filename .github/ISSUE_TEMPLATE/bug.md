@@ -2,13 +2,12 @@
 name: 錯誤回報
 about: 回報與規格或預期不符的行為
 title: "[Bug] "
-labels: [bug]
 type: Bug
 ---
 
 <!--
 請勿貼上真實學生資料、對話原文、金鑰或 token；需要示例時請改用合成資料。
-Labels：除了 `bug`，請依涉及的面向加上 frontend / backend / ai / database / security。
+Labels：依涉及的面向加上 frontend / backend / ai / database / security（類型由 Issue Type：Bug 表示）。
 -->
 
 ## 發生了什麼

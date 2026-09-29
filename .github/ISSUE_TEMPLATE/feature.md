@@ -7,9 +7,9 @@ title: "[F-xx.n] "
 <!--
 Issue Type（建立後手動選擇）：功能父 Issue 與再往下拆的核心功能切片選 Feature；實際被指派的葉節點（面向任務、其他功能切片）選 Task。
 Labels：
-- 功能父 Issue，以及再往下拆的核心功能切片：只標 `feature`。
-- 面向任務：只標 1 個面向（frontend / backend / ai / database / security）＋ `testing`。
-- 其他功能切片（葉節點）：標實際涉及的面向＋ `testing`。
+- 功能父 Issue，以及再往下拆的核心功能切片：不加 label。
+- 面向任務：只標 1 個面向（frontend / backend / ai / database / security）。
+- 其他功能切片（葉節點）：標實際涉及的面向。
 層級：用 GitHub 的 sub-issue 功能掛在上一層底下；相依用 blocked-by 設定。帶 `frontend` 的任務需 blocked by 前端選型（S-11）。
 規則細節不要寫在這裡，請連到 `docs/specs/`。
 -->
