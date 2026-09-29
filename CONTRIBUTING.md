@@ -91,17 +91,18 @@ Refs: #7
 ## Pull Request
 
 1. 推送分支並建立指向 `main` 的 PR。
-2. PR 描述需包含：
+2. 依 PR 模板（`.github/pull_request_template.md`）填寫，至少包含：
    - 對應 Issue：`Closes #<issue>`
    - 改動摘要，以及明確不包含的範圍
    - 測試證據，包括新增的測試與如何執行
+   - 規格檢查：改到規則時，已同步更新 `docs/specs/`
 3. CI（fmt、clippy、test）與 commitlint 必須通過。
 4. 至少一位成員 review 後才能合併。
 5. 合併後刪除分支。
 
 ## Issue 與 Labels
 
-需求以 Issue 管理，並使用 GitHub 原生的 sub-issue 分層：
+需求以 Issue 管理，並使用 GitHub 原生的 sub-issue 分層。新建 Issue 時請選用對應的模板：「規格決策」、「功能」或「錯誤回報」（`.github/ISSUE_TEMPLATE/`）。
 
 | 層級 | 範例 | 說明 | Labels |
 | --- | --- | --- | --- |
