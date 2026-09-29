@@ -1,20 +1,21 @@
 # socrates-chat
 
-蘇格拉底式對話學習系統：學生就哲學題目與 AI 進行多輪討論。系統以追問引導學生釐清立場、檢視理由與假設，而不直接代答；教師可建立討論活動並查看班級學習成果。
+蘇格拉底式對話學習系統：學生就哲學題目與 AI 進行多輪討論。系統以追問引導學生釐清立場、檢視理由與假設，而不直接代答；教師可建立討論活動並查看學生的學習成果。系統只服務一門課程，使用資格由修課名單控制。
 
-> **目前狀態：規格階段。** 功能需求已拆成規格（S-xx）與功能（F-xx）Issues，未定案的產品與技術決策都先由規格 Issue 處理。
+> **目前狀態：規格階段。** 功能需求已拆成規格（S-xx）與功能（F-xx）Issues，未定案的產品與技術決策都先由規格 Issue 處理。已確認的決策見 [`docs/specs/decisions.md`](docs/specs/decisions.md)。
 
 ## 技術棧
 
 | 範圍 | 狀態 | 內容 |
 | --- | --- | --- |
 | 後端 | 已確定 | Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing |
-| 資料庫 | 已確定 | PostgreSQL（部署方式待 S-09） |
+| 資料庫 | 已確定 | PostgreSQL；開發與 CI 用 Docker Compose，正式環境部署待 S-09 |
 | 前端 | **待確認（S-11）** | 候選：React、TypeScript、Vite、Tailwind CSS、assistant-ui、Recharts |
-| AI 服務 | **待確認（S-03）** | 候選：OpenAI API |
-| 登入身分服務 | **待確認（S-01）** | 登入來源：Google、Apple、GitHub |
+| AI 服務 | 已確定（S-03.1） | OpenAI API（後端以單一介面包裝，模型待評估） |
+| 登入 | 已確定（S-01.1） | 只接受 Google；Rust 自行整合 OAuth，session 存 PostgreSQL |
+| 對話傳輸 | 已確定（S-08.4） | HTTP + SSE 串流 |
 
-各套件版本及部署方式尚未指定。Supabase 與 Redis 不在目前架構內。
+各套件版本與正式環境部署方式尚未指定。Supabase 與 Redis 不在目前架構內。
 
 ### 資料流
 
