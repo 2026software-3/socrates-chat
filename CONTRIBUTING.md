@@ -101,15 +101,26 @@ Refs: #7
 
 ## Issue 與 Labels
 
-需求以 Issue 管理：
+需求以 Issue 管理，並使用 GitHub 原生的 sub-issue 分層：
 
-- **`S-xx` 規格 Issue**：產出核准的需求／設計決策與 Given / When / Then 情境，不寫產品程式碼。
-- **`F-xx` 功能 Issue**：可獨立驗收的縱向切片。被規格 Issue block 時，須等規格核准後才能開始。
+| 層級 | 範例 | 說明 | Labels |
+| --- | --- | --- | --- |
+| 規格父 Issue | `S-01` | 一組相關的規格決策，不寫產品程式碼 | `spec` |
+| 規格決策 | `S-01.2` | 單一決策主題，產出核准決策與 Given / When / Then | 面向 + `testing` |
+| 功能父 Issue | `F-06` | 使用者情境與整體驗收 | `feature` |
+| 功能切片 | `F-06.1` | 可獨立驗收的小功能 | 核心功能：`feature`（再往下拆）；其他：面向 + `testing` |
+| 面向任務 | `F-06.1-BE` | 核心功能切片中單一面向的工作（`DB`／`AI`／`BE`／`SEC`／`FE`） | 單一面向 + `testing` |
 
-GitHub labels 一律使用英文，採多選，依 Issue 實際涉及的工作面向套用。每張 Issue 都加上 `testing`：
+- **實際開發與 PR 都針對葉節點**（沒有 sub-issue 的 Issue），PR 以 `Closes #<葉節點>` 關閉；父 Issue 在所有 sub-issue 完成且整體驗收通過後關閉。
+- **相依以 GitHub 原生的 blocked-by 標示**，放在最細的層級，被 block 的 Issue 須等前置完成後才能開始。
+- **面向任務的順序**：`DB`／`AI` → `BE`（先定 API 契約）→ `SEC`、`FE`。前端任務另外要等前端技術選型（S-11）完成。
+
+GitHub labels 一律使用英文。類型 label 只用在父 Issue 與中間層；面向 label 採多選，依葉節點實際涉及的工作面向套用，每張葉節點都加上 `testing`：
 
 | Label | 使用範圍 |
 | --- | --- |
+| `spec` | 規格父 Issue |
+| `feature` | 功能父 Issue，以及再往下拆的功能切片 |
 | `frontend` | 頁面、互動、狀態呈現、響應式介面 |
 | `backend` | API、商業規則、權限判斷及服務流程 |
 | `ai` | 模型提示、生成、分類、分析、推薦及評估 |
@@ -117,7 +128,7 @@ GitHub labels 一律使用英文，採多選，依 Issue 實際涉及的工作�
 | `security` | 身分驗證、授權、個資、去識別化、日誌及外部服務資料流 |
 | `testing` | 測試設計與自動化；所有 Issue 都包含測試先行工作 |
 
-`ai`、`database`、`security` 是後端工作的細分面向，依需要與 `backend` 一併套用。
+`ai`、`database`、`security` 是後端工作的細分面向。在面向任務中各自獨立成一張；在其他功能切片中，依需要與 `backend` 一併套用。
 
 ## SDD + TDD 工作流程
 
