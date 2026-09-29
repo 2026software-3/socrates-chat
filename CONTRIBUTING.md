@@ -196,7 +196,7 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 
 ### 撰寫原則
 
-- `description` 使用祈使語氣，簡短描述做了什麼，結尾不加句號；中英文皆可。
+- `description` 使用祈使語氣，簡短描述做了什麼，結尾不加句號；中英文皆可，也可以用專有名詞開頭（例如 `Google`、`OpenAI`）。
 - 一個 commit 只做一件事。TDD 流程中可以先 commit 失敗的測試（`test: ...`），再 commit 實作（`feat: ...`）。
 - 破壞性變更在 type 後加 `!`，或在 footer 寫 `BREAKING CHANGE: <說明>`。
 - 用 footer 關聯 Issue，例如 `Refs: #12`。
