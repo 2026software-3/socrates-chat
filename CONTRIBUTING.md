@@ -137,7 +137,7 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 **9. 通過檢查與 review**
 
 - CI 會檢查格式、lint、測試、commit 格式與 PR 標題，失敗時點進去看原因並修正後再 push（PR 標題可以直接在網頁上修改）。
-- 至少一位成員 approve；依意見修改後 push，PR 會自動更新，但需要重新 review。
+- 必須由一位維護者 approve（見 [Pull Request](#pull-request)）；其他成員也歡迎協助 review。依意見修改後 push，PR 會自動更新，但需要重新 review。
 - 通過後按 **Squash and merge** 合併。
 
 **10. 合併之後**
@@ -239,7 +239,11 @@ npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint --fro
    - `Conventional Commits`：PR 內每個 commit 的訊息格式；
    - `PR title`：PR 標題格式；
    - 改到 `backend/` 時，另有後端 CI（fmt、clippy、test），也必須通過。
-5. 至少一位成員 approve 後才能合併；有新的 push 後，之前的 approve 會失效，需要重新 review。
+5. **必須由一位維護者 approve 才能合併**。維護者是 `@Ray05202006`、`@whyhugo`、`@freEZeT29276632`，任一位核准即可。
+   - 這由 `.github/CODEOWNERS` 與 ruleset 強制執行：開 PR 時會自動請維護者 review。
+   - 其他成員歡迎協助 review 與留言，但他們的 approve 不能讓 PR 合併。
+   - 維護者自己開的 PR，需由另一位維護者核准（GitHub 不允許核准自己的 PR）。
+   - 有新的 push 後，之前的 approve 會失效，需要重新 review。
 6. 只能用 **Squash and merge** 合併（repo 已關閉其他合併方式）；合併後分支會自動刪除。
 
 `main` 受 ruleset 保護：不能直接 push、不能 force push、不能刪除，所有改動都必須經過上述 PR 流程。
