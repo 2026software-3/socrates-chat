@@ -25,7 +25,7 @@
 ### S-01.3 角色核發、權限矩陣與管理者／停用流程（部分決定）
 
 - 預設角色為學生（需在修課名單內）。
-- 使用者可自行申請教師身分，由管理者審核後生效；教師可有多位（含助教），權限相同。
+- 教師由管理者建立：管理者輸入教師的電子郵件，該 Google 帳號登入後即為教師（已登入過的帳號立即生效）；管理者可移除教師身分。教師可有多位（含助教），權限相同。
 - 首位管理者由部署時的環境變數（例如 `ADMIN_EMAILS`）指定，這些信箱首次登入即成為管理者。
 - **仍待決定**：帳號停用／復原流程
 
@@ -132,14 +132,13 @@
 - 語音備援的 TTS 也經後端代理，前端不接觸 OpenAI。
 - 詳見 [`S-08.1-component-dataflow.md`](S-08.1-component-dataflow.md)。
 
-### S-08.2 登入憑證驗證與身分映射（部分決定）
+### S-08.2 登入憑證驗證與身分映射（已決定）
 
 - Google OIDC Authorization Code + PKCE（`openidconnect` crate），驗證 state、nonce、ID token 簽章與 `email_verified`。
 - 以 Google `sub` 識別使用者；角色每次請求從資料庫載入；教師與管理者不需在修課名單內。
 - Session：256 位元隨機 token，資料庫只存雜湊；cookie 為 HttpOnly、Secure、SameSite=Lax；閒置 7 天失效、絕對上限 30 天；CSRF 以 `Origin` 檢查。
 - 不限制 Google 帳號網域，由修課名單把關。
 - 詳見 [`S-08.2-auth-verification.md`](S-08.2-auth-verification.md)。
-- **仍待決定**：教師申請是否需要填寫資料
 
 ### S-08.3 連線池、migration 工具與設定管理（已決定）
 
