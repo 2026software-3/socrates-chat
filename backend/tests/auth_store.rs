@@ -7,9 +7,15 @@ use socrates_chat_backend::auth_store::{
     upsert_user,
 };
 use sqlx::PgPool;
+use uuid::Uuid;
 
 const HASH_A: [u8; 32] = [1; 32];
 const HASH_B: [u8; 32] = [2; 32];
+
+/// 測試用的一次性值（避免把固定值當作 nonce 寫死）。
+fn random_value() -> String {
+    format!("test-{}", Uuid::new_v4())
+}
 
 #[sqlx::test]
 async fn upsert_creates_user_with_lowercased_email(pool: PgPool) {
@@ -168,14 +174,15 @@ async fn each_login_creates_a_new_session(pool: PgPool) {
 
 #[sqlx::test]
 async fn login_state_is_single_use(pool: PgPool) {
-    save_login_state(&pool, "st", "nonce", "verifier")
+    let nonce = random_value();
+    save_login_state(&pool, "st", &nonce, "verifier")
         .await
         .unwrap();
     let got = take_login_state(&pool, "st", Utc::now())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(got.nonce, "nonce");
+    assert_eq!(got.nonce, nonce);
     assert_eq!(got.pkce_verifier, "verifier");
     assert!(
         take_login_state(&pool, "st", Utc::now())
@@ -197,7 +204,9 @@ async fn unknown_login_state_is_rejected(pool: PgPool) {
 
 #[sqlx::test]
 async fn expired_login_state_is_rejected_and_consumed(pool: PgPool) {
-    save_login_state(&pool, "st", "n", "v").await.unwrap();
+    save_login_state(&pool, "st", &random_value(), "v")
+        .await
+        .unwrap();
     let late = Utc::now() + Duration::minutes(11);
     assert!(take_login_state(&pool, "st", late).await.unwrap().is_none());
     assert!(
