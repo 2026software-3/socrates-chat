@@ -130,6 +130,24 @@ GitHub labels 一律使用英文。類型 label 只用在父 Issue 與中間層�
 
 `ai`、`database`、`security` 是後端工作的細分面向。在面向任務中各自獨立成一張；在其他功能切片中，依需要與 `backend` 一併套用。
 
+## 規格決策流程
+
+`docs/specs/` 是專案規則的唯一來源。Issue 負責討論與追蹤，不重複規則細節。
+
+| 位置 | 放什麼 |
+| --- | --- |
+| `docs/specs/decisions.md` | 所有已確認的決策，以及尚未決定的清單 |
+| `docs/specs/<規格>.md` | 較長的技術設計（例如 `S-08.2-auth-verification.md`） |
+| 規格 Issue（`S-xx.n`） | 討論尚未決定的事項；決定後內文只留文件連結，並關閉 |
+| 功能 Issue（`F-xx`） | 要做的工作與驗收條件；「規格依據」段落連到 `docs/specs/` |
+
+決定一項規格的步驟：
+1. 在對應的規格 Issue 討論並取得需求方確認。
+2. 開 PR 更新 `docs/specs/`，commit 類型用 `docs`，並以 `Closes #<規格 Issue>` 關聯。
+3. PR 合併後，規格 Issue 自動關閉；被它 block 的功能 Issue 即可開始。
+
+之後要修改已決定的規則，一樣經 PR 修改 `docs/specs/`，並在 PR 說明受影響的功能 Issue。
+
 ## SDD + TDD 工作流程
 
 1. **SDD：先固定規格。** Issue 需連結來源需求，描述使用者情境、成功與失敗流程、資料／權限邊界、錯誤或等待狀態，以及可觀察的驗收條件。未定義事項標為待確認，不自行補成產品決策。
