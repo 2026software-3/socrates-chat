@@ -114,6 +114,7 @@ Refs: #7
 
 - **實際開發與 PR 都針對葉節點**（沒有 sub-issue 的 Issue），PR 以 `Closes #<葉節點>` 關閉；父 Issue 在所有 sub-issue 完成且整體驗收通過後關閉。
 - **相依以 GitHub 原生的 blocked-by 標示**，放在最細的層級，被 block 的 Issue 須等前置完成後才能開始。
+- **Milestone 代表交付階段**（M1 基礎流程～M7 上線前品質），依相依關係排序、不代表產品優先順序。功能父 Issue 與其所有 sub-issue 掛在同一個 milestone；規格 Issue 掛在它最早解除阻擋的階段。一張 Issue 只能屬於一個 milestone。
 - **面向任務的順序**：`DB`／`AI` → `BE`（先定 API 契約）→ `SEC`、`FE`。前端任務另外要等前端技術選型（S-11）完成。
 
 GitHub labels 一律使用英文。類型 label 只用在父 Issue 與中間層；面向 label 採多選，依葉節點實際涉及的工作面向套用，每張葉節點都加上 `testing`：
