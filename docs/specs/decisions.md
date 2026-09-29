@@ -38,7 +38,7 @@
 - 教師或管理者匯入學生電子郵件名單；名單外帳號登入後看到「尚未開通」。
 - 匯入：CSV、文字檔或直接貼上，每行一個電子郵件（可有 `email` 標題列）；去空白、轉小寫；回報新增／已存在／格式錯誤；匯入只新增、不移除。
 - 移出名單：立即失去學生權限，資料全部保留，教師仍看得到過去總結；重新加回即恢復。要刪除資料需刪除帳號（F-22.5）。
-- 詳見 [`technical-details.md`](technical-details.md) §6。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-01.4 一節。
 
 ## S-02 確認個資可見範圍、去識別化與資料生命週期
 
@@ -81,7 +81,7 @@
 - 三階段依序推進、不退回：釐清（立場與關鍵詞）→ 論證（理由與隱含假設）→ 挑戰（反例與對立觀點，完成即符合收斂條件）。
 - 每回合只問一個問題；不提出 AI 自己的答案，學生問「你覺得呢？」時反問或平衡列出觀點；語氣中立尊重；離題時帶回主題。
 - 目前階段存在後端；模型每回合以結構化 JSON 回傳追問類型與晉級判斷；規則版本記錄在每則 AI 回覆上。
-- 授課教師日後可提出調整。詳見 [`technical-details.md`](technical-details.md) §3。
+- 授課教師日後可提出調整。詳見 [`technical-details.md`](technical-details.md) 的 S-03.2 一節。
 
 ### S-03.3 收斂條件、總結欄位與人工修正（已決定）
 
@@ -89,7 +89,7 @@
 - AI 在學生已說明立場與理由、且回應過至少一個反例或對立觀點時提議收尾；另設回合上限。
 - AI 總結不可修改；學生可另外附加「我的反思」。
 - 回合上限：學生送出一則訊息算 1 回合；第 15 回合起引導收尾，第 20 回合直接產生總結並結束；全系統以環境變數設定。
-- 詳見 [`technical-details.md`](technical-details.md) §2。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-03.3 一節。
 
 ### S-03.4 AI 行為評分準則與情境集（已決定）
 
@@ -99,7 +99,7 @@
 
 - 學生訊息先存入資料庫；AI 逾時或錯誤時自動重試 1 次，仍失敗則顯示「AI 暫時無法回覆」與重試按鈕，訊息不遺失。
 - 首個 token 15 秒逾時、完整回覆上限 60 秒；只在尚未串流出任何內容時自動重試；串流中途失敗則捨棄部分內容並標記失敗。
-- 詳見 [`technical-details.md`](technical-details.md) §1。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-03.5 一節。
 
 ## S-04 確認個人分析結果、雷達圖與思辨視覺化規格
 
@@ -119,14 +119,14 @@
 - 瀏覽器端偵測靜音自動結束這一輪發言，也可手動按鈕結束；輪流模式以 HTTP 傳輸即可。
 - 開口前不計時；說話中靜音 3 秒後進入 3 秒「即將送出」倒數，倒數中繼續說話會接在同一段；可按「送出」或「我還沒說完」，也可關閉自動送出。
 - AI 語音自動播放，可停止、重播，學生可按「說話」打斷；播放時不收音；單次發言上限 60 秒。
-- 詳見 [`technical-details.md`](technical-details.md) §8。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-05.2 一節。
 
 ### S-05.3 語音服務選型與資料流（已決定）
 
 - 混合：預設使用瀏覽器 Web Speech API；不支援時改用 OpenAI 語音 API（經 Rust）。
 - 瀏覽器模式的逐字稿由前端回傳後端保存；需在隱私說明中告知音訊會送往瀏覽器廠商。
 - 改用 OpenAI 的條件：沒有 `SpeechRecognition`，或出現 `network`／`service-not-allowed`／`language-not-supported` 錯誤（之後本次登入持續使用 OpenAI）；語音合成沒有 `speechSynthesis` 或找不到中文語音。拒絕麥克風權限不觸發改用，改提示文字輸入。辨識語言固定 `zh-TW`。
-- 詳見 [`technical-details.md`](technical-details.md) §7。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-05.3 一節。
 
 ### S-05.4 音訊保存與逐字稿同步（已決定）
 
@@ -146,7 +146,7 @@
 - 每筆來源顯示標題、作者、出版年、來源類型（教師書單／外部資料庫）與連結。
 - 模型只能引用後端查到的結果 ID，後端刪除不在結果中的引用，因此不會顯示編造的書目。
 - 查無結果顯示「目前找不到可靠的資料」；外部資料庫失敗或逾時（10 秒）時只顯示教師書單並註明；查詢失敗不影響主對話。
-- 詳見 [`technical-details.md`](technical-details.md) §5。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-06.4 一節。
 
 ## S-07 確認角色素材與遊戲化規則
 
@@ -211,7 +211,7 @@
 
 - 以 60 人同時使用量測：頁面 LCP p75 ≤ 2.5 秒；一般 API p95 ≤ 500 毫秒；AI 首個 token p95 ≤ 5 秒、完整回覆 p95 ≤ 30 秒；語音備援辨識 p95 ≤ 5 秒、語音開始播放 p95 ≤ 3 秒。
 - 一般 API 用假 AI 做負載測試；AI 門檻在測試環境以真實 OpenAI 抽樣量測（每項至少 50 次）。
-- 詳見 [`technical-details.md`](technical-details.md) §4。
+- 詳見 [`technical-details.md`](technical-details.md) 的 S-10.2 一節。
 
 ### S-10.3 同時使用人數與負載測試方法（已決定）
 
