@@ -34,7 +34,8 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - 後端：Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing；資料庫 PostgreSQL。
   - 登入：只接受 Google，由 Rust 自行整合 OAuth，session 存 PostgreSQL（S-01.1）。
   - AI：OpenAI，後端以單一介面包裝 AI 呼叫，保留更換彈性（S-03.1）。
-  - 對話 API：HTTP + SSE 串流（S-08.4）。
+  - 對話 API：HTTP + SSE 串流（S-08.4）；前端與 API 同網域部署（S-08.1）。
+  - 登入驗證與 session 規格見 `docs/specs/S-08.2-auth-verification.md`；維運流程見 `docs/specs/S-09.3-ops-procedures.md`。
   - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。
   - 開發／CI 資料庫：Docker Compose 的 PostgreSQL（S-09.1）。
 - **未定案，不得自行決定**：

@@ -125,6 +125,22 @@
 
 ## S-08 確認前後端、PostgreSQL 與 AI 服務的責任邊界
 
+### S-08.1 元件關係圖與資料流（已決定）
+
+- 前端與 API 部署在同一個網域（API 走 `/api`），session cookie 為第一方 `SameSite=Lax`。
+- 後端模組化；AI 呼叫一律經 `AiProvider` 介面；管理者輸出在序列化層統一遮蔽；錯誤統一為 JSON 並附 request ID。
+- 語音備援的 TTS 也經後端代理，前端不接觸 OpenAI。
+- 詳見 [`S-08.1-component-dataflow.md`](S-08.1-component-dataflow.md)。
+
+### S-08.2 登入憑證驗證與身分映射（部分決定）
+
+- Google OIDC Authorization Code + PKCE（`openidconnect` crate），驗證 state、nonce、ID token 簽章與 `email_verified`。
+- 以 Google `sub` 識別使用者；角色每次請求從資料庫載入；教師與管理者不需在修課名單內。
+- Session：256 位元隨機 token，資料庫只存雜湊；cookie 為 HttpOnly、Secure、SameSite=Lax；閒置 7 天失效、絕對上限 30 天；CSRF 以 `Origin` 檢查。
+- 不限制 Google 帳號網域，由修課名單把關。
+- 詳見 [`S-08.2-auth-verification.md`](S-08.2-auth-verification.md)。
+- **仍待決定**：教師申請是否需要填寫資料
+
 ### S-08.3 連線池、migration 工具與設定管理（已決定）
 
 - migration 使用 `sqlx migrate`（`backend/migrations/`）。
@@ -145,6 +161,15 @@
 
 - 憑證由部署平台的秘密管理（或 GitHub Actions secrets）注入環境變數；不進版控、不進前端；資料庫不對公網開放。
 - **仍待決定**：具體平台（隨正式環境決定）
+
+### S-09.3 migration、監控、備份還原流程與負責人（部分決定）
+
+- Migration 只往前、採「先擴充、後收縮」；正式環境部署前單獨執行 `sqlx migrate run`；CI 加上 `cargo sqlx prepare --check`。
+- 監控：`/health` 存活、`/ready` 檢查資料庫；JSON 日誌不含敏感內容；列出告警條件。
+- 備份：每日 `pg_dump` 並以公鑰加密，保留 7 份每日＋4 份每週；私鑰離線保存，由 2 位指定的系統管理者各持一份，解密與還原都留紀錄。
+- RPO 24 小時、RTO 4 小時；還原演練每 6 個月一次，並在上線前做一次。
+- 詳見 [`S-09.3-ops-procedures.md`](S-09.3-ops-procedures.md)。
+- **仍待決定**：維運負責人與備援負責人的人選
 
 ## S-10 確認瀏覽器支援、效能與負載驗收門檻
 
@@ -174,9 +199,6 @@
 - S-07.3 成就條件
 - S-07.4 任務週期、兌換項目與管理員定價
 - S-07.6 成果分享格式與欄位
-- S-08.1 元件關係圖與資料流
-- S-08.2 登入憑證驗證與身分映射
-- S-09.3 migration、監控、備份還原流程與負責人
 - S-10.2 頁面與 AI 回應時間門檻
 - S-11.1 框架、語言與建置工具
 - S-11.2 樣式方案與對話 UI 元件
