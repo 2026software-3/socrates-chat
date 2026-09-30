@@ -137,7 +137,7 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 **9. 通過檢查與 review**
 
 - CI 會檢查格式、lint、測試、commit 格式與 PR 標題，失敗時點進去看原因並修正後再 push（PR 標題可以直接在網頁上修改）。
-- 必須由一位維護者 approve（見 [Pull Request](#pull-request)）；其他成員也歡迎協助 review。依意見修改後 push，PR 會自動更新，但需要重新 review。
+- 必須由一位維護者，或 PR label 對應 team 的成員 approve（見 [Pull Request](#pull-request)）；其他成員也歡迎協助 review。依意見修改後 push，PR 會自動更新，但需要重新 review。
 - 通過後按 **Squash and merge** 合併。
 
 **10. 合併之後**
@@ -238,11 +238,24 @@ npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint --fro
 4. 必須通過的檢查：
    - `Conventional Commits`：PR 內每個 commit 的訊息格式；
    - `PR title`：PR 標題格式；
+   - `Reviewer approval`：核准者符合下一點的規則；
    - 改到 `backend/` 時，另有後端 CI（fmt、clippy、test），也必須通過。
-5. **必須由一位維護者 approve 才能合併**。維護者是 `@Ray05202006`、`@whyhugo`、`@freEZeT29276632`，任一位核准即可。
-   - 這由 `.github/CODEOWNERS` 與 ruleset 強制執行：開 PR 時會自動請維護者 review。
-   - 其他成員歡迎協助 review 與留言，但他們的 approve 不能讓 PR 合併。
-   - 維護者自己開的 PR，需由另一位維護者核准（GitHub 不允許核准自己的 PR）。
+5. **必須有一位符合資格的成員 approve 才能合併**，任一位即可：
+   - 維護者：`@Ray05202006`、`@whyhugo`、`@freEZeT29276632`；
+   - 或 PR 的 label 所對應 GitHub team 的成員：
+
+     | PR label | 可核准的 team |
+     | --- | --- |
+     | `frontend` | `Frontend` |
+     | `backend` | `Backend` |
+     | `ai` | `AI` |
+     | `database` | `DB` |
+     | `security` | `Security` |
+
+   - PR 的 label 依對應 Issue 的面向套用；有多個 label 時，任一個對應 team 的成員都可以核准。沒有上述 label 的 PR（例如只改文件）需由維護者核准。
+   - 這由 `Reviewer approval` 檢查（`.github/workflows/approval.yml`）與 ruleset 強制執行；加上或移除 label、新的 review 都會重新檢查。其他人的 approve 不會讓檢查通過。
+   - 改到 `.github/` 或 `commitlint.config.mjs`（CI 與核准規則本身）時，一律需要維護者核准，由 `.github/CODEOWNERS` 強制執行，開 PR 時也會自動請維護者 review。
+   - GitHub 不允許核准自己的 PR，需由另一位符合資格的成員核准。
    - 有新的 push 後，之前的 approve 會失效，需要重新 review。
 6. 只能用 **Squash and merge** 合併（repo 已關閉其他合併方式）；合併後分支會自動刪除。
 

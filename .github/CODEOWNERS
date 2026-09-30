@@ -1,3 +1,5 @@
-# 所有檔案都需要其中一位維護者核准才能合併（見 CONTRIBUTING.md 的 Pull Request 一節）。
-# 任一位核准即可；由 main 的 ruleset「Protect main」強制執行。
-* @Ray05202006 @whyhugo @freEZeT29276632
+# 一般 PR 的核准規則由 `Approval` workflow 檢查（見 CONTRIBUTING.md 的 Pull Request 一節）。
+# 下列檔案決定了檢查與核准規則本身，改動時一律需要其中一位維護者核准；由 main 的 ruleset「Protect main」強制執行。
+# 維護者名單需與 .github/workflows/approval.yml 的 MAINTAINERS 一致。
+/.github/ @Ray05202006 @whyhugo @freEZeT29276632
+/commitlint.config.mjs @Ray05202006 @whyhugo @freEZeT29276632
