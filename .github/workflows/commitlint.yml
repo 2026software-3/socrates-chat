@@ -2,6 +2,7 @@ name: Commitlint
 
 on:
   pull_request:
+    types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
@@ -16,3 +17,14 @@ jobs:
         with:
           fetch-depth: 0
       - uses: wagoid/commitlint-github-action@v6
+
+  # PRs are squash-merged with the PR title as the commit message, so the title must follow Conventional Commits too.
+  pr-title:
+    name: PR title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Lint PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" | npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint

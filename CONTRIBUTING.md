@@ -130,18 +130,20 @@ git push -u origin feat/f-06.1-be-send-message
 gh pr create --base main      # 或在 GitHub 網頁上開
 ```
 
+- PR 標題要符合 Conventional Commits，例如 `feat(backend): save student messages before calling AI`（合併後會成為 `main` 上的 commit 訊息）。
 - PR 描述會自動帶出模板，逐項填寫，第一行寫 `Closes #<Issue 編號>`。
-- 把 Project 上的 Status 改成 `In review`。
+- 連結 Issue 後，Project 會自動把它移到 `In review`；沒有自動移動時請手動修改。
 
 **9. 通過檢查與 review**
 
-- CI 會檢查格式、lint、測試與 commit 格式，失敗時點進去看原因並修正後再 push。
-- 至少一位成員 review；依意見修改後 push，PR 會自動更新。
+- CI 會檢查格式、lint、測試、commit 格式與 PR 標題，失敗時點進去看原因並修正後再 push（PR 標題可以直接在網頁上修改）。
+- 必須由一位維護者，或 PR label 對應 team 的成員 approve（見 [Pull Request](#pull-request)）；其他成員也歡迎協助 review。依意見修改後 push，PR 會自動更新，但需要重新 review。
+- 通過後按 **Squash and merge** 合併。
 
 **10. 合併之後**
 
-- PR 合併時，`Closes #` 會自動關閉 Issue，Project 自動把它移到 `Done`。
-- 刪除分支。
+- PR 合併時，`Closes #` 會自動關閉 Issue，Project 自動把它移到 `Done`；遠端分支會自動刪除。
+- 清理本機：`git switch main && git pull`，再用 `git branch -D <分支名稱>` 刪除本機分支（squash 合併後 `-d` 會判斷為未合併而拒絕，所以用 `-D`）。
 - 查看這張 Issue 的「Blocks」清單：如果某張被你擋住的 Issue 現在所有前置都完成了，把它的 Status 從 `Backlog` 改成 `Ready`，讓其他人可以接手。
 
 ## 分支規則
@@ -194,7 +196,7 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 
 ### 撰寫原則
 
-- `description` 使用祈使語氣，簡短描述做了什麼，結尾不加句號；中英文皆可。
+- `description` 使用祈使語氣，簡短描述做了什麼，結尾不加句號；中英文皆可，也可以用專有名詞開頭（例如 `Google`、`OpenAI`）。
 - 一個 commit 只做一件事。TDD 流程中可以先 commit 失敗的測試（`test: ...`），再 commit 實作（`feat: ...`）。
 - 破壞性變更在 type 後加 `!`，或在 footer 寫 `BREAKING CHANGE: <說明>`。
 - 用 footer 關聯 Issue，例如 `Refs: #12`。
@@ -227,14 +229,37 @@ npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint --fro
 ## Pull Request
 
 1. 推送分支並建立指向 `main` 的 PR。
-2. 依 PR 模板（`.github/pull_request_template.md`）填寫，至少包含：
+2. **PR 標題也要符合 Conventional Commits**，例如 `feat(backend): save student messages before calling AI`。PR 以 squash 合併，合併後 `main` 上的 commit 訊息就是 PR 標題。
+3. 依 PR 模板（`.github/pull_request_template.md`）填寫，至少包含：
    - 對應 Issue：`Closes #<issue>`
    - 改動摘要，以及明確不包含的範圍
    - 測試證據，包括新增的測試與如何執行
    - 規格檢查：改到規則時，已同步更新 `docs/specs/`
-3. CI（fmt、clippy、test）與 commitlint 必須通過。
-4. 至少一位成員 review 後才能合併。
-5. 合併後刪除分支。
+4. 必須通過的檢查：
+   - `Conventional Commits`：PR 內每個 commit 的訊息格式；
+   - `PR title`：PR 標題格式；
+   - `Reviewer approval`：核准者符合下一點的規則；
+   - 改到 `backend/` 時，另有後端 CI（fmt、clippy、test），也必須通過。
+5. **必須有一位符合資格的成員 approve 才能合併**，任一位即可：
+   - 維護者：`@Ray05202006`、`@whyhugo`、`@freEZeT29276632`；
+   - 或 PR 的 label 所對應 GitHub team 的成員：
+
+     | PR label | 可核准的 team |
+     | --- | --- |
+     | `frontend` | `Frontend` |
+     | `backend` | `Backend` |
+     | `ai` | `AI` |
+     | `database` | `DB` |
+     | `security` | `Security` |
+
+   - PR 的 label 依對應 Issue 的面向套用；有多個 label 時，任一個對應 team 的成員都可以核准。沒有上述 label 的 PR（例如只改文件）需由維護者核准。
+   - 這由 `Reviewer approval` 檢查（`.github/workflows/approval.yml`）與 ruleset 強制執行；加上或移除 label、新的 review 都會重新檢查。其他人的 approve 不會讓檢查通過。
+   - 改到 `.github/` 或 `commitlint.config.mjs`（CI 與核准規則本身）時，一律需要維護者核准，由 `.github/CODEOWNERS` 強制執行，開 PR 時也會自動請維護者 review。
+   - GitHub 不允許核准自己的 PR，需由另一位符合資格的成員核准。
+   - 有新的 push 後，之前的 approve 會失效，需要重新 review。
+6. 只能用 **Squash and merge** 合併（repo 已關閉其他合併方式）；合併後分支會自動刪除。
+
+`main` 受 ruleset 保護：不能直接 push、不能 force push、不能刪除，所有改動都必須經過上述 PR 流程。
 
 原則上**一個 PR 只完成一張葉節點 Issue**，方便 review 與追蹤。
 

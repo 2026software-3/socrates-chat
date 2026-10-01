@@ -1,0 +1,82 @@
+name: Approval
+
+# PRs need an approval from a maintainer, or from a member of the org team that matches one of the PR's labels.
+# CODEOWNERS cannot express label-based owners, so this check is a required status check in the "Protect main" ruleset.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  approval:
+    name: Reviewer approval
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check approvals
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # GITHUB_TOKEN cannot read org team membership; this token needs the org "Members: read" permission.
+          TEAM_READ_TOKEN: ${{ secrets.TEAM_READ_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # Keep in sync with .github/CODEOWNERS and CONTRIBUTING.md.
+          MAINTAINERS: Ray05202006 whyhugo freEZeT29276632
+        run: |
+          set -euo pipefail
+          declare -A team_for_label=([ai]=ai [backend]=backend [database]=db [frontend]=frontend [security]=security)
+
+          # Latest non-comment review of each reviewer; stale approvals are dismissed on push by the ruleset.
+          approvers=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+            --jq '.[] | select(.state != "COMMENTED") | "\(.user.login) \(.state)"' \
+            | awk '{ state[$1] = $2 } END { for (u in state) if (state[u] == "APPROVED") print u }')
+
+          if [ -z "$approvers" ]; then
+            echo "::error::尚未有有效的核准。需要一位維護者，或 PR label 對應 team 的成員 approve。"
+            exit 1
+          fi
+
+          for user in $approvers; do
+            if [[ " $MAINTAINERS " == *" $user "* ]]; then
+              echo "已由維護者 $user 核准。"
+              exit 0
+            fi
+          done
+
+          teams=()
+          while IFS= read -r label; do
+            if [ -n "${team_for_label[$label]:-}" ]; then
+              teams+=("${team_for_label[$label]}")
+            fi
+          done < <(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')
+
+          if [ ${#teams[@]} -eq 0 ]; then
+            echo "::error::PR 沒有對應 team 的 label，需要維護者 approve。目前核准者：$(echo $approvers)"
+            exit 1
+          fi
+
+          if [ -z "$TEAM_READ_TOKEN" ]; then
+            echo "::error::未設定 secret TEAM_READ_TOKEN，無法查詢 team 成員。"
+            exit 1
+          fi
+
+          for team in "${teams[@]}"; do
+            for user in $approvers; do
+              if out=$(GH_TOKEN=$TEAM_READ_TOKEN gh api "orgs/$ORG/teams/$team/memberships/$user" --jq .state 2>&1); then
+                if [ "$out" = "active" ]; then
+                  echo "已由 team $team 的成員 $user 核准。"
+                  exit 0
+                fi
+              elif ! grep -q 'HTTP 404' <<<"$out"; then
+                echo "::error::查詢 team $team 成員失敗：$out"
+                exit 1
+              fi
+            done
+          done
+
+          echo "::error::核准者（$(echo $approvers)）不是維護者，也不屬於 label 對應的 team（${teams[*]}）。"
+          exit 1
