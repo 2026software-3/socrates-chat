@@ -137,6 +137,10 @@ pub async fn save_login_state(
     nonce: &str,
     pkce_verifier: &str,
 ) -> Result<(), sqlx::Error> {
+    // 順便清掉放棄的登入流程，避免資料表無限成長
+    sqlx::query("DELETE FROM oauth_login_states WHERE created_at < now() - interval '10 minutes'")
+        .execute(pool)
+        .await?;
     sqlx::query("INSERT INTO oauth_login_states (state, nonce, pkce_verifier) VALUES ($1, $2, $3)")
         .bind(state)
         .bind(nonce)

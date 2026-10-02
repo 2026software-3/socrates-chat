@@ -66,6 +66,11 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
 }
 
 impl Config {
+    /// 回覆產生的 claim 超過多久視為殘留（秒）：兩次嘗試的上限再加一點餘裕。
+    pub fn generation_stale_secs(&self) -> f64 {
+        self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         Ok(Self {

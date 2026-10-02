@@ -252,3 +252,19 @@ async fn cross_site_post_is_rejected(pool: PgPool) {
     let res = send(&app, get("/api/me", Some(&cookie))).await;
     assert_eq!(res.status(), StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn abandoned_login_states_are_purged_on_next_login(pool: PgPool) {
+    let app = test_app(pool.clone());
+    send(&app, get("/api/auth/google/login", None)).await;
+    sqlx::query("UPDATE oauth_login_states SET created_at = now() - interval '11 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    send(&app, get("/api/auth/google/login", None)).await;
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM oauth_login_states")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "只剩剛建立的那一筆");
+}

@@ -323,3 +323,94 @@ async fn stream_is_owner_only(pool: PgPool) {
     // 沒有人能觸發 AI 呼叫
     assert_eq!(s.ai.request_count(), 0);
 }
+
+#[sqlx::test]
+async fn only_one_reply_stream_per_conversation(pool: PgPool) {
+    let s = setup(pool.clone(), vec![Reply(REPLY.to_vec())]).await;
+    say(&s, "嗨").await;
+    let url = format!("/api/conversations/{}/stream", s.conv);
+
+    // 已有進行中的回覆：第二條串流與新訊息都被擋下，且不會呼叫 AI
+    sqlx::query("UPDATE conversations SET generating_since = now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = send(&s.app, get(&url, Some(&s.a.student))).await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"]["code"], "reply_in_progress");
+    let res = send(
+        &s.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/messages", s.conv),
+            Some(&s.a.student),
+            Some(json!({"content": "插話"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(s.ai.request_count(), 0);
+
+    // 殘留的 claim（例如服務重啟）過期後可重新產生
+    sqlx::query("UPDATE conversations SET generating_since = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+    // 結束後釋放
+    let (g,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT generating_since FROM conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(g.is_none());
+}
+
+#[sqlx::test]
+async fn concurrent_second_stream_is_rejected_while_first_runs(pool: PgPool) {
+    let s = setup(pool, vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
+    say(&s, "嗨").await;
+    let url = format!("/api/conversations/{}/stream", s.conv);
+
+    let (app, cookie, url1) = (s.app.clone(), s.a.student.clone(), url.clone());
+    let first =
+        tokio::spawn(async move { text_body(send(&app, get(&url1, Some(&cookie))).await).await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let res = send(&s.app, get(&url, Some(&s.a.student))).await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+
+    // 第一條失敗收尾後釋放，再開一次可成功
+    let events = parse_sse(&first.await.unwrap());
+    assert_eq!(events.last().unwrap().0, "error");
+    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+}
+
+#[sqlx::test]
+async fn judgement_reason_is_stored_but_never_streamed(pool: PgPool) {
+    let s = setup(
+        pool.clone(),
+        vec![Reply(vec![
+            "請說明理由？<<<META>>>{\"question_type\":\"reason\",\"advance\":false,\"reason\":\"尚未說明關鍵詞\"}",
+        ])],
+    )
+    .await;
+    say(&s, "嗨").await;
+    let events = stream_events(&s).await;
+    assert!(!format!("{events:?}").contains("尚未說明關鍵詞"));
+    let (r,): (Option<String>,) =
+        sqlx::query_as("SELECT advance_reason FROM messages WHERE role = 'ai'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(r.as_deref(), Some("尚未說明關鍵詞"));
+    assert!(!detail(&s).await.to_string().contains("尚未說明關鍵詞"));
+}
+
+#[sqlx::test]
+async fn failure_after_only_hidden_meta_prefix_still_retries(pool: PgPool) {
+    // 只收到分隔標記的前綴就失敗：學生什麼都還沒看到，可以自動重試
+    let s = setup(pool, vec![FailAfter(vec!["<<<MET"]), Reply(REPLY.to_vec())]).await;
+    say(&s, "嗨").await;
+    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+    assert_eq!(s.ai.request_count(), 2);
+}

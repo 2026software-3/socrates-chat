@@ -100,7 +100,12 @@ impl MetaSplitter {
 pub struct TurnMeta {
     pub question_type: Option<String>,
     pub advance: bool,
+    /// 模型對階段判斷的理由（S-03.2）；只供稽核與評估，不回傳給學生。
+    pub reason: Option<String>,
 }
+
+/// 判斷理由的長度上限（字元）。
+const MAX_REASON_CHARS: usize = 500;
 
 const QUESTION_TYPES: [&str; 6] = [
     "clarify",
@@ -118,6 +123,7 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
         question_type: Option<String>,
         #[serde(default)]
         advance: bool,
+        reason: Option<String>,
     }
     let parsed = raw
         .find('{')
@@ -129,10 +135,15 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
                 .question_type
                 .filter(|q| QUESTION_TYPES.contains(&q.as_str())),
             advance: r.advance,
+            reason: r
+                .reason
+                .map(|s| s.trim().chars().take(MAX_REASON_CHARS).collect::<String>())
+                .filter(|s| !s.is_empty()),
         },
         None => TurnMeta {
             question_type: None,
             advance: false,
+            reason: None,
         },
     }
 }
@@ -175,7 +186,7 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
          - 回覆要簡短（幾句話）。\n\n\
          目前階段（階段只進不退）：{stage}{wrap}\n\n\
          回覆格式：先寫給學生看的文字；接著另起一行輸出 {delim}，之後輸出一行 JSON：\n\
-         {{\"question_type\":\"clarify|reason|assumption|counterexample|perspective|wrap_up\",\"advance\":true或false}}\n\
+         {{\"question_type\":\"clarify|reason|assumption|counterexample|perspective|wrap_up\",\"advance\":true或false,\"reason\":\"一句話說明判斷理由\"}}\n\
          advance 表示學生「到目前為止」是否已達成本階段進入下一階段的條件。JSON 不要給學生看。",
         title = c.title,
         desc = c.description,
@@ -205,15 +216,51 @@ impl OpenAiProvider {
     }
 }
 
-/// 解析 OpenAI 串流的一行（`data: {...}`），回傳其中的文字片段。
-pub fn parse_sse_line(line: &str) -> Option<String> {
-    let data = line.strip_prefix("data:")?.trim();
+#[derive(Debug, PartialEq, Eq)]
+pub enum SseItem {
+    Delta(String),
+    Done,
+    Ignore,
+}
+
+/// 解析 OpenAI 串流的一行（`data: {...}`）。格式錯誤回傳 `Err`，不會當作正常結束。
+pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
+    let Some(data) = line.strip_prefix("data:") else {
+        return Ok(SseItem::Ignore); // 註解、空行、其他欄位
+    };
+    let data = data.trim();
     if data == "[DONE]" {
-        return None;
+        return Ok(SseItem::Done);
     }
-    let v: serde_json::Value = serde_json::from_str(data).ok()?;
-    let text = v["choices"][0]["delta"]["content"].as_str()?;
-    (!text.is_empty()).then(|| text.to_string())
+    let v: serde_json::Value = serde_json::from_str(data).map_err(|_| AiError)?;
+    if let Some(text) = v["choices"][0]["delta"]["content"].as_str()
+        && !text.is_empty()
+    {
+        return Ok(SseItem::Delta(text.to_string()));
+    }
+    if v["choices"][0]["finish_reason"].is_string() {
+        return Ok(SseItem::Done);
+    }
+    Ok(SseItem::Ignore)
+}
+
+/// 把任意切分的位元組累積成完整的行再解碼，避免多位元組字元被切在片段之間。
+#[derive(Default)]
+pub struct SseDecoder {
+    buf: Vec<u8>,
+}
+
+impl SseDecoder {
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<SseItem>, AiError> {
+        self.buf.extend_from_slice(bytes);
+        let mut items = Vec::new();
+        while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.buf.drain(..=i).collect();
+            let line = std::str::from_utf8(&line).map_err(|_| AiError)?;
+            items.push(parse_sse_line(line.trim_end())?);
+        }
+        Ok(items)
+    }
 }
 
 #[async_trait]
@@ -241,22 +288,30 @@ impl AiProvider for OpenAiProvider {
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
             let mut bytes = res.bytes_stream();
-            let mut buf = String::new();
+            let mut decoder = SseDecoder::default();
             while let Some(chunk) = bytes.next().await {
-                let Ok(chunk) = chunk else {
-                    let _ = tx.send(Err(AiError)).await;
-                    return;
-                };
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(i) = buf.find('\n') {
-                    let line: String = buf.drain(..=i).collect();
-                    if let Some(text) = parse_sse_line(line.trim_end())
-                        && tx.send(Ok(text)).await.is_err()
-                    {
+                let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+                    Ok(items) => items,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
                         return;
+                    }
+                };
+                for item in items {
+                    match item {
+                        SseItem::Delta(t) => {
+                            if tx.send(Ok(t)).await.is_err() {
+                                return;
+                            }
+                        }
+                        // 看到結束標記才算正常完成
+                        SseItem::Done => return,
+                        SseItem::Ignore => {}
                     }
                 }
             }
+            // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
+            let _ = tx.send(Err(AiError)).await;
         });
         Ok(ReceiverStream::new(rx).boxed())
     }
@@ -304,30 +359,73 @@ mod tests {
 
     #[test]
     fn parse_meta_accepts_valid_and_falls_back_on_garbage() {
-        let m = parse_meta("\n{\"question_type\":\"reason\",\"advance\":true}\n");
+        let m = parse_meta(
+            "\n{\"question_type\":\"reason\",\"advance\":true,\"reason\":\" 已說明理由 \"}\n",
+        );
         assert_eq!(m.question_type.as_deref(), Some("reason"));
         assert!(m.advance);
+        assert_eq!(m.reason.as_deref(), Some("已說明理由"));
         let m = parse_meta("{\"question_type\":\"weird\",\"advance\":true}");
         assert_eq!(m.question_type, None);
+        assert_eq!(m.reason, None);
         let m = parse_meta("not json");
         assert_eq!(
             m,
             TurnMeta {
                 question_type: None,
-                advance: false
+                advance: false,
+                reason: None
             }
         );
+    }
+
+    #[test]
+    fn parse_meta_truncates_long_reason() {
+        let long = "理".repeat(MAX_REASON_CHARS + 50);
+        let m = parse_meta(&format!("{{\"advance\":false,\"reason\":\"{long}\"}}"));
+        assert_eq!(m.reason.unwrap().chars().count(), MAX_REASON_CHARS);
     }
 
     #[test]
     fn sse_line_parsing() {
         assert_eq!(
             parse_sse_line("data: {\"choices\":[{\"delta\":{\"content\":\"嗨\"}}]}"),
-            Some("嗨".to_string())
+            Ok(SseItem::Delta("嗨".to_string()))
         );
-        assert_eq!(parse_sse_line("data: [DONE]"), None);
-        assert_eq!(parse_sse_line("data: {\"choices\":[{\"delta\":{}}]}"), None);
-        assert_eq!(parse_sse_line(": keep-alive"), None);
+        assert_eq!(parse_sse_line("data: [DONE]"), Ok(SseItem::Done));
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"),
+            Ok(SseItem::Done)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{}}]}"),
+            Ok(SseItem::Ignore)
+        );
+        assert_eq!(parse_sse_line(": keep-alive"), Ok(SseItem::Ignore));
+        // 壞掉的 JSON 不能被當作正常內容或正常結束
+        assert_eq!(parse_sse_line("data: {oops"), Err(AiError));
+    }
+
+    #[test]
+    fn decoder_handles_multibyte_char_split_across_chunks() {
+        let line = "data: {\"choices\":[{\"delta\":{\"content\":\"正義\"}}]}\n";
+        let bytes = line.as_bytes();
+        // 切在「正」的中間
+        let cut = line.find('正').unwrap() + 1;
+        let mut d = SseDecoder::default();
+        assert_eq!(d.push(&bytes[..cut]), Ok(vec![]));
+        assert_eq!(
+            d.push(&bytes[cut..]),
+            Ok(vec![SseItem::Delta("正義".to_string())])
+        );
+    }
+
+    #[test]
+    fn decoder_rejects_invalid_utf8_and_bad_json() {
+        let mut d = SseDecoder::default();
+        assert_eq!(d.push(b"data: \xff\xfe\n"), Err(AiError));
+        let mut d = SseDecoder::default();
+        assert_eq!(d.push(b"data: {oops\n"), Err(AiError));
     }
 
     #[test]
