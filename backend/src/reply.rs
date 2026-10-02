@@ -67,7 +67,7 @@ async fn release_generation(state: &AppState, id: Uuid) {
         .execute(&state.pool)
         .await
     {
-        tracing::error!(error = %e, "failed to release generation claim");
+        tracing::error!(class = %crate::error::db_error_class(&e), "failed to release generation claim");
     }
 }
 
@@ -160,7 +160,7 @@ async fn generate(state: &AppState, conv: &Conversation, messages: &[Message], t
             let _ = tx.send(event("error", json!({"code": "conflict"})));
         }
         Err(e) => {
-            tracing::error!(error = %e, "failed to save AI reply");
+            tracing::error!(class = %crate::error::db_error_class(&e), "failed to save AI reply");
             let _ = tx.send(event("error", json!({"code": "internal"})));
         }
     }

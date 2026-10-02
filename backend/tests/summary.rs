@@ -387,3 +387,193 @@ async fn deleting_conversation_removes_summary_from_teacher_view(pool: PgPool) {
     let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
     assert!(list.as_array().unwrap().is_empty());
 }
+
+#[sqlx::test]
+async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    // 管理者同時被加為教師
+    send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/teachers",
+            Some(&a.admin),
+            Some(json!({"email": "admin@example.com"})),
+        ),
+    )
+    .await;
+    let conv = start_conversation(&app, &a).await;
+    student_says(&app, &a, &conv, "想法").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+
+    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    assert_eq!(list[0]["stance"], "message");
+    assert!(!list.to_string().contains("會拉桿"));
+}
+
+#[sqlx::test]
+async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![GOOD])]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    // 教師自己試用：開一場對話並結束
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&a.teacher),
+            Some(json!({"title": "試用"})),
+        ),
+    )
+    .await;
+    let act = json_body(res).await["id"].as_str().unwrap().to_string();
+    send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/activities/{act}/publish"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/conversations",
+            Some(&a.teacher),
+            Some(json!({"activity_id": act})),
+        ),
+    )
+    .await;
+    let own = json_body(res).await["id"].as_str().unwrap().to_string();
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{own}/messages"),
+            Some(&a.teacher),
+            Some(json!({"content": "試試"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    end(&app, &a.teacher, &own).await;
+    settled_summary(&app, &a.teacher, &own).await;
+
+    // 學生的對話才會出現
+    let conv = start_conversation(&app, &a).await;
+    student_says(&app, &a, &conv, "想法").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+
+    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let ids: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["conversation_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![conv.as_str()]);
+}
+
+#[sqlx::test]
+async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
+    let app = test_app_with_ai(pool.clone(), ai);
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    student_says(&app, &a, &conv, "想法").await;
+
+    sqlx::query("UPDATE conversations SET generating_since = now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (st, body) = end(&app, &a.student, &conv).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "reply_in_progress");
+    let d = json_body(
+        send(
+            &app,
+            get(&format!("/api/conversations/{conv}"), Some(&a.student)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(d["status"], "active");
+
+    // 回覆完成（claim 釋放）後即可結束
+    sqlx::query("UPDATE conversations SET generating_since = NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(end(&app, &a.student, &conv).await.0, StatusCode::ACCEPTED);
+}
+
+#[sqlx::test]
+async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
+    // 第一代卡住（Hang）；在它逾時前手動重試，第二代很快成功。
+    // 第一代之後失敗收尾時，不能把已完成的結果改成 failed。
+    let ai = FakeAi::with(vec![Hang, Reply(vec![GOOD])]);
+    let app = test_app_with_ai(pool.clone(), ai);
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    student_says(&app, &a, &conv, "想法").await;
+    end(&app, &a.student, &conv).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/summary/retry"),
+            Some(&a.student),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "ready"
+    );
+
+    // 等第一代的逾時與自動重試都結束
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let s = settled_summary(&app, &a.student, &conv).await;
+    assert_eq!(s["status"], "ready");
+    assert_eq!(s["stance"], "會拉桿");
+}
+
+#[sqlx::test]
+async fn orphaned_pending_summaries_are_failed_on_startup(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    student_says(&app, &a, &conv, "想法").await;
+    sqlx::query("UPDATE conversations SET status = 'ended'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO summaries (conversation_id) VALUES ($1::uuid)")
+        .bind(&conv)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let n = socrates_chat_backend::summary::recover_orphaned(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "failed"
+    );
+}

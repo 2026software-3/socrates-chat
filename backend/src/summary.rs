@@ -23,7 +23,7 @@ use crate::{
     },
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
-    error::ApiError,
+    error::{ApiError, db_error_class},
 };
 
 /// 管理者介面看到的固定替代字串（S-02.2）。
@@ -37,13 +37,22 @@ pub fn routes() -> Router<AppState> {
         .route("/api/teacher/summaries", get(teacher_list))
 }
 
-/// 結束對話並建立「產生中」的總結；回傳是否真的由這次呼叫結束（已結束則為 `false`）。
-pub async fn end_conversation(conn: &mut PgConnection, id: Uuid) -> Result<bool, sqlx::Error> {
+/// 結束對話並建立「產生中」的總結；回傳是否真的由這次呼叫結束。
+///
+/// 已結束，或 AI 正在回覆中（要等回覆完成，總結才包含學生看到的全部內容）時回傳 `false`。
+pub async fn end_conversation(
+    conn: &mut PgConnection,
+    id: Uuid,
+    stale_secs: f64,
+) -> Result<bool, sqlx::Error> {
     let r = sqlx::query(
-        "UPDATE conversations SET status = 'ended', ended_at = now(), generating_since = NULL
-         WHERE id = $1 AND status = 'active'",
+        "UPDATE conversations SET status = 'ended', ended_at = now()
+         WHERE id = $1 AND status = 'active'
+           AND (generating_since IS NULL
+                OR generating_since < now() - make_interval(secs => $2))",
     )
     .bind(id)
+    .bind(stale_secs)
     .execute(&mut *conn)
     .await?;
     if r.rows_affected() == 0 {
@@ -56,16 +65,37 @@ pub async fn end_conversation(conn: &mut PgConnection, id: Uuid) -> Result<bool,
     Ok(true)
 }
 
-/// 在背景產生總結（呼叫端已把總結列設為 pending）。
-pub fn spawn_generation(state: AppState, id: Uuid) {
+/// 服務啟動時呼叫：背景任務不會跨重啟存活，所以此時還是 pending 的總結都是孤兒，
+/// 標記為 failed 讓學生可以重試。
+pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE summaries SET status = 'failed', completed_at = now() WHERE status = 'pending'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
+pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
     tokio::spawn(async move {
-        if let Err(e) = generate(&state, id).await {
-            tracing::error!(error = %e, "summary generation bookkeeping failed");
+        if let Err(e) = generate(&state, id, attempt).await {
+            // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
+            tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
+            // 盡力把這一代標記為失敗，避免永遠停在 pending
+            let _ = sqlx::query(
+                "UPDATE summaries SET status = 'failed', completed_at = now()
+                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
+            )
+            .bind(id)
+            .bind(attempt)
+            .execute(&state.pool)
+            .await;
         }
     });
 }
 
-async fn generate(state: &AppState, id: Uuid) -> Result<(), sqlx::Error> {
+async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
     let (title, description): (String, String) =
         sqlx::query_as("SELECT title, description FROM conversations WHERE id = $1")
             .bind(id)
@@ -99,22 +129,24 @@ async fn generate(state: &AppState, id: Uuid) -> Result<(), sqlx::Error> {
             sqlx::query(
                 "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
                         turning_points = $4, rules_version = $5, completed_at = now()
-                 WHERE conversation_id = $1 AND status = 'pending'",
+                 WHERE conversation_id = $1 AND attempt = $6 AND status = 'pending'",
             )
             .bind(id)
             .bind(s.stance)
             .bind(s.reasons)
             .bind(s.turning_points)
             .bind(RULES_VERSION)
+            .bind(attempt)
             .execute(&state.pool)
             .await?;
         }
         None => {
             sqlx::query(
                 "UPDATE summaries SET status = 'failed', completed_at = now()
-                 WHERE conversation_id = $1 AND status = 'pending'",
+                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
             )
             .bind(id)
+            .bind(attempt)
             .execute(&state.pool)
             .await?;
         }
@@ -176,11 +208,17 @@ async fn end(
         return Err(ApiError::conflict("empty_conversation", "還沒有討論內容"));
     }
     let mut tx = state.pool.begin().await?;
-    let ended = end_conversation(&mut tx, id).await?;
+    let ended = end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
-    if ended {
-        spawn_generation(state.clone(), id);
+    if !ended {
+        // 沒有結束成功：若對話其實已被結束（競態）就回傳目前狀態，否則是 AI 還在回覆
+        let now = owned_conversation(&state, cu.user.id, id).await?;
+        if now.status == "active" {
+            return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+        }
+        return Ok((StatusCode::OK, Json(view(&state, id).await?)));
     }
+    spawn_generation(state.clone(), id, 1);
     Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
 }
 
@@ -200,25 +238,28 @@ async fn retry(
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
     owned_conversation(&state, cu.user.id, id).await?;
     // 只有失敗，或產生中卻已超過逾時上限（例如服務重啟）才能重試
-    let r = sqlx::query(
-        "UPDATE summaries SET status = 'pending', started_at = now(), completed_at = NULL
+    // 重試開新的一代（attempt + 1）；舊的背景任務之後寫入會因代數不符而被忽略
+    let next: Option<(i32,)> = sqlx::query_as(
+        "UPDATE summaries SET status = 'pending', attempt = attempt + 1, started_at = now(),
+                completed_at = NULL
          WHERE conversation_id = $1
            AND (status = 'failed'
-                OR (status = 'pending' AND started_at < now() - make_interval(secs => $2)))",
+                OR (status = 'pending' AND started_at < now() - make_interval(secs => $2)))
+         RETURNING attempt",
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
-    .execute(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
-    if r.rows_affected() == 0 {
+    let Some((attempt,)) = next else {
         // 沒有總結列代表對話還沒結束
         view(&state, id).await?;
         return Err(ApiError::conflict(
             "summary_not_retryable",
             "目前無法重新產生總結",
         ));
-    }
-    spawn_generation(state.clone(), id);
+    };
+    spawn_generation(state.clone(), id, attempt);
     Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
 }
 
@@ -249,13 +290,14 @@ async fn teacher_list(
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN users u ON u.id = c.user_id
-         WHERE s.status = 'ready'
+         WHERE s.status = 'ready' AND c.as_student
          ORDER BY c.ended_at DESC, s.conversation_id",
     )
     .fetch_all(&state.pool)
     .await?;
-    // 只有管理者身分（不是教師）時，總結屬敏感欄位，一律遮蔽（S-02.2）
-    if !cu.roles.teacher {
+    // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），
+    // 即使同一帳號也是教師。
+    if cu.roles.admin {
         for r in &mut rows {
             r.stance = Some(MASKED.into());
             r.reasons = Some(MASKED.into());

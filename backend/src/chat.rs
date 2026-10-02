@@ -110,8 +110,8 @@ async fn create(
         return Err(ApiError::bad_request("invalid_source", "活動或題目不可用"));
     };
     let c = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description, as_student)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id, activity_id, topic_id, title, description, language, status, stage,
                    turn_count, converge_ready, created_at, ended_at",
     )
@@ -120,6 +120,7 @@ async fn create(
     .bind(topic_id)
     .bind(title)
     .bind(description)
+    .bind(cu.roles.student)
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(c)))
@@ -233,11 +234,11 @@ async fn send_message(
     .fetch_one(&mut *tx)
     .await?;
     // 到達回合上限：不再追問，直接產生總結並結束（S-03.3）
-    let auto_ended =
-        turn >= state.config.max_turns as i32 && summary::end_conversation(&mut tx, id).await?;
+    let auto_ended = turn >= state.config.max_turns as i32
+        && summary::end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
     if auto_ended {
-        summary::spawn_generation(state.clone(), id);
+        summary::spawn_generation(state.clone(), id, 1);
     }
     Ok((
         StatusCode::CREATED,
