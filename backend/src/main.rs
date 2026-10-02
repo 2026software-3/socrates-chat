@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, config::Config, identity::GoogleIdentity,
+    AppState, ai::OpenAiProvider, app, config::Config, identity::GoogleIdentity, summary,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
@@ -24,6 +24,12 @@ async fn main() {
             .run(&pool)
             .await
             .expect("failed to run migrations");
+    }
+    // 重啟前進行中的總結不會繼續產生：標記為失敗，讓學生可以重試
+    match summary::recover_orphaned(&pool).await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
+        Err(_) => tracing::error!("failed to recover orphaned summaries"),
     }
     let identity = GoogleIdentity::discover(
         &config.google_client_id,

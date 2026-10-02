@@ -128,6 +128,7 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
     let parsed = raw
         .find('{')
         .zip(raw.rfind('}'))
+        .filter(|(a, b)| a <= b)
         .and_then(|(a, b)| serde_json::from_str::<Raw>(&raw[a..=b]).ok());
     match parsed {
         Some(r) => TurnMeta {
@@ -317,9 +318,140 @@ impl AiProvider for OpenAiProvider {
     }
 }
 
+// ---- 非串流呼叫與總結 ----
+
+/// 把串流收成完整文字（總結等不需要逐字顯示的用途）；套用與對話相同的逾時規則（S-03.5）。
+pub async fn collect(
+    ai: &dyn AiProvider,
+    req: AiRequest,
+    first_token: std::time::Duration,
+    total: std::time::Duration,
+) -> Result<String, AiError> {
+    use tokio::time::{Instant, timeout_at};
+    let start = Instant::now();
+    let first_deadline = start + first_token;
+    let total_deadline = start + total;
+    let mut stream = timeout_at(first_deadline, ai.stream_chat(req))
+        .await
+        .map_err(|_| AiError)??;
+    let mut text = String::new();
+    let mut got_chunk = false;
+    loop {
+        let limit = if got_chunk {
+            total_deadline
+        } else {
+            first_deadline.min(total_deadline)
+        };
+        match timeout_at(limit, stream.next()).await {
+            Err(_) | Ok(Some(Err(_))) => return Err(AiError),
+            Ok(None) => return Ok(text),
+            Ok(Some(Ok(chunk))) => {
+                got_chunk = true;
+                text.push_str(&chunk);
+            }
+        }
+    }
+}
+
+/// 單一總結欄位的長度上限（字元）。
+const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub stance: String,
+    pub reasons: String,
+    pub turning_points: String,
+}
+
+pub fn build_summary_prompt(title: &str, description: &str) -> String {
+    format!(
+        "你是哲學討論的紀錄整理者，使用繁體中文。以下是學生與引導者就「{title}」（{description}）\
+         的完整對話。請只依對話內容整理學生的論點，不加入你自己的看法，也不評分。\n\
+         輸出一個 JSON 物件，欄位皆為字串且不可為空：\n\
+         {{\"stance\":\"學生的主要立場\",\"reasons\":\"學生提出的核心理由\",\
+         \"turning_points\":\"討論中的重要轉折與修正（若無明顯轉折，說明立場維持不變及原因）\"}}\n\
+         只輸出 JSON。"
+    )
+}
+
+/// 把對話整理成給總結模型看的單一文字。
+pub fn format_transcript(turns: &[ChatTurn]) -> String {
+    turns
+        .iter()
+        .map(|t| {
+            let who = if t.role == ChatRole::User {
+                "學生"
+            } else {
+                "引導者"
+            };
+            format!("{who}：{}", t.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// 解析總結；缺欄位、空白或格式錯誤都回傳 `None`（視為結果不完整，F-08.4）。
+pub fn parse_summary(raw: &str) -> Option<Summary> {
+    #[derive(Deserialize)]
+    struct Raw {
+        stance: String,
+        reasons: String,
+        turning_points: String,
+    }
+    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
+    if end < start {
+        return None;
+    }
+    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
+    let clean = |s: String| -> Option<String> {
+        let s: String = s.trim().chars().take(MAX_SUMMARY_FIELD_CHARS).collect();
+        (!s.is_empty()).then_some(s)
+    };
+    Some(Summary {
+        stance: clean(r.stance)?,
+        reasons: clean(r.reasons)?,
+        turning_points: clean(r.turning_points)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_summary_requires_all_fields() {
+        let ok = parse_summary(
+            "```json\n{\"stance\":\"拉桿\",\"reasons\":\"功利\",\"turning_points\":\"改為不拉\"}\n```",
+        )
+        .unwrap();
+        assert_eq!(ok.stance, "拉桿");
+        assert_eq!(ok.turning_points, "改為不拉");
+        for bad in [
+            "",
+            "no json",
+            "{\"stance\":\"a\",\"reasons\":\"b\"}",
+            "{\"stance\":\"a\",\"reasons\":\"  \",\"turning_points\":\"c\"}",
+            "{\"stance\":\"a\",\"reasons\":1,\"turning_points\":\"c\"}",
+            "} reversed {",
+        ] {
+            assert!(parse_summary(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn transcript_labels_speakers() {
+        let t = format_transcript(&[
+            ChatTurn {
+                role: ChatRole::User,
+                content: "我拉桿".into(),
+            },
+            ChatTurn {
+                role: ChatRole::Assistant,
+                content: "為什麼？".into(),
+            },
+        ]);
+        assert_eq!(t, "學生：我拉桿\n\n引導者：為什麼？");
+    }
 
     fn run(chunks: &[&str]) -> (String, String) {
         let mut s = MetaSplitter::default();
@@ -368,6 +500,8 @@ mod tests {
         let m = parse_meta("{\"question_type\":\"weird\",\"advance\":true}");
         assert_eq!(m.question_type, None);
         assert_eq!(m.reason, None);
+        let m = parse_meta("} reversed {");
+        assert!(!m.advance);
         let m = parse_meta("not json");
         assert_eq!(
             m,

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{AppState, auth::RequireStudent, error::ApiError};
+use crate::{AppState, auth::RequireStudent, error::ApiError, summary};
 
 /// 單則訊息的長度上限（字元），避免單次請求過大。
 pub const MAX_MESSAGE_CHARS: usize = 4000;
@@ -110,8 +110,8 @@ async fn create(
         return Err(ApiError::bad_request("invalid_source", "活動或題目不可用"));
     };
     let c = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description, as_student)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id, activity_id, topic_id, title, description, language, status, stage,
                    turn_count, converge_ready, created_at, ended_at",
     )
@@ -120,6 +120,7 @@ async fn create(
     .bind(topic_id)
     .bind(title)
     .bind(description)
+    .bind(cu.roles.student)
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(c)))
@@ -190,7 +191,7 @@ async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(b): Json<NewMessage>,
-) -> Result<(StatusCode, Json<Message>), ApiError> {
+) -> Result<(StatusCode, Json<SentMessage>), ApiError> {
     let content = b.content.trim();
     if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
         return Err(ApiError::bad_request("invalid_message", "訊息長度不符"));
@@ -208,19 +209,20 @@ async fn send_message(
     // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
     let mut tx = state.pool.begin().await?;
     // AI 正在回覆時不接受新訊息，避免回覆對不上提問
-    let updated = sqlx::query(
+    let turn: Option<(i32,)> = sqlx::query_as(
         "UPDATE conversations SET turn_count = turn_count + 1
          WHERE id = $1 AND status = 'active'
            AND (generating_since IS NULL
-                OR generating_since < now() - make_interval(secs => $2))",
+                OR generating_since < now() - make_interval(secs => $2))
+         RETURNING turn_count",
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
-    if updated.rows_affected() == 0 {
+    let Some((turn,)) = turn else {
         return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
-    }
+    };
     let m = sqlx::query_as(
         "INSERT INTO messages (conversation_id, role, content, source)
          VALUES ($1, 'student', $2, $3)
@@ -231,8 +233,28 @@ async fn send_message(
     .bind(source)
     .fetch_one(&mut *tx)
     .await?;
+    // 到達回合上限：不再追問，直接產生總結並結束（S-03.3）
+    let auto_ended = turn >= state.config.max_turns as i32
+        && summary::end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(m)))
+    if auto_ended {
+        summary::spawn_generation(state.clone(), id, 1);
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(SentMessage {
+            message: m,
+            auto_ended,
+        }),
+    ))
+}
+
+#[derive(Serialize)]
+struct SentMessage {
+    #[serde(flatten)]
+    message: Message,
+    /// 這則訊息達到回合上限，對話已自動結束、總結產生中。
+    auto_ended: bool,
 }
 
 async fn remove(

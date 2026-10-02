@@ -243,6 +243,58 @@ pub struct Actors {
     pub outsider: String,
 }
 
+/// 教師建立並發布一個活動，學生從中開始一場對話，回傳對話 id。
+pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&a.teacher),
+            Some(serde_json::json!({"title": "電車難題", "description": "你會拉桿嗎？"})),
+        ),
+    )
+    .await;
+    let act = json_body(res).await["id"].as_str().unwrap().to_string();
+    send(
+        app,
+        json_req(
+            "POST",
+            &format!("/api/activities/{act}/publish"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/conversations",
+            Some(&a.student),
+            Some(serde_json::json!({"activity_id": act})),
+        ),
+    )
+    .await;
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 學生在對話中送出一則訊息，回傳回應內容。
+pub async fn student_says(app: &Router, a: &Actors, conv: &str, text: &str) -> (StatusCode, Value) {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/messages"),
+            Some(&a.student),
+            Some(serde_json::json!({"content": text})),
+        ),
+    )
+    .await;
+    let status = res.status();
+    (status, json_body(res).await)
+}
+
 /// 建立管理者、教師、名單內學生與名單外帳號並登入。
 pub async fn seed_actors(app: &Router) -> Actors {
     let admin = login_as(app, "sub-admin", "admin@example.com").await;

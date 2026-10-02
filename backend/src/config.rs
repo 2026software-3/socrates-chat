@@ -57,6 +57,18 @@ fn parse_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, ConfigErr
     }
 }
 
+/// 回合設定必須是 `1 <= 引導收尾 <= 上限 <= 1000`（S-03.3）；資料庫以 `i32` 計數，
+/// 同時避免 `0` 或過大的值讓對話在第一則訊息就結束。
+pub fn validate_turns(wrap_up_turn: u32, max_turns: u32) -> Result<(), ConfigError> {
+    if wrap_up_turn >= 1 && wrap_up_turn <= max_turns && max_turns <= 1000 {
+        Ok(())
+    } else {
+        Err(ConfigError(
+            "WRAP_UP_TURN and MAX_TURNS must satisfy 1 <= WRAP_UP_TURN <= MAX_TURNS <= 1000".into(),
+        ))
+    }
+}
+
 /// 以逗號分隔的信箱清單，去空白並轉小寫。
 pub fn parse_admin_emails(raw: &str) -> Vec<String> {
     raw.split(',')
@@ -73,6 +85,9 @@ impl Config {
 
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
+        let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
+        let max_turns = parse_or("MAX_TURNS", 20)?;
+        validate_turns(wrap_up_turn, max_turns)?;
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
@@ -88,8 +103,8 @@ impl Config {
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
-            wrap_up_turn: parse_or("WRAP_UP_TURN", 15)?,
-            max_turns: parse_or("MAX_TURNS", 20)?,
+            wrap_up_turn,
+            max_turns,
             ai_first_token_timeout: Duration::from_secs(parse_or(
                 "AI_FIRST_TOKEN_TIMEOUT_SECS",
                 15,
@@ -97,5 +112,20 @@ impl Config {
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
             app_base_url,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turn_settings_are_validated() {
+        assert!(validate_turns(15, 20).is_ok());
+        assert!(validate_turns(1, 1).is_ok());
+        assert!(validate_turns(20, 20).is_ok());
+        for (wrap, max) in [(0, 20), (21, 20), (15, 0), (5, 1001), (5, u32::MAX)] {
+            assert!(validate_turns(wrap, max).is_err(), "{wrap}/{max}");
+        }
     }
 }

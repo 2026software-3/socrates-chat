@@ -58,10 +58,18 @@ impl ApiError {
     }
 }
 
+/// 資料庫錯誤的安全摘要：只含 SQLSTATE，不含錯誤訊息。
+/// PostgreSQL 的約束錯誤訊息可能帶出整列資料（含對話或總結內容），因此不能直接寫進日誌。
+pub fn db_error_class(e: &sqlx::Error) -> String {
+    e.as_database_error()
+        .and_then(|d| d.code().map(|c| c.to_string()))
+        .unwrap_or_else(|| "non-database".to_string())
+}
+
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
-        // 只記錄錯誤本身，不把內部細節回給前端
-        tracing::error!(error = %e, "database error");
+        // 只記錄錯誤種類，不把內部細節回給前端或日誌
+        tracing::error!(class = %db_error_class(&e), "database error");
         Self::internal()
     }
 }
