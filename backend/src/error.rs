@@ -73,8 +73,8 @@ impl IntoResponse for ApiError {
             self.status,
             Json(json!({
                 "error": {
+                    // S-12.1：只回 code 與 request_id，由前端依 code 查翻譯
                     "code": self.code,
-                    "message": self.message,
                     "request_id": request_id,
                 }
             })),

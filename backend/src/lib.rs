@@ -18,6 +18,7 @@ pub mod auth_store;
 pub mod config;
 pub mod error;
 pub mod identity;
+pub mod roster;
 
 /// 所有 handler 共用的狀態。
 #[derive(Clone)]
@@ -47,6 +48,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .merge(auth::routes())
+        .merge(roster::routes())
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))
