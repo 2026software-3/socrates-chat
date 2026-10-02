@@ -15,6 +15,7 @@ use crate::{config::Config, error::ApiError, identity::IdentityProvider};
 
 pub mod auth;
 pub mod auth_store;
+pub mod catalog;
 pub mod config;
 pub mod error;
 pub mod identity;
@@ -49,6 +50,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .merge(auth::routes())
         .merge(roster::routes())
+        .merge(catalog::routes())
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))

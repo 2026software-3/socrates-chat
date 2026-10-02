@@ -133,6 +133,39 @@ pub fn get(path: &str, cookie: Option<&str>) -> Request<Body> {
     b.body(Body::empty()).unwrap()
 }
 
+/// 四種身分的 session cookie（合成資料）。
+pub struct Actors {
+    pub admin: String,
+    pub teacher: String,
+    pub student: String,
+    /// 名單外、非教師、非管理者
+    pub outsider: String,
+}
+
+/// 建立管理者、教師、名單內學生與名單外帳號並登入。
+pub async fn seed_actors(app: &Router) -> Actors {
+    let admin = login_as(app, "sub-admin", "admin@example.com").await;
+    for (path, body) in [
+        (
+            "/api/admin/teachers",
+            serde_json::json!({"email": "teacher@example.com"}),
+        ),
+        (
+            "/api/roster/import",
+            serde_json::json!({"text": "student@example.com"}),
+        ),
+    ] {
+        let res = send(app, json_req("POST", path, Some(&admin), Some(body))).await;
+        assert!(res.status().is_success());
+    }
+    Actors {
+        teacher: login_as(app, "sub-teacher", "teacher@example.com").await,
+        student: login_as(app, "sub-student", "student@example.com").await,
+        outsider: login_as(app, "sub-outsider", "outsider@example.com").await,
+        admin,
+    }
+}
+
 /// 帶 `Origin: APP_URL` 的 JSON 請求（符合 CSRF 檢查）。
 pub fn json_req(
     method: &str,
