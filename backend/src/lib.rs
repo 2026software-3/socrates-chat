@@ -11,8 +11,9 @@ use axum::{
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{config::Config, error::ApiError, identity::IdentityProvider};
+use crate::{ai::AiProvider, config::Config, error::ApiError, identity::IdentityProvider};
 
+pub mod ai;
 pub mod auth;
 pub mod auth_store;
 pub mod catalog;
@@ -20,6 +21,7 @@ pub mod chat;
 pub mod config;
 pub mod error;
 pub mod identity;
+pub mod reply;
 pub mod roster;
 
 /// 所有 handler 共用的狀態。
@@ -28,14 +30,21 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
+    pub ai: Arc<dyn AiProvider>,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool, config: Config, identity: Arc<dyn IdentityProvider>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        config: Config,
+        identity: Arc<dyn IdentityProvider>,
+        ai: Arc<dyn AiProvider>,
+    ) -> Self {
         Self {
             pool,
             config: Arc::new(config),
             identity,
+            ai,
         }
     }
 }
@@ -53,6 +62,7 @@ pub fn app(state: AppState) -> Router {
         .merge(roster::routes())
         .merge(catalog::routes())
         .merge(chat::routes())
+        .merge(reply::routes())
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))

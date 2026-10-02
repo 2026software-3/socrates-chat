@@ -1,7 +1,11 @@
 //! 整合測試共用工具：假的身分服務、測試設定與登入輔助函式。全部使用合成資料。
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use axum::{
@@ -9,10 +13,13 @@ use axum::{
     body::Body,
     http::{Request, Response, StatusCode, header},
 };
+use futures_util::{StreamExt, stream};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use socrates_chat_backend::{
-    AppState, app,
+    AppState,
+    ai::{AiError, AiProvider, AiRequest, AiStream},
+    app,
     config::Config,
     identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
 };
@@ -68,11 +75,105 @@ pub fn test_config() -> Config {
         admin_emails: vec!["admin@example.com".to_string()],
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
+        openai_api_key: "test-key".to_string(),
+        openai_model: "test-model".to_string(),
+        openai_base_url: "http://127.0.0.1:1".to_string(),
+        wrap_up_turn: 3,
+        max_turns: 5,
+        // 縮短逾時讓逾時測試很快跑完
+        ai_first_token_timeout: Duration::from_millis(200),
+        ai_total_timeout: Duration::from_millis(1000),
+    }
+}
+
+/// 一次 AI 呼叫的腳本。
+pub enum Script {
+    /// 依序給出這些片段後正常結束
+    Reply(Vec<&'static str>),
+    /// 直接失敗（尚未串流任何內容）
+    Fail,
+    /// 給出這些片段後中途失敗
+    FailAfter(Vec<&'static str>),
+    /// 永遠不回應
+    Hang,
+}
+
+/// 假的 AI：依序執行腳本（用完後一律失敗），並記錄收到的請求。
+#[derive(Default)]
+pub struct FakeAi {
+    scripts: Mutex<VecDeque<Script>>,
+    pub requests: Mutex<Vec<AiRequest>>,
+}
+
+impl FakeAi {
+    pub fn with(scripts: Vec<Script>) -> Arc<Self> {
+        Arc::new(Self {
+            scripts: Mutex::new(scripts.into()),
+            requests: Mutex::default(),
+        })
+    }
+
+    pub fn request_count(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl AiProvider for FakeAi {
+    async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
+        self.requests.lock().unwrap().push(req);
+        let script = self.scripts.lock().unwrap().pop_front();
+        match script {
+            Some(Script::Reply(chunks)) => {
+                Ok(stream::iter(chunks.into_iter().map(|c| Ok(c.to_string()))).boxed())
+            }
+            Some(Script::FailAfter(chunks)) => Ok(stream::iter(
+                chunks
+                    .into_iter()
+                    .map(|c| Ok(c.to_string()))
+                    .chain([Err(AiError)]),
+            )
+            .boxed()),
+            Some(Script::Hang) => std::future::pending().await,
+            Some(Script::Fail) | None => Err(AiError),
+        }
     }
 }
 
 pub fn test_app(pool: PgPool) -> Router {
-    app(AppState::new(pool, test_config(), Arc::new(FakeIdentity)))
+    test_app_with_ai(pool, FakeAi::with(vec![]))
+}
+
+pub fn test_app_with_ai(pool: PgPool, ai: Arc<FakeAi>) -> Router {
+    app(AppState::new(
+        pool,
+        test_config(),
+        Arc::new(FakeIdentity),
+        ai,
+    ))
+}
+
+/// 解析 SSE 回應內容為 (event 名稱, data) 清單。
+pub fn parse_sse(body: &str) -> Vec<(String, Value)> {
+    body.split("\n\n")
+        .filter_map(|block| {
+            let mut name = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(v) = line.strip_prefix("event:") {
+                    name = Some(v.trim().to_string());
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    data = serde_json::from_str(v.trim()).ok();
+                }
+            }
+            Some((name?, data?))
+        })
+        .collect()
+}
+
+pub async fn text_body(res: Response<Body>) -> String {
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 pub async fn send(app: &Router, req: Request<Body>) -> Response<Body> {

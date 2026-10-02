@@ -37,6 +37,7 @@ pub struct Conversation {
     pub status: String,
     pub stage: i16,
     pub turn_count: i32,
+    pub converge_ready: bool,
     pub created_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
 }
@@ -45,7 +46,7 @@ macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
             "SELECT id, activity_id, topic_id, title, description, language, status, stage,
-                    turn_count, created_at, ended_at FROM conversations ",
+                    turn_count, converge_ready, created_at, ended_at FROM conversations ",
             $tail
         )
     };
@@ -112,7 +113,7 @@ async fn create(
         "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id, activity_id, topic_id, title, description, language, status, stage,
-                   turn_count, created_at, ended_at",
+                   turn_count, converge_ready, created_at, ended_at",
     )
     .bind(cu.user.id)
     .bind(activity_id)
@@ -206,10 +207,20 @@ async fn send_message(
     }
     // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
     let mut tx = state.pool.begin().await?;
-    sqlx::query("UPDATE conversations SET turn_count = turn_count + 1 WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    // AI 正在回覆時不接受新訊息，避免回覆對不上提問
+    let updated = sqlx::query(
+        "UPDATE conversations SET turn_count = turn_count + 1
+         WHERE id = $1 AND status = 'active'
+           AND (generating_since IS NULL
+                OR generating_since < now() - make_interval(secs => $2))",
+    )
+    .bind(id)
+    .bind(state.config.generation_stale_secs())
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+    }
     let m = sqlx::query_as(
         "INSERT INTO messages (conversation_id, role, content, source)
          VALUES ($1, 'student', $2, $3)
