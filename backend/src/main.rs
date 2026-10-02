@@ -1,7 +1,8 @@
-use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
 
-// Bind address and other runtime configuration are pending S-08.
-const ADDR: &str = "127.0.0.1:3000";
+use socrates_chat_backend::{AppState, app, config::Config, identity::GoogleIdentity};
+use sqlx::postgres::PgPoolOptions;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
@@ -9,12 +10,35 @@ async fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let listener = tokio::net::TcpListener::bind(ADDR)
+    let config = Config::from_env().expect("invalid configuration");
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&config.database_url)
+        .await
+        .expect("failed to connect to database");
+    // 正式環境的 migration 於部署前單獨執行（S-09.3）；本機開發可設 RUN_MIGRATIONS=true。
+    if std::env::var("RUN_MIGRATIONS").is_ok_and(|v| v == "true") {
+        sqlx::migrate!()
+            .run(&pool)
+            .await
+            .expect("failed to run migrations");
+    }
+    let identity = GoogleIdentity::discover(
+        &config.google_client_id,
+        &config.google_client_secret,
+        &config.google_redirect_url,
+    )
+    .await
+    .expect("failed to discover Google OIDC configuration");
+
+    let addr = config.listen_addr.clone();
+    let state = AppState::new(pool, config, Arc::new(identity));
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind listener");
-    tracing::info!("listening on {ADDR}");
+    tracing::info!("listening on {addr}");
 
-    axum::serve(listener, socrates_chat_backend::app())
+    axum::serve(listener, app(state))
         .await
         .expect("server error");
 }

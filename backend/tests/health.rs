@@ -1,14 +1,25 @@
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
+
+/// 健康檢查不碰資料庫，用不會真的連線的 lazy pool。
+fn app() -> axum::Router {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+        .unwrap();
+    common::test_app(pool)
+}
 
 #[tokio::test]
 async fn health_returns_ok_status_as_json() {
-    let response = socrates_chat_backend::app()
+    let response = app()
         .oneshot(Request::get("/health").body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -23,7 +34,7 @@ async fn health_returns_ok_status_as_json() {
 
 #[tokio::test]
 async fn unknown_route_returns_not_found() {
-    let response = socrates_chat_backend::app()
+    let response = app()
         .oneshot(Request::get("/does-not-exist").body(Body::empty()).unwrap())
         .await
         .unwrap();

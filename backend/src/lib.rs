@@ -1,7 +1,41 @@
-pub mod auth_store;
+use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Request, State},
+    http::{HeaderValue, Method, header},
+    middleware::{self, Next},
+    response::Response,
+    routing::get,
+};
 use serde::Serialize;
+use sqlx::PgPool;
+
+use crate::{config::Config, error::ApiError, identity::IdentityProvider};
+
+pub mod auth;
+pub mod auth_store;
+pub mod config;
+pub mod error;
+pub mod identity;
+
+/// 所有 handler 共用的狀態。
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: PgPool,
+    pub config: Arc<Config>,
+    pub identity: Arc<dyn IdentityProvider>,
+}
+
+impl AppState {
+    pub fn new(pool: PgPool, config: Config, identity: Arc<dyn IdentityProvider>) -> Self {
+        Self {
+            pool,
+            config: Arc::new(config),
+            identity,
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct Health {
@@ -9,10 +43,45 @@ struct Health {
 }
 
 /// Builds the application router.
-pub fn app() -> Router {
-    Router::new().route("/health", get(health))
+pub fn app(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .merge(auth::routes())
+        .layer(middleware::from_fn_with_state(state.clone(), check_origin))
+        // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
+        .layer(middleware::from_fn(request_id))
+        .with_state(state)
 }
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+/// 為每個請求產生 request ID：放進錯誤回應與 `x-request-id` 標頭。
+async fn request_id(req: Request, next: Next) -> Response {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut res = error::REQUEST_ID.scope(id.clone(), next.run(req)).await;
+    if let Ok(v) = HeaderValue::from_str(&id) {
+        res.headers_mut().insert("x-request-id", v);
+    }
+    res
+}
+
+/// CSRF 防護（S-08.2）：會改變狀態的請求，`Origin` 必須等於本站網域。
+async fn check_origin(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    if !safe {
+        let origin = req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok());
+        if origin != Some(state.config.app_base_url.as_str()) {
+            return Err(ApiError::forbidden("csrf", "請求來源不被允許"));
+        }
+    }
+    Ok(next.run(req).await)
 }
