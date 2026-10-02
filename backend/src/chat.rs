@@ -37,6 +37,7 @@ pub struct Conversation {
     pub status: String,
     pub stage: i16,
     pub turn_count: i32,
+    pub converge_ready: bool,
     pub created_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
 }
@@ -45,7 +46,7 @@ macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
             "SELECT id, activity_id, topic_id, title, description, language, status, stage,
-                    turn_count, created_at, ended_at FROM conversations ",
+                    turn_count, converge_ready, created_at, ended_at FROM conversations ",
             $tail
         )
     };
@@ -112,7 +113,7 @@ async fn create(
         "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id, activity_id, topic_id, title, description, language, status, stage,
-                   turn_count, created_at, ended_at",
+                   turn_count, converge_ready, created_at, ended_at",
     )
     .bind(cu.user.id)
     .bind(activity_id)

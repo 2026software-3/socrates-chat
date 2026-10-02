@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use socrates_chat_backend::{AppState, app, config::Config, identity::GoogleIdentity};
+use socrates_chat_backend::{
+    AppState, ai::OpenAiProvider, app, config::Config, identity::GoogleIdentity,
+};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -32,7 +34,12 @@ async fn main() {
     .expect("failed to discover Google OIDC configuration");
 
     let addr = config.listen_addr.clone();
-    let state = AppState::new(pool, config, Arc::new(identity));
+    let ai = OpenAiProvider::new(
+        &config.openai_base_url,
+        &config.openai_api_key,
+        &config.openai_model,
+    );
+    let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind listener");
