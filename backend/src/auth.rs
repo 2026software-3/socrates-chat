@@ -63,8 +63,31 @@ fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
         .filter(|v| !v.is_empty())
 }
 
+/// 使用者的角色；每次請求由資料庫載入，不存在 cookie 裡（S-08.2）。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Roles {
+    pub admin: bool,
+    pub teacher: bool,
+    pub student: bool,
+}
+
+impl Roles {
+    /// 教師或管理者。
+    pub fn can_teach(&self) -> bool {
+        self.admin || self.teacher
+    }
+
+    /// 能使用學生功能：修課名單內的學生，或教師、管理者（不需要在名單內）。
+    pub fn is_member(&self) -> bool {
+        self.admin || self.teacher || self.student
+    }
+}
+
 /// 目前登入的使用者；沒有有效 session 時回 401。
-pub struct CurrentUser(pub SessionUser);
+pub struct CurrentUser {
+    pub user: auth_store::User,
+    pub roles: Roles,
+}
 
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
@@ -74,10 +97,77 @@ impl FromRequestParts<AppState> for CurrentUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
-            .await?
-            .map(CurrentUser)
-            .ok_or_else(ApiError::unauthorized)
+        let SessionUser { user, .. } =
+            auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
+                .await?
+                .ok_or_else(ApiError::unauthorized)?;
+        let (teacher, student): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1),
+                    EXISTS (SELECT 1 FROM enrollments WHERE email = $1)",
+        )
+        .bind(&user.email)
+        .fetch_one(&state.pool)
+        .await?;
+        let roles = Roles {
+            admin: user.is_admin,
+            teacher,
+            student,
+        };
+        Ok(CurrentUser { user, roles })
+    }
+}
+
+/// 只有管理者可通過，否則 403。
+pub struct RequireAdmin(pub CurrentUser);
+
+impl FromRequestParts<AppState> for RequireAdmin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let cu = CurrentUser::from_request_parts(parts, state).await?;
+        if !cu.roles.admin {
+            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        }
+        Ok(RequireAdmin(cu))
+    }
+}
+
+/// 教師或管理者可通過，否則 403。
+pub struct RequireTeacher(pub CurrentUser);
+
+impl FromRequestParts<AppState> for RequireTeacher {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let cu = CurrentUser::from_request_parts(parts, state).await?;
+        if !cu.roles.can_teach() {
+            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        }
+        Ok(RequireTeacher(cu))
+    }
+}
+
+/// 學生功能的守門：名單外、非教師、非管理者回 403 `not_enrolled`。
+pub struct RequireStudent(pub CurrentUser);
+
+impl FromRequestParts<AppState> for RequireStudent {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let cu = CurrentUser::from_request_parts(parts, state).await?;
+        if !cu.roles.is_member() {
+            return Err(ApiError::forbidden("not_enrolled", "尚未開通"));
+        }
+        Ok(RequireStudent(cu))
     }
 }
 
@@ -177,14 +267,16 @@ struct MeResponse {
     email: String,
     display_name: Option<String>,
     is_admin: bool,
+    roles: Roles,
 }
 
-async fn me(CurrentUser(su): CurrentUser) -> Json<MeResponse> {
-    let u = su.user;
+async fn me(cu: CurrentUser) -> Json<MeResponse> {
+    let u = cu.user;
     Json(MeResponse {
         id: u.id,
         email: u.email,
         display_name: u.display_name,
         is_admin: u.is_admin,
+        roles: cu.roles,
     })
 }
