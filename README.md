@@ -79,4 +79,4 @@ npm run build      # 建置；後端設定 FRONTEND_DIR=../frontend/dist 即可�
 
 ## 授權
 
-本專案以 [MIT License](LICENSE) 授權。所使用的開源套件皆為寬鬆授權，盤點與需要留意的項目（Geist 字型 OFL-1.1、建置工具 `lightningcss` MPL-2.0 等）見 [docs/THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)。
+本專案以 [MIT License](LICENSE) 授權。所使用的開源套件皆為寬鬆授權；複製進原始碼的 shadcn/ui、assistant-ui 與打包的 Geist 字型所需的聲明見 [docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md)。
