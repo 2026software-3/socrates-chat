@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 後端 | 已確定 | Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing |
 | 資料庫 | 已確定 | PostgreSQL；開發與 CI 用 Docker Compose，正式環境部署待 S-09 |
-| 前端 | **待確認（S-11）** | 候選：React、TypeScript、Vite、Tailwind CSS、assistant-ui、Recharts |
+| 前端 | **暫定（S-11 尚未正式定案，隨時可改）** | React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui |
 | AI 服務 | 已確定（S-03.1） | OpenAI API（後端以單一介面包裝，模型待評估） |
 | 登入 | 已確定（S-01.1） | 只接受 Google；Rust 自行整合 OAuth，session 存 PostgreSQL |
 | 對話傳輸 | 已確定（S-08.4） | HTTP + SSE 串流 |
@@ -33,10 +33,11 @@ flowchart LR
 ```text
 .
 ├── backend/     # Rust + Axum API 服務
-├── frontend/    # 前端（技術選型待 S-11，目前為佔位）
+├── frontend/    # 前端（暫定技術選型，見 frontend/README.md）
 ├── .github/     # CI 與 commitlint workflows
 ├── AGENTS.md    # 給 AI coding agent 的開發指引
-└── CONTRIBUTING.md
+├── CONTRIBUTING.md
+└── LICENSE      # MIT
 ```
 
 ## 快速開始
@@ -54,7 +55,17 @@ cargo test         # 執行測試
 
 ### 前端
 
-尚未建立，請見 [`frontend/README.md`](frontend/README.md)。
+需求：Node.js 與 npm。
+
+```bash
+cd frontend
+npm ci
+npm run dev        # 開發伺服器，/api 轉給本機後端
+npm test           # 執行測試
+npm run build      # 建置；後端設定 FRONTEND_DIR=../frontend/dist 即可同網域提供
+```
+
+細節與約束請見 [`frontend/README.md`](frontend/README.md)。
 
 ## 參與開發
 
@@ -65,3 +76,7 @@ cargo test         # 執行測試
 - 採 SDD + TDD：先確認規格與驗收情境，再寫會失敗的測試，最後做最小實作。
 
 使用 AI coding agent 的開發者，請讓 agent 讀取 [AGENTS.md](AGENTS.md)。
+
+## 授權
+
+本專案以 [MIT License](LICENSE) 授權。所使用的開源套件皆為寬鬆授權，盤點與需要留意的項目（Geist 字型 OFL-1.1、建置工具 `lightningcss` MPL-2.0 等）見 [docs/THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)。
