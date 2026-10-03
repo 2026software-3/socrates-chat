@@ -18,24 +18,10 @@ export type Topic = {
   is_active: boolean
 }
 
-export type ActivityStatus = 'draft' | 'published' | 'closed'
-
-export type Activity = {
-  id: string
-  title: string
-  description: string
-  topic_id: string | null
-  status: ActivityStatus
-  created_at: string
-}
-
-export type Available = { activities: Activity[]; topics: Topic[] }
-
 export type ConversationStatus = 'active' | 'ended'
 
 export type Conversation = {
   id: string
-  activity_id: string | null
   topic_id: string | null
   title: string
   description: string

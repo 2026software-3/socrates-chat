@@ -243,36 +243,32 @@ pub struct Actors {
     pub outsider: String,
 }
 
-/// 教師建立並發布一個活動，學生從中開始一場對話，回傳對話 id。
-pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+/// 以指定身分建立一個題目，回傳 id。
+pub async fn create_topic(app: &Router, cookie: &str, title: &str, description: &str) -> String {
     let res = send(
         app,
         json_req(
             "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(serde_json::json!({"title": "電車難題", "description": "你會拉桿嗎？"})),
+            "/api/topics",
+            Some(cookie),
+            Some(serde_json::json!({"title": title, "description": description})),
         ),
     )
     .await;
-    let act = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
-        app,
-        json_req(
-            "POST",
-            &format!("/api/activities/{act}/publish"),
-            Some(&a.teacher),
-            None,
-        ),
-    )
-    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 教師建立一個題目，學生從中開始一場對話，回傳對話 id。
+pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+    let topic = create_topic(app, &a.teacher, "電車難題", "你會拉桿嗎？").await;
     let res = send(
         app,
         json_req(
             "POST",
             "/api/conversations",
             Some(&a.student),
-            Some(serde_json::json!({"activity_id": act})),
+            Some(serde_json::json!({"topic_id": topic})),
         ),
     )
     .await;

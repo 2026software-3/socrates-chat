@@ -25,42 +25,20 @@ async fn null_clears_topic_category_and_absent_keeps_it(pool: PgPool) {
     let a = seed_actors(&app).await;
     let id = create(
         &app,
-        &a.admin,
-        "/api/admin/topics",
+        &a.teacher,
+        "/api/topics",
         json!({"title": "T", "category": "倫理學"}),
     )
     .await;
-    let path = format!("/api/admin/topics/{id}");
+    let path = format!("/api/topics/{id}");
 
-    let body = patch(&app, &a.admin, &path, json!({"title": "T2"})).await;
+    let body = patch(&app, &a.teacher, &path, json!({"title": "T2"})).await;
     assert_eq!(body["category"], "倫理學");
 
-    let body = patch(&app, &a.admin, &path, json!({"category": null})).await;
+    let body = patch(&app, &a.teacher, &path, json!({"category": null})).await;
     assert_eq!(body["category"], Value::Null);
     assert_eq!(body["title"], "T2");
 
-    let body = patch(&app, &a.admin, &path, json!({"category": "知識論"})).await;
+    let body = patch(&app, &a.teacher, &path, json!({"category": "知識論"})).await;
     assert_eq!(body["category"], "知識論");
-}
-
-#[sqlx::test]
-async fn null_unlinks_activity_topic_and_absent_keeps_it(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    let topic = create(&app, &a.admin, "/api/admin/topics", json!({"title": "T"})).await;
-    let id = create(
-        &app,
-        &a.teacher,
-        "/api/activities",
-        json!({"title": "A", "topic_id": topic}),
-    )
-    .await;
-    let path = format!("/api/activities/{id}");
-
-    let body = patch(&app, &a.teacher, &path, json!({"title": "A2"})).await;
-    assert_eq!(body["topic_id"], topic.as_str());
-
-    let body = patch(&app, &a.teacher, &path, json!({"topic_id": null})).await;
-    assert_eq!(body["topic_id"], Value::Null);
-    assert_eq!(body["title"], "A2");
 }

@@ -8,40 +8,19 @@ use serde_json::{Value, json};
 use socrates_chat_backend::chat::MAX_MESSAGE_CHARS;
 use sqlx::PgPool;
 
-/// 教師建立並發布一個活動，回傳 id。
-pub async fn published_activity(app: &Router, teacher: &str) -> String {
-    let res = send(
-        app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(teacher),
-            Some(json!({"title": "電車難題", "description": "如果你是駕駛，你會怎麼做？"})),
-        ),
-    )
-    .await;
-    let id = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
-        app,
-        json_req(
-            "POST",
-            &format!("/api/activities/{id}/publish"),
-            Some(teacher),
-            None,
-        ),
-    )
-    .await;
-    id
+/// 教師建立一個題目，回傳 id。
+pub async fn teacher_topic(app: &Router, teacher: &str) -> String {
+    create_topic(app, teacher, "電車難題", "如果你是駕駛，你會怎麼做？").await
 }
 
-async fn start(app: &Router, cookie: &str, activity_id: &str) -> String {
+async fn start(app: &Router, cookie: &str, topic_id: &str) -> String {
     let res = send(
         app,
         json_req(
             "POST",
             "/api/conversations",
             Some(cookie),
-            Some(json!({"activity_id": activity_id})),
+            Some(json!({"topic_id": topic_id})),
         ),
     )
     .await;
@@ -64,17 +43,17 @@ async fn say(app: &Router, cookie: &str, conv: &str, text: &str) -> StatusCode {
 }
 
 #[sqlx::test]
-async fn student_starts_conversation_from_published_activity(pool: PgPool) {
+async fn new_conversation_starts_at_stage_one(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
     let res = send(
         &app,
         json_req(
             "POST",
             "/api/conversations",
             Some(&a.student),
-            Some(json!({"activity_id": act})),
+            Some(json!({"topic_id": topic})),
         ),
     )
     .await;
@@ -95,8 +74,8 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
             &app,
             json_req(
                 "POST",
-                "/api/admin/topics",
-                Some(&a.admin),
+                "/api/topics",
+                Some(&a.teacher),
                 Some(json!({"title": "自由意志"})),
             ),
         )
@@ -122,8 +101,8 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
         &app,
         json_req(
             "PATCH",
-            &format!("/api/admin/topics/{id}"),
-            Some(&a.admin),
+            &format!("/api/topics/{id}"),
+            Some(&a.teacher),
             Some(json!({"is_active": false})),
         ),
     )
@@ -145,38 +124,26 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
 async fn unavailable_sources_are_rejected(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    // 草稿活動
     let res = send(
         &app,
         json_req(
             "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "草稿"})),
+            "/api/conversations",
+            Some(&a.student),
+            Some(json!({"topic_id": uuid::Uuid::new_v4()})),
         ),
     )
     .await;
-    let draft = json_body(res).await["id"].clone();
-    for body in [
-        json!({"activity_id": draft}),
-        json!({}),
-        json!({"activity_id": uuid::Uuid::new_v4()}),
-    ] {
-        let res = send(
-            &app,
-            json_req("POST", "/api/conversations", Some(&a.student), Some(body)),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    }
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_source");
 }
 
 #[sqlx::test]
 async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
-    let conv = start(&app, &a.student, &act).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &topic).await;
 
     assert_eq!(
         say(&app, &a.student, &conv, "我會轉向。").await,
@@ -213,8 +180,8 @@ async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
 async fn message_validation(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
-    let conv = start(&app, &a.student, &act).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &topic).await;
 
     assert_eq!(
         say(&app, &a.student, &conv, "   ").await,
@@ -256,8 +223,8 @@ async fn message_validation(pool: PgPool) {
 async fn ended_conversation_rejects_new_messages(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
-    let conv = start(&app, &a.student, &act).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &topic).await;
     sqlx::query("UPDATE conversations SET status = 'ended'")
         .execute(&pool)
         .await
@@ -284,8 +251,8 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
     )
     .await;
     let other = login_as(&app, "sub-other", "other@example.com").await;
-    let act = published_activity(&app, &a.teacher).await;
-    let conv = start(&app, &a.student, &act).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &topic).await;
     say(&app, &a.student, &conv, "這是我的私人想法").await;
 
     for cookie in [&other, &a.teacher, &a.admin] {
@@ -337,7 +304,7 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
             "POST",
             "/api/conversations",
             Some(&a.outsider),
-            Some(json!({"activity_id": act})),
+            Some(json!({"topic_id": topic})),
         ),
     )
     .await;
@@ -356,8 +323,8 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
 async fn owner_deletes_conversation_with_messages(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
-    let conv = start(&app, &a.student, &act).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &topic).await;
     say(&app, &a.student, &conv, "hello").await;
 
     let res = send(
@@ -385,16 +352,16 @@ async fn owner_deletes_conversation_with_messages(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn conversation_keeps_snapshot_when_activity_changes(pool: PgPool) {
+async fn conversation_keeps_snapshot_when_topic_changes(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
-    let conv = start(&app, &a.student, &act).await;
+    let topic = teacher_topic(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &topic).await;
     send(
         &app,
         json_req(
             "PATCH",
-            &format!("/api/activities/{act}"),
+            &format!("/api/topics/{topic}"),
             Some(&a.teacher),
             Some(json!({"title": "改名了"})),
         ),

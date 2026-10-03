@@ -8,7 +8,7 @@
 - **CSRF**：`POST`／`PUT`／`PATCH`／`DELETE` 必須帶 `Origin` 標頭，且等於 `APP_BASE_URL`，否則 `403 csrf`（瀏覽器會自動帶）。
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
 - **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。
-- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`、活動的 `topic_id`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
+- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - 對話內容只有擁有者讀得到；別人（含教師、管理者）一律 `404`。
 
 ## 登入
@@ -28,8 +28,6 @@
 | --- | --- | --- |
 | GET／POST | `/api/admin/teachers` | 列出／新增教師，body `{ "email": "..." }`（204，重複新增也 204；`invalid_email` 400） |
 | DELETE | `/api/admin/teachers/{email}` | 移除教師身分（204／404） |
-| GET／POST | `/api/admin/topics` | 列出全部／新增題目 `{ title, description?, category? }`（201） |
-| PATCH | `/api/admin/topics/{id}` | 修改 `{ title?, description?, category?, is_active? }`；停用後學生看不到 |
 
 ## 修課名單（教師或管理者）
 
@@ -39,21 +37,21 @@
 | POST | `/api/roster/import` | body `{ "text": "每行一個電子郵件（可有 email 標題列）" }` → `{ added, existing, invalid: [{ line, value }] }`；只新增不移除 |
 | DELETE | `/api/roster/{email}` | 移出名單（204／404）；資料保留 |
 
-## 活動（教師或管理者）與學生可選清單
+## 題目（教師或管理者）與學生可選清單
+
+教師直接建立題目，學生直接選題目開始對話；沒有另外的「活動」。
 
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
-| GET／POST | `/api/activities` | 列表／建立 `{ title, description?, topic_id? }`（201，狀態 `draft`） |
-| GET／PATCH | `/api/activities/{id}` | 讀取／修改 `{ title?, description?, topic_id? }` |
-| POST | `/api/activities/{id}/publish` | 發布（`status: published`），可重新開放 |
-| POST | `/api/activities/{id}/close` | 停止開放（`status: closed`） |
-| GET | `/api/available` | 學生可選：`{ activities: [已發布活動], topics: [已啟用題目] }` |
+| GET／POST | `/api/topics` | 列出全部（含已停用）／新增題目 `{ title, description?, category? }`（201） |
+| PATCH | `/api/topics/{id}` | 修改 `{ title?, description?, category?, is_active? }`；停用後學生看不到，可重新啟用 |
+| GET | `/api/available` | 學生可選：已啟用題目的陣列 |
 
 ## 對話（學生；教師與管理者也可用自己的對話）
 
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
-| POST | `/api/conversations` | `{ activity_id }` 或 `{ topic_id }`（201）；來源須為已發布活動／已啟用題目，否則 `400 invalid_source` |
+| POST | `/api/conversations` | `{ topic_id }`（201）；題目須為已啟用，否則 `400 invalid_source`；題目內容在開始時複製進對話，之後題目異動不影響這場對話 |
 | GET | `/api/conversations` | 我的對話列表（不含訊息） |
 | GET | `/api/conversations/{id}` | 對話與全部訊息；含 `status`（`active`／`ended`）、`stage`（1–3）、`turn_count`、`converge_ready` |
 | DELETE | `/api/conversations/{id}` | 刪除我的對話（含訊息與總結），204 |

@@ -1,36 +1,19 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { AvailablePage } from '@/features/student/available-page'
-import type { Available } from '@/lib/types'
+import type { Topic } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
-const AVAILABLE: Available = {
-  activities: [
-    {
-      id: 'act-1',
-      title: 'Activity One',
-      description: 'Activity desc',
-      topic_id: null,
-      status: 'published',
-      created_at: '2026-01-01T00:00:00Z',
-    },
-  ],
-  topics: [
-    {
-      id: 'top-1',
-      title: 'Topic One',
-      description: 'Topic desc',
-      category: 'Ethics',
-      is_active: true,
-    },
-  ],
-}
+const AVAILABLE: Topic[] = [
+  { id: 'top-1', title: 'Topic One', description: 'Topic desc', category: 'Ethics', is_active: true },
+  { id: 'top-2', title: 'Topic Two', description: 'Other desc', category: null, is_active: true },
+]
 
-function mockAvailable(data: Available = AVAILABLE) {
+function mockAvailable(data: Topic[] = AVAILABLE) {
   server.use(http.get('/api/available', () => HttpResponse.json(data)))
 }
 
@@ -47,33 +30,14 @@ function renderPage() {
 }
 
 describe('student available page', () => {
-  it('shows teacher activities and the topic bank as distinguishable sections', async () => {
+  it('lists the available topics with their description and category', async () => {
     mockAvailable()
     renderPage()
-    const act = await screen.findByRole('region', { name: '教師活動' })
-    const bank = screen.getByRole('region', { name: '題庫題目' })
-    expect(within(act).getByText('Activity One')).toBeInTheDocument()
-    expect(within(act).getByText('Activity desc')).toBeInTheDocument()
-    expect(within(act).queryByText('Topic One')).not.toBeInTheDocument()
-    expect(within(bank).getByText('Topic One')).toBeInTheDocument()
-    expect(within(bank).getByText('Ethics')).toBeInTheDocument()
-    expect(within(bank).queryByText('Activity One')).not.toBeInTheDocument()
+    expect(await screen.findByText('Topic One')).toBeInTheDocument()
+    expect(screen.getByText('Topic desc')).toBeInTheDocument()
+    expect(screen.getByText('Ethics')).toBeInTheDocument()
+    expect(screen.getByText('Topic Two')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '我的對話' })).toHaveAttribute('href', '/conversations')
-  })
-
-  it('starts a conversation from an activity', async () => {
-    mockAvailable()
-    let body: unknown
-    server.use(
-      http.post('/api/conversations', async ({ request }) => {
-        body = await request.json()
-        return HttpResponse.json({ id: 'c-1' }, { status: 201 })
-      }),
-    )
-    renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
-    expect(await screen.findByText('chat page')).toBeInTheDocument()
-    expect(body).toEqual({ activity_id: 'act-1' })
   })
 
   it('starts a conversation from a topic', async () => {
@@ -117,7 +81,7 @@ describe('student available page', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Topic One/ }))
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Topic One/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: /Activity One/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Topic Two/ })).toBeEnabled()
   })
 
   it('scrolls the start error into view', async () => {
@@ -147,7 +111,7 @@ describe('student available page', () => {
       http.post('/api/conversations', () => apiError(400, 'invalid_source')),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Topic Two/ }))
     await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2))
     expect(screen.getByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
   })
@@ -157,29 +121,22 @@ describe('student available page', () => {
     server.use(
       http.get('/api/available', () => {
         loads += 1
-        return HttpResponse.json(loads === 1 ? AVAILABLE : { activities: [], topics: AVAILABLE.topics })
+        return HttpResponse.json(loads === 1 ? AVAILABLE : [AVAILABLE[0]])
       }),
       http.post('/api/conversations', () => apiError(400, 'invalid_source')),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('請選擇可用的活動或題目。')
-    await waitFor(() => expect(screen.queryByText('Activity One')).not.toBeInTheDocument())
+    await userEvent.click(await screen.findByRole('button', { name: /Topic Two/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('請選擇可用的題目。')
+    await waitFor(() => expect(screen.queryByText('Topic Two')).not.toBeInTheDocument())
     expect(loads).toBe(2)
     expect(screen.getByRole('button', { name: /Topic One/ })).toBeEnabled()
   })
 
   it('shows an empty state when nothing is available', async () => {
-    mockAvailable({ activities: [], topics: [] })
+    mockAvailable([])
     renderPage()
-    expect(await screen.findByText('目前沒有可討論的活動或題目，請稍後再來看看。')).toBeInTheDocument()
-  })
-
-  it('shows a per-section empty text when only one list is empty', async () => {
-    mockAvailable({ activities: [], topics: AVAILABLE.topics })
-    renderPage()
-    expect(await screen.findByText('目前沒有開放的教師活動')).toBeInTheDocument()
-    expect(screen.getByText('Topic One')).toBeInTheDocument()
+    expect(await screen.findByText('目前沒有可討論的題目，請稍後再來看看。')).toBeInTheDocument()
   })
 
   it('shows an error with retry', async () => {
@@ -189,7 +146,7 @@ describe('student available page', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('系統發生錯誤，請稍後再試。')
     fail = false
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
-    expect(await screen.findByText('Activity One')).toBeInTheDocument()
+    expect(await screen.findByText('Topic Two')).toBeInTheDocument()
   })
 
   it('shows a loading state first', async () => {
@@ -201,6 +158,6 @@ describe('student available page', () => {
     )
     renderPage()
     expect(await screen.findByRole('status')).toHaveTextContent('載入中')
-    expect(await screen.findByText('Activity One')).toBeInTheDocument()
+    expect(await screen.findByText('Topic Two')).toBeInTheDocument()
   })
 })

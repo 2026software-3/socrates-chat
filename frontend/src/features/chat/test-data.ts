@@ -4,7 +4,6 @@ import type { Conversation, ConversationDetail, Message, SummaryView } from '@/l
 export function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: 'c1',
-    activity_id: null,
     topic_id: 't1',
     title: '合成題目：電車難題',
     description: '合成描述：該不該扳動拉桿？',

@@ -29,7 +29,6 @@ pub fn routes() -> Router<AppState> {
 #[derive(Debug, Serialize, FromRow)]
 pub struct Conversation {
     pub id: Uuid,
-    pub activity_id: Option<Uuid>,
     pub topic_id: Option<Uuid>,
     pub title: String,
     pub description: String,
@@ -45,7 +44,7 @@ pub struct Conversation {
 macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
-            "SELECT id, activity_id, topic_id, title, description, language, status, stage,
+            "SELECT id, topic_id, title, description, language, status, stage,
                     turn_count, converge_ready, created_at, ended_at FROM conversations ",
             $tail
         )
@@ -64,8 +63,7 @@ pub struct Message {
 
 #[derive(Deserialize)]
 struct NewConversation {
-    activity_id: Option<Uuid>,
-    topic_id: Option<Uuid>,
+    topic_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -80,43 +78,22 @@ async fn create(
     State(state): State<AppState>,
     Json(b): Json<NewConversation>,
 ) -> Result<(StatusCode, Json<Conversation>), ApiError> {
-    // 來源必須是已發布的活動，或已啟用的題目
-    let source: Option<(Option<Uuid>, Option<Uuid>, String, String)> =
-        match (b.activity_id, b.topic_id) {
-            (Some(a), _) => sqlx::query_as(
-                "SELECT id, topic_id, title, description FROM activities
-                 WHERE id = $1 AND status = 'published'",
-            )
-            .bind(a)
+    // 來源必須是已啟用的題目
+    let topic: Option<(Uuid, String, String)> =
+        sqlx::query_as("SELECT id, title, description FROM topics WHERE id = $1 AND is_active")
+            .bind(b.topic_id)
             .fetch_optional(&state.pool)
-            .await?
-            .map(
-                |(id, topic, title, desc): (Uuid, Option<Uuid>, String, String)| {
-                    (Some(id), topic, title, desc)
-                },
-            ),
-            (None, Some(t)) => sqlx::query_as(
-                "SELECT id, title, description FROM topics WHERE id = $1 AND is_active",
-            )
-            .bind(t)
-            .fetch_optional(&state.pool)
-            .await?
-            .map(|(id, title, desc): (Uuid, String, String)| (None, Some(id), title, desc)),
-            (None, None) => {
-                return Err(ApiError::bad_request("invalid_source", "請選擇活動或題目"));
-            }
-        };
-    let Some((activity_id, topic_id, title, description)) = source else {
-        return Err(ApiError::bad_request("invalid_source", "活動或題目不可用"));
+            .await?;
+    let Some((topic_id, title, description)) = topic else {
+        return Err(ApiError::bad_request("invalid_source", "題目不可用"));
     };
     let c = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description, as_student)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, activity_id, topic_id, title, description, language, status, stage,
+        "INSERT INTO conversations (user_id, topic_id, title, description, as_student)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, topic_id, title, description, language, status, stage,
                    turn_count, converge_ready, created_at, ended_at",
     )
     .bind(cu.user.id)
-    .bind(activity_id)
     .bind(topic_id)
     .bind(title)
     .bind(description)
