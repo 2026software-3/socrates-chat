@@ -12,7 +12,7 @@
 | --- | --- |
 | `backend/` | Rust + Axum API 服務（`src/lib.rs` 提供 `app()` router，`src/main.rs` 啟動服務） |
 | `backend/tests/` | 後端整合測試 |
-| `frontend/` | 佔位；前端技術待 S-11 選型，**不要自行建立前端專案** |
+| `frontend/` | 前端專案（React + TypeScript + Vite + Tailwind + shadcn/ui + assistant-ui，**暫定**；S-11 尚未正式定案，見 `frontend/README.md`） |
 | `.github/workflows/` | CI（後端）與 commitlint |
 
 ## 指令
@@ -39,7 +39,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。
   - 開發／CI 資料庫：Docker Compose 的 PostgreSQL（S-09.1）。
 - **未定案，不得自行決定**：
-  - 前端技術（S-11）
+  - 前端技術的正式定案（S-11；目前為暫定組合，不要再擴充或更換主要框架）
   - OpenAI 具體模型（S-03.4 評估後決定）
   - 正式環境的部署方式（S-09）
   - 各套件版本
