@@ -320,7 +320,7 @@ async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
 /// 帳號不存在時也做一次雜湊比對，讓回應時間不洩漏帳號是否存在。
 fn dummy_hash() -> &'static str {
     static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HASH.get_or_init(|| password::hash("dummy-password-for-timing").unwrap_or_default())
+    HASH.get_or_init(|| password::hash(&password::generate_temporary()).unwrap_or_default())
 }
 
 async fn verify_blocking(password: String, hash: String) -> bool {

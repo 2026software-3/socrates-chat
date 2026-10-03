@@ -493,7 +493,8 @@ async fn google_only_account_cannot_use_password_login(pool: PgPool) {
 
 #[sqlx::test]
 async fn bootstrap_admins_creates_admin_accounts_once(pool: PgPool) {
-    let hash = password::hash("Initial-Admin-1").unwrap();
+    let initial = password::generate_temporary();
+    let hash = password::hash(&initial).unwrap();
     let emails = vec!["admin@example.com".to_string()];
     assert_eq!(
         auth_store::bootstrap_admins(&pool, &emails, &hash)
@@ -510,7 +511,7 @@ async fn bootstrap_admins_creates_admin_accounts_once(pool: PgPool) {
     );
 
     let app = test_app(pool);
-    let res = login(&app, "admin@example.com", "Initial-Admin-1").await;
+    let res = login(&app, "admin@example.com", &initial).await;
     assert_eq!(res.status(), StatusCode::OK);
     let cookie = session_cookie(&res).unwrap();
     let me: Value = json_body(send(&app, get("/api/me", Some(&cookie))).await).await;
@@ -520,10 +521,14 @@ async fn bootstrap_admins_creates_admin_accounts_once(pool: PgPool) {
 
 #[test]
 fn password_hash_round_trips_and_temporary_passwords_are_random() {
-    let h = password::hash("some password").unwrap();
-    assert!(password::verify("some password", &h));
-    assert!(!password::verify("other password", &h));
-    assert!(!password::verify("some password", "not a hash"));
+    let (p, other) = (
+        password::generate_temporary(),
+        password::generate_temporary(),
+    );
+    let h = password::hash(&p).unwrap();
+    assert!(password::verify(&p, &h));
+    assert!(!password::verify(&other, &h));
+    assert!(!password::verify(&p, "not a hash"));
     let (a, b) = (
         password::generate_temporary(),
         password::generate_temporary(),
