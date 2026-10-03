@@ -9,7 +9,7 @@ use axum::{
     routing::{get, patch, post},
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
@@ -18,6 +18,15 @@ use crate::{
     auth::{RequireAdmin, RequireStudent, RequireTeacher},
     error::ApiError,
 };
+
+/// PATCH 的三態欄位：沒帶＝`None`（保留）、`null`＝`Some(None)`（清除）、有值＝`Some(Some(v))`。
+fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -63,7 +72,8 @@ struct NewTopic {
 struct TopicPatch {
     title: Option<String>,
     description: Option<String>,
-    category: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    category: Option<Option<String>>,
     is_active: Option<bool>,
 }
 
@@ -110,7 +120,8 @@ async fn update_topic(
     }
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
-                category = COALESCE($4, category), is_active = COALESCE($5, is_active),
+                category = CASE WHEN $4 THEN $5::text ELSE category END,
+                is_active = COALESCE($6, is_active),
                 updated_at = now()
          WHERE id = $1
          RETURNING id, title, description, category, is_active",
@@ -118,7 +129,8 @@ async fn update_topic(
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
-    .bind(p.category)
+    .bind(p.category.is_some())
+    .bind(p.category.flatten())
     .bind(p.is_active)
     .fetch_optional(&state.pool)
     .await?
@@ -159,7 +171,8 @@ struct NewActivity {
 struct ActivityPatch {
     title: Option<String>,
     description: Option<String>,
-    topic_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "nullable")]
+    topic_id: Option<Option<Uuid>>,
 }
 
 async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
@@ -228,21 +241,22 @@ async fn update_activity(
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    if let Some(t) = p.topic_id
+    if let Some(Some(t)) = p.topic_id
         && !topic_exists(&state.pool, t).await?
     {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
     }
     sqlx::query_as(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
-                topic_id = COALESCE($4, topic_id), updated_at = now()
+                topic_id = CASE WHEN $4 THEN $5::uuid ELSE topic_id END, updated_at = now()
          WHERE id = $1
          RETURNING id, title, description, topic_id, status, created_at",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
-    .bind(p.topic_id)
+    .bind(p.topic_id.is_some())
+    .bind(p.topic_id.flatten())
     .fetch_optional(&state.pool)
     .await?
     .map(Json)
