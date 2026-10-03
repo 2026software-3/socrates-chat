@@ -36,6 +36,65 @@ Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)�
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1. 授權全文與 FAQ：https://openfontlicense.org 。完整文字也隨套件放在 `node_modules/@fontsource-variable/geist/LICENSE`。
 
+## 複製進本專案原始碼的第三方程式碼
+
+shadcn/ui 與 assistant-ui 的元件不是只當套件引用，而是把原始碼**複製進本 repo**（再依需求修改）。MIT 要求複製與修改後的版本保留原作者的版權與授權聲明，聲明如下。
+
+| 來源 | 本專案中的位置 | 授權 |
+| --- | --- | --- |
+| [shadcn/ui](https://github.com/shadcn-ui/ui) | `frontend/src/components/ui/`（以及 `frontend/src/lib/utils.ts` 等由 shadcn CLI 產生的檔案） | MIT，Copyright (c) 2023 shadcn |
+| [assistant-ui](https://github.com/assistant-ui/assistant-ui) | `frontend/src/components/assistant-ui/` | MIT，Copyright (c) 2026 AgentbaseAI Inc. |
+
+```text
+MIT License
+
+Copyright (c) 2023 shadcn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+```text
+MIT License
+
+Copyright (c) 2026 AgentbaseAI Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+shadcn/ui 的 Radix UI、lucide-react 等是一般依賴（不複製進原始碼），授權已列在上方盤點中。
+
 ## 維護
 
 - 新增依賴前，先確認授權不是強 copyleft（GPL／AGPL）或不允許散布的授權。
