@@ -368,14 +368,28 @@ async fn only_one_reply_stream_per_conversation(pool: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_second_stream_is_rejected_while_first_runs(pool: PgPool) {
-    let s = setup(pool, vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
+    let s = setup(pool.clone(), vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
     say(&s, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
 
     let (app, cookie, url1) = (s.app.clone(), s.a.student.clone(), url.clone());
     let first =
         tokio::spawn(async move { text_body(send(&app, get(&url1, Some(&cookie))).await).await });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // 等第一條串流確實取得 claim 再送第二個請求，避免依賴固定時間
+    let mut claimed = false;
+    for _ in 0..200 {
+        let (g,): (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT generating_since FROM conversations")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if g.is_some() {
+            claimed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(claimed, "first stream never claimed the conversation");
     let res = send(&s.app, get(&url, Some(&s.a.student))).await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
