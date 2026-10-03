@@ -1,4 +1,5 @@
 # 開發與 CI 用的 PostgreSQL（S-09.1）。僅供本機，不含真實資料。
+# 加上 --profile app 會一併建置並啟動前後端（docker compose --profile app up --build）。
 services:
   db:
     image: postgres:16
@@ -8,8 +9,31 @@ services:
       POSTGRES_DB: socrates
     ports:
       - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U socrates"]
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # 後端 ＋ 前端建置產物，單一容器、單一網址（S-08.1）。設定沿用專案根目錄的 .env，
+  # 下列三項為容器內需要的覆寫。RUN_MIGRATIONS 為本機／試用的便利設定；
+  # 正式環境的 migration 流程見 S-09.3。
+  app:
+    profiles: ["app"]
+    build: .
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: postgres://socrates:socrates@db:5432/socrates
+      RUN_MIGRATIONS: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  pgdata:

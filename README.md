@@ -71,10 +71,10 @@ docker compose up -d db    # PostgreSQL 16，監聽 127.0.0.1:5432，帳號、�
 ### 4. 設定環境變數
 
 ```bash
-cp backend/.env.example backend/.env    # .env 不進版控
+cp .env.example .env    # 專案根目錄；本地執行與 Docker 共用，.env 不進版控
 ```
 
-編輯 `backend/.env`，至少填入：
+編輯 `.env`，至少填入：
 
 | 變數 | 說明 |
 | --- | --- |
@@ -82,11 +82,14 @@ cp backend/.env.example backend/.env    # .env 不進版控
 | `ADMIN_EMAILS` | 首次登入即成為管理者的信箱，以逗號分隔 |
 | `OPENAI_API_KEY`、`OPENAI_MODEL` | 第 3 步取得的 API key 與模型名稱 |
 
-其餘變數（`DATABASE_URL`、`APP_BASE_URL`、`COOKIE_SECURE`、`RUN_MIGRATIONS` 等）的預設值適用於本機開發，說明見 `backend/.env.example`。`RUN_MIGRATIONS=true` 時，後端啟動前會自動執行 `backend/migrations/`。
+其餘變數（`DATABASE_URL`、`APP_BASE_URL`、`COOKIE_SECURE`、`RUN_MIGRATIONS` 等）的預設值適用於本機開發，說明見 `.env.example`。`RUN_MIGRATIONS=true` 時，後端啟動前會自動執行 `backend/migrations/`。
 
 ### 5. 啟動後端
 
+後端不會自行讀取 `.env`，需先把它載入目前的終端機：
+
 ```bash
+set -a && . ./.env && set +a             # 載入專案根目錄的 .env
 cd backend
 cargo run                                # 啟動於 http://127.0.0.1:3000
 curl http://127.0.0.1:3000/health        # 另開終端機，應回傳 {"status":"ok"}
@@ -113,7 +116,7 @@ npm ci
 npm run build
 ```
 
-再於 `backend/.env` 設定 `FRONTEND_DIR=../frontend/dist`，重新啟動後端，開啟 `http://localhost:3000`。
+再於 `.env` 設定 `FRONTEND_DIR=../frontend/dist`，重新載入 `.env` 並重新啟動後端，開啟 `http://localhost:3000`。
 
 > Google 登入完成後會導回 `APP_BASE_URL`（預設 `http://localhost:3000`）。若要在開發模式的 `5173` 走完整個登入流程，需把 `APP_BASE_URL` 與 Google 的重新導向 URI 一併改成對應網址。
 
@@ -125,6 +128,18 @@ npm run build
 2. 管理者新增教師帳號並維護題目庫。
 3. 教師或管理者匯入修課名單（學生電子郵件）；名單外的帳號登入後看到「尚未開通」。
 4. 教師建立並發布討論活動，學生即可開始對話。
+
+### 另一種跑法：全部在容器
+
+不想安裝 Rust 或 Node 時，只需要 Docker，使用第 4 步設定好的同一個 `.env`（不需要第 2、5、6 步）：
+
+```bash
+docker compose --profile app up --build
+```
+
+啟動後開啟 `http://localhost:3000`。這會建置單一映像（後端 API ＋ 前端建置產物，同網域提供）並連同 PostgreSQL 一起啟動，容器內的 `DATABASE_URL`、`FRONTEND_DIR`、`LISTEN_ADDR` 已自動設定，migration 也會自動執行。資料庫存放在 Docker volume（`pgdata`），`docker compose down` 不會遺失資料，加上 `-v` 才會清除。這是本機與試用的便利做法，不代表正式環境的部署方式（S-09 尚未決定）。
+
+兩種跑法都使用 3000 埠，**同一時間只能跑其中一種**。
 
 ### 正式環境
 
