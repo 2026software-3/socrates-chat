@@ -109,10 +109,7 @@ function ActivityForm({
           value={values.topicId}
           onChange={(e) => setValues({ ...values, topicId: e.target.value })}
         >
-          {/* 後端 PATCH 的 null 會被忽略，無法清除題目，所以原本有題目時不提供「不指定」 */}
-          <option value="" disabled={hasInitialTopic}>
-            {t('teacher.activities.topicNone')}
-          </option>
+          <option value="">{t('teacher.activities.topicNone')}</option>
           {hasInitialTopic && !topics.some((tp) => tp.id === initial.topicId) ? (
             <option value={initial.topicId}>{t('teacher.activities.topicUnavailable')}</option>
           ) : null}
@@ -230,12 +227,12 @@ export function ActivitiesPage() {
   }
 
   async function update(a: Activity, v: Values) {
-    // 只在換成另一個題目時才送 topic_id（後端不支援清除）
-    const topicChanged = v.topicId !== '' && v.topicId !== (a.topic_id ?? '')
+    // 只在題目有變動時才送 topic_id；選「不指定題目」送 null 以清除
+    const topicChanged = v.topicId !== (a.topic_id ?? '')
     await api.patch<Activity>(`/api/activities/${a.id}`, {
       title: v.title,
       description: v.description.trim(),
-      ...(topicChanged ? { topic_id: v.topicId } : {}),
+      ...(topicChanged ? { topic_id: v.topicId === '' ? null : v.topicId } : {}),
     })
     toast.success(t('teacher.activities.updated'))
     setEditing(null)

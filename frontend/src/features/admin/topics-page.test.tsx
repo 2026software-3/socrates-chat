@@ -225,7 +225,7 @@ describe('TopicsPage', () => {
     expect(calls).toEqual([])
   })
 
-  it('does not send an empty category (the backend cannot clear it) and keeps the shown category', async () => {
+  it('sends category null when the category is emptied, and drops the shown category', async () => {
     const { calls } = mockTopics([topic('1', { category: 'Ethics' })])
     render()
     await screen.findByText('Topic 1')
@@ -234,8 +234,19 @@ describe('TopicsPage', () => {
     await userEvent.clear(within(dialog).getByLabelText('分類'))
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { category: null } }])
+    expect(within(screen.getByRole('list', { name: '題目清單' })).queryByText('Ethics')).not.toBeInTheDocument()
+  })
+
+  it('does not send the category when it is left empty on a topic without one', async () => {
+    const { calls } = mockTopics([topic('1', { category: null })])
+    render()
+    await screen.findByText('Topic 1')
+    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(calls).toEqual([])
-    expect(within(screen.getByRole('list', { name: '題目清單' })).getByText('Ethics')).toBeInTheDocument()
   })
 
   it('trims the description when creating and editing', async () => {
