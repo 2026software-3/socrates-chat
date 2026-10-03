@@ -6,6 +6,7 @@ import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { adminFeature } from '@/features/admin'
 import { LoginPage } from '@/features/auth/login-page'
+import { ChangePasswordPage } from '@/features/auth/change-password-page'
 import { PendingPage } from '@/features/auth/pending-page'
 import { chatFeature } from '@/features/chat'
 import { studentFeature } from '@/features/student'
@@ -36,6 +37,14 @@ function Shell() {
   }
   if (auth.status === 'anon') return <Navigate to="/login" replace />
   const { me } = auth
+  // 臨時密碼：改密碼前其他 API 都會回 password_change_required，所以只放行改密碼頁
+  if (me.must_change_password) {
+    return (
+      <Layout me={me} nav={[]}>
+        <ChangePasswordPage />
+      </Layout>
+    )
+  }
   return (
     <Layout me={me} nav={hasAnyRole(me.roles) ? allNav : []}>
       {hasAnyRole(me.roles) ? <Outlet /> : <PendingPage />}

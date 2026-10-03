@@ -73,6 +73,7 @@ pub fn test_config() -> Config {
         google_client_secret: "test-secret".to_string(),
         google_redirect_url: format!("{APP_URL}/api/auth/google/callback"),
         admin_emails: vec!["admin@example.com".to_string()],
+        admin_initial_password: None,
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
         frontend_dir: None,

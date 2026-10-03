@@ -7,6 +7,8 @@ export type Me = {
   email: string
   display_name: string | null
   is_admin: boolean
+  /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
+  must_change_password: boolean
   roles: Roles
 }
 

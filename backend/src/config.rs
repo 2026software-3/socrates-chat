@@ -13,6 +13,8 @@ pub struct Config {
     pub google_redirect_url: String,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
+    /// 首位管理者內建登入的初始密碼（S-01.3）；沒設定就不建立內建管理者帳號，只能用 Google 登入。
+    pub admin_initial_password: Option<String>,
     /// session cookie 是否加 `Secure`；本機 http 開發可設為 `false`。
     pub cookie_secure: bool,
     pub listen_addr: String,
@@ -97,6 +99,9 @@ impl Config {
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
             admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
+            admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
+                .ok()
+                .filter(|v| !v.is_empty()),
             cookie_secure: env::var("COOKIE_SECURE")
                 .map(|v| v != "false")
                 .unwrap_or(true),
