@@ -8,6 +8,7 @@
 - **CSRF**：`POST`／`PUT`／`PATCH`／`DELETE` 必須帶 `Origin` 標頭，且等於 `APP_BASE_URL`，否則 `403 csrf`（瀏覽器會自動帶）。
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
 - **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。
+- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`、活動的 `topic_id`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - 對話內容只有擁有者讀得到；別人（含教師、管理者）一律 `404`。
 
 ## 登入
