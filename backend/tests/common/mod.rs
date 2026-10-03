@@ -145,12 +145,11 @@ pub fn test_app(pool: PgPool) -> Router {
 }
 
 pub fn test_app_with_ai(pool: PgPool, ai: Arc<FakeAi>) -> Router {
-    app(AppState::new(
-        pool,
-        test_config(),
-        Arc::new(FakeIdentity),
-        ai,
-    ))
+    test_app_with_config(pool, ai, test_config())
+}
+
+pub fn test_app_with_config(pool: PgPool, ai: Arc<FakeAi>, config: Config) -> Router {
+    app(AppState::new(pool, config, Arc::new(FakeIdentity), ai))
 }
 
 /// 解析 SSE 回應內容為 (event 名稱, data) 清單。
