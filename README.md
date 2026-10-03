@@ -67,14 +67,14 @@ docker compose --profile app up --build
 
 兩種跑法都使用 3000 埠，**同一時間只能跑其中一種**。
 
-#### 後端
+### 後端常用指令
 
 ```bash
 curl http://127.0.0.1:3000/health   # {"status":"ok"}
 cd backend && cargo test            # 執行測試
 ```
 
-#### 前端
+### 前端常用指令
 
 需求：Node.js 與 npm。
 
