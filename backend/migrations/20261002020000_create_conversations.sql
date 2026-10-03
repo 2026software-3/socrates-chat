@@ -4,8 +4,7 @@
 CREATE TABLE conversations (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    -- 來源：教師活動或題目庫題目；來源之後被刪除或停用不影響既有對話
-    activity_id  uuid REFERENCES activities (id) ON DELETE SET NULL,
+    -- 來源題目；之後被刪除或停用不影響既有對話
     topic_id     uuid REFERENCES topics (id) ON DELETE SET NULL,
     -- 開始時複製的題目內容，之後來源異動不會改變這場對話
     title        text NOT NULL,
