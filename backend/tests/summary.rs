@@ -8,6 +8,7 @@ use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
 use serde_json::{Value, json};
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
 
 const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\",\"turning_points\":\"後來考慮了不作為的責任\"}";
@@ -519,13 +520,22 @@ async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
 async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     // 第一代卡住（Hang）；在它逾時前手動重試，第二代很快成功。
     // 第一代之後失敗收尾時，不能把已完成的結果改成 failed。
+    // 第一代的首字逾時要遠大於手動重試的等待，否則它自己的自動重試會先拿走第二個腳本
+    let config = Config {
+        ai_first_token_timeout: Duration::from_millis(1500),
+        ai_total_timeout: Duration::from_millis(4000),
+        ..test_config()
+    };
     let ai = FakeAi::with(vec![Hang, Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool.clone(), ai);
+    let app = test_app_with_config(pool.clone(), ai.clone(), config);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     student_says(&app, &a, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // 等第一代真的拿到 Hang 腳本，重試的第二代才會拿到 Reply
+    while ai.request_count() < 1 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
         .execute(&pool)
         .await
@@ -547,7 +557,7 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     );
 
     // 等第一代的逾時與自動重試都結束
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(1700)).await;
     let s = settled_summary(&app, &a.student, &conv).await;
     assert_eq!(s["status"], "ready");
     assert_eq!(s["stance"], "會拉桿");
