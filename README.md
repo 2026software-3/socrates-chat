@@ -42,30 +42,93 @@ flowchart LR
 
 ## 快速開始
 
-### 後端
+從 clone 到在本機跑起整個系統的完整步驟。第 1～4 步只需做一次。
 
-需求：Rust stable（由 `backend/rust-toolchain.toml` 指定，rustup 會自動安裝對應元件）。
+### 1. 安裝工具並取得程式碼
+
+| 工具 | 用途 |
+| --- | --- |
+| [Rust](https://rustup.rs/)（rustup） | 後端；版本由 `backend/rust-toolchain.toml` 指定，第一次執行 `cargo` 時自動安裝 |
+| [Docker](https://docs.docker.com/get-docker/)（含 Compose） | 啟動開發用 PostgreSQL |
+| Node.js 與 npm | 前端 |
+
+```bash
+git clone https://github.com/2026software-3/socrates-chat.git
+cd socrates-chat
+```
+
+### 2. 啟動資料庫
+
+```bash
+docker compose up -d db    # PostgreSQL 16，監聽 127.0.0.1:5432，帳號、密碼與資料庫名稱皆為 socrates
+```
+
+### 3. 準備第三方憑證
+
+- **Google OAuth**：到 [Google Cloud Console](https://console.cloud.google.com/apis/credentials) 建立 OAuth client（Web application），將授權的重新導向 URI 設為 `http://localhost:3000/api/auth/google/callback`（即 `${APP_BASE_URL}/api/auth/google/callback`），取得 client ID 與 secret。系統只接受 Google 登入。
+- **OpenAI**：取得 API key，並決定要用的模型。具體模型尚未定案（S-03.1／S-03.4），所以 `OPENAI_MODEL` 沒有預設值，必須自行填寫。本機開發也可把 `OPENAI_BASE_URL` 指向 OpenAI 相容的服務。
+
+### 4. 設定環境變數
+
+```bash
+cp backend/.env.example backend/.env    # .env 不進版控
+```
+
+編輯 `backend/.env`，至少填入：
+
+| 變數 | 說明 |
+| --- | --- |
+| `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | 第 3 步取得的 Google OAuth 憑證 |
+| `ADMIN_EMAILS` | 首次登入即成為管理者的信箱，以逗號分隔 |
+| `OPENAI_API_KEY`、`OPENAI_MODEL` | 第 3 步取得的 API key 與模型名稱 |
+
+其餘變數（`DATABASE_URL`、`APP_BASE_URL`、`COOKIE_SECURE`、`RUN_MIGRATIONS` 等）的預設值適用於本機開發，說明見 `backend/.env.example`。`RUN_MIGRATIONS=true` 時，後端啟動前會自動執行 `backend/migrations/`。
+
+### 5. 啟動後端
 
 ```bash
 cd backend
-cargo run          # 啟動於 http://127.0.0.1:3000
-curl http://127.0.0.1:3000/health   # {"status":"ok"}
-cargo test         # 執行測試
+cargo run                                # 啟動於 http://127.0.0.1:3000
+curl http://127.0.0.1:3000/health        # 另開終端機，應回傳 {"status":"ok"}
+cargo test                               # 執行測試
 ```
 
-### 前端
+### 6. 啟動前端
 
-需求：Node.js 與 npm。
+兩種方式擇一。
+
+**開發模式**（熱更新）：
 
 ```bash
 cd frontend
 npm ci
-npm run dev        # 開發伺服器，/api 轉給本機後端
-npm test           # 執行測試
-npm run build      # 建置；後端設定 FRONTEND_DIR=../frontend/dist 即可同網域提供
+npm run dev        # http://localhost:5173，/api 轉給 127.0.0.1:3000 的後端
 ```
 
-細節與約束請見 [`frontend/README.md`](frontend/README.md)。
+**同網域提供**（與正式架構相同，前端與 API 共用 `http://localhost:3000`）：
+
+```bash
+cd frontend
+npm ci
+npm run build
+```
+
+再於 `backend/.env` 設定 `FRONTEND_DIR=../frontend/dist`，重新啟動後端，開啟 `http://localhost:3000`。
+
+> Google 登入完成後會導回 `APP_BASE_URL`（預設 `http://localhost:3000`）。若要在開發模式的 `5173` 走完整個登入流程，需把 `APP_BASE_URL` 與 Google 的重新導向 URI 一併改成對應網址。
+
+其他前端指令（`npm test`、`npm run typecheck`、`npm run lint`）與約束見 [`frontend/README.md`](frontend/README.md)，後端 API 見 [`docs/api/mvp-backend-api.md`](docs/api/mvp-backend-api.md)。
+
+### 7. 第一次使用
+
+1. 以 `ADMIN_EMAILS` 中的 Google 帳號登入，取得管理者身分。
+2. 管理者新增教師帳號並維護題目庫。
+3. 教師或管理者匯入修課名單（學生電子郵件）；名單外的帳號登入後看到「尚未開通」。
+4. 教師建立並發布討論活動，學生即可開始對話。
+
+### 正式環境
+
+正式環境的部署方式尚未決定（S-09）。migration 須在部署前單獨執行、不要依賴 `RUN_MIGRATIONS`，並保持 `COOKIE_SECURE=true`；維運流程見 [`docs/specs/S-09.3-ops-procedures.md`](docs/specs/S-09.3-ops-procedures.md)。
 
 ## 參與開發
 
