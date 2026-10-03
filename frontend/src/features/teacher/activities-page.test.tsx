@@ -207,15 +207,27 @@ describe('ActivitiesPage', () => {
     expect(body).toEqual({ title: '第一週討論', description: '請討論公平' })
   })
 
-  it('does not offer to clear the topic when editing an activity that has one', async () => {
-    mockList([act()])
+  it('sends topic_id null when "no topic" is chosen while editing', async () => {
+    let body: unknown
+    server.use(
+      http.get('/api/available', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/activities', () => HttpResponse.json([act()])),
+      http.patch('/api/activities/a1', async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json(act({ topic_id: null }))
+      }),
+    )
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
     const select = within(dialog).getByLabelText('題目（選填）')
     await waitFor(() => expect(select).toHaveValue('t1'))
-    expect(within(dialog).getByRole('option', { name: '不指定題目' })).toBeDisabled()
+    expect(within(dialog).getByRole('option', { name: '不指定題目' })).toBeEnabled()
+    await userEvent.selectOptions(select, '')
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    expect(await screen.findByText('活動已更新。')).toBeInTheDocument()
+    expect(body).toEqual({ title: '第一週討論', description: '請討論公平', topic_id: null })
   })
 
   it('keeps an inactive topic selected and labelled instead of showing none', async () => {

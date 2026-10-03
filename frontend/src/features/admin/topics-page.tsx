@@ -168,9 +168,9 @@ export function TopicsPage() {
     const body: Partial<Pick<Topic, 'title' | 'description' | 'category'>> = {}
     if (v.title.trim() !== topic.title) body.title = v.title.trim()
     if (v.description.trim() !== topic.description.trim()) body.description = v.description.trim()
-    // 後端的 PATCH 以 COALESCE 處理，空字串會被存成 ''，無法清除分類；清空視為不修改
+    // 後端 PATCH：沒帶＝保留、null＝清除分類
     const category = v.category.trim()
-    if (category !== '' && category !== (topic.category ?? '')) body.category = category
+    if (category !== (topic.category ?? '')) body.category = category === '' ? null : category
     if (Object.keys(body).length > 0) {
       await api.patch(`/api/admin/topics/${encodeURIComponent(topic.id)}`, body)
       patch(topic.id, body)
