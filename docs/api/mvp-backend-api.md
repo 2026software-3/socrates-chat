@@ -41,7 +41,7 @@
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
 | GET | `/api/roster` | `{ emails: [...] }` |
-| POST | `/api/roster/import` | body `{ "text": "每行一個電子郵件（可有 email 標題列）" }` → `{ added, existing, invalid: [{ line, value }], credentials: [{ email, temporary_password }] }`；只新增不移除；`credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次，已有帳號的信箱不在其中） |
+| POST | `/api/roster/import` | body `{ "text": "每行一個電子郵件（可有 email 標題列）" }` → `{ added, existing, invalid: [{ line, value }], credentials: [{ email, temporary_password }] }`；只新增不移除；`credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次；**只有管理者匯入才會建立**，教師匯入時為空陣列；已有帳號與教師／管理者信箱不在其中） |
 | DELETE | `/api/roster/{email}` | 移出名單（204／404）；資料保留 |
 
 ## 活動（教師或管理者）與學生可選清單

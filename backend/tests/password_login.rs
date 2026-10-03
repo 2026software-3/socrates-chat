@@ -469,10 +469,10 @@ async fn google_login_binds_to_the_password_account_with_the_same_email(pool: Pg
         .await
         .unwrap();
     assert_eq!(sub.as_deref(), Some("sub-s"));
-    // 綁定不影響內建密碼
+    // 本人用 Google 登入後，建立者知道的臨時密碼就失效
     assert_eq!(
         login(&app, "student@example.com", &temp).await.status(),
-        StatusCode::OK
+        StatusCode::UNAUTHORIZED
     );
     let (n,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM users WHERE email = 'student@example.com'")
@@ -530,4 +530,114 @@ fn password_hash_round_trips_and_temporary_passwords_are_random() {
     );
     assert_ne!(a, b);
     assert_eq!(a.len(), 12);
+}
+
+#[sqlx::test]
+async fn password_changed_by_the_owner_survives_google_binding(pool: PgPool) {
+    let app = test_app(pool);
+    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    account_with_password(&app, &admin, "student@example.com", GOOD_PASSWORD).await;
+    login_as(&app, "sub-s", "student@example.com").await;
+    assert_eq!(
+        login(&app, "student@example.com", GOOD_PASSWORD)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn google_login_does_not_inherit_the_must_change_gate(pool: PgPool) {
+    let app = test_app(pool);
+    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    reset(&app, &admin, "student@example.com").await;
+    let google = login_as(&app, "sub-s", "student@example.com").await;
+    let me = json_body(send(&app, get("/api/me", Some(&google))).await).await;
+    assert_eq!(me["must_change_password"], false);
+}
+
+#[sqlx::test]
+async fn teachers_importing_the_roster_do_not_get_student_credentials(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/roster/import",
+            Some(&a.teacher),
+            Some(json!({"text": "newstudent@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["added"], 1);
+    assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
+    // 沒有建立帳號：教師拿不到可以冒用學生身分的密碼
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM users WHERE email = 'newstudent@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0);
+    assert_eq!(
+        login(&app, "newstudent@example.com", "anything-at-all")
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test]
+async fn roster_import_never_creates_accounts_for_staff_emails(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    // 教師、設定中的管理者信箱就算被放進名單，也不在這裡替他們建帳號
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/roster/import",
+            Some(&a.admin),
+            Some(json!({"text": "other-teacher@example.com\nadmin2@example.com\nregular@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    // other-teacher 與 admin2 先登錄為教師／管理者信箱
+    sqlx::query("INSERT INTO teachers (email) VALUES ('other-teacher@example.com')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/roster/import",
+            Some(&a.admin),
+            Some(json!({"text": "other-teacher@example.com\nteacher@example.com\nadmin@example.com"})),
+        ),
+    )
+    .await;
+    let body = json_body(res).await;
+    assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
+}
+
+#[sqlx::test]
+async fn pre_created_account_cannot_block_an_admin_email_from_becoming_admin(pool: PgPool) {
+    let mut config = test_config();
+    config.admin_emails = vec!["admin@example.com".into(), "admin2@example.com".into()];
+    let app = test_app_with_config(pool, FakeAi::with(vec![]), config);
+    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    // 有人搶先替 admin2 的信箱建了帳號
+    let temp = reset(&app, &admin, "admin2@example.com").await;
+    let google = login_as(&app, "sub-admin2", "admin2@example.com").await;
+    let me = json_body(send(&app, get("/api/me", Some(&google))).await).await;
+    assert_eq!(me["is_admin"], true);
+    // 搶先建立者知道的臨時密碼已失效
+    assert_eq!(
+        login(&app, "admin2@example.com", &temp).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
