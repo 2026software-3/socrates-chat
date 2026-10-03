@@ -83,7 +83,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
 ## Git 規範
 
 - 開發主線為 `main`。**永遠不要 push 到 `main`**，也不要在 `main` 上直接 commit。
-- 分支命名為 `<type>/<issue-id>-<slug>`，例如 `feat/f-06-text-chat`、`docs/s-03-ai-dialogue-spec`。
+- 分支命名為 `<type>/<slug>`；有對應 Issue 時帶上編號，即 `<type>/<issue-id>-<slug>`，例如 `feat/f-06-text-chat`、`docs/s-03-ai-dialogue-spec`；沒有 Issue 的改動可省略編號，例如 `chore/bump-deps`。
 - 所有 commit 遵守 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)，格式與 scope 見 [CONTRIBUTING.md](CONTRIBUTING.md#commit-規範)。
 - PR 描述需以 `Closes #<issue>` 關聯 Issue。
 - 不要使用 `--no-verify`、`--force` push 到共用分支，也不要改寫已推送的歷史，除非維護者明確要求。

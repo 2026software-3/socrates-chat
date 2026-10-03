@@ -158,9 +158,9 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 
 - **開發主線是 `main`**，應隨時保持可建置且測試通過。
 - **禁止直接 push 到 `main`**，所有改動都從 `main` 開分支、經 PR 合併。
-- 分支命名：`<type>/<issue-id>-<slug>`
+- 分支命名：`<type>/<slug>`；有對應 Issue 時用 `<type>/<issue-id>-<slug>`
   - `type` 與 commit type 相同（見下節）；
-  - `issue-id` 是 Issue 標題中的編號，改成小寫；
+  - `issue-id` 是 Issue 標題中的編號，改成小寫。有 Issue 就建議帶上，方便對照；沒有 Issue 的改動（例如修錯字、CI、依賴更新）可省略；
   - `slug` 是幾個英文字的簡短描述，用 `-` 連接。
 
   ```text
