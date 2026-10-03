@@ -47,7 +47,7 @@ flowchart LR
 需求：Docker。
 
 ```bash
-cp backend/.env.example backend/.env   # 填入 Google OAuth、OPENAI_API_KEY、OPENAI_MODEL、ADMIN_EMAILS
+cp .env.example .env   # 填入 Google OAuth、OPENAI_API_KEY、OPENAI_MODEL、ADMIN_EMAILS
 docker compose --profile app up --build
 ```
 

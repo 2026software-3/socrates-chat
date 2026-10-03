@@ -64,7 +64,7 @@
 
 ```bash
 docker compose up -d --wait
-export DATABASE_URL=postgres://socrates:socrates@127.0.0.1:5432/socrates   # 或複製 backend/.env.example
+export DATABASE_URL=postgres://socrates:socrates@127.0.0.1:5432/socrates   # 或複製根目錄的 .env.example
 cd backend && cargo test
 ```
 

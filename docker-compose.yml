@@ -17,14 +17,14 @@ services:
       timeout: 3s
       retries: 15
 
-  # 後端 ＋ 前端建置產物，單一容器、單一網址（S-08.1）。設定沿用 backend/.env，
+  # 後端 ＋ 前端建置產物，單一容器、單一網址（S-08.1）。設定沿用專案根目錄的 .env，
   # 下列三項為容器內需要的覆寫。RUN_MIGRATIONS 為本機／試用的便利設定；
   # 正式環境的 migration 流程見 S-09.3。
   app:
     profiles: ["app"]
     build: .
     env_file:
-      - path: backend/.env
+      - path: .env
         required: true
     environment:
       DATABASE_URL: postgres://socrates:socrates@db:5432/socrates
