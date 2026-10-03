@@ -75,6 +75,7 @@ pub fn test_config() -> Config {
         admin_emails: vec!["admin@example.com".to_string()],
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
+        frontend_dir: None,
         openai_api_key: "test-key".to_string(),
         openai_model: "test-model".to_string(),
         openai_base_url: "http://127.0.0.1:1".to_string(),
