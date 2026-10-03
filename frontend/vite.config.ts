@@ -18,5 +18,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // 固定時區，避免日期斷言隨機器時區而變
+    env: { TZ: 'UTC' },
   },
 })
