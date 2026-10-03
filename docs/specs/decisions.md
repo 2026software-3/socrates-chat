@@ -239,6 +239,14 @@
   - AI 行為評分情境集（S-03.4）是否三種語言各一套
   - 前端 i18n 函式庫（隨 S-11.1 決定）
 
+## S-11 前端技術選型（暫定）
+
+需求方在 2026-10-02 指示：前端先暫時使用 [assistant-ui](https://github.com/assistant-ui/assistant-ui)（對話介面）與 [shadcn/ui](https://github.com/shadcn-ui/ui)（元件）。**這是暫定組合，S-11 各項仍待正式討論，下方「尚未決定」清單維持不變。**
+
+- 為了能搭起骨架，目前實際採用：React、TypeScript、Vite、Tailwind CSS，另有 `react-router`（路由）、Vitest + Testing Library + MSW（測試）、oxlint（lint）。這些是工程上的暫定選擇，不是需求方決策，S-11.2～S-11.5 討論時可調整。
+- 前端的約束不變：只經由同網域的 `/api` 存取後端、不持有金鑰或 token（S-08.1）；介面文字走三語翻譯（S-12.1）。
+- 詳見 [`frontend/README.md`](../../frontend/README.md)。
+
 ## 尚未決定
 
 以下規格決策尚未討論或暫時跳過：
