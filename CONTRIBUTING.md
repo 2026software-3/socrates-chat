@@ -357,7 +357,6 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 
 - 不寫 `ALTER TABLE`、`DROP INDEX` 這類轉移語句；要改 schema，直接修改 `backend/migrations/` 裡原本建立該資料表的 `CREATE` 語句。
 - 新資料表才新增 migration 檔（`sqlx migrate add <描述>`）。
-- 修改既有 migration 後，本機資料庫的 migration 紀錄會對不上（checksum 不符），需要重建：`docker compose down -v && docker compose up -d db`。
 - 正式上線後此規則作廢，改為只往前新增 migration（見 [S-09.3](docs/specs/S-09.3-ops-procedures.md)）。
 
 ## 規格決策流程
