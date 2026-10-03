@@ -5,11 +5,13 @@ use axum::{
     extract::{Request, State},
     http::{HeaderValue, Method, header},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
 use sqlx::PgPool;
+use tower::ServiceExt;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{ai::AiProvider, config::Config, error::ApiError, identity::IdentityProvider};
 
@@ -65,6 +67,7 @@ pub fn app(state: AppState) -> Router {
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(summary::routes())
+        .fallback(fallback)
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))
@@ -73,6 +76,21 @@ pub fn app(state: AppState) -> Router {
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+/// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
+/// 找不到的檔案退回 `index.html`（前端路由，S-08.1）。
+async fn fallback(State(state): State<AppState>, req: Request) -> Response {
+    let path = req.uri().path();
+    let is_api = path == "/api" || path.starts_with("/api/");
+    let Some(dir) = state.config.frontend_dir.as_ref().filter(|_| !is_api) else {
+        return ApiError::not_found().into_response();
+    };
+    let spa = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
+    match spa.oneshot(req).await {
+        Ok(res) => res.into_response(),
+        Err(never) => match never {},
+    }
 }
 
 /// 為每個請求產生 request ID：放進錯誤回應與 `x-request-id` 標頭。

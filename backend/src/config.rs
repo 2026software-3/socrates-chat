@@ -16,6 +16,8 @@ pub struct Config {
     /// session cookie 是否加 `Secure`；本機 http 開發可設為 `false`。
     pub cookie_secure: bool,
     pub listen_addr: String,
+    /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
+    pub frontend_dir: Option<std::path::PathBuf>,
     pub openai_api_key: String,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
@@ -99,6 +101,10 @@ impl Config {
                 .map(|v| v != "false")
                 .unwrap_or(true),
             listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
+            frontend_dir: env::var("FRONTEND_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(Into::into),
             openai_api_key: required("OPENAI_API_KEY")?,
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")

@@ -80,4 +80,6 @@ cp .env.example .env   # 填入 GOOGLE_CLIENT_ID／SECRET、OPENAI_API_KEY、OPE
 cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration
 ```
 
+要連前端一起跑：在 `frontend/` 執行 `npm ci && npm run build`，並設定 `FRONTEND_DIR=../frontend/dist`，後端就會在同一個網域提供前端（找不到的路徑退回 `index.html`，`/api/*` 仍回 JSON 404）。開發前端時改用 `npm run dev`（Vite 會把 `/api` 轉給本機後端）。
+
 具體 OpenAI 模型尚未決定（S-03.1／S-03.4），因此 `OPENAI_MODEL` 沒有預設值。
