@@ -42,7 +42,20 @@ flowchart LR
 
 ## 快速開始
 
-### 後端
+### 用 Docker 一鍵啟動（不需安裝 Rust 或 Node）
+
+需求：Docker。
+
+```bash
+cp backend/.env.example backend/.env   # 填入 Google OAuth、OPENAI_API_KEY、OPENAI_MODEL、ADMIN_EMAILS
+docker compose --profile app up --build
+```
+
+啟動後開啟 http://localhost:3000。這會建置單一映像（後端 API ＋ 前端建置產物，同網域提供）並連同 PostgreSQL 一起啟動，容器內的 `DATABASE_URL`、`FRONTEND_DIR`、`LISTEN_ADDR` 已自動設定，migration 也會自動執行。資料庫存放在 Docker volume（`pgdata`），`docker compose down` 不會遺失資料，加上 `-v` 才會清除。這是本機與試用的便利做法，不代表正式環境的部署方式（S-09 尚未決定）。
+
+### 開發者：分別執行後端與前端
+
+#### 後端
 
 需求：Rust stable（由 `backend/rust-toolchain.toml` 指定，rustup 會自動安裝對應元件）。
 
@@ -53,7 +66,7 @@ curl http://127.0.0.1:3000/health   # {"status":"ok"}
 cargo test         # 執行測試
 ```
 
-### 前端
+#### 前端
 
 需求：Node.js 與 npm。
 
