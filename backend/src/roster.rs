@@ -11,8 +11,10 @@ use sqlx::PgPool;
 
 use crate::{
     AppState,
-    auth::{RequireAdmin, RequireTeacher},
+    auth::{RequireAdmin, RequireTeacher, hash_blocking},
+    auth_store,
     error::ApiError,
+    password,
 };
 
 pub fn routes() -> Router<AppState> {
@@ -161,6 +163,14 @@ struct ImportResult {
     added: usize,
     existing: usize,
     invalid: Vec<InvalidLine>,
+    /// 這次新建立的內建帳號與臨時密碼（只在這次回應出現）；信箱已有帳號的不在其中。
+    credentials: Vec<Credential>,
+}
+
+#[derive(Serialize)]
+struct Credential {
+    email: String,
+    temporary_password: String,
 }
 
 async fn import_roster(
@@ -170,18 +180,32 @@ async fn import_roster(
 ) -> Result<Json<ImportResult>, ApiError> {
     let parsed = parse_roster(&body.text);
     let mut added = 0;
+    let mut credentials = Vec::new();
     // 匯入只新增，不移除名單上原有的人
     for email in &parsed.emails {
         let r = sqlx::query("INSERT INTO enrollments (email) VALUES ($1) ON CONFLICT DO NOTHING")
             .bind(email)
             .execute(&state.pool)
             .await?;
-        added += r.rows_affected() as usize;
+        if r.rows_affected() == 0 {
+            continue;
+        }
+        added += 1;
+        // 新加入的學生同時建立內建帳號（自動產生臨時密碼）；已有帳號的不動
+        let temporary_password = password::generate_temporary();
+        let hash = hash_blocking(temporary_password.clone()).await?;
+        if auth_store::create_account_if_absent(&state.pool, email, &hash).await? {
+            credentials.push(Credential {
+                email: email.clone(),
+                temporary_password,
+            });
+        }
     }
     Ok(Json(ImportResult {
         added,
         existing: parsed.emails.len() - added,
         invalid: parsed.invalid,
+        credentials,
     }))
 }
 

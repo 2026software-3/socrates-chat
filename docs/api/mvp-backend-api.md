@@ -7,7 +7,7 @@
 
 - **CSRF**：`POST`／`PUT`／`PATCH`／`DELETE` 必須帶 `Origin` 標頭，且等於 `APP_BASE_URL`，否則 `403 csrf`（瀏覽器會自動帶）。
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
-- **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。
+- **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`、活動的 `topic_id`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - 對話內容只有擁有者讀得到；別人（含教師、管理者）一律 `404`。
 
@@ -17,8 +17,12 @@
 | --- | --- | --- |
 | GET | `/api/auth/google/login` | 導向 Google 授權頁（303） |
 | GET | `/api/auth/google/callback` | Google 回呼；成功設定 `sid` cookie 並導回 `APP_BASE_URL`，失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`） |
+| POST | `/api/auth/login` | 內建登入，body `{ email, password }` → `{ must_change_password }` 並設定 `sid` cookie；失敗 401 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一信箱連續失敗 5 次鎖定 15 分鐘，期間回 429 `too_many_attempts` |
+| POST | `/api/auth/change-password` | body `{ current_password, new_password }` → 204；`invalid_current_password`、`invalid_new_password`（長度 8–128）、`password_unchanged`（皆 400）；成功後其他 session 失效 |
 | POST | `/api/auth/logout` | 登出，204 |
-| GET | `/api/me` | `{ id, email, display_name, is_admin, roles: { admin, teacher, student } }` |
+| GET | `/api/me` | `{ id, email, display_name, is_admin, must_change_password, roles: { admin, teacher, student } }`；`must_change_password` 為 `true` 時，前端應導向改密碼頁，其他 API 會回 `password_change_required` |
+
+沒有註冊 API：內建帳號只由系統建立（管理者重設密碼、匯入修課名單、部署時的 `ADMIN_INITIAL_PASSWORD`）。
 
 `roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
 
@@ -28,6 +32,7 @@
 | --- | --- | --- |
 | GET／POST | `/api/admin/teachers` | 列出／新增教師，body `{ "email": "..." }`（204，重複新增也 204；`invalid_email` 400） |
 | DELETE | `/api/admin/teachers/{email}` | 移除教師身分（204／404） |
+| POST | `/api/admin/users/reset-password` | body `{ "email": "..." }` → `{ email, temporary_password }`（臨時密碼只出現這一次）；沒有帳號就建立；清除該使用者所有 session 與登入鎖定 |
 | GET／POST | `/api/admin/topics` | 列出全部／新增題目 `{ title, description?, category? }`（201） |
 | PATCH | `/api/admin/topics/{id}` | 修改 `{ title?, description?, category?, is_active? }`；停用後學生看不到 |
 
@@ -36,7 +41,7 @@
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
 | GET | `/api/roster` | `{ emails: [...] }` |
-| POST | `/api/roster/import` | body `{ "text": "每行一個電子郵件（可有 email 標題列）" }` → `{ added, existing, invalid: [{ line, value }] }`；只新增不移除 |
+| POST | `/api/roster/import` | body `{ "text": "每行一個電子郵件（可有 email 標題列）" }` → `{ added, existing, invalid: [{ line, value }], credentials: [{ email, temporary_password }] }`；只新增不移除；`credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次，已有帳號的信箱不在其中） |
 | DELETE | `/api/roster/{email}` | 移出名單（204／404）；資料保留 |
 
 ## 活動（教師或管理者）與學生可選清單

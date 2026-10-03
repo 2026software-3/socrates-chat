@@ -24,6 +24,7 @@ tokio-stream = "0.1.19"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tower-http = { version = "0.7.1", features = ["fs"] }
 tower = { version = "0.5.3", features = ["util"] }
+argon2 = "0.6.0"
 
 [dev-dependencies]
 http-body-util = "0.1.5"

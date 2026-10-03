@@ -23,6 +23,7 @@ pub mod chat;
 pub mod config;
 pub mod error;
 pub mod identity;
+pub mod password;
 pub mod reply;
 pub mod roster;
 pub mod summary;
