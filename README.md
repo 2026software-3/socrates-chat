@@ -42,29 +42,10 @@ flowchart LR
 
 ## 快速開始
 
-兩種跑法共用專案根目錄的同一個 `.env`，先設定一次：
-
-```bash
-cp .env.example .env   # 填入 Google OAuth、OPENAI_API_KEY、OPENAI_MODEL、ADMIN_EMAILS
-```
-
-兩種跑法都使用 3000 埠，**同一時間只能跑其中一種**。
-
-### 跑法一：全部在容器（不需安裝 Rust 或 Node）
-
-需求：Docker。
-
-```bash
-docker compose --profile app up --build
-```
-
-啟動後開啟 http://localhost:3000。這會建置單一映像（後端 API ＋ 前端建置產物，同網域提供）並連同 PostgreSQL 一起啟動，容器內的 `DATABASE_URL`、`FRONTEND_DIR`、`LISTEN_ADDR` 已自動設定，migration 也會自動執行。資料庫存放在 Docker volume（`pgdata`），`docker compose down` 不會遺失資料，加上 `-v` 才會清除。這是本機與試用的便利做法，不代表正式環境的部署方式（S-09 尚未決定）。
-
-### 跑法二：本地執行後端與前端（開發用）
-
 需求：Docker（只用來跑 PostgreSQL）、Rust stable（由 `backend/rust-toolchain.toml` 指定，rustup 會自動安裝對應元件）、Node.js 與 npm。
 
 ```bash
+cp .env.example .env                     # 填入 Google OAuth、OPENAI_API_KEY、OPENAI_MODEL、ADMIN_EMAILS
 docker compose up -d db                  # 只啟動資料庫
 set -a && . ./.env && set +a             # 後端不會自行讀取 .env，需先載入
 (cd frontend && npm ci && npm run build) # 建置前端，由後端同網域提供
@@ -73,6 +54,18 @@ FRONTEND_DIR=../frontend/dist cargo run  # 啟動於 http://127.0.0.1:3000
 ```
 
 開發前端時不需要建置，改在另一個終端機執行 `cd frontend && npm run dev`（Vite 會把 `/api` 轉給本機後端，後端就不必設 `FRONTEND_DIR`）。
+
+### 另一種跑法：全部在容器
+
+不想安裝 Rust 或 Node 時，只需要 Docker，同樣使用上面設定好的 `.env`：
+
+```bash
+docker compose --profile app up --build
+```
+
+啟動後開啟 http://localhost:3000。這會建置單一映像（後端 API ＋ 前端建置產物，同網域提供）並連同 PostgreSQL 一起啟動，容器內的 `DATABASE_URL`、`FRONTEND_DIR`、`LISTEN_ADDR` 已自動設定，migration 也會自動執行。資料庫存放在 Docker volume（`pgdata`），`docker compose down` 不會遺失資料，加上 `-v` 才會清除。這是本機與試用的便利做法，不代表正式環境的部署方式（S-09 尚未決定）。
+
+兩種跑法都使用 3000 埠，**同一時間只能跑其中一種**。
 
 #### 後端
 
