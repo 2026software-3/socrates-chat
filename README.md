@@ -4,6 +4,12 @@
 
 > **目前狀態：規格階段。** 功能需求已拆成規格（S-xx）與功能（F-xx）Issues，未定案的產品與技術決策都先由規格 Issue 處理。已確認的決策見 [`docs/specs/decisions.md`](docs/specs/decisions.md)。
 
+## 操作演示
+
+![操作演示：學生與 AI 討論電車難題並產生學習總結，再由教師查看班上論點分布](docs/demo/demo.gif)
+
+學生選題後與 AI 多輪討論，結束時產生 AI 學習總結；教師在「班上論點分布」看到全班的主張分組與論證傾向。完整畫質見 [`docs/demo/demo.mp4`](docs/demo/demo.mp4)，重新錄製方式見 [`scripts/demo/`](scripts/demo/record.mjs)。
+
 ## 技術棧
 
 | 範圍 | 狀態 | 內容 |
@@ -34,7 +40,7 @@ flowchart LR
 .
 ├── backend/     # Rust + Axum API 服務
 ├── frontend/    # 前端（暫定技術選型，見 frontend/README.md）
-├── scripts/     # 開發輔助腳本（匯入示範資料）
+├── scripts/     # 開發輔助腳本（匯入示範資料、錄製操作演示）
 ├── .github/     # CI 與 commitlint workflows
 ├── AGENTS.md    # 給 AI coding agent 的開發指引
 ├── CONTRIBUTING.md
@@ -82,6 +88,18 @@ ADMIN_PASSWORD='<管理者目前的密碼>' ./scripts/seed-demo.sh
 ```
 
 會建立教師 `teacher@example.com`（密碼 `Teacher-Demo-2026`）、學生 `student1`～`student3@example.com`（密碼 `Student-Demo-2026`），以及「電車難題」下 6 場已完成的對話（含 AI 總結、主張分組與 6 維分數），用教師登入就能看到班上論點分布。可重複執行。內建題目「電車難題」在服務啟動時自動建立。
+
+### 錄製操作演示（選用）
+
+匯入示範資料後，用 Playwright 自動操作並錄成 `docs/demo/demo.mp4` 與 `demo.gif`（需要 ffmpeg；學生對話會真的呼叫 AI，產生少量費用）：
+
+```bash
+cd scripts/demo
+npm install && npx playwright install chromium
+npm run record
+```
+
+每次錄製都會替 `student1@example.com` 多留一場對話，班上分布的數字會跟著變動。
 
 ### 正式環境
 
