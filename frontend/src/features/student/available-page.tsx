@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
+import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { useAuth } from '@/auth/auth-context'
 import { errorText, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Available, Conversation } from '@/lib/types'
@@ -24,6 +25,8 @@ type Item = {
 export function AvailablePage() {
   const t = useT()
   const navigate = useNavigate()
+  const auth = useAuth()
+  const welcomeName = auth.status === 'authed' ? (auth.me.display_name ?? auth.me.email) : ''
   const { data, error, loading, reload } = useFetch<Available>('/api/available')
   const [startingKey, setStartingKey] = useState<string>()
   const [startError, setStartError] = useState<unknown>()
@@ -96,15 +99,13 @@ export function AvailablePage() {
       </div>
     )
 
-  return (
-    <Page
-      title={t('student.available.title')}
-      actions={
-        <Button asChild variant="outline" size="sm">
-          <Link to="/conversations">{t('student.available.myConversations')}</Link>
-        </Button>
-      }
-    >
+  const myConversations = (
+    <Button asChild variant="outline" size="sm">
+      <Link to="/conversations">{t('student.available.myConversations')}</Link>
+    </Button>
+  )
+  const content = (
+    <>
       {startError ? (
         <div ref={errorRef} className="mb-4">
           <Alert variant="destructive" role="alert">
@@ -113,7 +114,21 @@ export function AvailablePage() {
         </div>
       ) : null}
       {body}
-    </Page>
+    </>
+  )
+
+  return (
+    <div className="space-y-6">
+      <div className="from-primary/10 to-background flex flex-wrap items-end justify-between gap-4 rounded-xl border bg-gradient-to-br p-6">
+        <div className="space-y-1">
+          <p className="text-muted-foreground text-sm">{t('home.welcome', { name: welcomeName })}</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{t('home.studentHeadline')}</h1>
+          <p className="text-muted-foreground max-w-prose text-sm">{t('home.studentTagline')}</p>
+        </div>
+        {myConversations}
+      </div>
+      {content}
+    </div>
   )
 }
 

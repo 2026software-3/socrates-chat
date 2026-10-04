@@ -41,6 +41,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
               <NavLink
                 key={n.to}
                 to={n.to}
+                end={n.to === '/'}
                 className={({ isActive }) =>
                   `rounded-md px-3 py-1.5 text-sm whitespace-nowrap ${isActive ? 'bg-secondary font-medium' : 'text-muted-foreground hover:bg-muted'}`
                 }

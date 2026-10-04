@@ -3,13 +3,13 @@ import { hasAnyRole, useAuth } from '@/auth/auth-context'
 import { canAccess, type Access, type Feature } from '@/app/feature'
 import { Layout } from '@/app/layout'
 import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { adminFeature } from '@/features/admin'
 import { LoginPage } from '@/features/auth/login-page'
 import { ChangePasswordPage } from '@/features/auth/change-password-page'
 import { PendingPage } from '@/features/auth/pending-page'
 import { chatFeature } from '@/features/chat'
 import { studentFeature } from '@/features/student'
+import { AvailablePage } from '@/features/student/available-page'
 import { teacherFeature } from '@/features/teacher'
 import { useT } from '@/i18n'
 import type { ReactNode } from 'react'
@@ -68,31 +68,6 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
   return <>{children}</>
 }
 
-function HomePage() {
-  const t = useT()
-  const auth = useAuth()
-  if (auth.status !== 'authed') return null
-  const { me } = auth
-  const items = allNav.filter((n) => canAccess(n.access, me.roles))
-  return (
-    <Page title={t('home.welcome', { name: me.display_name ?? me.email })}>
-      <p className="text-muted-foreground">{t('home.choose')}</p>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((n) => (
-          <Link key={n.to} to={n.to}>
-            <Card className="hover:bg-muted/50 h-full transition-colors">
-              <CardHeader>
-                <CardTitle>{t(n.labelKey)}</CardTitle>
-                <CardDescription>{n.to}</CardDescription>
-              </CardHeader>
-            </Card>
-          </Link>
-        ))}
-      </div>
-    </Page>
-  )
-}
-
 function NotFoundPage() {
   const t = useT()
   return (
@@ -109,7 +84,7 @@ export function AppRoutes() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route element={<Shell />}>
-        <Route index element={<HomePage />} />
+        <Route index element={<AvailablePage />} />
         {features.flatMap((f) =>
           f.routes.map((r) => (
             <Route key={r.path} path={r.path} element={<RequireAccess access={r.access}>{r.element}</RequireAccess>} />

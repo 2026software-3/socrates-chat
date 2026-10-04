@@ -8,7 +8,7 @@ import { server } from '@/test/server'
 describe('app shell', () => {
   it('sends anonymous visitors to the login page', async () => {
     mockMe(null)
-    renderApp(null, { route: '/available' })
+    renderApp(null, { route: '/' })
     expect(await screen.findByRole('button', { name: '使用 Google 登入' })).toBeInTheDocument()
   })
 
@@ -36,6 +36,20 @@ describe('app shell', () => {
     mockMe(makeMe())
     renderApp(null, { route: '/teacher/roster' })
     expect(await screen.findByRole('heading', { name: '尚未開通' })).toBeInTheDocument()
+  })
+
+  it('takes students straight to topic selection from the home page', async () => {
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
+  })
+
+  it('takes teachers straight to topic selection too', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
   })
 
   it('shows student navigation only to students', async () => {
@@ -74,10 +88,11 @@ describe('app shell', () => {
 
   it('switches language without reloading', async () => {
     mockMe(makeMe({ student: true }))
-    renderApp(null, { route: '/available' })
-    await screen.findByRole('heading', { name: '選擇討論題目' })
+    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')
-    expect(await screen.findByRole('heading', { name: 'Choose a discussion topic' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Which question will you think about today?' })).toBeInTheDocument()
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem('lang')).toBe('en')
   })

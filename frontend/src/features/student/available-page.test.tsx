@@ -38,11 +38,11 @@ function renderPage() {
   mockMe(makeMe({ student: true }))
   return renderApp(
     <Routes>
-      <Route path="/available" element={<AvailablePage />} />
+      <Route path="/" element={<AvailablePage />} />
       <Route path="/conversations" element={<p>list page</p>} />
       <Route path="/conversations/:id" element={<p>chat page</p>} />
     </Routes>,
-    { route: '/available' },
+    { route: '/' },
   )
 }
 

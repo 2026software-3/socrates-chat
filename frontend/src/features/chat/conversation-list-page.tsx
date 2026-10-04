@@ -53,7 +53,7 @@ export function ConversationListPage() {
         <EmptyBlock>
           <span className="block">{t('chat.list.empty')}</span>
           <Button asChild variant="link">
-            <Link to="/available">{t('chat.list.browse')}</Link>
+            <Link to="/">{t('chat.list.browse')}</Link>
           </Button>
         </EmptyBlock>
       ) : null}
