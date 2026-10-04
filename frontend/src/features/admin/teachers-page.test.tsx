@@ -202,4 +202,32 @@ describe('TeachersPage', () => {
     expect(await screen.findByText('Teachers: 1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add teacher' })).toBeInTheDocument()
   })
+
+  it('generates a temporary password and shows it once', async () => {
+    mockTeachers(['a@example.com'])
+    const bodies: unknown[] = []
+    server.use(
+      http.post('/api/admin/users/reset-password', async ({ request }) => {
+        bodies.push(await request.json())
+        return HttpResponse.json({ email: 'a@example.com', temporary_password: 'ABCD2345WXYZ' })
+      }),
+    )
+    render()
+    await userEvent.click(await screen.findByRole('button', { name: '重設 a@example.com 的密碼' }))
+    await userEvent.click(screen.getByRole('button', { name: '產生臨時密碼' }))
+    expect(await screen.findByLabelText('臨時密碼')).toHaveValue('ABCD2345WXYZ')
+    expect(bodies).toEqual([{ email: 'a@example.com' }])
+    await userEvent.click(screen.getByRole('button', { name: '我已記下，關閉' }))
+    await waitFor(() => expect(screen.queryByDisplayValue('ABCD2345WXYZ')).not.toBeInTheDocument())
+  })
+
+  it('shows an error in the dialog when generating fails', async () => {
+    mockTeachers(['a@example.com'])
+    server.use(http.post('/api/admin/users/reset-password', () => apiError(500, 'internal')))
+    render()
+    await userEvent.click(await screen.findByRole('button', { name: '重設 a@example.com 的密碼' }))
+    await userEvent.click(screen.getByRole('button', { name: '產生臨時密碼' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('系統發生錯誤，請稍後再試。')
+    expect(screen.queryByLabelText('臨時密碼')).not.toBeInTheDocument()
+  })
 })
