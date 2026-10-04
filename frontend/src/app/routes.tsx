@@ -1,9 +1,9 @@
-import { Link, Navigate, Outlet, Route, Routes } from 'react-router'
+import { Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router'
 import { hasAnyRole, useAuth } from '@/auth/auth-context'
 import { canAccess, type Access, type Feature } from '@/app/feature'
 import { Layout } from '@/app/layout'
 import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
-import { adminFeature } from '@/features/admin'
+import { adminFeature, opsNav } from '@/features/admin'
 import { LoginPage } from '@/features/auth/login-page'
 import { ChangePasswordPage } from '@/features/auth/change-password-page'
 import { PendingPage } from '@/features/auth/pending-page'
@@ -12,11 +12,15 @@ import { studentFeature } from '@/features/student'
 import { AvailablePage } from '@/features/student/available-page'
 import { teacherFeature } from '@/features/teacher'
 import { useT } from '@/i18n'
+import type { Roles } from '@/lib/types'
 import type { ReactNode } from 'react'
 
 // 新增功能時：在 features/<name>/index.tsx 匯出 Feature，再加進這裡。
 export const features: Feature[] = [studentFeature, chatFeature, teacherFeature, adminFeature]
 const allNav = features.flatMap((f) => f.nav)
+
+/** 純管理者：只有管理者角色，只做系統維運，不參與討論。 */
+const isOpsAdmin = (roles: Roles) => roles.admin && !roles.teacher && !roles.student
 
 /** 已登入外框：未登入導向 /login；沒有任何角色（尚未開通）只看得到說明頁。 */
 function Shell() {
@@ -46,7 +50,7 @@ function Shell() {
     )
   }
   return (
-    <Layout me={me} nav={hasAnyRole(me.roles) ? allNav : []}>
+    <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : hasAnyRole(me.roles) ? allNav : []}>
       {hasAnyRole(me.roles) ? <Outlet /> : <PendingPage />}
     </Layout>
   )
@@ -55,7 +59,10 @@ function Shell() {
 function RequireAccess({ access, children }: { access: Access; children: ReactNode }) {
   const auth = useAuth()
   const t = useT()
+  const { pathname } = useLocation()
   if (auth.status !== 'authed') return null
+  // 純管理者只能進維運頁面；其他功能頁導回維運首頁
+  if (isOpsAdmin(auth.me.roles) && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />
   if (!canAccess(access, auth.me.roles)) {
     return (
       <Page title={t('error.forbidden')}>
@@ -66,6 +73,13 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
     )
   }
   return <>{children}</>
+}
+
+/** 首頁：純管理者進維運首頁，其他人直接進選題。 */
+function Home() {
+  const auth = useAuth()
+  if (auth.status === 'authed' && isOpsAdmin(auth.me.roles)) return <Navigate to="/admin" replace />
+  return <AvailablePage />
 }
 
 function NotFoundPage() {
@@ -84,7 +98,7 @@ export function AppRoutes() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route element={<Shell />}>
-        <Route index element={<AvailablePage />} />
+        <Route index element={<Home />} />
         {features.flatMap((f) =>
           f.routes.map((r) => (
             <Route key={r.path} path={r.path} element={<RequireAccess access={r.access}>{r.element}</RequireAccess>} />

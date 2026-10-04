@@ -77,8 +77,34 @@ describe('app shell', () => {
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
 
-  it('shows everything to admins', async () => {
+  function mockOpsData() {
+    server.use(
+      http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
+      http.get('/api/roster', () => HttpResponse.json({ emails: ['a@example.com', 'b@example.com'] })),
+      http.get('/api/admin/topics', () => HttpResponse.json([])),
+    )
+  }
+
+  it('gives an admin-only account just the operations pages', async () => {
     mockMe(makeMe({ admin: true }))
+    mockOpsData()
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('heading', { name: '系統維運' })).toBeInTheDocument()
+    const nav = screen.getByRole('navigation', { name: 'main' })
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教師管理', '修課名單', '題目庫'])
+    expect(await screen.findByText('2')).toBeInTheDocument()
+  })
+
+  it('keeps an admin-only account out of discussion and teacher pages', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockOpsData()
+    renderApp(null, { route: '/conversations' })
+    expect(await screen.findByRole('heading', { name: '系統維運' })).toBeInTheDocument()
+  })
+
+  it('keeps the normal navigation for an admin who is also a teacher', async () => {
+    mockMe(makeMe({ admin: true, teacher: true }))
+    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
     const nav = await screen.findByRole('navigation', { name: 'main' })
     for (const name of ['教師管理', '題目庫', '修課名單', '選擇題目']) {
