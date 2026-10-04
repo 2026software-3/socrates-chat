@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { errorText, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { EmailList, RosterImportResult } from '@/lib/types'
@@ -31,6 +32,7 @@ function ImportPanel({ onImported }: { onImported: () => void }) {
   const [error, setError] = useState<string>()
   const [result, setResult] = useState<RosterImportResult>()
   const busy = useRef(false)
+  const { isCopied, copyToClipboard } = useCopyToClipboard()
 
   async function onFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -132,6 +134,42 @@ function ImportPanel({ onImported }: { onImported: () => void }) {
                     </li>
                   ))}
                 </ul>
+              ) : null}
+              {result.credentials && result.credentials.length > 0 ? (
+                <div className="space-y-2 border-t pt-3">
+                  <h4 className="font-medium">{t('teacher.roster.credsHeading')}</h4>
+                  <Alert>
+                    <AlertDescription>{t('teacher.roster.credsHelp')}</AlertDescription>
+                  </Alert>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t('teacher.roster.credsEmail')}</TableHead>
+                        <TableHead>{t('teacher.roster.credsPassword')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {result.credentials.map((c) => (
+                        <TableRow key={c.email}>
+                          <TableCell className="break-all">{c.email}</TableCell>
+                          <TableCell className="font-mono">{c.temporary_password}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      copyToClipboard(
+                        (result.credentials ?? []).map((c) => `${c.email},${c.temporary_password}`).join('\n'),
+                      )
+                    }
+                  >
+                    {isCopied ? t('teacher.roster.credsCopied') : t('teacher.roster.credsCopyAll')}
+                  </Button>
+                </div>
               ) : null}
             </section>
           ) : null}

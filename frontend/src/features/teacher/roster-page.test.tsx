@@ -240,4 +240,23 @@ describe('RosterPage', () => {
     expect(await screen.findByText('找不到資料。')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('bob@example.com')).not.toBeInTheDocument())
   })
+
+  it('shows the temporary passwords of newly created accounts once', async () => {
+    mockRoster([])
+    server.use(
+      http.post('/api/roster/import', () =>
+        HttpResponse.json({
+          added: 1,
+          existing: 0,
+          invalid: [],
+          credentials: [{ email: 'new@example.com', temporary_password: 'ABCD2345WXYZ' }],
+        }),
+      ),
+    )
+    setup()
+    await userEvent.type(await screen.findByLabelText('電子郵件（每行一個）'), 'new@example.com')
+    await userEvent.click(screen.getByRole('button', { name: '匯入' }))
+    expect(await screen.findByRole('heading', { name: '臨時密碼（新帳號）' })).toBeInTheDocument()
+    expect(screen.getByText('ABCD2345WXYZ')).toBeInTheDocument()
+  })
 })
