@@ -4,6 +4,8 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
+import { useMessageSource } from '@/features/chat/use-message-source'
+import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { ChatThread } from '@/features/chat/chat-thread'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
@@ -34,10 +36,14 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState<unknown>()
 
+  // 下一則學生訊息的輸入來源：語音輸入後送出時記錄為語音（S-05.4），送出後回到文字
+  const messageSource = useMessageSource()
+
   const adapter = useMemo(
     () =>
       createChatAdapter({
         conversationId: detail.id,
+        takeSource: messageSource.take,
         persistedIds: detail.messages.filter((m) => m.role === 'student').map((m) => m.id),
         // 達回合上限：對話已自動結束、總結產生中，不會有串流
         onSent: (sent) => {
@@ -49,7 +55,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           setSuggestEnd(done.suggest_end)
         },
       }),
-    [detail],
+    [detail, messageSource],
   )
   const initialMessages = useMemo(() => toInitialMessages(detail), [detail])
   const runtime = useLocalRuntime(adapter, { initialMessages })
@@ -92,7 +98,12 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           onConfirm={endDiscussion}
         />
 
-        <ChatThread showComposer={!ended} composerDisabled={ending} />
+        <ChatThread
+          showComposer={!ended}
+          composerDisabled={ending}
+          language={detail.language}
+          onVoiceSource={(s: RecognitionSource) => messageSource.set(s)}
+        />
         {ended ? <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p> : null}
         {ended ? <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} /> : null}
       </div>

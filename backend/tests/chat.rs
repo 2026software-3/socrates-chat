@@ -288,7 +288,7 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
     let conv = start(&app, &a.student, &act).await;
     say(&app, &a.student, &conv, "這是我的私人想法").await;
 
-    for cookie in [&other, &a.teacher, &a.admin] {
+    for cookie in [&other] {
         // 讀取、送訊息、刪除都是 404（不洩漏存在與否）
         let res = send(
             &app,
@@ -315,6 +315,32 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
         let list: Value =
             json_body(send(&app, get("/api/conversations", Some(cookie))).await).await;
         assert!(!list.to_string().contains("私人想法"));
+    }
+
+    // 教師與管理者不參與討論：學生功能一律 403 forbidden（連別人的對話是否存在都不碰）
+    for cookie in [&a.teacher, &a.admin] {
+        let res = send(
+            &app,
+            get(&format!("/api/conversations/{conv}"), Some(cookie)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(res).await["error"]["code"], "forbidden");
+        assert_eq!(
+            say(&app, cookie, &conv, "偷說話").await,
+            StatusCode::FORBIDDEN
+        );
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/conversations",
+                Some(cookie),
+                Some(json!({"activity_id": act})),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     // 名單外與未登入

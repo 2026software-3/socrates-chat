@@ -5,6 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBlock } from '@/components/page'
 import { useDateFormat } from '@/features/chat/format'
+import { FrameworkBadge } from '@/features/dashboard/framework-badge'
+import { RadarChart } from '@/features/dashboard/radar-chart'
 import { useSummary } from '@/features/chat/use-summary'
 import { errorText, useI18n, useT } from '@/i18n'
 
@@ -60,10 +62,22 @@ export function SummaryPanel({ conversationId, pollMs, maxPollMs }: Props) {
 
         {state.kind === 'ready' ? (
           <>
+            {state.summary.claim ? (
+              <div>
+                <p className="text-sm font-medium">{t('chat.summary.claim')}</p>
+                <p className="mt-1 break-words">{state.summary.claim}</p>
+              </div>
+            ) : null}
+            <FrameworkBadge framework={state.summary.framework} />
+            {state.summary.framework_scores ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">{t('dashboard.radar.single')}</p>
+                <RadarChart scores={state.summary.framework_scores} max={5} label={t('dashboard.radar.single')} />
+              </div>
+            ) : null}
             <dl className="space-y-4">
               <SummaryItem label={t('chat.summary.stance')} text={state.summary.stance} />
               <SummaryItem label={t('chat.summary.reasons')} text={state.summary.reasons} />
-              <SummaryItem label={t('chat.summary.turning')} text={state.summary.turning_points} />
             </dl>
             {completed ? (
               <p className="text-muted-foreground text-xs">{t('chat.summary.completedAt', { date: completed })}</p>

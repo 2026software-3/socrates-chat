@@ -46,7 +46,6 @@ export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
     status: 'ready',
     stance: '合成立場：支持扳動拉桿',
     reasons: '合成理由：結果論',
-    turning_points: '合成轉折：考慮了權利',
     completed_at: '2026-03-05T09:00:00Z',
     ...overrides,
   }

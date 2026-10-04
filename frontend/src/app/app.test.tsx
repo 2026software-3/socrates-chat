@@ -45,11 +45,32 @@ describe('app shell', () => {
     expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
   })
 
-  it('takes teachers straight to topic selection too', async () => {
+  const emptyClass = {
+    masked: false,
+    students_total: 0,
+    students_participating: 0,
+    completed: 0,
+    positions: {},
+    frameworks: {},
+    topics: [],
+  }
+
+  it('takes teachers to the class dashboard — they do not take part in discussions', async () => {
     mockMe(makeMe({ teacher: true }))
-    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '班上論點分布' })).toBeInTheDocument()
+    const nav = screen.getByRole('navigation', { name: 'main' })
+    for (const name of ['選擇題目', '我的對話', '我的儀表板']) {
+      expect(within(nav).queryByRole('link', { name })).not.toBeInTheDocument()
+    }
+  })
+
+  it('sends a teacher who types a student URL back to the dashboard', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    renderApp(null, { route: '/conversations' })
+    expect(await screen.findByRole('heading', { name: '班上論點分布' })).toBeInTheDocument()
   })
 
   it('shows student navigation only to students', async () => {
@@ -58,7 +79,7 @@ describe('app shell', () => {
     const nav = await screen.findByRole('navigation', { name: 'main' })
     expect(within(nav).getByRole('link', { name: '選擇題目' })).toBeInTheDocument()
     expect(within(nav).getByRole('link', { name: '我的對話' })).toBeInTheDocument()
-    expect(within(nav).queryByRole('link', { name: '修課名單' })).not.toBeInTheDocument()
+    expect(within(nav).queryByRole('link', { name: '學生帳號' })).not.toBeInTheDocument()
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
 
@@ -72,7 +93,7 @@ describe('app shell', () => {
     mockMe(makeMe({ teacher: true }))
     renderApp(null, { route: '/' })
     const nav = await screen.findByRole('navigation', { name: 'main' })
-    expect(within(nav).getByRole('link', { name: '修課名單' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: '學生帳號' })).toBeInTheDocument()
     expect(within(nav).getByRole('link', { name: '學生總結' })).toBeInTheDocument()
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
@@ -81,6 +102,17 @@ describe('app shell', () => {
     server.use(
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
       http.get('/api/roster', () => HttpResponse.json({ emails: ['a@example.com', 'b@example.com'] })),
+      http.get('/api/students', () =>
+        HttpResponse.json(
+          ['a@example.com', 'b@example.com'].map((email) => ({
+            email,
+            display_name: null,
+            has_account: true,
+            disabled: false,
+            completed_conversations: 0,
+          })),
+        ),
+      ),
       http.get('/api/admin/topics', () => HttpResponse.json([])),
     )
   }
@@ -104,12 +136,13 @@ describe('app shell', () => {
 
   it('keeps the normal navigation for an admin who is also a teacher', async () => {
     mockMe(makeMe({ admin: true, teacher: true }))
-    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
     renderApp(null, { route: '/' })
     const nav = await screen.findByRole('navigation', { name: 'main' })
-    for (const name of ['教師管理', '題目庫', '修課名單', '選擇題目']) {
+    for (const name of ['教師管理', '題目庫', '學生帳號', '班上分布']) {
       expect(within(nav).getByRole('link', { name })).toBeInTheDocument()
     }
+    expect(within(nav).queryByRole('link', { name: '選擇題目' })).not.toBeInTheDocument()
   })
 
   it('switches language without reloading', async () => {
@@ -121,6 +154,14 @@ describe('app shell', () => {
     expect(await screen.findByRole('heading', { name: 'Which question will you think about today?' })).toBeInTheDocument()
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem('lang')).toBe('en')
+  })
+
+  it('shows the disabled page when the account has been disabled', async () => {
+    server.use(http.get('/api/me', () => apiError(403, 'account_disabled')))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByText('帳號已停用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '登出' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
   })
 
   it('shows an error with retry when /api/me fails with a server error', async () => {

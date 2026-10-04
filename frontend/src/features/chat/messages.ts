@@ -48,9 +48,9 @@ export const chatMessages = defineMessages({
     'chat.summary.check': '再檢查一次',
     'chat.summary.failed': '總結產生失敗。',
     'chat.summary.retry': '重新產生總結',
+    'chat.summary.claim': '最終主張',
     'chat.summary.stance': '立場',
     'chat.summary.reasons': '核心理由',
-    'chat.summary.turning': '思考轉折',
     'chat.summary.completedAt': '完成於 {date}',
   },
   en: {
@@ -100,9 +100,9 @@ export const chatMessages = defineMessages({
     'chat.summary.check': 'Check again',
     'chat.summary.failed': 'The summary could not be generated.',
     'chat.summary.retry': 'Generate the summary again',
+    'chat.summary.claim': 'Final claim',
     'chat.summary.stance': 'Stance',
     'chat.summary.reasons': 'Core reasons',
-    'chat.summary.turning': 'Turning points',
     'chat.summary.completedAt': 'Completed {date}',
   },
   es: {
@@ -152,9 +152,9 @@ export const chatMessages = defineMessages({
     'chat.summary.check': 'Comprobar de nuevo',
     'chat.summary.failed': 'No se pudo generar el resumen.',
     'chat.summary.retry': 'Generar el resumen de nuevo',
+    'chat.summary.claim': 'Afirmación final',
     'chat.summary.stance': 'Postura',
     'chat.summary.reasons': 'Razones principales',
-    'chat.summary.turning': 'Puntos de giro',
     'chat.summary.completedAt': 'Completado el {date}',
   },
 })

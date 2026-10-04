@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, config::Config, identity::GoogleIdentity,
-    password, summary,
+    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config,
+    identity::GoogleIdentity, password, summary,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
@@ -31,6 +31,10 @@ async fn main() {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
         Err(_) => tracing::error!("failed to recover orphaned summaries"),
+    }
+    // 內建題目（電車難題）：已存在時不動它
+    if catalog::seed_builtin_topics(&pool).await.is_err() {
+        tracing::error!("failed to seed built-in topics");
     }
     // 首位管理者的內建帳號：初始密碼來自環境變數，已存在的帳號不會被重設（S-01.3）
     if let Some(initial) = &config.admin_initial_password {

@@ -23,6 +23,19 @@ use crate::{
 
 const COOKIE_NAME: &str = "sid";
 
+/// 帳號已被管理者停用（S-01.3）：登入後看到「帳號已停用」。
+const ACCOUNT_DISABLED: ApiError = ApiError::forbidden("account_disabled", "帳號已停用");
+
+async fn is_disabled(state: &AppState, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let (disabled,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND disabled_at IS NOT NULL)",
+    )
+    .bind(user_id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(disabled)
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/google/login", get(login))
@@ -81,9 +94,10 @@ impl Roles {
         self.admin || self.teacher
     }
 
-    /// 能使用學生功能：修課名單內的學生，或教師、管理者（不需要在名單內）。
-    pub fn is_member(&self) -> bool {
-        self.admin || self.teacher || self.student
+    /// 能使用學生功能（選題、對話、語音、個人儀表板）：只有修課名單內的學生。
+    /// 教師與管理者不參與討論，即使有教師或管理者身分也不行。
+    pub fn is_participant(&self) -> bool {
+        self.student
     }
 }
 
@@ -129,13 +143,19 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
             auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
                 .await?
                 .ok_or_else(ApiError::unauthorized)?;
-        let (teacher, student): (bool, bool) = sqlx::query_as(
+        let (teacher, student, disabled): (bool, bool, bool) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1),
-                    EXISTS (SELECT 1 FROM enrollments WHERE email = $1)",
+                    EXISTS (SELECT 1 FROM enrollments WHERE email = $1),
+                    EXISTS (SELECT 1 FROM users WHERE id = $2 AND disabled_at IS NOT NULL)",
         )
         .bind(&user.email)
+        .bind(user.id)
         .fetch_one(&state.pool)
         .await?;
+        // 停用的帳號即使還有 session 也不能使用（停用時雖已清除 session，這裡再擋一次）
+        if disabled {
+            return Err(ACCOUNT_DISABLED);
+        }
         let roles = Roles {
             admin: user.is_admin,
             teacher,
@@ -185,7 +205,8 @@ impl FromRequestParts<AppState> for RequireTeacher {
     }
 }
 
-/// 學生功能的守門：名單外、非教師、非管理者回 403 `not_enrolled`。
+/// 學生功能的守門：只有修課名單內的學生可通過。
+/// 教師與管理者（不在名單內）回 403 `forbidden`，名單外帳號回 403 `not_enrolled`。
 pub struct RequireStudent(pub CurrentUser);
 
 impl FromRequestParts<AppState> for RequireStudent {
@@ -196,8 +217,12 @@ impl FromRequestParts<AppState> for RequireStudent {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let cu = CurrentUser::from_request_parts(parts, state).await?;
-        if !cu.roles.is_member() {
-            return Err(ApiError::forbidden("not_enrolled", "尚未開通"));
+        if !cu.roles.is_participant() {
+            return Err(if cu.roles.can_teach() {
+                ApiError::forbidden("forbidden", "教師與管理者不參與討論")
+            } else {
+                ApiError::forbidden("not_enrolled", "尚未開通")
+            });
         }
         Ok(RequireStudent(cu))
     }
@@ -274,6 +299,12 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     )
     .await
     .map_err(|_| "login_failed")?;
+    if is_disabled(state, user.id)
+        .await
+        .map_err(|_| "login_failed")?
+    {
+        return Err("account_disabled");
+    }
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     auth_store::create_session(&state.pool, user.id, &hash_token(&token))
@@ -377,6 +408,10 @@ async fn password_login(
         return Err(INVALID_CREDENTIALS);
     };
     auth_store::clear_login_failures(&state.pool, &email).await?;
+    // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
+    if is_disabled(&state, account.id).await? {
+        return Err(ACCOUNT_DISABLED);
+    }
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     let session =

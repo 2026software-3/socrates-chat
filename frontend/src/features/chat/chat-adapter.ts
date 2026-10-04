@@ -1,12 +1,14 @@
 import type { ChatModelAdapter, ChatModelRunResult } from '@assistant-ui/react'
 import { streamReply } from '@/features/chat/sse'
 import { api, isApiError } from '@/lib/api'
-import type { SentMessage, StreamDone } from '@/lib/types'
+import type { MessageSource, SentMessage, StreamDone } from '@/lib/types'
 
 export type ChatAdapterOptions = {
   conversationId: string
   /** 已存在伺服器上的學生訊息 id（載入的歷史）；這些訊息不會再 POST。 */
   persistedIds?: Iterable<string>
+  /** 取出這則學生訊息的輸入來源（文字或語音）；沒提供就是文字。 */
+  takeSource?: () => MessageSource
   onSent?: (sent: SentMessage) => void
   onDone?: (done: StreamDone) => void
   /** 後端回報對話已結束（例如在別的分頁結束）；畫面應切成唯讀。 */
@@ -36,9 +38,10 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
       try {
         if (!persisted.has(last.id)) {
           const content = last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('\n')
+          const source = options.takeSource?.() ?? 'text'
           const sent = await api.post<SentMessage>(`/api/conversations/${options.conversationId}/messages`, {
             content,
-            source: 'text',
+            source,
           })
           persisted.add(last.id)
           options.onSent?.(sent)

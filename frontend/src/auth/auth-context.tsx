@@ -6,6 +6,8 @@ type AuthState =
   | { status: 'loading' }
   | { status: 'anon' }
   | { status: 'error' }
+  /** 帳號已被管理者停用（S-01.3） */
+  | { status: 'disabled' }
   | { status: 'authed'; me: Me }
 
 type AuthValue = AuthState & {
@@ -25,7 +27,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setState({ status: 'authed', me })
     } catch (e) {
       // 401 = 沒登入；其他（網路、500）顯示錯誤而不是假裝沒登入
-      setState(isApiError(e) && e.status === 401 ? { status: 'anon' } : { status: 'error' })
+      if (isApiError(e) && e.status === 401) setState({ status: 'anon' })
+      else if (isApiError(e) && e.code === 'account_disabled') setState({ status: 'disabled' })
+      else setState({ status: 'error' })
     }
   }, [])
 

@@ -110,11 +110,14 @@ function TopicForm({
   )
 }
 
-/** 題目庫：新增、編輯、啟用／停用題目（只有管理者進得來）。 */
-export function TopicsPage() {
+/**
+ * 題目庫：新增、編輯、啟用／停用題目。管理者走 `/api/admin/topics`，教師走 `/api/topics`
+ * （教師也能放入題目，S-01.3），畫面相同。
+ */
+export function TopicsPage({ base = '/api/admin/topics' }: { base?: string } = {}) {
   const t = useT()
   const { lang } = useI18n()
-  const { data, error, loading, reload } = useFetch<Topic[]>('/api/admin/topics')
+  const { data, error, loading, reload } = useFetch<Topic[]>(base)
 
   // 成功的修改先套在本機，不必等重新載入；資料重新載入（data 換了）就作廢，以伺服器為準
   const [patchState, setPatchState] = useState<{ base: Topic[] | undefined; map: Record<string, Partial<Topic>> }>({
@@ -159,7 +162,7 @@ export function TopicsPage() {
     if (v.description.trim()) body.description = v.description.trim()
     if (v.category.trim()) body.category = v.category.trim()
     setNotice(undefined)
-    await api.post('/api/admin/topics', body)
+    await api.post(base, body)
     setNotice(t('admin.topics.created', { title: body.title }))
     reload()
   }
@@ -172,7 +175,7 @@ export function TopicsPage() {
     const category = v.category.trim()
     if (category !== (topic.category ?? '')) body.category = category === '' ? null : category
     if (Object.keys(body).length > 0) {
-      await api.patch(`/api/admin/topics/${encodeURIComponent(topic.id)}`, body)
+      await api.patch(`${base}/${encodeURIComponent(topic.id)}`, body)
       patch(topic.id, body)
     }
     setEditing(undefined)
@@ -184,7 +187,7 @@ export function TopicsPage() {
     setToggling((s) => new Set(s).add(topic.id))
     patch(topic.id, { is_active: next }) // 樂觀更新
     try {
-      await api.patch(`/api/admin/topics/${encodeURIComponent(topic.id)}`, { is_active: next })
+      await api.patch(`${base}/${encodeURIComponent(topic.id)}`, { is_active: next })
     } catch (err) {
       patch(topic.id, { is_active: !next }) // 失敗就還原
       setActionError(err)
