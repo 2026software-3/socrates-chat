@@ -34,6 +34,7 @@ flowchart LR
 .
 ├── backend/     # Rust + Axum API 服務
 ├── frontend/    # 前端（暫定技術選型，見 frontend/README.md）
+├── scripts/     # 開發輔助腳本（匯入示範資料）
 ├── .github/     # CI 與 commitlint workflows
 ├── AGENTS.md    # 給 AI coding agent 的開發指引
 ├── CONTRIBUTING.md
@@ -71,6 +72,16 @@ docker compose --profile app up --build    # http://localhost:3000
 ```
 
 兩種跑法都使用 3000 埠，同一時間只能跑其中一種。
+
+### 匯入示範資料（選用）
+
+服務啟動後，用管理者登入一次並更改初始密碼，再執行（全部是合成資料，只給本機使用）：
+
+```bash
+ADMIN_PASSWORD='<管理者目前的密碼>' ./scripts/seed-demo.sh
+```
+
+會建立教師 `teacher@example.com`（密碼 `Teacher-Demo-2026`）、學生 `student1`～`student3@example.com`（密碼 `Student-Demo-2026`），以及「電車難題」下 6 場已完成的對話（含 AI 總結、主張分組與 6 維分數），用教師登入就能看到班上論點分布。可重複執行。內建題目「電車難題」在服務啟動時自動建立。
 
 ### 正式環境
 
