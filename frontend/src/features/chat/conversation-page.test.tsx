@@ -362,7 +362,7 @@ describe('ConversationPage: ending', () => {
     mockDetail(makeDetail())
     server.use(http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(true), { status: 201 })))
     // /stream 沒有 handler：若有請求會因未處理而讓測試失敗
-    mockSummaries(makeSummary({ status: 'pending', stance: null, reasons: null, turning_points: null, completed_at: null }), makeSummary())
+    mockSummaries(makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null }), makeSummary())
     renderPage()
     await send('最後一個想法')
     expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
@@ -380,7 +380,7 @@ describe('ConversationPage: ending', () => {
         return HttpResponse.json({ status: 'pending' }, { status: 202 })
       }),
     )
-    const pending = makeSummary({ status: 'pending', stance: null, reasons: null, turning_points: null, completed_at: null })
+    const pending = makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null })
     const calls = mockSummaries(pending, pending, makeSummary())
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: '結束討論' }))
@@ -391,10 +391,9 @@ describe('ConversationPage: ending', () => {
     expect(await screen.findByText('正在產生總結…')).toBeInTheDocument()
     expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
     expect(screen.getByText('合成理由：結果論')).toBeInTheDocument()
-    expect(screen.getByText('合成轉折：考慮了權利')).toBeInTheDocument()
     expect(screen.getByText('立場')).toBeInTheDocument()
     expect(screen.getByText('核心理由')).toBeInTheDocument()
-    expect(screen.getByText('思考轉折')).toBeInTheDocument()
+    expect(screen.queryByText('思考轉折')).not.toBeInTheDocument()
     expect(ends).toBe(1)
     expect(calls.count).toBe(3)
     // 結束後唯讀，沒有編輯控制
@@ -468,7 +467,7 @@ describe('ConversationPage: ending', () => {
 })
 
 describe('ConversationPage: summary states', () => {
-  const failed = makeSummary({ status: 'failed', stance: null, reasons: null, turning_points: null, completed_at: null })
+  const failed = makeSummary({ status: 'failed', stance: null, reasons: null, completed_at: null })
 
   it('failed summary offers retry, which POSTs summary/retry and polls again', async () => {
     mockDetail(makeDetail({ status: 'ended' }))
@@ -499,7 +498,7 @@ describe('ConversationPage: summary states', () => {
 
   it('stops polling after the time cap and offers to check again', async () => {
     mockDetail(makeDetail({ status: 'ended' }))
-    const pending = makeSummary({ status: 'pending', stance: null, reasons: null, turning_points: null, completed_at: null })
+    const pending = makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null })
     const calls = mockSummaries(pending)
     renderPage()
     expect(await screen.findByText('總結花的時間比預期久。')).toBeInTheDocument()
@@ -525,7 +524,7 @@ describe('ConversationPage: summary states', () => {
 
   it('stops polling when leaving the page', async () => {
     mockDetail(makeDetail({ status: 'ended' }))
-    const pending = makeSummary({ status: 'pending', stance: null, reasons: null, turning_points: null, completed_at: null })
+    const pending = makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null })
     const calls = mockSummaries(pending)
     const { unmount } = renderPage()
     await screen.findByText('正在產生總結…')

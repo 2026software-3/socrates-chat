@@ -11,6 +11,8 @@ import {
 import { ArrowUp, RefreshCw } from 'lucide-react'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { VoiceControls } from '@/features/chat/voice/voice-controls'
+import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { errorText, useT } from '@/i18n'
 import { ApiError } from '@/lib/api'
 
@@ -21,7 +23,19 @@ const MAX_LENGTH = 4000
  * 對話串。只用 assistant-ui 的 primitives（狀態、串流與重試由 runtime 處理），外觀與文字自己渲染：
  * 不顯示附件、推理、工具、編輯、分支與其他與後端契約無關的功能，也只顯示 AI 回覆文字本身。
  */
-export function ChatThread({ showComposer, composerDisabled }: { showComposer: boolean; composerDisabled: boolean }) {
+export function ChatThread({
+  showComposer,
+  composerDisabled,
+  language,
+  onVoiceSource,
+}: {
+  showComposer: boolean
+  composerDisabled: boolean
+  /** 這場對話的語言；語音辨識與合成跟隨它（S-12.1） */
+  language: string
+  /** 輸入框目前的文字是以哪種語音來源輸入的；送出時一起保存（S-05.4） */
+  onVoiceSource: (source: RecognitionSource) => void
+}) {
   const t = useT()
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-col gap-3">
@@ -40,7 +54,7 @@ export function ChatThread({ showComposer, composerDisabled }: { showComposer: b
         </div>
       </ThreadPrimitive.Viewport>
       {showComposer ? <PendingReply /> : null}
-      {showComposer ? <ChatComposer disabled={composerDisabled} /> : null}
+      {showComposer ? <ChatComposer disabled={composerDisabled} language={language} onVoiceSource={onVoiceSource} /> : null}
     </ThreadPrimitive.Root>
   )
 }
@@ -133,7 +147,15 @@ function PendingReply() {
   )
 }
 
-function ChatComposer({ disabled: externalDisabled }: { disabled: boolean }) {
+function ChatComposer({
+  disabled: externalDisabled,
+  language,
+  onVoiceSource,
+}: {
+  disabled: boolean
+  language: string
+  onVoiceSource: (source: RecognitionSource) => void
+}) {
   const t = useT()
   // 最後一則 AI 回覆失敗時鎖住輸入：先按重試，避免在未保存／未回覆的訊息後再疊新訊息
   const lastFailed = useAuiState((s) => {
@@ -142,27 +164,41 @@ function ChatComposer({ disabled: externalDisabled }: { disabled: boolean }) {
   })
   const disabled = externalDisabled || lastFailed
   return (
-    <ComposerPrimitive.Root className="flex flex-wrap items-end gap-2">
+    <ComposerPrimitive.Root className="flex flex-col gap-2">
       {lastFailed ? (
         <p role="status" className="text-muted-foreground w-full text-sm">
           {t('chat.thread.retryFirst')}
         </p>
       ) : null}
-      <ComposerPrimitive.Input
-        aria-label={t('chat.thread.inputLabel')}
-        placeholder={t('chat.thread.placeholder')}
-        maxLength={MAX_LENGTH}
-        rows={2}
+      <VoiceControls
+        language={language}
+        onSource={onVoiceSource}
         disabled={disabled}
-        className="border-input bg-background focus-visible:ring-ring/50 max-h-48 min-h-16 w-full min-w-0 resize-none rounded-lg border px-3 py-2 text-base outline-none focus-visible:ring-2 disabled:opacity-50 md:text-sm"
+        input={
+          <ComposerPrimitive.Input
+            aria-label={t('chat.thread.inputLabel')}
+            placeholder={t('chat.thread.placeholder')}
+            maxLength={MAX_LENGTH}
+            rows={1}
+            disabled={disabled}
+            className="max-h-40 min-h-9 min-w-0 flex-1 resize-none self-center bg-transparent py-1.5 text-base outline-none disabled:opacity-50 md:text-sm"
+          />
+        }
+        sendButton={
+          <ComposerPrimitive.Send asChild>
+            {/* 不能直接傳 disabled={false}：會蓋掉 Send 自己依「輸入為空／AI 回覆中」算出的停用狀態 */}
+            <Button
+              type="submit"
+              size="icon-lg"
+              className="shrink-0 rounded-full"
+              aria-label={t('chat.thread.send')}
+              {...(disabled ? { disabled: true } : {})}
+            >
+              <ArrowUp aria-hidden />
+            </Button>
+          </ComposerPrimitive.Send>
+        }
       />
-      <ComposerPrimitive.Send asChild>
-        {/* 不能直接傳 disabled={false}：會蓋掉 Send 自己依「輸入為空／AI 回覆中」算出的停用狀態 */}
-        <Button type="submit" aria-label={t('chat.thread.send')} {...(disabled ? { disabled: true } : {})}>
-          <ArrowUp aria-hidden />
-          <span className="hidden sm:inline">{t('chat.thread.send')}</span>
-        </Button>
-      </ComposerPrimitive.Send>
     </ComposerPrimitive.Root>
   )
 }

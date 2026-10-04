@@ -18,7 +18,6 @@ function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
     student_email: 'ming@example.com',
     stance: '應該拉桿',
     reasons: '拯救較多人',
-    turning_points: '考慮了義務論',
     ...over,
   }
 }
@@ -33,7 +32,6 @@ const rows = [
     student_email: 'anon@example.com',
     stance: null,
     reasons: null,
-    turning_points: null,
   }),
 ]
 
@@ -52,8 +50,27 @@ function setup(data: TeacherSummary[] = rows) {
   return renderTeacherPage(<SummariesPage />)
 }
 
+describe('SummariesPage classification', () => {
+  it('shows the claim and main school, and the masked text for admins as-is', async () => {
+    server.use(
+      http.get('/api/teacher/summaries', () =>
+        HttpResponse.json([
+          row({ claim: '該拉桿', framework: 'deontology' }),
+          row({ conversation_id: 'c9', title: '管理者視角', claim: 'message', framework: 'message' }),
+        ]),
+      ),
+    )
+    renderTeacherPage(<SummariesPage />)
+    const card = (await screen.findByText('電車難題')).closest('li') as HTMLElement
+    expect(within(card).getByText('該拉桿')).toBeInTheDocument()
+    expect(within(card).getByText('義務論')).toBeInTheDocument()
+    const masked = screen.getByText('管理者視角').closest('li') as HTMLElement
+    expect(within(masked).getAllByText('message')).toHaveLength(2)
+  })
+})
+
 describe('SummariesPage', () => {
-  it('lists student, topic, localized date and the three summary fields', async () => {
+  it('lists student, topic, localized date and the stance and reasons', async () => {
     setup()
     const card = cardOf(await screen.findByText('王小明'))
     expect(within(card).getByText('ming@example.com')).toBeInTheDocument()
@@ -61,14 +78,13 @@ describe('SummariesPage', () => {
     expect(within(card).getByText(/結束於 2026年3月5日/)).toBeInTheDocument()
     expect(within(card).getByText('應該拉桿')).toBeInTheDocument()
     expect(within(card).getByText('拯救較多人')).toBeInTheDocument()
-    expect(within(card).getByText('考慮了義務論')).toBeInTheDocument()
   })
 
   it('shows placeholders for a missing name and empty fields', async () => {
     setup()
     const card = cardOf(await screen.findByText('anon@example.com'))
     expect(within(card).getByText('（未提供姓名）')).toBeInTheDocument()
-    expect(within(card).getAllByText('（無內容）')).toHaveLength(3)
+    expect(within(card).getAllByText('（無內容）')).toHaveLength(2)
   })
 
   it('states that teachers cannot see conversation originals and never requests conversations', async () => {
@@ -100,9 +116,9 @@ describe('SummariesPage', () => {
   })
 
   it('renders the admin masking string as is', async () => {
-    setup([row({ stance: 'message', reasons: 'message', turning_points: 'message' })])
+    setup([row({ stance: 'message', reasons: 'message' })])
     const card = cardOf(await screen.findByText('王小明'))
-    expect(within(card).getAllByText('message')).toHaveLength(3)
+    expect(within(card).getAllByText('message')).toHaveLength(2)
   })
 
   it('shows loading, then the empty state', async () => {

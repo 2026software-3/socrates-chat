@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { adminMessages } from '@/features/admin/messages'
 import { authMessages } from '@/features/auth/messages'
 import { chatMessages } from '@/features/chat/messages'
+import { voiceMessages } from '@/features/chat/voice/messages'
+import { dashboardMessages } from '@/features/dashboard/messages'
 import { studentMessages } from '@/features/student/messages'
 import { teacherMessages } from '@/features/teacher/messages'
 import { common } from '@/i18n/common.messages'
@@ -9,7 +11,16 @@ import { DEFAULT_LANG, LANGS, pickLang, type Lang } from '@/i18n/define'
 import { isApiError } from '@/lib/api'
 
 // 新增功能時：在該功能目錄建立 messages.ts，再加進這裡。
-const bundles = [common, authMessages, studentMessages, chatMessages, teacherMessages, adminMessages] as const
+const bundles = [
+  common,
+  authMessages,
+  studentMessages,
+  chatMessages,
+  voiceMessages,
+  dashboardMessages,
+  teacherMessages,
+  adminMessages,
+] as const
 
 type KeysOf<B> = B extends { 'zh-TW': infer M } ? keyof M : never
 export type MessageKey = KeysOf<(typeof bundles)[number]>

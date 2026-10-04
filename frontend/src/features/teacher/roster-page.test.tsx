@@ -9,8 +9,12 @@ import { server } from '@/test/server'
 
 const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
 
+/** 名單上的學生（已有帳號、使用中）。 */
+const rows = (list: string[]) =>
+  list.map((email) => ({ email, display_name: null, has_account: true, disabled: false, completed_conversations: 0 }))
+
 function mockRoster(list: string[] = emails) {
-  server.use(http.get('/api/roster', () => HttpResponse.json({ emails: list })))
+  server.use(http.get('/api/students', () => HttpResponse.json(rows(list))))
 }
 
 function setup() {
@@ -48,9 +52,9 @@ describe('RosterPage', () => {
   it('shows an error with retry', async () => {
     let calls = 0
     server.use(
-      http.get('/api/roster', () => {
+      http.get('/api/students', () => {
         calls += 1
-        return calls === 1 ? apiError(500, 'internal') : HttpResponse.json({ emails })
+        return calls === 1 ? apiError(500, 'internal') : HttpResponse.json(rows(emails))
       }),
     )
     setup()
@@ -124,7 +128,7 @@ describe('RosterPage', () => {
     let list = [...emails]
     let deleted = ''
     server.use(
-      http.get('/api/roster', () => HttpResponse.json({ emails: list })),
+      http.get('/api/students', () => HttpResponse.json(rows(list))),
       http.delete('/api/roster/:email', ({ request, params }) => {
         deleted = new URL(request.url).pathname
         list = list.filter((e) => e !== String(params.email))
@@ -162,7 +166,7 @@ describe('RosterPage', () => {
 
   it('shows a translated message for a non-404 removal failure', async () => {
     server.use(
-      http.get('/api/roster', () => HttpResponse.json({ emails })),
+      http.get('/api/students', () => HttpResponse.json(rows(emails))),
       http.delete('/api/roster/:email', () => apiError(500, 'internal')),
     )
     setup()
@@ -209,9 +213,9 @@ describe('RosterPage', () => {
   it('shows an error with retry when a reload fails while old data is on screen', async () => {
     let calls = 0
     server.use(
-      http.get('/api/roster', () => {
+      http.get('/api/students', () => {
         calls += 1
-        return calls === 2 ? apiError(500, 'internal') : HttpResponse.json({ emails })
+        return calls === 2 ? apiError(500, 'internal') : HttpResponse.json(rows(emails))
       }),
       http.post('/api/roster/import', () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
     )
@@ -226,7 +230,7 @@ describe('RosterPage', () => {
   it('shows a translated message and refreshes when removal returns 404', async () => {
     let list = [...emails]
     server.use(
-      http.get('/api/roster', () => HttpResponse.json({ emails: list })),
+      http.get('/api/students', () => HttpResponse.json(rows(list))),
       http.delete('/api/roster/:email', () => {
         list = list.filter((e) => e !== 'bob@example.com')
         return apiError(404, 'not_found')
