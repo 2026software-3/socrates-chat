@@ -13,20 +13,30 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::{ai::AiProvider, config::Config, error::ApiError, identity::IdentityProvider};
+use crate::{
+    ai::AiProvider,
+    config::Config,
+    error::ApiError,
+    identity::IdentityProvider,
+    voice::{OpenAiVoice, VoiceProvider},
+};
 
+pub mod accounts;
 pub mod ai;
 pub mod auth;
 pub mod auth_store;
 pub mod catalog;
 pub mod chat;
+pub mod claims;
 pub mod config;
+pub mod dashboard;
 pub mod error;
 pub mod identity;
 pub mod password;
 pub mod reply;
 pub mod roster;
 pub mod summary;
+pub mod voice;
 
 /// 所有 handler 共用的狀態。
 #[derive(Clone)]
@@ -35,6 +45,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
+    pub voice: Arc<dyn VoiceProvider>,
 }
 
 impl AppState {
@@ -44,12 +56,19 @@ impl AppState {
         identity: Arc<dyn IdentityProvider>,
         ai: Arc<dyn AiProvider>,
     ) -> Self {
+        let voice = Arc::new(OpenAiVoice::from_config(&config));
         Self {
             pool,
             config: Arc::new(config),
             identity,
             ai,
+            voice,
         }
+    }
+
+    pub fn with_voice(mut self, voice: Arc<dyn VoiceProvider>) -> Self {
+        self.voice = voice;
+        self
     }
 }
 
@@ -64,10 +83,14 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .merge(auth::routes())
         .merge(roster::routes())
+        .merge(accounts::routes())
+        .merge(dashboard::routes())
+        .merge(claims::routes())
         .merge(catalog::routes())
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(summary::routes())
+        .merge(voice::routes())
         .fallback(fallback)
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID

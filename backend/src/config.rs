@@ -24,6 +24,11 @@ pub struct Config {
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
     pub openai_base_url: String,
+    /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
+    pub openai_stt_model: Option<String>,
+    pub openai_tts_model: Option<String>,
+    /// 語音合成的聲音名稱。
+    pub openai_tts_voice: String,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -114,6 +119,12 @@ impl Config {
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+            openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
+            openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
+            openai_tts_voice: env::var("OPENAI_TTS_VOICE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "alloy".into()),
             wrap_up_turn,
             max_turns,
             ai_first_token_timeout: Duration::from_secs(parse_or(

@@ -374,19 +374,12 @@ async fn available_list_requires_enrollment(pool: PgPool) {
         send(&app, get("/api/available", None)).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    // 教師與管理者不需要在名單內
-    assert_eq!(
-        send(&app, get("/api/available", Some(&a.teacher)))
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    assert_eq!(
-        send(&app, get("/api/available", Some(&a.admin)))
-            .await
-            .status(),
-        StatusCode::OK
-    );
+    // 教師與管理者不參與討論：即使不在名單內也不能用學生功能
+    for cookie in [&a.teacher, &a.admin] {
+        let res = send(&app, get("/api/available", Some(cookie))).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(res).await["error"]["code"], "forbidden");
+    }
 
     // 被移出名單後立即失去存取
     send(

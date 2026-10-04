@@ -307,9 +307,10 @@ async fn stream_is_owner_only(pool: PgPool) {
     say(&s, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
     for cookie in [&s.a.teacher, &s.a.admin] {
+        // 教師與管理者不參與討論
         assert_eq!(
             send(&s.app, get(&url, Some(cookie))).await.status(),
-            StatusCode::NOT_FOUND
+            StatusCode::FORBIDDEN
         );
     }
     assert_eq!(

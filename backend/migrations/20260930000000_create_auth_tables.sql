@@ -13,6 +13,8 @@ CREATE TABLE users (
     display_name text,
     -- 首次登入時依 ADMIN_EMAILS 授予，之後以資料庫為準
     is_admin     boolean NOT NULL DEFAULT false,
+    -- 帳號停用（F-01.4，S-01.3）：只有管理者可操作；停用時清除所有 session，資料全部保留，復原後照舊
+    disabled_at  timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
