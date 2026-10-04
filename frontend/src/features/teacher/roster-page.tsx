@@ -18,6 +18,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { useAuth } from '@/auth/auth-context'
+import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { errorText, useT } from '@/i18n'
 import { api } from '@/lib/api'
@@ -184,6 +186,9 @@ export function RosterPage() {
   const t = useT()
   const roster = useFetch<EmailList>('/api/roster')
   const [query, setQuery] = useState('')
+  const auth = useAuth()
+  const isAdmin = auth.status === 'authed' && auth.me.roles.admin
+  const [toReset, setToReset] = useState<string>()
   const [removing, setRemoving] = useState<string | null>(null)
   const [removePending, setRemovePending] = useState(false)
   const [removeError, setRemoveError] = useState<string>()
@@ -241,14 +246,24 @@ export function RosterPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t('teacher.roster.emailColumn')}</TableHead>
-                    <TableHead className="w-24 text-right">{t('teacher.roster.actionsColumn')}</TableHead>
+                    <TableHead className="text-right">{t('teacher.roster.actionsColumn')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.map((email) => (
                     <TableRow key={email}>
                       <TableCell className="break-all">{email}</TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="space-x-2 text-right whitespace-nowrap">
+                        {isAdmin ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-label={t('admin.reset.resetPassword', { email })}
+                            onClick={() => setToReset(email)}
+                          >
+                            {t('admin.reset.resetConfirm')}
+                          </Button>
+                        ) : null}
                         <Button
                           variant="outline"
                           size="sm"
@@ -275,6 +290,8 @@ export function RosterPage() {
           roster.reload()
         }}
       />
+
+      <ResetPasswordDialog email={toReset} onClose={() => setToReset(undefined)} />
 
       <AlertDialog open={removing !== null} onOpenChange={(o) => !o && !removePending && setRemoving(null)}>
         <AlertDialogContent>
