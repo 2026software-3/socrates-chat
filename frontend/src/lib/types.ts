@@ -96,6 +96,8 @@ export type RosterImportResult = {
   added: number
   existing: number
   invalid: { line: number; value: string }[]
+  /** 這次新建立的內建帳號與臨時密碼（只出現一次；教師匯入時為空或沒有這個欄位） */
+  credentials?: { email: string; temporary_password: string }[]
 }
 
 /** SSE `done` 事件的內容。 */

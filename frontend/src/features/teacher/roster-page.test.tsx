@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
-import { apiError } from '@/test/render'
+import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
@@ -239,5 +239,45 @@ describe('RosterPage', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '移除' }))
     expect(await screen.findByText('找不到資料。')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('bob@example.com')).not.toBeInTheDocument())
+  })
+
+  it('shows the temporary passwords of newly created accounts once', async () => {
+    mockRoster([])
+    server.use(
+      http.post('/api/roster/import', () =>
+        HttpResponse.json({
+          added: 1,
+          existing: 0,
+          invalid: [],
+          credentials: [{ email: 'new@example.com', temporary_password: 'ABCD2345WXYZ' }],
+        }),
+      ),
+    )
+    setup()
+    await userEvent.type(await screen.findByLabelText('電子郵件（每行一個）'), 'new@example.com')
+    await userEvent.click(screen.getByRole('button', { name: '匯入' }))
+    expect(await screen.findByRole('heading', { name: '臨時密碼（新帳號）' })).toBeInTheDocument()
+    expect(screen.getByText('ABCD2345WXYZ')).toBeInTheDocument()
+  })
+
+  it('does not offer password reset to a plain teacher', async () => {
+    mockRoster(['alice@example.com'])
+    setup()
+    await screen.findByText('alice@example.com')
+    expect(screen.queryByRole('button', { name: '重設 alice@example.com 的密碼' })).not.toBeInTheDocument()
+  })
+
+  it('lets an admin reset a student password', async () => {
+    mockRoster(['alice@example.com'])
+    server.use(
+      http.post('/api/admin/users/reset-password', () =>
+        HttpResponse.json({ email: 'alice@example.com', temporary_password: 'ABCD2345WXYZ' }),
+      ),
+    )
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '重設 alice@example.com 的密碼' }))
+    await userEvent.click(screen.getByRole('button', { name: '重設密碼' }))
+    expect(await screen.findByLabelText('臨時密碼')).toHaveValue('ABCD2345WXYZ')
   })
 })

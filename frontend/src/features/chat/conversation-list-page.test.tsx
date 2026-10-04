@@ -41,7 +41,7 @@ describe('ConversationListPage', () => {
     setup([])
     renderApp(null, { route: '/conversations' })
     expect(await screen.findByText('你還沒有任何對話。')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '選擇題目開始討論' })).toHaveAttribute('href', '/available')
+    expect(screen.getByRole('link', { name: '選擇題目開始討論' })).toHaveAttribute('href', '/')
   })
 
   it('shows a translated error with retry', async () => {

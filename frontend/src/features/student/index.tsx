@@ -1,7 +1,7 @@
 import type { Feature } from '@/app/feature'
-import { AvailablePage } from '@/features/student/available-page'
 
+// 選題頁就是首頁（/），由 app/routes.tsx 的 index route 提供，所以這裡沒有自己的路由
 export const studentFeature: Feature = {
-  routes: [{ path: '/available', element: <AvailablePage />, access: 'member' }],
-  nav: [{ to: '/available', labelKey: 'student.nav.available', access: 'member' }],
+  routes: [],
+  nav: [{ to: '/', labelKey: 'student.nav.available', access: 'member' }],
 }

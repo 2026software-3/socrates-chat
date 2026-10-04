@@ -53,7 +53,7 @@ describe('forced password change', () => {
 
   it('sends accounts on a temporary password to the change page, hiding navigation', async () => {
     mockMe(tempMe())
-    renderApp(null, { route: '/available' })
+    renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '更改密碼' })).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
   })

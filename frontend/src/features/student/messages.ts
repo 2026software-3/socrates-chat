@@ -3,7 +3,6 @@ import { defineMessages } from '@/i18n/define'
 export const studentMessages = defineMessages({
   'zh-TW': {
     'student.nav.available': '選擇題目',
-    'student.available.title': '選擇討論題目',
     'student.available.myConversations': '我的對話',
     'student.available.activities': '教師活動',
     'student.available.activitiesHint': '由老師建立並開放的討論活動',
@@ -20,7 +19,6 @@ export const studentMessages = defineMessages({
   },
   en: {
     'student.nav.available': 'Choose a topic',
-    'student.available.title': 'Choose a discussion topic',
     'student.available.myConversations': 'My conversations',
     'student.available.activities': 'Teacher activities',
     'student.available.activitiesHint': 'Discussion activities created and opened by your teacher',
@@ -37,7 +35,6 @@ export const studentMessages = defineMessages({
   },
   es: {
     'student.nav.available': 'Elegir un tema',
-    'student.available.title': 'Elige un tema de discusión',
     'student.available.myConversations': 'Mis conversaciones',
     'student.available.activities': 'Actividades del profesor',
     'student.available.activitiesHint': 'Actividades de discusión creadas y abiertas por tu profesor',

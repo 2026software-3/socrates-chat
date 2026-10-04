@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react'
+import { KeyRound, Trash2 } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import {
@@ -14,6 +14,7 @@ import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
 import { useFetch } from '@/lib/use-fetch'
@@ -33,6 +34,8 @@ export function TeachersPage() {
   const [toRemove, setToRemove] = useState<string>()
   const [removing, setRemoving] = useState(false)
   const [removeError, setRemoveError] = useState<unknown>()
+
+  const [toReset, setToReset] = useState<string>()
 
   const emails = useMemo(
     () => [...new Set(data?.emails ?? [])].sort((a, b) => a.localeCompare(b)),
@@ -156,17 +159,27 @@ export function TeachersPage() {
               {shown.map((e) => (
                 <li key={e} className="flex items-center justify-between gap-2 px-3 py-2">
                   <span className="min-w-0 break-all text-sm">{e}</span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={t('admin.teachers.remove', { email: e })}
-                    onClick={() => {
-                      setRemoveError(undefined)
-                      setToRemove(e)
-                    }}
-                  >
-                    <Trash2 aria-hidden />
-                  </Button>
+                  <div className="flex shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={t('admin.reset.resetPassword', { email: e })}
+                      onClick={() => setToReset(e)}
+                    >
+                      <KeyRound aria-hidden />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={t('admin.teachers.remove', { email: e })}
+                      onClick={() => {
+                        setRemoveError(undefined)
+                        setToRemove(e)
+                      }}
+                    >
+                      <Trash2 aria-hidden />
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -193,6 +206,8 @@ export function TeachersPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ResetPasswordDialog email={toReset} onClose={() => setToReset(undefined)} />
     </Page>
   )
 }
