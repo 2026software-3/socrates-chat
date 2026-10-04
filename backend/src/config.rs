@@ -13,13 +13,22 @@ pub struct Config {
     pub google_redirect_url: String,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
+    /// 首位管理者內建登入的初始密碼（S-01.3）；沒設定就不建立內建管理者帳號，只能用 Google 登入。
+    pub admin_initial_password: Option<String>,
     /// session cookie 是否加 `Secure`；本機 http 開發可設為 `false`。
     pub cookie_secure: bool,
     pub listen_addr: String,
+    /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
+    pub frontend_dir: Option<std::path::PathBuf>,
     pub openai_api_key: String,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
     pub openai_base_url: String,
+    /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
+    pub openai_stt_model: Option<String>,
+    pub openai_tts_model: Option<String>,
+    /// 語音合成的聲音名稱。
+    pub openai_tts_voice: String,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -95,14 +104,27 @@ impl Config {
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
             admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
+            admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
+                .ok()
+                .filter(|v| !v.is_empty()),
             cookie_secure: env::var("COOKIE_SECURE")
                 .map(|v| v != "false")
                 .unwrap_or(true),
             listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
+            frontend_dir: env::var("FRONTEND_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(Into::into),
             openai_api_key: required("OPENAI_API_KEY")?,
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+            openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
+            openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
+            openai_tts_voice: env::var("OPENAI_TTS_VOICE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "alloy".into()),
             wrap_up_turn,
             max_turns,
             ai_first_token_timeout: Duration::from_secs(parse_or(

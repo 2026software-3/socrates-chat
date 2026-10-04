@@ -73,11 +73,16 @@ pub fn test_config() -> Config {
         google_client_secret: "test-secret".to_string(),
         google_redirect_url: format!("{APP_URL}/api/auth/google/callback"),
         admin_emails: vec!["admin@example.com".to_string()],
+        admin_initial_password: None,
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
+        frontend_dir: None,
         openai_api_key: "test-key".to_string(),
         openai_model: "test-model".to_string(),
         openai_base_url: "http://127.0.0.1:1".to_string(),
+        openai_stt_model: None,
+        openai_tts_model: None,
+        openai_tts_voice: "alloy".to_string(),
         wrap_up_turn: 3,
         max_turns: 5,
         // 縮短逾時讓逾時測試很快跑完
@@ -145,12 +150,11 @@ pub fn test_app(pool: PgPool) -> Router {
 }
 
 pub fn test_app_with_ai(pool: PgPool, ai: Arc<FakeAi>) -> Router {
-    app(AppState::new(
-        pool,
-        test_config(),
-        Arc::new(FakeIdentity),
-        ai,
-    ))
+    test_app_with_config(pool, ai, test_config())
+}
+
+pub fn test_app_with_config(pool: PgPool, ai: Arc<FakeAi>, config: Config) -> Router {
+    app(AppState::new(pool, config, Arc::new(FakeIdentity), ai))
 }
 
 /// 解析 SSE 回應內容為 (event 名稱, data) 清單。

@@ -8,10 +8,11 @@ use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
 use serde_json::{Value, json};
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
 
-const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\",\"turning_points\":\"後來考慮了不作為的責任\"}";
-const INCOMPLETE: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\"}";
+const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\"}";
+const INCOMPLETE: &str = "{\"stance\":\"會拉桿\"}";
 
 /// 輪詢到總結不再是 pending 為止（背景產生）。
 async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
@@ -61,7 +62,6 @@ async fn ending_generates_a_saved_summary(pool: PgPool) {
     assert_eq!(s["status"], "ready");
     assert_eq!(s["stance"], "會拉桿");
     assert_eq!(s["reasons"], "救五人優先");
-    assert_eq!(s["turning_points"], "後來考慮了不作為的責任");
 
     // 對話已結束，不能再送訊息；AI 收到的是完整逐字稿
     let (st, _) = student_says(&app, &a, &conv, "還想補充").await;
@@ -244,8 +244,8 @@ async fn summary_endpoints_are_owner_only_and_read_only(pool: PgPool) {
             get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
         )
         .await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert_eq!(end(&app, cookie, &conv).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(end(&app, cookie, &conv).await.0, StatusCode::FORBIDDEN);
         let res = send(
             &app,
             json_req(
@@ -256,7 +256,7 @@ async fn summary_endpoints_are_owner_only_and_read_only(pool: PgPool) {
             ),
         )
         .await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
     let res = send(
         &app,
@@ -340,7 +340,7 @@ async fn admin_view_of_summaries_is_masked(pool: PgPool) {
 
     let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
     let row = &list[0];
-    for f in ["stance", "reasons", "turning_points"] {
+    for f in ["stance", "reasons"] {
         assert_eq!(row[f], "message");
     }
     assert!(!list.to_string().contains("會拉桿"));
@@ -416,10 +416,10 @@ async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
 
 #[sqlx::test]
 async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
-    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![GOOD])]);
+    let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
     let app = test_app_with_ai(pool, ai);
     let a = seed_actors(&app).await;
-    // 教師自己試用：開一場對話並結束
+    // 教師不參與討論：不能開對話
     let res = send(
         &app,
         json_req(
@@ -451,20 +451,7 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
         ),
     )
     .await;
-    let own = json_body(res).await["id"].as_str().unwrap().to_string();
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/conversations/{own}/messages"),
-            Some(&a.teacher),
-            Some(json!({"content": "試試"})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
-    end(&app, &a.teacher, &own).await;
-    settled_summary(&app, &a.teacher, &own).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
     // 學生的對話才會出現
     let conv = start_conversation(&app, &a).await;
@@ -519,13 +506,22 @@ async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
 async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     // 第一代卡住（Hang）；在它逾時前手動重試，第二代很快成功。
     // 第一代之後失敗收尾時，不能把已完成的結果改成 failed。
+    // 第一代的首字逾時要遠大於手動重試的等待，否則它自己的自動重試會先拿走第二個腳本
+    let config = Config {
+        ai_first_token_timeout: Duration::from_millis(1500),
+        ai_total_timeout: Duration::from_millis(4000),
+        ..test_config()
+    };
     let ai = FakeAi::with(vec![Hang, Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool.clone(), ai);
+    let app = test_app_with_config(pool.clone(), ai.clone(), config);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     student_says(&app, &a, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // 等第一代真的拿到 Hang 腳本，重試的第二代才會拿到 Reply
+    while ai.request_count() < 1 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
         .execute(&pool)
         .await
@@ -547,7 +543,7 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     );
 
     // 等第一代的逾時與自動重試都結束
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(1700)).await;
     let s = settled_summary(&app, &a.student, &conv).await;
     assert_eq!(s["status"], "ready");
     assert_eq!(s["stance"], "會拉桿");

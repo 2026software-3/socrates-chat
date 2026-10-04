@@ -110,8 +110,8 @@ async fn create(
         return Err(ApiError::bad_request("invalid_source", "活動或題目不可用"));
     };
     let c = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description, as_student)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id, activity_id, topic_id, title, description, language, status, stage,
                    turn_count, converge_ready, created_at, ended_at",
     )
@@ -120,7 +120,6 @@ async fn create(
     .bind(topic_id)
     .bind(title)
     .bind(description)
-    .bind(cu.roles.student)
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(c)))

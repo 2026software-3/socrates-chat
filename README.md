@@ -10,9 +10,9 @@
 | --- | --- | --- |
 | 後端 | 已確定 | Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing |
 | 資料庫 | 已確定 | PostgreSQL；開發與 CI 用 Docker Compose，正式環境部署待 S-09 |
-| 前端 | **待確認（S-11）** | 候選：React、TypeScript、Vite、Tailwind CSS、assistant-ui、Recharts |
+| 前端 | **暫定（S-11 尚未正式定案，隨時可改）** | React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui |
 | AI 服務 | 已確定（S-03.1） | OpenAI API（後端以單一介面包裝，模型待評估） |
-| 登入 | 已確定（S-01.1） | 只接受 Google；Rust 自行整合 OAuth，session 存 PostgreSQL |
+| 登入 | 已確定（S-01.1） | 內建電子郵件＋密碼（不開放註冊）加 Google 登入；Rust 自行實作，session 存 PostgreSQL |
 | 對話傳輸 | 已確定（S-08.4） | HTTP + SSE 串流 |
 
 各套件版本與正式環境部署方式尚未指定。Supabase 與 Redis 不在目前架構內。
@@ -33,28 +33,59 @@ flowchart LR
 ```text
 .
 ├── backend/     # Rust + Axum API 服務
-├── frontend/    # 前端（技術選型待 S-11，目前為佔位）
+├── frontend/    # 前端（暫定技術選型，見 frontend/README.md）
+├── scripts/     # 開發輔助腳本（匯入示範資料）
 ├── .github/     # CI 與 commitlint workflows
 ├── AGENTS.md    # 給 AI coding agent 的開發指引
-└── CONTRIBUTING.md
+├── CONTRIBUTING.md
+└── LICENSE      # MIT
 ```
 
 ## 快速開始
 
-### 後端
-
-需求：Rust stable（由 `backend/rust-toolchain.toml` 指定，rustup 會自動安裝對應元件）。
-
 ```bash
-cd backend
-cargo run          # 啟動於 http://127.0.0.1:3000
-curl http://127.0.0.1:3000/health   # {"status":"ok"}
-cargo test         # 執行測試
+git clone https://github.com/2026software-3/socrates-chat.git
+cd socrates-chat
+cp .env.example .env    # 填入 GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET、ADMIN_EMAILS、OPENAI_API_KEY、OPENAI_MODEL
 ```
 
-### 前端
+### 本地執行（需要 Rust、Node.js、Docker）
 
-尚未建立，請見 [`frontend/README.md`](frontend/README.md)。
+```bash
+# 終端機 1：資料庫＋後端（http://127.0.0.1:3000）
+docker compose up -d db
+set -a && . ./.env && set +a
+cd backend && cargo run
+```
+
+```bash
+# 終端機 2：前端（http://localhost:5173）
+cd frontend
+npm ci
+npm run dev
+```
+
+### Docker（只需要 Docker）
+
+```bash
+docker compose --profile app up --build    # http://localhost:3000
+```
+
+兩種跑法都使用 3000 埠，同一時間只能跑其中一種。
+
+### 匯入示範資料（選用）
+
+服務啟動後，用管理者登入一次並更改初始密碼，再執行（全部是合成資料，只給本機使用）：
+
+```bash
+ADMIN_PASSWORD='<管理者目前的密碼>' ./scripts/seed-demo.sh
+```
+
+會建立教師 `teacher@example.com`（密碼 `Teacher-Demo-2026`）、學生 `student1`～`student3@example.com`（密碼 `Student-Demo-2026`），以及「電車難題」下 6 場已完成的對話（含 AI 總結、主張分組與 6 維分數），用教師登入就能看到班上論點分布。可重複執行。內建題目「電車難題」在服務啟動時自動建立。
+
+### 正式環境
+
+正式環境的部署方式尚未決定（S-09）。migration 須在部署前單獨執行、不要依賴 `RUN_MIGRATIONS`，並保持 `COOKIE_SECURE=true`；維運流程見 [`docs/specs/S-09.3-ops-procedures.md`](docs/specs/S-09.3-ops-procedures.md)。
 
 ## 參與開發
 
@@ -65,3 +96,7 @@ cargo test         # 執行測試
 - 採 SDD + TDD：先確認規格與驗收情境，再寫會失敗的測試，最後做最小實作。
 
 使用 AI coding agent 的開發者，請讓 agent 讀取 [AGENTS.md](AGENTS.md)。
+
+## 授權
+
+本專案以 [MIT License](LICENSE) 授權。所使用的開源套件皆為寬鬆授權；複製進原始碼的 shadcn/ui、assistant-ui 與打包的 Geist 字型所需的聲明見 [docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md)。

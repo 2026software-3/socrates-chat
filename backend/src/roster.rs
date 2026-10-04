@@ -11,8 +11,10 @@ use sqlx::PgPool;
 
 use crate::{
     AppState,
-    auth::{RequireAdmin, RequireTeacher},
+    auth::{RequireAdmin, RequireTeacher, hash_blocking},
+    auth_store,
     error::ApiError,
+    password,
 };
 
 pub fn routes() -> Router<AppState> {
@@ -161,27 +163,69 @@ struct ImportResult {
     added: usize,
     existing: usize,
     invalid: Vec<InvalidLine>,
+    /// 這次新建立的內建帳號與臨時密碼（只在這次回應出現）；信箱已有帳號的不在其中。
+    credentials: Vec<Credential>,
+}
+
+#[derive(Serialize)]
+struct Credential {
+    email: String,
+    temporary_password: String,
+}
+
+/// 信箱是否屬於教師或管理者（教師清單、`ADMIN_EMAILS` 或已是管理者的使用者）。
+async fn is_staff_email(state: &AppState, email: &str) -> Result<bool, ApiError> {
+    if state.config.admin_emails.iter().any(|e| e == email) {
+        return Ok(true);
+    }
+    let (staff,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1)
+             OR EXISTS (SELECT 1 FROM users WHERE email = $1 AND is_admin)",
+    )
+    .bind(email)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(staff)
 }
 
 async fn import_roster(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Json(body): Json<ImportBody>,
 ) -> Result<Json<ImportResult>, ApiError> {
     let parsed = parse_roster(&body.text);
     let mut added = 0;
+    let mut credentials = Vec::new();
     // 匯入只新增，不移除名單上原有的人
     for email in &parsed.emails {
         let r = sqlx::query("INSERT INTO enrollments (email) VALUES ($1) ON CONFLICT DO NOTHING")
             .bind(email)
             .execute(&state.pool)
             .await?;
-        added += r.rows_affected() as usize;
+        if r.rows_affected() == 0 {
+            continue;
+        }
+        added += 1;
+        // 只有管理者匯入時才建立內建帳號並取得臨時密碼：知道臨時密碼等於能用該學生的身分登入，
+        // 教師不能看到對話原文（S-02.1），所以教師匯入只加名單，學生用 Google 登入或請管理者重設密碼。
+        // 教師與管理者的信箱也不在這裡建帳號，避免有人搶先替他們建好帳號。
+        if !cu.roles.admin || is_staff_email(&state, email).await? {
+            continue;
+        }
+        let temporary_password = password::generate_temporary();
+        let hash = hash_blocking(temporary_password.clone()).await?;
+        if auth_store::create_account_if_absent(&state.pool, email, &hash).await? {
+            credentials.push(Credential {
+                email: email.clone(),
+                temporary_password,
+            });
+        }
     }
     Ok(Json(ImportResult {
         added,
         existing: parsed.emails.len() - added,
         invalid: parsed.invalid,
+        credentials,
     }))
 }
 

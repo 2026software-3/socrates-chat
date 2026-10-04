@@ -22,7 +22,7 @@ async fn upsert_creates_user_with_lowercased_email(pool: PgPool) {
     let u = upsert_user(&pool, "sub-1", "Alice@Example.COM", Some("Alice"), false)
         .await
         .unwrap();
-    assert_eq!(u.google_sub, "sub-1");
+    assert_eq!(u.google_sub.as_deref(), Some("sub-1"));
     assert_eq!(u.email, "alice@example.com");
     assert_eq!(u.display_name.as_deref(), Some("Alice"));
     assert!(!u.is_admin);

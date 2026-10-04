@@ -64,7 +64,7 @@
 
 ```bash
 docker compose up -d --wait
-export DATABASE_URL=postgres://socrates:socrates@127.0.0.1:5432/socrates   # 或複製 backend/.env.example
+export DATABASE_URL=postgres://socrates:socrates@127.0.0.1:5432/socrates   # 或複製根目錄的 .env.example
 cd backend && cargo test
 ```
 
@@ -158,9 +158,9 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 
 - **開發主線是 `main`**，應隨時保持可建置且測試通過。
 - **禁止直接 push 到 `main`**，所有改動都從 `main` 開分支、經 PR 合併。
-- 分支命名：`<type>/<issue-id>-<slug>`
+- 分支命名：`<type>/<slug>`；有對應 Issue 時用 `<type>/<issue-id>-<slug>`
   - `type` 與 commit type 相同（見下節）；
-  - `issue-id` 是 Issue 標題中的編號，改成小寫；
+  - `issue-id` 是 Issue 標題中的編號，改成小寫。有 Issue 就建議帶上，方便對照；沒有 Issue 的改動（例如修錯字、CI、依賴更新）可省略；
   - `slug` 是幾個英文字的簡短描述，用 `-` 連接。
 
   ```text
@@ -350,6 +350,14 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 | 我的工作 | 指派給自己、尚未完成的 Issue |
 | 規格決策 | 尚未完成的規格 Issue |
 | 功能進度 | 各功能父 Issue 與切片的完成進度 |
+
+## 資料庫 migration
+
+專案**尚未正式上線**，沒有需要保留的資料，所以**不需考慮資料庫轉移**：
+
+- 不寫 `ALTER TABLE`、`DROP INDEX` 這類轉移語句；要改 schema，直接修改 `backend/migrations/` 裡原本建立該資料表的 `CREATE` 語句。
+- 新資料表才新增 migration 檔（`sqlx migrate add <描述>`）。
+- 正式上線後此規則作廢，改為只往前新增 migration（見 [S-09.3](docs/specs/S-09.3-ops-procedures.md)）。
 
 ## 規格決策流程
 

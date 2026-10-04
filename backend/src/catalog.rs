@@ -1,6 +1,7 @@
 //! 題目庫（F-03）、討論活動（F-02）與學生可選項目（F-04）。
 //!
-//! 題目庫由管理者維護；活動由教師建立與發布，所有教師權限相同（S-01.3）。
+//! 題目庫由教師（含助教）與管理者維護，活動由教師建立與發布，所有教師權限相同（S-01.3）。
+//! 系統啟動時會補上內建題目「電車難題」（`seed_builtin_topics`）。
 
 use axum::{
     Json, Router,
@@ -32,6 +33,11 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/admin/topics", get(list_all_topics).post(create_topic))
         .route("/api/admin/topics/{id}", patch(update_topic))
+        .route(
+            "/api/topics",
+            get(list_topics_for_teacher).post(create_topic_for_teacher),
+        )
+        .route("/api/topics/{id}", patch(update_topic_for_teacher))
         .route(
             "/api/activities",
             get(list_activities).post(create_activity),
@@ -81,6 +87,17 @@ async fn list_all_topics(
     _: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Topic>>, ApiError> {
+    list_topics(&state).await
+}
+
+async fn list_topics_for_teacher(
+    _: RequireTeacher,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Topic>>, ApiError> {
+    list_topics(&state).await
+}
+
+async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     let rows = sqlx::query_as(
         "SELECT id, title, description, category, is_active FROM topics ORDER BY created_at, id",
     )
@@ -93,6 +110,21 @@ async fn create_topic(
     _: RequireAdmin,
     State(state): State<AppState>,
     Json(b): Json<NewTopic>,
+) -> Result<(StatusCode, Json<Topic>), ApiError> {
+    insert_topic(&state, b).await
+}
+
+async fn create_topic_for_teacher(
+    _: RequireTeacher,
+    State(state): State<AppState>,
+    Json(b): Json<NewTopic>,
+) -> Result<(StatusCode, Json<Topic>), ApiError> {
+    insert_topic(&state, b).await
+}
+
+async fn insert_topic(
+    state: &AppState,
+    b: NewTopic,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
     if !valid_text(&b.title) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
@@ -115,6 +147,19 @@ async fn update_topic(
     Path(id): Path<Uuid>,
     Json(p): Json<TopicPatch>,
 ) -> Result<Json<Topic>, ApiError> {
+    patch_topic(&state, id, p).await
+}
+
+async fn update_topic_for_teacher(
+    _: RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(p): Json<TopicPatch>,
+) -> Result<Json<Topic>, ApiError> {
+    patch_topic(&state, id, p).await
+}
+
+async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<Topic>, ApiError> {
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
@@ -136,6 +181,27 @@ async fn update_topic(
     .await?
     .map(Json)
     .ok_or_else(ApiError::not_found)
+}
+
+/// 內建題目的固定 ID：重複啟動時不會重複建立，教師改動或停用後也不會被覆寫。
+const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
+
+/// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
+pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO topics (id, title, description, category) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(TROLLEY_TOPIC_ID)
+    .bind("電車難題")
+    .bind(
+        "一輛失控的電車正衝向軌道上的五個人。你站在轉轍器旁，只要拉下拉桿，電車就會轉向另一條軌道，\
+         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。",
+    )
+    .bind("倫理學")
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // ---- 活動 ----

@@ -1,4 +1,4 @@
--- F-06.1：對話與訊息（S-02.5、S-03.2、S-03.3、S-05.4、S-12.1）
+-- F-06.1、F-07、F-08：對話與訊息（S-02.5、S-03.2、S-03.3、S-05.4、S-12.1）
 -- 訊息內容屬敏感欄位（S-02.2）：只有擁有者讀得到，教師與管理者的輸出一律遮蔽。
 
 CREATE TABLE conversations (
@@ -17,6 +17,11 @@ CREATE TABLE conversations (
     stage        smallint NOT NULL DEFAULT 1 CHECK (stage BETWEEN 1 AND 3),
     -- 學生每送出一則訊息算 1 回合（S-03.3）
     turn_count   integer NOT NULL DEFAULT 0,
+    -- 第 3 階段中學生已回應反例或對立觀點時由後端設為 true；之後 AI 提議收尾（S-03.3）
+    converge_ready boolean NOT NULL DEFAULT false,
+    -- 正在產生 AI 回覆的時間；同一場對話同時間只允許一條回覆串流。
+    -- 超過逾時上限仍未清除（例如服務重啟）視為過期，可重新產生。
+    generating_since timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),
     ended_at     timestamptz
 );
@@ -35,6 +40,8 @@ CREATE TABLE messages (
     rules_version   text,
     -- AI 追問類型（S-03.2）
     question_type   text,
+    -- 模型對「是否達到進入下一階段條件」的判斷理由，供稽核與評估，不回傳給學生（S-03.2）
+    advance_reason  text,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 

@@ -18,14 +18,31 @@ use crate::{
     AppState, auth_store,
     auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
     error::ApiError,
+    password,
 };
 
 const COOKIE_NAME: &str = "sid";
+
+/// 帳號已被管理者停用（S-01.3）：登入後看到「帳號已停用」。
+const ACCOUNT_DISABLED: ApiError = ApiError::forbidden("account_disabled", "帳號已停用");
+
+async fn is_disabled(state: &AppState, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let (disabled,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND disabled_at IS NOT NULL)",
+    )
+    .bind(user_id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(disabled)
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/google/login", get(login))
         .route("/api/auth/google/callback", get(callback))
+        .route("/api/auth/login", post(password_login))
+        .route("/api/auth/change-password", post(change_password))
+        .route("/api/admin/users/reset-password", post(reset_password))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me))
 }
@@ -77,17 +94,24 @@ impl Roles {
         self.admin || self.teacher
     }
 
-    /// 能使用學生功能：修課名單內的學生，或教師、管理者（不需要在名單內）。
-    pub fn is_member(&self) -> bool {
-        self.admin || self.teacher || self.student
+    /// 能使用學生功能（選題、對話、語音、個人儀表板）：只有修課名單內的學生。
+    /// 教師與管理者不參與討論，即使有教師或管理者身分也不行。
+    pub fn is_participant(&self) -> bool {
+        self.student
     }
 }
 
-/// 目前登入的使用者；沒有有效 session 時回 401。
+/// 目前登入的使用者；沒有有效 session 時回 401，
+/// 用臨時密碼登入、尚未更改密碼時回 403 `password_change_required`。
 pub struct CurrentUser {
     pub user: auth_store::User,
     pub roles: Roles,
+    /// 這個 session 是用臨時密碼登入、尚未更改密碼。
+    pub must_change_password: bool,
 }
+
+/// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
+pub struct AnyCurrentUser(pub CurrentUser);
 
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
@@ -96,24 +120,52 @@ impl FromRequestParts<AppState> for CurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        let AnyCurrentUser(cu) = AnyCurrentUser::from_request_parts(parts, state).await?;
+        if cu.must_change_password {
+            return Err(ApiError::forbidden(
+                "password_change_required",
+                "請先更改密碼",
+            ));
+        }
+        Ok(cu)
+    }
+}
+
+impl FromRequestParts<AppState> for AnyCurrentUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        let SessionUser { user, .. } =
+        let SessionUser { user, session } =
             auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
                 .await?
                 .ok_or_else(ApiError::unauthorized)?;
-        let (teacher, student): (bool, bool) = sqlx::query_as(
+        let (teacher, student, disabled): (bool, bool, bool) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1),
-                    EXISTS (SELECT 1 FROM enrollments WHERE email = $1)",
+                    EXISTS (SELECT 1 FROM enrollments WHERE email = $1),
+                    EXISTS (SELECT 1 FROM users WHERE id = $2 AND disabled_at IS NOT NULL)",
         )
         .bind(&user.email)
+        .bind(user.id)
         .fetch_one(&state.pool)
         .await?;
+        // 停用的帳號即使還有 session 也不能使用（停用時雖已清除 session，這裡再擋一次）
+        if disabled {
+            return Err(ACCOUNT_DISABLED);
+        }
         let roles = Roles {
             admin: user.is_admin,
             teacher,
             student,
         };
-        Ok(CurrentUser { user, roles })
+        Ok(AnyCurrentUser(CurrentUser {
+            user,
+            roles,
+            must_change_password: session.must_change_password,
+        }))
     }
 }
 
@@ -153,7 +205,8 @@ impl FromRequestParts<AppState> for RequireTeacher {
     }
 }
 
-/// 學生功能的守門：名單外、非教師、非管理者回 403 `not_enrolled`。
+/// 學生功能的守門：只有修課名單內的學生可通過。
+/// 教師與管理者（不在名單內）回 403 `forbidden`，名單外帳號回 403 `not_enrolled`。
 pub struct RequireStudent(pub CurrentUser);
 
 impl FromRequestParts<AppState> for RequireStudent {
@@ -164,8 +217,12 @@ impl FromRequestParts<AppState> for RequireStudent {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let cu = CurrentUser::from_request_parts(parts, state).await?;
-        if !cu.roles.is_member() {
-            return Err(ApiError::forbidden("not_enrolled", "尚未開通"));
+        if !cu.roles.is_participant() {
+            return Err(if cu.roles.can_teach() {
+                ApiError::forbidden("forbidden", "教師與管理者不參與討論")
+            } else {
+                ApiError::forbidden("not_enrolled", "尚未開通")
+            });
         }
         Ok(RequireStudent(cu))
     }
@@ -242,6 +299,12 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     )
     .await
     .map_err(|_| "login_failed")?;
+    if is_disabled(state, user.id)
+        .await
+        .map_err(|_| "login_failed")?
+    {
+        return Err("account_disabled");
+    }
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     auth_store::create_session(&state.pool, user.id, &hash_token(&token))
@@ -267,16 +330,169 @@ struct MeResponse {
     email: String,
     display_name: Option<String>,
     is_admin: bool,
+    must_change_password: bool,
     roles: Roles,
 }
 
-async fn me(cu: CurrentUser) -> Json<MeResponse> {
+async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
     let u = cu.user;
     Json(MeResponse {
         id: u.id,
         email: u.email,
         display_name: u.display_name,
         is_admin: u.is_admin,
+        must_change_password: cu.must_change_password,
         roles: cu.roles,
     })
+}
+
+// ---- 內建帳號密碼登入（S-08.2 第 1 節）----
+
+/// 帳號不存在時也做一次雜湊比對，讓回應時間不洩漏帳號是否存在。
+fn dummy_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| password::hash(&password::generate_temporary()).unwrap_or_default())
+}
+
+async fn verify_blocking(password: String, hash: String) -> bool {
+    tokio::task::spawn_blocking(move || password::verify(&password, &hash))
+        .await
+        .unwrap_or(false)
+}
+
+pub async fn hash_blocking(password: String) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || password::hash(&password))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or_else(ApiError::internal)
+}
+
+const INVALID_CREDENTIALS: ApiError = ApiError::new(
+    StatusCode::UNAUTHORIZED,
+    "invalid_credentials",
+    "電子郵件或密碼不正確",
+);
+
+#[derive(Deserialize)]
+struct LoginBody {
+    email: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct LoginResponse {
+    must_change_password: bool,
+}
+
+async fn password_login(
+    State(state): State<AppState>,
+    Json(body): Json<LoginBody>,
+) -> Result<Response, ApiError> {
+    let email = body.email.trim().to_lowercase();
+    let now = Utc::now();
+    if auth_store::is_locked(&state.pool, &email, now).await? {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_attempts",
+            "嘗試次數過多，請稍後再試",
+        ));
+    }
+    let account = auth_store::find_password_account(&state.pool, &email).await?;
+    let real_hash = account.as_ref().and_then(|a| a.password_hash.clone());
+    let has_password = real_hash.is_some();
+    let hash = real_hash.unwrap_or_else(|| dummy_hash().to_string());
+    let ok = verify_blocking(body.password, hash).await && has_password;
+    let (Some(account), true) = (account, ok) else {
+        auth_store::record_login_failure(&state.pool, &email, now).await?;
+        return Err(INVALID_CREDENTIALS);
+    };
+    auth_store::clear_login_failures(&state.pool, &email).await?;
+    // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
+    if is_disabled(&state, account.id).await? {
+        return Err(ACCOUNT_DISABLED);
+    }
+    // 登入一律建立新 session（防止 session fixation）
+    let token = new_token();
+    let session =
+        auth_store::create_password_session(&state.pool, account.id, &hash_token(&token)).await?;
+    Ok((
+        [(
+            header::SET_COOKIE,
+            session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
+        )],
+        Json(LoginResponse {
+            must_change_password: session.must_change_password,
+        }),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+async fn change_password(
+    AnyCurrentUser(cu): AnyCurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ChangePasswordBody>,
+) -> Result<StatusCode, ApiError> {
+    if !password::is_acceptable(&body.new_password) {
+        return Err(ApiError::bad_request(
+            "invalid_new_password",
+            "新密碼長度需為 8 到 128 個字元",
+        ));
+    }
+    if body.new_password == body.current_password {
+        return Err(ApiError::bad_request(
+            "password_unchanged",
+            "新密碼不能與目前密碼相同",
+        ));
+    }
+    let wrong_current = ApiError::bad_request("invalid_current_password", "目前密碼不正確");
+    let Some(current_hash) = auth_store::password_hash_of(&state.pool, cu.user.id).await? else {
+        return Err(wrong_current);
+    };
+    if !verify_blocking(body.current_password, current_hash).await {
+        return Err(wrong_current);
+    }
+    let new_hash = hash_blocking(body.new_password).await?;
+    auth_store::set_password(&state.pool, cu.user.id, &new_hash, false).await?;
+    // 保留目前登入，其他裝置的 session 全部失效
+    let keep = token_from_headers(&headers).map(hash_token);
+    auth_store::delete_sessions_except(&state.pool, cu.user.id, keep.as_ref().map(|h| &h[..]))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ResetBody {
+    email: String,
+}
+
+#[derive(Serialize)]
+struct ResetResponse {
+    email: String,
+    /// 只在這次回應出現，之後無法再查詢。
+    temporary_password: String,
+}
+
+/// 管理者重設密碼（產生臨時密碼）；信箱沒有帳號時一併建立。
+async fn reset_password(
+    _: RequireAdmin,
+    State(state): State<AppState>,
+    Json(body): Json<ResetBody>,
+) -> Result<Json<ResetResponse>, ApiError> {
+    let email = crate::roster::normalize_email(&body.email)
+        .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))?;
+    let temporary_password = password::generate_temporary();
+    let hash = hash_blocking(temporary_password.clone()).await?;
+    auth_store::reset_password(&state.pool, &email, &hash).await?;
+    Ok(Json(ResetResponse {
+        email,
+        temporary_password,
+    }))
 }

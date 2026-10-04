@@ -12,7 +12,7 @@
 | --- | --- |
 | `backend/` | Rust + Axum API 服務（`src/lib.rs` 提供 `app()` router，`src/main.rs` 啟動服務） |
 | `backend/tests/` | 後端整合測試 |
-| `frontend/` | 佔位；前端技術待 S-11 選型，**不要自行建立前端專案** |
+| `frontend/` | 前端專案（React + TypeScript + Vite + Tailwind + shadcn/ui + assistant-ui，**暫定**；S-11 尚未正式定案，見 `frontend/README.md`） |
 | `.github/workflows/` | CI（後端）與 commitlint |
 
 ## 指令
@@ -32,14 +32,14 @@ cargo run                          # 啟動於 127.0.0.1:3000
 
 - **已確定**（詳見 [`docs/specs/decisions.md`](docs/specs/decisions.md)）：
   - 後端：Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing；資料庫 PostgreSQL。
-  - 登入：只接受 Google，由 Rust 自行整合 OAuth，session 存 PostgreSQL（S-01.1）。
+  - 登入：系統內建電子郵件＋密碼（不開放自行註冊，密碼由管理者重設），並提供 Google 登入；皆由 Rust 自行實作，session 存 PostgreSQL（S-01.1）。
   - AI：OpenAI，後端以單一介面包裝 AI 呼叫，保留更換彈性（S-03.1）。
   - 對話 API：HTTP + SSE 串流（S-08.4）；前端與 API 同網域部署（S-08.1）。
   - 登入驗證與 session 規格見 `docs/specs/S-08.2-auth-verification.md`；維運流程見 `docs/specs/S-09.3-ops-procedures.md`。
-  - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。
+  - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。正式上線前不需考慮資料庫轉移，不寫 `ALTER`，直接改原本的 `CREATE`（見 [CONTRIBUTING.md](CONTRIBUTING.md#資料庫-migration)）。
   - 開發／CI 資料庫：Docker Compose 的 PostgreSQL（S-09.1）。
 - **未定案，不得自行決定**：
-  - 前端技術（S-11）
+  - 前端技術的正式定案（S-11；目前為暫定組合，不要再擴充或更換主要框架）
   - OpenAI 具體模型（S-03.4 評估後決定）
   - 正式環境的部署方式（S-09）
   - 各套件版本
@@ -83,7 +83,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
 ## Git 規範
 
 - 開發主線為 `main`。**永遠不要 push 到 `main`**，也不要在 `main` 上直接 commit。
-- 分支命名為 `<type>/<issue-id>-<slug>`，例如 `feat/f-06-text-chat`、`docs/s-03-ai-dialogue-spec`。
+- 分支命名為 `<type>/<slug>`；有對應 Issue 時帶上編號，即 `<type>/<issue-id>-<slug>`，例如 `feat/f-06-text-chat`、`docs/s-03-ai-dialogue-spec`；沒有 Issue 的改動可省略編號，例如 `chore/bump-deps`。
 - 所有 commit 遵守 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)，格式與 scope 見 [CONTRIBUTING.md](CONTRIBUTING.md#commit-規範)。
 - PR 描述需以 `Closes #<issue>` 關聯 Issue。
 - 不要使用 `--no-verify`、`--force` push 到共用分支，也不要改寫已推送的歷史，除非維護者明確要求。
