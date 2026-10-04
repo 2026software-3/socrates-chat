@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend (fmt, clippy, test)
+    name: Backend (fmt, clippy, test, coverage)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -53,7 +53,23 @@ jobs:
           workspaces: backend
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - run: rustup component add llvm-tools-preview
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-llvm-cov
+      # 取代 `cargo test`：同時跑測試並量測覆蓋率；目前只報告，不設門檻（見 docs/specs/decisions.md）
+      - run: cargo llvm-cov --locked --lcov --output-path lcov.info
+      - run: |
+          {
+            echo '### Backend coverage'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-lcov
+          path: backend/lcov.info
 
   frontend:
     name: Frontend (lint, typecheck, test, build)
