@@ -287,7 +287,7 @@ npx --yes -p @commitlint/cli -p @commitlint/config-conventional commitlint --fro
 | 功能切片（其他功能） | `F-11.1` | 本身就是要做的工作 | `Task` | 涉及的面向 |
 
 - **實際開發與 PR 都針對葉節點**，PR 以 `Closes #<葉節點>` 關閉；父 Issue 在所有 sub-issue 完成、且整體驗收通過後關閉。
-- **面向任務的順序**：`DB`／`AI` → `BE`（先定 API 契約）→ `SEC`、`FE`。前端任務另外要等前端技術選型（S-11）完成。
+- **面向任務的順序**：`DB`／`AI` → `BE`（先定 API 契約）→ `SEC`、`FE`。前端技術選型（S-11）已定案，不再阻擋前端任務。
 - 新建 Issue 時請選用模板：「規格決策」、「功能」或「錯誤回報」（`.github/ISSUE_TEMPLATE/`）。
 
 ### 相依（blocked-by）
@@ -399,8 +399,8 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 **找不到 `Ready` 的任務怎麼辦？**
 在「待辦總表」看 `Backlog` 的 Issue 被哪些前置擋住。前置通常是未決定的規格（`Spec`）或尚未完成的任務；可以協助推動該規格的討論，或詢問維護者。
 
-**為什麼前端任務都是 `Backlog`？**
-前端技術還沒選定。所有前端任務都 blocked by S-11.5（前端 PoC），S-11 決定並完成 PoC 後才會移到 `Ready`。
+**前端任務為什麼不再被 S-11 擋住？**
+前端技術選型已在 S-11 定案（見 `docs/specs/decisions.md`），S-11.5 已關閉；前端任務是否 `Ready` 只看各自其他的 blocked-by。
 
 **Issue 寫的和 `docs/specs/` 不一樣，聽誰的？**
 以 `docs/specs/` 為準，並在 Issue 留言告知，讓維護者修正 Issue。

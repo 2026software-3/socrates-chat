@@ -10,7 +10,7 @@ Labels：
 - 功能父 Issue，以及再往下拆的核心功能切片：不加 label。
 - 面向任務：只標 1 個面向（frontend / backend / ai / database / security）。
 - 其他功能切片（葉節點）：標實際涉及的面向。
-層級：用 GitHub 的 sub-issue 功能掛在上一層底下；相依用 blocked-by 設定。帶 `frontend` 的任務需 blocked by 前端選型（S-11）。
+層級：用 GitHub 的 sub-issue 功能掛在上一層底下；相依用 blocked-by 設定。前端選型（S-11）已定案，帶 `frontend` 的任務不再因此被擋住。
 規則細節不要寫在這裡，請連到 `docs/specs/`。
 -->
 

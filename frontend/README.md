@@ -1,8 +1,9 @@
 # frontend
 
-> **技術選型為暫定（S-11 尚未正式定案）：** React + TypeScript + Vite + Tailwind CSS + [shadcn/ui](https://ui.shadcn.com)（元件）+ [assistant-ui](https://www.assistant-ui.com)（對話介面）。
-> 其餘工具（路由 `react-router`、測試 Vitest + Testing Library + MSW、lint `oxlint`）是搭建骨架時的暫定選擇，
-> S-11.2～S-11.5 正式討論時可調整。
+> **技術選型已定案（S-11，2026-10-07，見 [`docs/specs/decisions.md`](../docs/specs/decisions.md#s-11-前端技術選型)）：**
+> React + TypeScript + Vite + Tailwind CSS + [shadcn/ui](https://ui.shadcn.com)（元件）+ [assistant-ui](https://www.assistant-ui.com)（對話介面）；
+> 路由 `react-router`、測試 Vitest + Testing Library + MSW、lint `oxlint`、i18n 自行實作、圖表為純 SVG。
+> 不再擴充或更換主要框架；新增主要依賴需先經規格討論。
 
 ## 約束（不變）
 

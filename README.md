@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | 後端 | 已確定 | Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing |
 | 資料庫 | 已確定 | PostgreSQL；開發與 CI 用 Docker Compose，正式環境部署待 S-09 |
-| 前端 | **暫定（S-11 尚未正式定案，隨時可改）** | React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui |
+| 前端 | 已確定（S-11） | React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui |
 | AI 服務 | 已確定（S-03.1） | OpenAI API（後端以單一介面包裝，模型待評估） |
 | 登入 | 已確定（S-01.1） | 內建電子郵件＋密碼（不開放註冊）加 Google 登入；Rust 自行實作，session 存 PostgreSQL |
 | 對話傳輸 | 已確定（S-08.4） | HTTP + SSE 串流 |
@@ -39,7 +39,7 @@ flowchart LR
 ```text
 .
 ├── backend/     # Rust + Axum API 服務
-├── frontend/    # 前端（暫定技術選型，見 frontend/README.md）
+├── frontend/    # 前端（見 frontend/README.md）
 ├── scripts/     # 開發輔助腳本（匯入示範資料、錄製操作演示）
 ├── .github/     # CI 與 commitlint workflows
 ├── AGENTS.md    # 給 AI coding agent 的開發指引
