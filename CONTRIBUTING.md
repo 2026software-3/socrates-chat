@@ -152,7 +152,7 @@ gh pr create --base main      # 或在 GitHub 網頁上開
 
 - PR 合併時，`Closes #` 會自動關閉 Issue，Project 自動把它移到 `Done`；遠端分支會自動刪除。
 - 清理本機：`git switch main && git pull`，再用 `git branch -D <分支名稱>` 刪除本機分支（squash 合併後 `-d` 會判斷為未合併而拒絕，所以用 `-D`）。
-- 查看這張 Issue 的「Blocks」清單：如果某張被你擋住的 Issue 現在所有前置都完成了，把它的 Status 從 `Backlog` 改成 `Ready`，讓其他人可以接手。
+- 被你擋住的 Issue 在所有前置都完成後，`Project status` workflow 會自動把 Status 從 `Backlog` 改成 `Ready`（見下方「Status 自動化」）；若沒有更新，可以到「Blocks」清單確認後手動改。
 
 ## 分支規則
 
@@ -330,10 +330,20 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 | Status | 意思 | 誰來改 |
 | --- | --- | --- |
 | `Backlog` | 還有未完成的 blocked-by 前置 | 新 Issue 預設 |
-| `Ready` | 前置都已完成，可以開始 | 完成前置的人，或維護者 |
+| `Ready` | 前置都已完成，可以開始 | 自動（`Project status` workflow），或維護者手動 |
 | `In progress` | 有人正在做 | 認領的人（同時指派自己） |
 | `In review` | PR 已開出，等待 review | PR 作者 |
 | `Done` | 完成 | Issue 關閉或 PR 合併時自動移入 |
+
+### Status 自動化
+
+`.github/workflows/project-status.yml` 依 GitHub 原生 blocked-by 維護 `Backlog` 與 `Ready`：
+
+- Issue 關閉或重開時，檢查被它擋住的 Issue；另有每日（台灣時間 08:00）全面掃描，補上沒有事件的情況（編輯依賴、新建的無前置 Issue）。
+- 開著、Type 為 `Task`、Status 是 `Backlog` 且沒有未關閉前置 → `Ready`；Status 是 `Ready` 但出現未關閉前置 → 退回 `Backlog`。
+- 不動父 Issue、`Spec`，也不動 `In progress`、`In review`、`Done`。
+- 手動執行：Actions 頁面選 `Project status` → Run workflow；預設 `dry_run`，只列出會做的變更。
+- 需要 repo secret `PROJECT_TOKEN`（fine-grained PAT 或 GitHub App token：org「Projects: read and write」、repo「Issues: read」），因為 `GITHUB_TOKEN` 不能寫 org Project。沒設定時 workflow 會失敗並說明原因。
 
 ### Sprint
 
