@@ -7,11 +7,13 @@ on:
       - "backend/**"
       - "frontend/**"
       - ".github/workflows/ci.yml"
+      - ".github/scripts/**"
   pull_request:
     paths:
       - "backend/**"
       - "frontend/**"
       - ".github/workflows/ci.yml"
+      - ".github/scripts/**"
 
 permissions:
   contents: read
@@ -89,3 +91,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  scripts:
+    name: Scripts (project-status tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: .github/scripts/project-status.test.sh

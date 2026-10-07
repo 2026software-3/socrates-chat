@@ -352,6 +352,7 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 - 取消指派不會改 Status。
 - 手動執行：Actions 頁面選 `Project status` → Run workflow；預設 `dry_run`，只列出會做的變更（只涵蓋全面掃描，即 `Backlog`↔`Ready`）。
 - 需要 repo secret `PROJECT_TOKEN`（fine-grained PAT 或 GitHub App token：org「Projects: read and write」、repo「Issues: read」），因為 `GITHUB_TOKEN` 不能寫 org Project。沒設定時 workflow 會失敗並說明原因。
+- API 呼叫失敗（非零結束碼、非 JSON、GraphQL `errors`）會重試 4 次；仍失敗時以 `::error::` 標示，處理完其他 Issue 後讓 workflow 失敗，不會靜默略過。腳本測試在 `.github/scripts/project-status.test.sh`（用假的 `gh`），由 CI 的 `scripts` job 執行。
 - PR 事件用 `pull_request_target` 才能使用 secret；workflow 不 checkout 也不執行 PR 的程式，只用 PR／Issue 編號。修改它時請維持這個前提。
 
 ### Sprint
