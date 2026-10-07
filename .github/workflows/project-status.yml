@@ -1,12 +1,20 @@
 name: Project status
 
-# Moves Task issues between Backlog and Ready on the org Project based on native blocked-by relations.
+# Keeps the org Project "Status" of Task issues in sync (see CONTRIBUTING.md, "Status 自動化"):
+#   blocked-by  Backlog <-> Ready (on issue closed/reopened, plus a daily sweep for edited dependencies)
+#   assigned    Backlog|Ready -> In progress
+#   pull request  opened / ready for review -> In review; converted to draft / closed unmerged -> In progress
 # GITHUB_TOKEN cannot write org Projects, so this needs the PROJECT_TOKEN secret
 # (fine-grained PAT or GitHub App token with org "Projects: read and write", plus repo "Issues: read").
-# GitHub has no event for edited dependencies, so a daily sweep reconciles everything else.
+#
+# pull_request_target (not pull_request) so PRs from branches and forks can use the secret.
+# This is safe only because the job never checks out or runs PR code: it reads the base-branch script
+# and passes it numbers and enum values, nothing taken from PR titles, bodies or branch names.
 on:
   issues:
-    types: [closed, reopened]
+    types: [closed, reopened, assigned]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, converted_to_draft, closed]
   schedule:
     - cron: "0 0 * * *" # 08:00 Asia/Taipei
   workflow_dispatch:
@@ -18,24 +26,31 @@ on:
 
 permissions:
   issues: read
+  pull-requests: read
 
+# One run per issue/PR so a pending run is never replaced by a different event's run.
 concurrency:
-  group: project-status
+  group: project-status-${{ github.event.issue.number || github.event.pull_request.number || github.event_name }}
   cancel-in-progress: false
 
 jobs:
   sync:
-    name: Sync Backlog / Ready
+    name: Sync Project status
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Reconcile Status
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          READ_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ORG: ${{ github.repository_owner }}
           PROJECT_NUMBER: "1"
-          MODE: ${{ github.event_name == 'issues' && 'event' || 'sweep' }}
+          MODE: ${{ (github.event_name == 'issues' && github.event.action == 'assigned' && 'assigned') || (github.event_name == 'issues' && 'event') || (github.event_name == 'pull_request_target' && 'pr') || 'sweep' }}
           ISSUE: ${{ github.event.issue.number }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
         run: .github/scripts/project-status.sh

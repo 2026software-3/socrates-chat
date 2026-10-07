@@ -331,19 +331,28 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 | --- | --- | --- |
 | `Backlog` | 還有未完成的 blocked-by 前置 | 新 Issue 預設 |
 | `Ready` | 前置都已完成，可以開始 | 自動（`Project status` workflow），或維護者手動 |
-| `In progress` | 有人正在做 | 認領的人（同時指派自己） |
-| `In review` | PR 已開出，等待 review | PR 作者 |
+| `In progress` | 有人正在做 | 指派時自動；PR 轉回 draft 或被關閉時自動退回 |
+| `In review` | PR 已開出，等待 review | 自動（PR 連到 Issue 時） |
 | `Done` | 完成 | Issue 關閉或 PR 合併時自動移入 |
 
 ### Status 自動化
 
-`.github/workflows/project-status.yml` 依 GitHub 原生 blocked-by 維護 `Backlog` 與 `Ready`：
+`.github/workflows/project-status.yml` 維護開著、Type 為 `Task` 的 Issue 的 Status：
 
-- Issue 關閉或重開時，檢查被它擋住的 Issue；另有每日（台灣時間 08:00）全面掃描，補上沒有事件的情況（編輯依賴、新建的無前置 Issue）。
-- 開著、Type 為 `Task`、Status 是 `Backlog` 且沒有未關閉前置 → `Ready`；Status 是 `Ready` 但出現未關閉前置 → 退回 `Backlog`。
-- 不動父 Issue、`Spec`，也不動 `In progress`、`In review`、`Done`。
-- 手動執行：Actions 頁面選 `Project status` → Run workflow；預設 `dry_run`，只列出會做的變更。
+| 事件 | 變更 |
+| --- | --- |
+| Issue 關閉或重開（檢查被它擋住的 Issue）、每日掃描（台灣時間 08:00，補上編輯依賴、新建無前置 Issue 等沒有事件的情況） | 沒有未關閉前置：`Backlog` → `Ready`；出現未關閉前置：`Ready` → `Backlog` |
+| Issue 被指派 | `Backlog`／`Ready` → `In progress` |
+| PR 開出、重開或標為 Ready for review（非 draft），且用 `Closes #n` 連到 Issue | 該 Issue：`Backlog`／`Ready`／`In progress` → `In review` |
+| PR 轉回 draft，或關閉但未合併 | 該 Issue：`In review` → `In progress` |
+
+- `Done` 由 Project 內建的 workflow 設定（Issue 關閉或 PR 合併），這個 workflow 不處理。
+- 不動父 Issue 與 `Spec`；只處理上表列出的狀態轉換，其他狀態不會被覆寫。
+- 一張 Issue 有多個 PR 時，其中一個轉回 draft 或被關閉就會退回 `In progress`，即使另一個仍在 review；遇到時手動調整。
+- 取消指派不會改 Status。
+- 手動執行：Actions 頁面選 `Project status` → Run workflow；預設 `dry_run`，只列出會做的變更（只涵蓋全面掃描，即 `Backlog`↔`Ready`）。
 - 需要 repo secret `PROJECT_TOKEN`（fine-grained PAT 或 GitHub App token：org「Projects: read and write」、repo「Issues: read」），因為 `GITHUB_TOKEN` 不能寫 org Project。沒設定時 workflow 會失敗並說明原因。
+- PR 事件用 `pull_request_target` 才能使用 secret；workflow 不 checkout 也不執行 PR 的程式，只用 PR／Issue 編號。修改它時請維持這個前提。
 
 ### Sprint
 
