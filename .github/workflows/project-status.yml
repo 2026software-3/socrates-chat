@@ -1,0 +1,41 @@
+name: Project status
+
+# Moves Task issues between Backlog and Ready on the org Project based on native blocked-by relations.
+# GITHUB_TOKEN cannot write org Projects, so this needs the PROJECT_TOKEN secret
+# (fine-grained PAT or GitHub App token with org "Projects: read and write", plus repo "Issues: read").
+# GitHub has no event for edited dependencies, so a daily sweep reconciles everything else.
+on:
+  issues:
+    types: [closed, reopened]
+  schedule:
+    - cron: "0 0 * * *" # 08:00 Asia/Taipei
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only print the changes, do not write to the Project
+        type: boolean
+        default: true
+
+permissions:
+  issues: read
+
+concurrency:
+  group: project-status
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Backlog / Ready
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reconcile Status
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          REPO: ${{ github.repository }}
+          ORG: ${{ github.repository_owner }}
+          PROJECT_NUMBER: "1"
+          MODE: ${{ github.event_name == 'issues' && 'event' || 'sweep' }}
+          ISSUE: ${{ github.event.issue.number }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: .github/scripts/project-status.sh
