@@ -1,0 +1,252 @@
+[
+  {
+    "id": "C01",
+    "stage": 1,
+    "title": "資源分配",
+    "description": "學校應如何分配有限的獎學金？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我覺得學校應該用公平的方式分配獎學金。"
+      }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "學生尚未說明公平的意思，可能指平均分配、依需求或依成績，應先釐清關鍵概念。"
+  },
+  {
+    "id": "C02",
+    "stage": 1,
+    "title": "校園手機管理",
+    "description": "學校是否應禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我同意某些限制，但不贊成管得太多。"
+      }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "學生未說明接受哪些限制，立場的具體範圍尚不清楚，應先請他界定。"
+  },
+  {
+    "id": "C03",
+    "stage": 1,
+    "title": "隱私與安全",
+    "description": "為了校園安全，學校是否應增加監視器？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "有人重視監視器帶來的安全，也有人擔心隱私受到影響，你怎麼看？"
+      },
+      {
+        "role": "user",
+        "content": "我覺得那個比較重要。"
+      }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "那個的指涉不明，應先確認學生指的是安全還是隱私。"
+  },
+  {
+    "id": "R01",
+    "stage": 2,
+    "title": "電車難題",
+    "description": "是否應切換軌道救五個人？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我認為應該切換軌道救五個人。"
+      }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "學生已表達清楚立場，但沒有提供支持理由，應詢問理由。"
+  },
+  {
+    "id": "R02",
+    "stage": 2,
+    "title": "校園手機管理",
+    "description": "學校是否應禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我支持禁止學生在上課時使用手機，因為上課本來就不應該用手機。"
+      }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "雖然使用了因為，但後半句只是重述立場，尚未提供實質支持理由。"
+  },
+  {
+    "id": "R03",
+    "stage": 2,
+    "title": "志工服務",
+    "description": "學校是否應把志工服務列為畢業條件？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你支持還是反對把志工服務列為畢業條件？"
+      },
+      {
+        "role": "user",
+        "content": "我反對。"
+      },
+      {
+        "role": "assistant",
+        "content": "你反對的主要理由是什麼？"
+      },
+      {
+        "role": "user",
+        "content": "我就是覺得不應該，還沒想清楚為什麼。"
+      }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "學生仍未提出理由，適合換一種較具體的問法協助形成理由，而非假定他已有完整論證。"
+  },
+  {
+    "id": "A01",
+    "stage": 2,
+    "title": "多數決",
+    "description": "班級是否應以多數決決定共同活動？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "應該採多數決，因為每個人都只有一票，票數較多的方案就能代表全班每個人的利益。"
+      }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "學生已提出理由，但從多數支持推到代表每個人的利益，依賴值得檢視的前提。"
+  },
+  {
+    "id": "A02",
+    "stage": 2,
+    "title": "自願承擔風險",
+    "description": "自願參與高風險活動的人，是否應自行承擔所有後果？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "應該，因為他報名時簽了同意書，這表示他充分理解所有風險，也自願接受每一種後果。"
+      }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "學生把簽署同意書視為充分理解並接受全部風險，應檢視這個推論所依賴的前提。"
+  },
+  {
+    "id": "A03",
+    "stage": 2,
+    "title": "考試與努力",
+    "description": "考試分數是否足以判斷學生努力的程度？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "足夠，因為大家寫的是同一份試卷，所以分數的差異只可能來自努力程度。"
+      }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "學生假定相同試卷排除了基礎、資源與身體狀況等其他因素，適合檢視這個前提。"
+  },
+  {
+    "id": "X01",
+    "stage": 3,
+    "title": "犧牲少數",
+    "description": "為了拯救更多人，是否可以犧牲少數人？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "只要能救更多人，犧牲少數就是合理的，因為讓更多人活下來是唯一需要考慮的標準。"
+      },
+      {
+        "role": "assistant",
+        "content": "即使少數人沒有同意，你也認為人數是唯一標準嗎？"
+      },
+      {
+        "role": "user",
+        "content": "對，不論任何情況，只要救到的人比較多就合理。"
+      }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "學生已確認普遍適用的原則，適合提出具體邊界案例，測試他是否仍接受該原則。"
+  },
+  {
+    "id": "X02",
+    "stage": 3,
+    "title": "誠實義務",
+    "description": "說謊是否在所有情況下都是錯的？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "說謊永遠是錯的，因為說謊會破壞人與人之間的信任。"
+      },
+      {
+        "role": "assistant",
+        "content": "你認為維持誠實的義務在所有情況下都應優先嗎？"
+      },
+      {
+        "role": "user",
+        "content": "是，即使說實話會帶來壞結果，也不能有例外。"
+      }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "學生明確排除所有例外，適合用說實話可能使他人遭受傷害的具體情境測試原則。"
+  },
+  {
+    "id": "X03",
+    "stage": 3,
+    "title": "遵守承諾",
+    "description": "人是否應在所有情況下遵守承諾？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "承諾一定要做到，因為別人會根據你的承諾安排事情。"
+      },
+      {
+        "role": "assistant",
+        "content": "承諾之後如果情況改變，你認為這項義務仍完全一樣嗎？"
+      },
+      {
+        "role": "user",
+        "content": "一樣，無論發生什麼事，都應照原本的承諾做。"
+      }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "學生主張情況改變也不能例外，適合提出履行承諾與處理緊急事件衝突的具體案例。"
+  },
+  {
+    "id": "V01",
+    "stage": 3,
+    "title": "結果與規則",
+    "description": "判斷行為對錯時，應如何衡量結果與規則？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我比較重視結果，因為行為造成的實際影響很重要；但我也理解，有人重視規則，是因為大家需要穩定的行為標準。我不確定兩者衝突時該怎麼衡量。"
+      }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "學生已提出兩套判準及各自理由，並明確困惑於如何權衡，適合引導比較觀點。"
+  },
+  {
+    "id": "V02",
+    "stage": 3,
+    "title": "自由與公共利益",
+    "description": "公共場所的噪音限制應如何兼顧自由與他人權益？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我重視街頭表演的自由，因為公共空間應該容許不同表達；附近居民則重視休息，認為自己不應被迫承受噪音。我覺得兩邊都有道理，但不知道限制應該畫在哪裡。"
+      }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "學生已理解兩方利益與理由，適合要求比較雙方判準，而不是再詢問單一立場的理由。"
+  },
+  {
+    "id": "V03",
+    "stage": 3,
+    "title": "家人與公平",
+    "description": "資源不足時，應如何衡量照顧家人的責任與公平分配？",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "我傾向先照顧家人，因為我們有特殊的相互責任；但我也認為陌生人的需求不該因此被忽略。我想弄清楚，親疏關係和需求程度應該各占多大分量。"
+      }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "學生明確提出關係責任與需求公平兩種判準，適合比較它們在分配決策中的分量。"
+  }
+]

@@ -1,0 +1,119 @@
+{
+  "api_errors": 0,
+  "cases": [
+    {
+      "case_id": "C01",
+      "expected_type": "clarify",
+      "file": "01.json",
+      "predicted_type": "clarify",
+      "status": "PASS"
+    },
+    {
+      "case_id": "C02",
+      "expected_type": "clarify",
+      "file": "02.json",
+      "predicted_type": "clarify",
+      "status": "PASS"
+    },
+    {
+      "case_id": "C03",
+      "expected_type": "clarify",
+      "file": "03.json",
+      "predicted_type": "clarify",
+      "status": "PASS"
+    },
+    {
+      "case_id": "R01",
+      "expected_type": "reason",
+      "file": "04.json",
+      "predicted_type": "reason",
+      "status": "PASS"
+    },
+    {
+      "case_id": "R02",
+      "expected_type": "reason",
+      "file": "05.json",
+      "predicted_type": "reason",
+      "status": "PASS"
+    },
+    {
+      "case_id": "R03",
+      "expected_type": "reason",
+      "file": "06.json",
+      "predicted_type": "reason",
+      "status": "PASS"
+    },
+    {
+      "case_id": "A01",
+      "expected_type": "assumption",
+      "file": "07.json",
+      "predicted_type": "assumption",
+      "status": "PASS"
+    },
+    {
+      "case_id": "A02",
+      "expected_type": "assumption",
+      "file": "08.json",
+      "predicted_type": "assumption",
+      "status": "PASS"
+    },
+    {
+      "case_id": "A03",
+      "expected_type": "assumption",
+      "file": "09.json",
+      "predicted_type": "clarify",
+      "status": "FAIL"
+    },
+    {
+      "case_id": "X01",
+      "expected_type": "counterexample",
+      "file": "10.json",
+      "predicted_type": "assumption",
+      "status": "FAIL"
+    },
+    {
+      "case_id": "X02",
+      "expected_type": "counterexample",
+      "file": "11.json",
+      "predicted_type": "assumption",
+      "status": "FAIL"
+    },
+    {
+      "case_id": "X03",
+      "expected_type": "counterexample",
+      "file": "12.json",
+      "predicted_type": "counterexample",
+      "status": "PASS"
+    },
+    {
+      "case_id": "V01",
+      "expected_type": "perspective",
+      "file": "13.json",
+      "predicted_type": "perspective",
+      "status": "PASS"
+    },
+    {
+      "case_id": "V02",
+      "expected_type": "perspective",
+      "file": "14.json",
+      "predicted_type": "counterexample",
+      "status": "FAIL"
+    },
+    {
+      "case_id": "V03",
+      "expected_type": "perspective",
+      "file": "15.json",
+      "predicted_type": "counterexample",
+      "status": "FAIL"
+    }
+  ],
+  "failed": 5,
+  "format_errors": 0,
+  "grading_scope": "question_type only; generated question quality not graded",
+  "model_requested": "gpt-4.1-mini",
+  "pass_rate_all_cases": 0.6666666666666666,
+  "passed": 10,
+  "rules_version": "v1.1/zh-TW",
+  "run_id": "1791518729639058800",
+  "total": 15
+}
