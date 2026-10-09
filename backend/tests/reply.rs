@@ -145,7 +145,7 @@ async fn rules_version_is_recorded_on_ai_reply(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(v.as_deref(), Some("v1/zh-TW"));
+    assert_eq!(v.as_deref(), Some(socrates_chat_backend::ai::RULES_VERSION));
 }
 
 #[sqlx::test]

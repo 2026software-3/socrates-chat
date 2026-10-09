@@ -1,0 +1,276 @@
+{
+  "acceptance_note": "Judge outcomes are not an agreed issue acceptance threshold; human spot-check and team review remain required.",
+  "all_cases_judge_pass": false,
+  "api_errors": 0,
+  "cases": [
+    {
+      "acceptable_types": [
+        "clarify"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "C01",
+      "expected_type": "clarify",
+      "file": "01.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "clarify",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "clarify"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "C02",
+      "expected_type": "clarify",
+      "file": "02.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "clarify",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "clarify"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "C03",
+      "expected_type": "clarify",
+      "file": "03.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "clarify",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "reason"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "R01",
+      "expected_type": "reason",
+      "file": "04.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "reason",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "reason"
+      ],
+      "annotation_allowed_match": false,
+      "annotation_preferred_match": false,
+      "case_id": "R02",
+      "expected_type": "reason",
+      "file": "05.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "clarify",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "reason"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "R03",
+      "expected_type": "reason",
+      "file": "06.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "FAIL",
+      "predicted_type": "reason",
+      "status": "JUDGE_FAIL",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "assumption",
+        "counterexample"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "A01",
+      "expected_type": "assumption",
+      "file": "07.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "FAIL",
+      "predicted_type": "assumption",
+      "status": "JUDGE_FAIL",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "assumption",
+        "clarify"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "A02",
+      "expected_type": "assumption",
+      "file": "08.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "assumption",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "assumption",
+        "clarify"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "A03",
+      "expected_type": "assumption",
+      "file": "09.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "assumption",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "counterexample",
+        "assumption"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "X01",
+      "expected_type": "counterexample",
+      "file": "10.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "counterexample",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "counterexample",
+        "assumption"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "X02",
+      "expected_type": "counterexample",
+      "file": "11.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "counterexample",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "counterexample",
+        "assumption"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "X03",
+      "expected_type": "counterexample",
+      "file": "12.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "counterexample",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "perspective",
+        "counterexample"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "V01",
+      "expected_type": "perspective",
+      "file": "13.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "perspective",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "perspective",
+        "counterexample"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "V02",
+      "expected_type": "perspective",
+      "file": "14.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "perspective",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    },
+    {
+      "acceptable_types": [
+        "perspective",
+        "counterexample"
+      ],
+      "annotation_allowed_match": true,
+      "annotation_preferred_match": true,
+      "case_id": "V03",
+      "expected_type": "perspective",
+      "file": "15.json",
+      "format_errors": [],
+      "format_valid": true,
+      "label_consistency": "PASS",
+      "predicted_type": "perspective",
+      "status": "JUDGE_PASS",
+      "strategy_appropriateness": "PASS"
+    }
+  ],
+  "evaluator_version": "f07-eval-v4",
+  "format_errors": 0,
+  "format_valid_count": 15,
+  "format_valid_rate_all_cases": 1.0,
+  "grading_scope": "strict format validation plus blind model classification and suitability review; dataset label matches are reference-only; advance not evaluated",
+  "judge_errors": 0,
+  "judge_failures": 2,
+  "judge_model": "gpt-4.1-mini",
+  "judge_pass_rate_all_cases": 0.8666666666666667,
+  "judge_passes": 13,
+  "judge_version": "f07-rubric-v1/zh-TW",
+  "judged_cases": 15,
+  "label_consistency_rate_judged_cases": 0.8666666666666667,
+  "model_requested": "gpt-4.1-mini",
+  "review_required": 0,
+  "rules_version": "v1.10/zh-TW",
+  "run_id": "1791535258640105500",
+  "schema_version": 4,
+  "strategy_appropriateness_rate_judged_cases": 1.0,
+  "total": 15
+}

@@ -1,0 +1,235 @@
+{
+  "acceptable_label_rate_all_cases": 0.6666666666666666,
+  "acceptable_labels": 10,
+  "api_errors": 0,
+  "cases": [
+    {
+      "acceptable_types": [
+        "clarify"
+      ],
+      "case_id": "C01",
+      "expected_type": "clarify",
+      "file": "01.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "clarify"
+      ],
+      "case_id": "C02",
+      "expected_type": "clarify",
+      "file": "02.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "clarify"
+      ],
+      "case_id": "C03",
+      "expected_type": "clarify",
+      "file": "03.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "reason"
+      ],
+      "case_id": "R01",
+      "expected_type": "reason",
+      "file": "04.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "reason",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "reason"
+      ],
+      "case_id": "R02",
+      "expected_type": "reason",
+      "file": "05.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": false,
+      "status": "UNEXPECTED_LABEL",
+      "strategy_match": false,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "reason"
+      ],
+      "case_id": "R03",
+      "expected_type": "reason",
+      "file": "06.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": false,
+      "status": "UNEXPECTED_LABEL",
+      "strategy_match": false,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "assumption",
+        "counterexample"
+      ],
+      "case_id": "A01",
+      "expected_type": "assumption",
+      "file": "07.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "assumption",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "assumption",
+        "clarify"
+      ],
+      "case_id": "A02",
+      "expected_type": "assumption",
+      "file": "08.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "assumption",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "assumption",
+        "clarify"
+      ],
+      "case_id": "A03",
+      "expected_type": "assumption",
+      "file": "09.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "assumption",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "counterexample",
+        "assumption"
+      ],
+      "case_id": "X01",
+      "expected_type": "counterexample",
+      "file": "10.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "counterexample",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "counterexample",
+        "assumption"
+      ],
+      "case_id": "X02",
+      "expected_type": "counterexample",
+      "file": "11.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": null,
+      "preferred_match": null,
+      "status": "FORMAT_ERROR",
+      "strategy_match": null,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "counterexample",
+        "assumption"
+      ],
+      "case_id": "X03",
+      "expected_type": "counterexample",
+      "file": "12.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "counterexample",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "perspective",
+        "counterexample"
+      ],
+      "case_id": "V01",
+      "expected_type": "perspective",
+      "file": "13.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": false,
+      "status": "UNEXPECTED_LABEL",
+      "strategy_match": false,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "perspective",
+        "counterexample"
+      ],
+      "case_id": "V02",
+      "expected_type": "perspective",
+      "file": "14.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "clarify",
+      "preferred_match": false,
+      "status": "UNEXPECTED_LABEL",
+      "strategy_match": false,
+      "teaching_quality": "NOT_REVIEWED"
+    },
+    {
+      "acceptable_types": [
+        "perspective",
+        "counterexample"
+      ],
+      "case_id": "V03",
+      "expected_type": "perspective",
+      "file": "15.json",
+      "label_consistency": "NOT_REVIEWED",
+      "predicted_type": "perspective",
+      "preferred_match": true,
+      "status": "ACCEPTABLE_LABEL",
+      "strategy_match": true,
+      "teaching_quality": "NOT_REVIEWED"
+    }
+  ],
+  "format_errors": 1,
+  "grading_scope": "declared question_type vs annotated labels only; actual question consistency and teaching quality NOT_REVIEWED",
+  "model_requested": "gpt-4.1-mini",
+  "preferred_match_rate_all_cases": 0.6666666666666666,
+  "preferred_matches": 10,
+  "rules_version": "v1.6/zh-TW",
+  "run_id": "1791528488265435900",
+  "total": 15,
+  "unexpected_labels": 4
+}
