@@ -100,7 +100,7 @@ function AiMessage() {
   return (
     <MessagePrimitive.Root data-role="ai" className="flex flex-col items-start gap-1">
       <span className="text-muted-foreground text-xs">{t('chat.thread.ai')}</span>
-      {hasText ? (
+      {hasText && failure === undefined ? (
         <div className="bg-muted max-w-[85%] rounded-2xl rounded-tl-sm px-4 py-2 text-sm">
           <MessagePrimitive.Parts components={{ Text: PlainText }} />
         </div>
