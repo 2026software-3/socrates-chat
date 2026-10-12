@@ -286,9 +286,7 @@
   - **前端覆蓋率建議用 Vitest 內建 v8 coverage**（`@vitest/coverage-v8`）：做法比照後端，CI 產出 lcov、寫入 job summary 並上傳 artifact，先只報告、不設門檻、不擋 PR；看過第一次實際數字再訂。授權相關畫面（登入、角色守門、「尚未開通」）可另訂較高門檻。覆蓋率不取代情境測試。
 - 詳見 [`frontend/README.md`](../../frontend/README.md)。
 
-## 已實作的功能（原暫定實作，已確認為正式規格）
-
-需求方於 2026-10-12 確認：以下已實作的做法視為正式規格。各項中標明「仍待決定」的部分仍不得自行假設，列於 [`open-decisions.md`](open-decisions.md)。
+## 已實作的功能
 
 ### 論點分布與 6 維分數（S-04、S-02.4）
 
