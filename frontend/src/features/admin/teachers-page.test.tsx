@@ -43,7 +43,9 @@ describe('TeachersPage', () => {
       expect.stringContaining('b@example.com'),
     ])
     expect(screen.getByText('共 2 位教師')).toBeInTheDocument()
-    expect(screen.getByText(/下次登入時成為教師/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/新增教師身分後立即生效/),
+    ).toBeInTheDocument()
   })
 
   it('shows a loading state, then an empty state', async () => {
