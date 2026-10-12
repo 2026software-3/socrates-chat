@@ -192,6 +192,22 @@ describe('student available page', () => {
     expect(await screen.findByText('Activity One')).toBeInTheDocument()
   })
 
+  it('shows the account-not-enrolled message when GET available returns 403', async () => {
+    server.use(
+      http.get('/api/available', () => apiError(403, 'not_enrolled')),
+    )
+
+    renderPage()
+
+    expect(
+      await screen.findByText('你的帳號尚未開通。'),
+    ).toBeInTheDocument()
+
+    expect(
+      screen.getByRole('button', { name: '重試' }),
+    ).toBeInTheDocument()
+  })
+
   it('shows a loading state first', async () => {
     server.use(
       http.get('/api/available', async () => {
