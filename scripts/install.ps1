@@ -2,7 +2,7 @@
 # 檢查 Docker、產生 .env、建置並啟動整個系統（資料庫＋後端＋前端）。
 #
 # 用法：
-#   powershell -ExecutionPolicy RemoteSigned -File scripts\install.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 # 非互動：先以環境變數提供下列必填值即可略過提問。
 #   GOOGLE_CLIENT_ID  GOOGLE_CLIENT_SECRET  ADMIN_EMAILS  OPENAI_API_KEY  OPENAI_MODEL
 # 可選：APP_BASE_URL（預設 http://localhost:3000）、ADMIN_INITIAL_PASSWORD（預設隨機產生）
