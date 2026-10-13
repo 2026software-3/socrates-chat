@@ -1,0 +1,14 @@
+{
+  "name": "socrates-chat-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Black-box end-to-end tests for socrates-chat: a real backend binary + PostgreSQL + a fake OpenAI server, driven over HTTP.",
+  "scripts": {
+    "test": "node --test --test-timeout=120000 tests/"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

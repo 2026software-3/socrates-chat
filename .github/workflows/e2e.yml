@@ -1,0 +1,61 @@
+name: E2E
+
+# 資訊性檢查，不阻擋合併：規格很多、部分功能尚未實作，失敗是預期中的事；超過 3 分鐘也直接放行。
+# 請不要把這個 workflow 設為 required check。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: E2E (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 3
+    env:
+      CARGO_TERM_COLOR: always
+      E2E_ADMIN_DATABASE_URL: postgres://socrates:socrates@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: socrates
+          POSTGRES_PASSWORD: socrates
+          POSTGRES_DB: socrates
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U socrates"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show active-toolchain || rustup toolchain install
+        working-directory: backend
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - run: cargo build --locked
+        working-directory: backend
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm test
+        working-directory: e2e
