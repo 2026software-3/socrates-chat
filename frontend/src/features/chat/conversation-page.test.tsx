@@ -233,7 +233,7 @@ describe('ConversationPage: sending', () => {
     expect(screen.queryByRole('textbox', { name: '訊息輸入' })).not.toBeInTheDocument()
   })
 
-  it('keeps the partial text, shows the error and completes on retry after a mid-stream error', async () => {
+  it('discards partial text, shows the error and completes on retry after a mid-stream error', async () => {
     mockDetail(makeDetail())
     let streams = 0
     server.use(
@@ -248,7 +248,7 @@ describe('ConversationPage: sending', () => {
     renderPage()
     await send('新的想法')
     expect(await screen.findByText('AI 暫時無法回覆。')).toBeInTheDocument()
-    expect(screen.getByText('寫到一半')).toBeInTheDocument()
+    expect(screen.queryByText('寫到一半')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
     expect(await screen.findByText('完整的回覆')).toBeInTheDocument()
     expect(screen.queryByText('寫到一半')).not.toBeInTheDocument()
