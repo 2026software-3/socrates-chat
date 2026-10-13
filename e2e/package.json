@@ -6,7 +6,7 @@
   "type": "module",
   "description": "Black-box end-to-end tests for socrates-chat: a real backend binary + PostgreSQL + a fake OpenAI server, driven over HTTP.",
   "scripts": {
-    "test": "node --test --test-timeout=120000 tests/"
+    "test": "node --test --test-timeout=120000 \"tests/*.e2e.mjs\""
   },
   "engines": {
     "node": ">=22"
