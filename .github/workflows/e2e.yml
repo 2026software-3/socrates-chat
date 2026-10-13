@@ -52,7 +52,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - run: cargo build --locked
+      # Argon2 在未最佳化的 debug 建置下極慢（每次登入數秒），e2e 登入次數多，只最佳化雜湊相關套件以免超過時限
+      - run: cargo build --locked --config 'profile.dev.package.argon2.opt-level=3' --config 'profile.dev.package.blake2.opt-level=3'
         working-directory: backend
       - uses: actions/setup-node@v5
         with:
