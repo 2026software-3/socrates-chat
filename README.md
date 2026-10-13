@@ -57,6 +57,12 @@ cd socrates-chat
 ./scripts/install.sh
 ```
 
+Windows（PowerShell）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
 腳本會依序詢問 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、管理者信箱、`OPENAI_API_KEY`、`OPENAI_MODEL`，產生 `.env`（含隨機的管理者初始密碼），建置並啟動前後端與資料庫，完成後顯示網址（預設 http://localhost:3000）。已有 `.env` 時直接沿用、不覆寫；也可先用同名環境變數提供這些值以非互動執行。停止服務：`docker compose --profile app down`。
 
 ## 手動安裝（Manual）
