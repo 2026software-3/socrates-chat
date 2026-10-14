@@ -307,7 +307,7 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
     let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "我會拉桿").await;
+    seed_student_message(&pool, &conv, "我會拉桿").await;
 
     // 沒有再次確認（電子郵件不符）不能刪
     let res = send(

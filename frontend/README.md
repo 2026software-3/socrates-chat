@@ -24,7 +24,7 @@ npm test           # vitest run
 npm run build
 ```
 
-後端 API 說明見 [`docs/api/mvp-backend-api.md`](../docs/api/mvp-backend-api.md)。
+後端 API 說明見 [`docs/api/api-reference.md`](../docs/api/api-reference.md)。
 
 ## 目錄慣例
 

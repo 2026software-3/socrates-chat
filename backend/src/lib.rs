@@ -32,6 +32,7 @@ pub mod config;
 pub mod dashboard;
 pub mod error;
 pub mod identity;
+pub mod openapi;
 pub mod password;
 pub mod reply;
 pub mod roster;
@@ -81,6 +82,7 @@ struct Health {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/api/openapi.json", get(openapi_json))
         .merge(auth::routes())
         .merge(roster::routes())
         .merge(accounts::routes())
@@ -96,6 +98,10 @@ pub fn app(state: AppState) -> Router {
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))
         .with_state(state)
+}
+
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(openapi::document())
 }
 
 async fn health() -> Json<Health> {

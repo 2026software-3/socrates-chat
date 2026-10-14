@@ -1,4 +1,4 @@
-/** 後端 API 的資料型別。對照 docs/api/mvp-backend-api.md。 */
+/** 後端 API 的資料型別。對照 docs/api/api-reference.md。 */
 
 export type Roles = { admin: boolean; teacher: boolean; student: boolean }
 

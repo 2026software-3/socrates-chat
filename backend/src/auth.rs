@@ -81,7 +81,7 @@ fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// 使用者的角色；每次請求由資料庫載入，不存在 cookie 裡（S-08.2）。
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema)]
 pub struct Roles {
     pub admin: bool,
     pub teacher: bool,
@@ -228,14 +228,22 @@ impl FromRequestParts<AppState> for RequireStudent {
     }
 }
 
-async fn login(State(state): State<AppState>) -> Result<Redirect, ApiError> {
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/login",
+    tag = "auth",
+    summary = "導向 Google 授權頁",
+    security(()),
+    responses((status = 303, description = "重新導向到 Google"), crate::error::CommonErrors)
+)]
+pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, ApiError> {
     let req = state.identity.start();
     auth_store::save_login_state(&state.pool, &req.state, &req.nonce, &req.pkce_verifier).await?;
     Ok(Redirect::to(&req.url))
 }
 
-#[derive(Deserialize)]
-struct CallbackParams {
+#[derive(Deserialize, utoipa::IntoParams)]
+pub(crate) struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
@@ -245,7 +253,19 @@ fn login_error(state: &AppState, code: &str) -> Response {
     Redirect::to(&format!("{}/login?error={code}", state.config.app_base_url)).into_response()
 }
 
-async fn callback(State(state): State<AppState>, Query(p): Query<CallbackParams>) -> Response {
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/callback",
+    tag = "auth",
+    summary = "Google 回呼（成功設定 sid cookie 並導回；失敗導回 /login?error=code）",
+    params(CallbackParams),
+    security(()),
+    responses((status = 303, description = "重新導向"), crate::error::CommonErrors)
+)]
+pub(crate) async fn callback(
+    State(state): State<AppState>,
+    Query(p): Query<CallbackParams>,
+) -> Response {
     match finish_login(&state, p).await {
         Ok(token) => (
             [(
@@ -313,7 +333,18 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     Ok(token)
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    tag = "auth",
+    summary = "登出",
+    security(()),
+    responses((status = 204, description = "已登出"), crate::error::CommonErrors)
+)]
+pub(crate) async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     if let Some(token) = token_from_headers(&headers) {
         auth_store::delete_session(&state.pool, &hash_token(token)).await?;
     }
@@ -324,8 +355,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
         .into_response())
 }
 
-#[derive(Serialize)]
-struct MeResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct MeResponse {
     id: Uuid,
     email: String,
     display_name: Option<String>,
@@ -334,7 +365,14 @@ struct MeResponse {
     roles: Roles,
 }
 
-async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
+#[utoipa::path(
+    get,
+    path = "/api/me",
+    tag = "auth",
+    summary = "目前登入者與角色",
+    responses((status = 200, description = "目前使用者", body = MeResponse), crate::error::CommonErrors)
+)]
+pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
     let u = cu.user;
     Json(MeResponse {
         id: u.id,
@@ -374,18 +412,27 @@ const INVALID_CREDENTIALS: ApiError = ApiError::new(
     "電子郵件或密碼不正確",
 );
 
-#[derive(Deserialize)]
-struct LoginBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct LoginBody {
     email: String,
     password: String,
 }
 
-#[derive(Serialize)]
-struct LoginResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct LoginResponse {
     must_change_password: bool,
 }
 
-async fn password_login(
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    tag = "auth",
+    summary = "內建帳號登入",
+    request_body = LoginBody,
+    security(()),
+    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn password_login(
     State(state): State<AppState>,
     Json(body): Json<LoginBody>,
 ) -> Result<Response, ApiError> {
@@ -428,13 +475,21 @@ async fn password_login(
         .into_response())
 }
 
-#[derive(Deserialize)]
-struct ChangePasswordBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ChangePasswordBody {
     current_password: String,
     new_password: String,
 }
 
-async fn change_password(
+#[utoipa::path(
+    post,
+    path = "/api/auth/change-password",
+    tag = "auth",
+    summary = "更改自己的密碼",
+    request_body = ChangePasswordBody,
+    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn change_password(
     AnyCurrentUser(cu): AnyCurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -468,20 +523,28 @@ async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-struct ResetBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ResetBody {
     email: String,
 }
 
-#[derive(Serialize)]
-struct ResetResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ResetResponse {
     email: String,
     /// 只在這次回應出現，之後無法再查詢。
     temporary_password: String,
 }
 
 /// 管理者重設密碼（產生臨時密碼）；信箱沒有帳號時一併建立。
-async fn reset_password(
+#[utoipa::path(
+    post,
+    path = "/api/admin/users/reset-password",
+    tag = "admin",
+    summary = "重設密碼（僅管理者；沒有帳號就建立）",
+    request_body = ResetBody,
+    responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse), crate::error::CommonErrors)
+)]
+pub(crate) async fn reset_password(
     _: RequireAdmin,
     State(state): State<AppState>,
     Json(body): Json<ResetBody>,

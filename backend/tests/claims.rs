@@ -34,9 +34,9 @@ async fn wait_for_requests(ai: &Arc<FakeAi>, n: usize) {
 }
 
 /// 學生開始並結束一場對話（題目標題為「電車難題」），等 `n` 次 AI 呼叫都完成。
-async fn finish(app: &Router, a: &Actors, ai: &Arc<FakeAi>, n: usize) {
+async fn finish(app: &Router, a: &Actors, ai: &Arc<FakeAi>, pool: &PgPool, n: usize) {
     let conv = start_conversation(app, a).await;
-    student_says(app, a, &conv, "我的想法").await;
+    seed_student_message(pool, &conv, "我的想法").await;
     send(
         app,
         json_req(
@@ -78,10 +78,10 @@ async fn similar_claims_share_a_group_and_the_second_call_sees_existing_names(po
         Reply(vec![Box::leak(s2.into_boxed_str())]),
         Reply(vec!["{\"group\":\" 拉桿 \"}"]),
     ]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
-    finish(&app, &a, &ai, 2).await;
-    finish(&app, &a, &ai, 4).await;
+    finish(&app, &a, &ai, &pool, 2).await;
+    finish(&app, &a, &ai, &pool, 4).await;
 
     let d = class(&app, &a.teacher).await;
     let topic = &d["topics"][0];
@@ -118,9 +118,9 @@ async fn failed_grouping_leaves_the_claim_ungrouped_until_regroup(pool: PgPool) 
         Fail, // 歸群失敗
         Reply(vec!["{\"groups\":[{\"name\":\"拉桿\",\"members\":[1]}]}"]),
     ]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
-    finish(&app, &a, &ai, 2).await;
+    finish(&app, &a, &ai, &pool, 2).await;
 
     // 總結不受影響，只是這場暫時沒有群組
     let d = class(&app, &a.teacher).await;
@@ -146,9 +146,9 @@ async fn regroup_is_for_teachers_and_keeps_old_groups_when_the_ai_fails(pool: Pg
         Reply(vec!["{\"group\":\"拉桿\"}"]),
         Fail,
     ]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
-    finish(&app, &a, &ai, 2).await;
+    finish(&app, &a, &ai, &pool, 2).await;
 
     for (cookie, status) in [
         (Some(a.student.as_str()), StatusCode::FORBIDDEN),
@@ -248,9 +248,9 @@ async fn students_and_teachers_see_the_claim_but_admins_get_the_masked_text(pool
         Reply(vec![Box::leak(s1.into_boxed_str())]),
         Reply(vec!["{\"group\":\"拉桿\"}"]),
     ]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
-    finish(&app, &a, &ai, 2).await;
+    finish(&app, &a, &ai, &pool, 2).await;
 
     let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
     assert_eq!(list[0]["claim"], "該拉桿");

@@ -283,8 +283,31 @@ pub async fn start_conversation(app: &Router, a: &Actors) -> String {
     json_body(res).await["id"].as_str().unwrap().to_string()
 }
 
-/// 學生在對話中送出一則訊息，回傳回應內容。
+/// 學生在對話中送出一則訊息。成功時回應是 SSE：讀完整條串流（等 AI 回覆結束），
+/// 回傳狀態與第一個 `message` 事件的內容；失敗時回傳 JSON 錯誤。
+/// 注意：這會觸發一次 AI 呼叫（消耗假 AI 的腳本）；只想放一則訊息當前置條件時用 `seed_student_message`。
 pub async fn student_says(app: &Router, a: &Actors, conv: &str, text: &str) -> (StatusCode, Value) {
+    let (status, events) = student_says_events(app, a, conv, text).await;
+    match events {
+        Ok(events) => (
+            status,
+            events
+                .into_iter()
+                .find(|(n, _)| n == "message")
+                .map(|(_, d)| d)
+                .unwrap_or(Value::Null),
+        ),
+        Err(body) => (status, body),
+    }
+}
+
+/// 同上，但回傳 SSE 的全部事件（成功）或 JSON 錯誤本文（失敗）。
+pub async fn student_says_events(
+    app: &Router,
+    a: &Actors,
+    conv: &str,
+    text: &str,
+) -> (StatusCode, Result<Vec<(String, Value)>, Value>) {
     let res = send(
         app,
         json_req(
@@ -296,7 +319,27 @@ pub async fn student_says(app: &Router, a: &Actors, conv: &str, text: &str) -> (
     )
     .await;
     let status = res.status();
-    (status, json_body(res).await)
+    if status == StatusCode::OK {
+        (status, Ok(parse_sse(&text_body(res).await)))
+    } else {
+        (status, Err(json_body(res).await))
+    }
+}
+
+/// 直接寫入一則學生訊息當作測試前置條件：不經過 API、不呼叫 AI、不佔用假 AI 的腳本。
+pub async fn seed_student_message(pool: &PgPool, conv: &str, text: &str) {
+    let id: uuid::Uuid = conv.parse().unwrap();
+    sqlx::query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, 'student', $2)")
+        .bind(id)
+        .bind(text)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE conversations SET turn_count = turn_count + 1 WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 /// 建立管理者、教師、名單內學生與名單外帳號並登入。

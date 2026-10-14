@@ -14,7 +14,13 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{AppState, auth::RequireStudent, error::ApiError, summary};
+use crate::{
+    AppState,
+    auth::RequireStudent,
+    error::ApiError,
+    reply::{self, EventStream},
+    summary,
+};
 
 /// 單則訊息的長度上限（字元），避免單次請求過大。
 pub const MAX_MESSAGE_CHARS: usize = 4000;
@@ -26,7 +32,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/messages", post(send_message))
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Conversation {
     pub id: Uuid,
     pub activity_id: Option<Uuid>,
@@ -52,7 +58,7 @@ macro_rules! conversation_select {
     };
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Message {
     pub id: Uuid,
     pub role: String,
@@ -62,20 +68,28 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Deserialize)]
-struct NewConversation {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct NewConversation {
     activity_id: Option<Uuid>,
     topic_id: Option<Uuid>,
 }
 
-#[derive(Serialize)]
-struct Detail {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Detail {
     #[serde(flatten)]
     conversation: Conversation,
     messages: Vec<Message>,
 }
 
-async fn create(
+#[utoipa::path(
+    post,
+    path = "/api/conversations",
+    tag = "conversations",
+    summary = "開始對話（活動或題目）",
+    request_body = NewConversation,
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_source", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Json(b): Json<NewConversation>,
@@ -125,7 +139,14 @@ async fn create(
     Ok((StatusCode::CREATED, Json(c)))
 }
 
-async fn list(
+#[utoipa::path(
+    get,
+    path = "/api/conversations",
+    tag = "conversations",
+    summary = "我的對話列表（不含訊息）",
+    responses((status = 200, description = "對話", body = Vec<Conversation>), crate::error::CommonErrors)
+)]
+pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Conversation>>, ApiError> {
@@ -165,7 +186,15 @@ pub async fn load_messages(
     .await?)
 }
 
-async fn detail(
+#[utoipa::path(
+    get,
+    path = "/api/conversations/{id}",
+    tag = "conversations",
+    summary = "對話與全部訊息",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 200, description = "對話與訊息", body = Detail), crate::error::CommonErrors)
+)]
+pub(crate) async fn detail(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -178,19 +207,28 @@ async fn detail(
     }))
 }
 
-#[derive(Deserialize)]
-struct NewMessage {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct NewMessage {
     content: String,
     #[serde(default)]
     source: Option<String>,
 }
 
-async fn send_message(
+#[utoipa::path(
+    post,
+    path = "/api/conversations/{id}/messages",
+    tag = "conversations",
+    summary = "送出學生訊息並以 SSE 串流 AI 回覆",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    request_body = NewMessage,
+    responses((status = 200, description = "text/event-stream。事件依序：message（保存好的學生訊息，含 auto_ended）；若未達回合上限再接 delta {text}* 與 done {message_id, question_type, stage, suggest_end} 或 error {code}", content_type = "text/event-stream", body = String), (status = 400, description = "invalid_message / invalid_source", body = crate::error::ErrorBody), (status = 409, description = "conversation_ended / reply_in_progress", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn send_message(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(b): Json<NewMessage>,
-) -> Result<(StatusCode, Json<SentMessage>), ApiError> {
+) -> Result<EventStream, ApiError> {
     let content = b.content.trim();
     if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
         return Err(ApiError::bad_request("invalid_message", "訊息長度不符"));
@@ -207,9 +245,11 @@ async fn send_message(
     }
     // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
     let mut tx = state.pool.begin().await?;
-    // AI 正在回覆時不接受新訊息，避免回覆對不上提問
+    // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
+    // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
     let turn: Option<(i32,)> = sqlx::query_as(
-        "UPDATE conversations SET turn_count = turn_count + 1
+        "UPDATE conversations SET turn_count = turn_count + 1,
+                generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
          WHERE id = $1 AND status = 'active'
            AND (generating_since IS NULL
                 OR generating_since < now() - make_interval(secs => $2))
@@ -217,6 +257,7 @@ async fn send_message(
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
+    .bind(state.config.max_turns as i32)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((turn,)) = turn else {
@@ -236,27 +277,39 @@ async fn send_message(
     let auto_ended = turn >= state.config.max_turns as i32
         && summary::end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
-    if auto_ended {
-        summary::spawn_generation(state.clone(), id, 1);
-    }
-    Ok((
-        StatusCode::CREATED,
-        Json(SentMessage {
+    // 第一個事件是保存好的學生訊息；之後才是 AI 回覆的 delta／done／error
+    let first = reply::event(
+        "message",
+        serde_json::to_value(SentMessage {
             message: m,
             auto_ended,
-        }),
-    ))
+        })
+        .map_err(|_| ApiError::internal())?,
+    );
+    if auto_ended {
+        summary::spawn_generation(state.clone(), id, 1);
+        return Ok(reply::single_event(first));
+    }
+    reply::begin_stream(state, cu.user.id, id, first).await
 }
 
-#[derive(Serialize)]
-struct SentMessage {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct SentMessage {
     #[serde(flatten)]
     message: Message,
     /// 這則訊息達到回合上限，對話已自動結束、總結產生中。
     auto_ended: bool,
 }
 
-async fn remove(
+#[utoipa::path(
+    delete,
+    path = "/api/conversations/{id}",
+    tag = "conversations",
+    summary = "刪除我的對話",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 204, description = "已刪除"), crate::error::CommonErrors)
+)]
+pub(crate) async fn remove(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

@@ -216,10 +216,12 @@
 
 - migration 使用 `sqlx migrate`（`backend/migrations/`）。
 - 設定與秘密一律用環境變數；本機用 `.env`（不進版控），並提供 `.env.example`。
+- **API 契約採 OpenAPI 3，用 `utoipa` 由程式碼產生（2026-10 決定）**：各 handler 以 `#[utoipa::path]`、型別以 `ToSchema` 標註，文件公開在 `GET /api/openapi.json`；測試檢查每個已文件化的端點都有對應路由且受保護。人讀的補充說明在 `docs/api/api-reference.md`。
 
 ### S-08.4 對話 API 傳輸方式與錯誤邊界（已決定）
 
 - 對話 API 採 HTTP + SSE 串流；若語音日後需要即時串流，再加 WebSocket。
+- **送出訊息即串流回覆（2026-10 修訂）**：`POST /api/conversations/{id}/messages` 保存學生訊息後，直接以 SSE 回傳 `message`（保存好的學生訊息）→ `delta`／`done`／`error`；不再要求前端另開串流。`GET /api/conversations/{id}/stream` 保留給重試（只重新產生還沒有回覆的 AI 回覆）。理由：兩步式在兩次請求之間斷線，會留下「已計回合但沒有回覆」的訊息。
 
 ## S-09 確認 PostgreSQL 部署與維運責任
 

@@ -31,8 +31,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/admin/users/{email}/enable", post(enable_user))
 }
 
-#[derive(Debug, Serialize, FromRow)]
-struct StudentRow {
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
+pub(crate) struct StudentRow {
     email: String,
     display_name: Option<String>,
     /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
@@ -43,7 +43,14 @@ struct StudentRow {
 }
 
 /// 修課名單上的學生與帳號狀態。
-async fn list_students(
+#[utoipa::path(
+    get,
+    path = "/api/students",
+    tag = "roster",
+    summary = "名單上的學生與帳號狀態",
+    responses((status = 200, description = "學生列表", body = Vec<StudentRow>), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_students(
     _: RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<StudentRow>>, ApiError> {
@@ -93,8 +100,8 @@ fn clean_reason(reason: Option<String>) -> Option<String> {
         .filter(|r| !r.is_empty())
 }
 
-#[derive(Deserialize)]
-struct ReasonBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ReasonBody {
     reason: Option<String>,
 }
 
@@ -107,7 +114,16 @@ fn reason_from(body: &Bytes) -> Option<String> {
     )
 }
 
-async fn disable_user(
+#[utoipa::path(
+    post,
+    path = "/api/admin/users/{email}/disable",
+    tag = "admin",
+    summary = "停用帳號",
+    params(("email" = String, Path, description = "電子郵件")),
+    request_body = Option<ReasonBody>,
+    responses((status = 204, description = "已停用"), (status = 409, description = "cannot_disable_self / last_admin", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn disable_user(
     RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Path(email): Path<String>,
@@ -170,7 +186,16 @@ async fn disable_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn enable_user(
+#[utoipa::path(
+    post,
+    path = "/api/admin/users/{email}/enable",
+    tag = "admin",
+    summary = "復原帳號",
+    params(("email" = String, Path, description = "電子郵件")),
+    request_body = Option<ReasonBody>,
+    responses((status = 204, description = "已復原"), crate::error::CommonErrors)
+)]
+pub(crate) async fn enable_user(
     RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Path(email): Path<String>,
@@ -210,14 +235,23 @@ async fn enable_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-struct DeleteBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct DeleteBody {
     /// 再次確認：必須與路徑上的電子郵件相同（S-02.5）
     confirm_email: String,
 }
 
 /// 刪除學生帳號：一併刪除對話、總結與修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除。
-async fn delete_student(
+#[utoipa::path(
+    post,
+    path = "/api/students/{email}/delete",
+    tag = "roster",
+    summary = "刪除學生帳號與其資料",
+    params(("email" = String, Path, description = "電子郵件")),
+    request_body = DeleteBody,
+    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn delete_student(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(email): Path<String>,

@@ -49,8 +49,8 @@ fn bump(counts: &mut Counts, keys: &[&'static str], value: Option<&str>) {
 }
 
 /// 6 維雷達圖的平均分數（S-04.2，暫定）：只平均有分數的總結；沒有任何分數時各維度為 0、`scored` 為 0。
-#[derive(Serialize, Clone)]
-struct RadarScores {
+#[derive(Serialize, Clone, utoipa::ToSchema)]
+pub(crate) struct RadarScores {
     /// 有 6 維分數的總結數
     scored: i64,
     /// 各學派的平均分數（0–5，取到小數第 2 位）
@@ -112,8 +112,8 @@ impl RadarScores {
     }
 }
 
-#[derive(Serialize)]
-struct Distribution {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Distribution {
     completed: i64,
     frameworks: Counts,
     radar: RadarScores,
@@ -137,8 +137,8 @@ impl Distribution {
 
 // ---- 個人 ----
 
-#[derive(Serialize, FromRow)]
-struct RecentRow {
+#[derive(Serialize, FromRow, utoipa::ToSchema)]
+pub(crate) struct RecentRow {
     conversation_id: Uuid,
     title: String,
     ended_at: Option<DateTime<Utc>>,
@@ -151,8 +151,8 @@ struct RecentRow {
     framework_scores: Option<serde_json::Value>,
 }
 
-#[derive(Serialize)]
-struct Personal {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Personal {
     total_conversations: i64,
     total_turns: i64,
     #[serde(flatten)]
@@ -161,7 +161,14 @@ struct Personal {
     recent: Vec<RecentRow>,
 }
 
-async fn personal(
+#[utoipa::path(
+    get,
+    path = "/api/dashboard/me",
+    tag = "dashboard",
+    summary = "個人儀表板",
+    responses((status = 200, description = "個人統計", body = Personal), crate::error::CommonErrors)
+)]
+pub(crate) async fn personal(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Personal>, ApiError> {
@@ -196,8 +203,8 @@ async fn personal(
 // ---- 班上（教師）----
 
 /// 一個主張群組：AI 把意思相近的主張歸成一群並命名（暫定）。
-#[derive(Serialize)]
-struct ClaimGroupView {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ClaimGroupView {
     /// 群組名稱（AI 命名，用對話語言）；`other` 為 `true` 時沒有名稱，前端顯示「其他」
     name: Option<String>,
     other: bool,
@@ -208,8 +215,8 @@ struct ClaimGroupView {
     radar: RadarScores,
 }
 
-#[derive(Serialize)]
-struct TopicDistribution {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct TopicDistribution {
     title: String,
     #[serde(flatten)]
     distribution: Distribution,
@@ -224,8 +231,8 @@ const MAX_GROUPS: usize = 6;
 /// 每個群組列出的理由數。
 const MAX_REASONS: usize = 5;
 
-#[derive(Serialize)]
-struct Class {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Class {
     /// 管理者身分一律為 `true`：看不到分析結果（S-02.2）
     masked: bool,
     students_total: i64,
@@ -248,7 +255,14 @@ struct ClassRow {
     framework_scores: Option<serde_json::Value>,
 }
 
-async fn class(
+#[utoipa::path(
+    get,
+    path = "/api/dashboard/class",
+    tag = "dashboard",
+    summary = "全班論點分布（只有教師）",
+    responses((status = 200, description = "班級統計", body = Class), crate::error::CommonErrors)
+)]
+pub(crate) async fn class(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<Class>, ApiError> {

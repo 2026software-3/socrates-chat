@@ -1,6 +1,6 @@
 import type { ChatModelAdapter, ChatModelRunResult } from '@assistant-ui/react'
-import { streamReply } from '@/features/chat/sse'
-import { api, isApiError } from '@/lib/api'
+import { type ReplyEvent, sendMessage, streamReply } from '@/features/chat/sse'
+import { isApiError } from '@/lib/api'
 import type { MessageSource, SentMessage, StreamDone } from '@/lib/types'
 
 export type ChatAdapterOptions = {
@@ -20,13 +20,13 @@ function isAbort(e: unknown): boolean {
 }
 
 /**
- * 把後端「POST 訊息 → 開 SSE」的契約包成 assistant-ui 的 ChatModelAdapter。
+ * 把後端「POST 訊息並以 SSE 串流回覆」的契約包成 assistant-ui 的 ChatModelAdapter。
  *
- * 重試語意：學生訊息一旦 POST 成功就記進 `persisted`；之後即使串流失敗（ai_unavailable），
- * 重試只會重新開串流，不會再 POST（否則同一回合會重複計算）。POST 失敗則訊息並未保存，
- * 重試時會再 POST。錯誤不丟出，而是以 incomplete/error 狀態（內容是錯誤碼）交給畫面翻譯。
- * 已知限制：POST 回應遺失（network）時無法分辨伺服器是否已保存；後端沒有 idempotency key，
- * 重試會再 POST 一次。畫面層在失敗時鎖住輸入框，避免在未保存的訊息後再疊訊息。
+ * 重試語意：串流的第一個事件 `message` 代表學生訊息已保存，這時就記進 `persisted`；之後即使
+ * 串流失敗（ai_unavailable），重試只會用 GET 重新開串流，不會再 POST（否則同一回合會重複計算）。
+ * POST 在保存前就失敗（HTTP 錯誤）則訊息並未保存，重試時會再 POST。錯誤不丟出，而是以 incomplete/error 狀態（內容是錯誤碼）交給畫面翻譯。
+ * 已知限制：POST 在收到 `message` 事件前連線中斷（network）時無法分辨伺服器是否已保存；後端沒有
+ * idempotency key，重試會再 POST 一次。畫面層在失敗時鎖住輸入框，避免在未保存的訊息後再疊訊息。
  * 這裡不記錄任何訊息內容。
  */
 export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter {
@@ -36,22 +36,22 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
       const last = messages.at(-1)
       if (!last || last.role !== 'user') return
       try {
-        if (!persisted.has(last.id)) {
-          const content = last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('\n')
-          const source = options.takeSource?.() ?? 'text'
-          const sent = await api.post<SentMessage>(`/api/conversations/${options.conversationId}/messages`, {
-            content,
-            source,
-          })
-          persisted.add(last.id)
-          options.onSent?.(sent)
-          // 達回合上限：對話已自動結束，沒有 AI 回覆可串流
-          if (sent.auto_ended) return
-        }
-        if (abortSignal.aborted) return
         let text = ''
-        for await (const ev of streamReply(options.conversationId, abortSignal)) {
-          if (ev.type === 'delta') {
+        const events: AsyncGenerator<ReplyEvent | { type: 'sent'; sent: SentMessage }> = persisted.has(last.id)
+          ? streamReply(options.conversationId, abortSignal)
+          : sendMessage(
+              options.conversationId,
+              {
+                content: last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('\n'),
+                source: options.takeSource?.() ?? 'text',
+              },
+              abortSignal,
+            )
+        for await (const ev of events) {
+          if (ev.type === 'sent') {
+            persisted.add(last.id)
+            options.onSent?.(ev.sent)
+          } else if (ev.type === 'delta') {
             text += ev.text
             yield { content: [{ type: 'text', text }] }
           } else {

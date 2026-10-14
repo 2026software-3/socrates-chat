@@ -281,9 +281,9 @@ function mockChat(lang: string = 'zh-TW', reply = 'AI 的追問') {
     http.post('/api/conversations/c1/messages', async ({ request }) => {
       const body = (await request.json()) as Posted
       posted.push(body)
-      return HttpResponse.json({ id: `srv-${posted.length}`, role: 'student', ...body, question_type: null, created_at: '2026-03-05T08:01:00Z', auto_ended: false }, { status: 201 })
+      const saved = { id: `srv-${posted.length}`, role: 'student', ...body, question_type: null, created_at: '2026-03-05T08:01:00Z', auto_ended: false }
+      return sse(`event: message\ndata: ${JSON.stringify(saved)}\n\n`, delta(reply), done)
     }),
-    http.get('/api/conversations/c1/stream', () => sse(delta(reply), done)),
   )
   return posted
 }

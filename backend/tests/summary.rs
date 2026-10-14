@@ -49,10 +49,10 @@ async fn end(app: &Router, cookie: &str, conv: &str) -> (StatusCode, Value) {
 #[sqlx::test]
 async fn ending_generates_a_saved_summary(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "我會拉桿，因為五個人比一個人多。").await;
+    seed_student_message(&pool, &conv, "我會拉桿，因為五個人比一個人多。").await;
 
     let (status, body) = end(&app, &a.student, &conv).await;
     assert_eq!(status, StatusCode::ACCEPTED);
@@ -74,14 +74,14 @@ async fn ending_generates_a_saved_summary(pool: PgPool) {
 #[sqlx::test]
 async fn cannot_end_an_empty_conversation_and_ending_twice_is_idempotent(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     let (st, body) = end(&app, &a.student, &conv).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], "empty_conversation");
 
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     assert_eq!(end(&app, &a.student, &conv).await.0, StatusCode::ACCEPTED);
     settled_summary(&app, &a.student, &conv).await;
     assert_eq!(end(&app, &a.student, &conv).await.0, StatusCode::OK);
@@ -92,10 +92,10 @@ async fn cannot_end_an_empty_conversation_and_ending_twice_is_idempotent(pool: P
 async fn failed_summary_is_marked_and_can_be_retried(pool: PgPool) {
     // 第一輪（含自動重試）兩次都失敗，之後手動重試成功
     let ai = FakeAi::with(vec![Fail, Fail, Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
 
     let s = settled_summary(&app, &a.student, &conv).await;
@@ -140,10 +140,10 @@ async fn failed_summary_is_marked_and_can_be_retried(pool: PgPool) {
 #[sqlx::test]
 async fn incomplete_ai_result_counts_as_failure(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![INCOMPLETE]), Reply(vec!["不是 JSON"])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     let s = settled_summary(&app, &a.student, &conv).await;
     assert_eq!(s["status"], "failed");
@@ -153,10 +153,10 @@ async fn incomplete_ai_result_counts_as_failure(pool: PgPool) {
 #[sqlx::test]
 async fn first_attempt_incomplete_then_complete_is_ready(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![INCOMPLETE]), Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     assert_eq!(
         settled_summary(&app, &a.student, &conv).await["status"],
@@ -170,7 +170,7 @@ async fn stale_pending_summary_can_be_retried_but_fresh_one_cannot(pool: PgPool)
     let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     sqlx::query("UPDATE summaries SET status = 'pending', started_at = now()")
         .execute(&pool)
@@ -195,17 +195,19 @@ async fn stale_pending_summary_can_be_retried_but_fresh_one_cannot(pool: PgPool)
 #[sqlx::test]
 async fn reaching_turn_limit_ends_conversation_and_summarises(pool: PgPool) {
     // 測試設定的 max_turns = 5
-    let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    // 前 4 則各觸發一次 AI 回覆，第 5 則直接結束並產生總結
+    let reply = || Reply(vec!["然後呢？"]);
+    let ai = FakeAi::with(vec![reply(), reply(), reply(), reply(), Reply(vec![GOOD])]);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     for i in 1..5 {
         let (st, body) = student_says(&app, &a, &conv, &format!("第{i}則")).await;
-        assert_eq!(st, StatusCode::CREATED);
+        assert_eq!(st, StatusCode::OK);
         assert_eq!(body["auto_ended"], false);
     }
     let (st, body) = student_says(&app, &a, &conv, "第5則").await;
-    assert_eq!(st, StatusCode::CREATED);
+    assert_eq!(st, StatusCode::OK);
     assert_eq!(body["auto_ended"], true);
     assert_eq!(body["content"], "第5則");
 
@@ -231,10 +233,10 @@ async fn reaching_turn_limit_ends_conversation_and_summarises(pool: PgPool) {
 #[sqlx::test]
 async fn summary_endpoints_are_owner_only_and_read_only(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
@@ -293,10 +295,10 @@ async fn summary_endpoints_are_owner_only_and_read_only(pool: PgPool) {
 #[sqlx::test]
 async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "這句是私密的對話原文").await;
+    seed_student_message(&pool, &conv, "這句是私密的對話原文").await;
     // 另一場尚未結束、以及一場失敗的，都不該出現
     let _active = start_conversation(&app, &a).await;
     end(&app, &a.student, &conv).await;
@@ -331,10 +333,10 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
 #[sqlx::test]
 async fn admin_view_of_summaries_is_masked(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
@@ -367,10 +369,10 @@ async fn teacher_summary_list_denies_everyone_else(pool: PgPool) {
 #[sqlx::test]
 async fn deleting_conversation_removes_summary_from_teacher_view(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
     let res = send(
@@ -391,7 +393,7 @@ async fn deleting_conversation_removes_summary_from_teacher_view(pool: PgPool) {
 #[sqlx::test]
 async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     // 管理者同時被加為教師
     send(
@@ -405,7 +407,7 @@ async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
     )
     .await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
@@ -417,7 +419,7 @@ async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
 #[sqlx::test]
 async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD])]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     // 教師不參與討論：不能開對話
     let res = send(
@@ -455,7 +457,7 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
 
     // 學生的對話才會出現
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
@@ -475,7 +477,7 @@ async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
     let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
 
     sqlx::query("UPDATE conversations SET generating_since = now()")
         .execute(&pool)
@@ -516,7 +518,7 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     let app = test_app_with_config(pool.clone(), ai.clone(), config);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     // 等第一代真的拿到 Hang 腳本，重試的第二代才會拿到 Reply
     while ai.request_count() < 1 {
@@ -554,7 +556,7 @@ async fn orphaned_pending_summaries_are_failed_on_startup(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    student_says(&app, &a, &conv, "想法").await;
+    seed_student_message(&pool, &conv, "想法").await;
     sqlx::query("UPDATE conversations SET status = 'ended'")
         .execute(&pool)
         .await

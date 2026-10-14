@@ -31,6 +31,11 @@ const sentMessage = (auto_ended = false) => ({
   auto_ended,
 })
 
+const messageFrame = (auto_ended = false) =>
+  `event: message\ndata: ${JSON.stringify(sentMessage(auto_ended))}\n\n`
+/** `POST …/messages` 的成功回應：先是保存好的學生訊息，其後是 AI 回覆事件。 */
+const postSse = (...frames: string[]) => sse(messageFrame(), ...frames)
+
 function mockDetail(detail: ConversationDetail | ReturnType<typeof apiError>) {
   server.use(http.get('/api/conversations/c1', () => ('messages' in detail ? HttpResponse.json(detail) : detail)))
 }
@@ -149,11 +154,8 @@ describe('ConversationPage: sending', () => {
     server.use(
       http.post('/api/conversations/c1/messages', async ({ request }) => {
         posts.push(await request.json())
-        return HttpResponse.json(sentMessage(), { status: 201 })
+        return postSse(delta('那你'), delta('為什麼這樣想？'), doneFrame({ stage: 2 }))
       }),
-      http.get('/api/conversations/c1/stream', () =>
-        sse(delta('那你'), delta('為什麼這樣想？'), doneFrame({ stage: 2 })),
-      ),
     )
     renderPage()
     await send('新的想法')
@@ -193,9 +195,8 @@ describe('ConversationPage: sending', () => {
     server.use(
       http.post('/api/conversations/c1/messages', () => {
         posts += 1
-        return posts === 1 ? apiError(409, 'reply_in_progress') : HttpResponse.json(sentMessage(), { status: 201 })
+        return posts === 1 ? apiError(409, 'reply_in_progress') : postSse(delta('補上'), doneFrame())
       }),
-      http.get('/api/conversations/c1/stream', () => sse(delta('補上'), doneFrame())),
     )
     renderPage()
     await send('第一則')
@@ -223,8 +224,7 @@ describe('ConversationPage: sending', () => {
   it('switches to the ended view when the stream reports conversation_ended', async () => {
     mockDetail(makeDetail())
     server.use(
-      http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(), { status: 201 })),
-      http.get('/api/conversations/c1/stream', () => sse(errorFrame('conversation_ended'))),
+      http.post('/api/conversations/c1/messages', () => postSse(errorFrame('conversation_ended'))),
     )
     mockSummaries(makeSummary())
     renderPage()
@@ -237,12 +237,10 @@ describe('ConversationPage: sending', () => {
     mockDetail(makeDetail())
     let streams = 0
     server.use(
-      http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(), { status: 201 })),
+      http.post('/api/conversations/c1/messages', () => postSse(delta('寫到一半'), errorFrame('ai_unavailable'))),
       http.get('/api/conversations/c1/stream', () => {
         streams += 1
-        return streams === 1
-          ? sse(delta('寫到一半'), errorFrame('ai_unavailable'))
-          : sse(delta('完整的回覆'), doneFrame())
+        return sse(delta('完整的回覆'), doneFrame())
       }),
     )
     renderPage()
@@ -258,8 +256,7 @@ describe('ConversationPage: sending', () => {
   it('ignores a malformed done frame: the reply stays complete and the stage is unchanged', async () => {
     mockDetail(makeDetail({ stage: 2 }))
     server.use(
-      http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(), { status: 201 })),
-      http.get('/api/conversations/c1/stream', () => sse(delta('完整回覆'), 'event: done\ndata: oops\n\n')),
+      http.post('/api/conversations/c1/messages', () => postSse(delta('完整回覆'), 'event: done\ndata: oops\n\n')),
     )
     renderPage()
     await send('新的想法')
@@ -286,11 +283,11 @@ describe('ConversationPage: sending', () => {
     server.use(
       http.post('/api/conversations/c1/messages', () => {
         posts += 1
-        return HttpResponse.json(sentMessage(), { status: 201 })
+        return postSse(errorFrame('ai_unavailable'))
       }),
       http.get('/api/conversations/c1/stream', () => {
         streams += 1
-        return streams === 1 ? sse(errorFrame('ai_unavailable')) : sse(delta('第二次成功'), doneFrame())
+        return sse(delta('第二次成功'), doneFrame())
       }),
     )
     renderPage()
@@ -299,7 +296,7 @@ describe('ConversationPage: sending', () => {
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
     expect(await screen.findByText('第二次成功')).toBeInTheDocument()
     expect(posts).toBe(1)
-    expect(streams).toBe(2)
+    expect(streams).toBe(1)
     expect(screen.queryByText('AI 暫時無法回覆。')).not.toBeInTheDocument()
     // 學生訊息只出現一次
     expect(screen.getAllByText('新的想法')).toHaveLength(1)
@@ -308,8 +305,20 @@ describe('ConversationPage: sending', () => {
   it('shows the network error text when the connection drops mid-stream', async () => {
     mockDetail(makeDetail())
     server.use(
-      http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(), { status: 201 })),
-      http.get('/api/conversations/c1/stream', () => HttpResponse.error()),
+      // 學生訊息已保存（收到 message 事件）後連線中斷
+      http.post(
+        '/api/conversations/c1/messages',
+        () =>
+          new HttpResponse(
+            new ReadableStream<Uint8Array>({
+              start(c) {
+                c.enqueue(enc.encode(messageFrame()))
+                c.error(new Error('connection dropped'))
+              },
+            }),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+      ),
     )
     renderPage()
     await send('新的想法')
@@ -338,8 +347,7 @@ describe('ConversationPage: suggest end', () => {
   it('shows the wrap-up banner after a done event with suggest_end', async () => {
     mockDetail(makeDetail())
     server.use(
-      http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(), { status: 201 })),
-      http.get('/api/conversations/c1/stream', () => sse(delta('收尾提問'), doneFrame({ suggest_end: true }))),
+      http.post('/api/conversations/c1/messages', () => postSse(delta('收尾提問'), doneFrame({ suggest_end: true }))),
     )
     renderPage()
     await screen.findByRole('textbox', { name: '訊息輸入' })
@@ -360,7 +368,7 @@ describe('ConversationPage: suggest end', () => {
 describe('ConversationPage: ending', () => {
   it('auto_ended: goes straight to the summary without opening a stream', async () => {
     mockDetail(makeDetail())
-    server.use(http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(true), { status: 201 })))
+    server.use(http.post('/api/conversations/c1/messages', () => sse(messageFrame(true))))
     // /stream 沒有 handler：若有請求會因未處理而讓測試失敗
     mockSummaries(makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null }), makeSummary())
     renderPage()
@@ -566,8 +574,7 @@ describe('privacy', () => {
     const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m))
     mockDetail(makeDetail())
     server.use(
-      http.post('/api/conversations/c1/messages', () => HttpResponse.json(sentMessage(), { status: 201 })),
-      http.get('/api/conversations/c1/stream', () => sse(delta('回覆'), doneFrame())),
+      http.post('/api/conversations/c1/messages', () => postSse(delta('回覆'), doneFrame())),
     )
     renderPage()
     await send('新的想法')

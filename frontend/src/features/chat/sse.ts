@@ -1,5 +1,5 @@
 import { ApiError } from '@/lib/api'
-import type { StreamDone } from '@/lib/types'
+import type { SentMessage, StreamDone } from '@/lib/types'
 
 /** 一個完整的 SSE 事件框。 */
 export type SseFrame = { event: string; data: string }
@@ -86,6 +86,8 @@ export async function* readSseFrames(body: ReadableStream<Uint8Array>): AsyncGen
 }
 
 export type ReplyEvent = { type: 'delta'; text: string } | { type: 'done'; done: StreamDone }
+/** `POST …/messages` 的串流事件：先是保存好的學生訊息，之後與重試串流相同。 */
+export type SendEvent = { type: 'sent'; sent: SentMessage } | ReplyEvent
 
 function isAbort(e: unknown, signal?: AbortSignal): boolean {
   return signal?.aborted === true || (e instanceof DOMException && e.name === 'AbortError')
@@ -118,17 +120,25 @@ function isStreamDone(p: unknown): p is StreamDone {
   return (d.stage === 1 || d.stage === 2 || d.stage === 3) && typeof d.suggest_end === 'boolean'
 }
 
+function isSentMessage(p: unknown): p is SentMessage {
+  if (typeof p !== 'object' || p === null) return false
+  const m = p as Record<string, unknown>
+  return typeof m.id === 'string' && typeof m.auto_ended === 'boolean'
+}
+
 /**
- * 開啟 `GET /api/conversations/{id}/stream` 並依序產出 `delta` 與 `done`。
+ * 開啟一條回覆串流（POST 訊息或 GET 重試）並依序產出事件。
  * `error` 事件、HTTP 錯誤、連線中斷或沒有 `done` 就結束，都會丟出帶 `code` 的 ApiError；
- * 中止（abort）則原樣丟出 AbortError。
+ * 中止（abort）則原樣丟出 AbortError。達回合上限時只有 `message` 事件（`auto_ended`），
+ * 沒有 AI 回覆，這時串流正常結束。
  */
-export async function* streamReply(conversationId: string, signal?: AbortSignal): AsyncGenerator<ReplyEvent> {
+async function* openStream(url: string, init: RequestInit, signal?: AbortSignal): AsyncGenerator<SendEvent> {
   let res: Response
   try {
-    res = await fetch(`/api/conversations/${conversationId}/stream`, {
+    res = await fetch(url, {
       credentials: 'same-origin',
-      headers: { Accept: 'text/event-stream' },
+      ...init,
+      headers: { Accept: 'text/event-stream', ...init.headers },
       signal,
     })
   } catch (e) {
@@ -141,7 +151,12 @@ export async function* streamReply(conversationId: string, signal?: AbortSignal)
   try {
     for await (const frame of readSseFrames(res.body)) {
       const payload = parseJson(frame.data) as Record<string, unknown> | undefined
-      if (frame.event === 'delta') {
+      if (frame.event === 'message') {
+        if (!isSentMessage(payload)) throw new ApiError(0, 'internal', '')
+        yield { type: 'sent', sent: payload }
+        // 達回合上限：對話已自動結束，沒有 AI 回覆可等
+        if (payload.auto_ended) return
+      } else if (frame.event === 'delta') {
         if (typeof payload?.text === 'string') yield { type: 'delta', text: payload.text }
       } else if (frame.event === 'done') {
         // 回覆已完整串完；done 內容格式不對時只略過階段更新，不把整則回覆當成失敗
@@ -157,4 +172,24 @@ export async function* streamReply(conversationId: string, signal?: AbortSignal)
     throw new ApiError(0, 'network', '')
   }
   throw new ApiError(0, 'network', '')
+}
+
+/** 送出學生訊息並串流 AI 回覆：`POST /api/conversations/{id}/messages`（S-08.4）。 */
+export function sendMessage(
+  conversationId: string,
+  body: { content: string; source: string },
+  signal?: AbortSignal,
+): AsyncGenerator<SendEvent> {
+  return openStream(
+    `/api/conversations/${conversationId}/messages`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    signal,
+  )
+}
+
+/** 重試：`GET /api/conversations/{id}/stream` 只重新產生還沒有回覆的 AI 回覆。 */
+export async function* streamReply(conversationId: string, signal?: AbortSignal): AsyncGenerator<ReplyEvent> {
+  for await (const ev of openStream(`/api/conversations/${conversationId}/stream`, {}, signal)) {
+    if (ev.type !== 'sent') yield ev
+  }
 }

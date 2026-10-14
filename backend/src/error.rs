@@ -90,3 +90,34 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+
+/// OpenAPI 用的錯誤本文型別（只描述格式，實際輸出見 `ApiError::into_response`）。
+#[derive(utoipa::ToSchema)]
+pub struct ErrorBody {
+    pub error: ErrorDetail,
+}
+
+#[derive(utoipa::ToSchema)]
+pub struct ErrorDetail {
+    /// 錯誤碼，前端依此顯示翻譯文字（S-12.1）
+    pub code: String,
+    pub request_id: String,
+}
+
+/// 幾乎所有需要登入的端點共有的錯誤回應。
+#[derive(utoipa::IntoResponses)]
+#[allow(dead_code)]
+pub enum CommonErrors {
+    /// 未登入（`unauthorized`）
+    #[response(status = 401)]
+    Unauthorized(#[to_schema] ErrorBody),
+    /// 角色不符、名單外、帳號停用、須先改密碼或 CSRF（`forbidden`／`not_enrolled`／`account_disabled`／`password_change_required`／`csrf`）
+    #[response(status = 403)]
+    Forbidden(#[to_schema] ErrorBody),
+    /// 資源不存在或不屬於你（`not_found`）
+    #[response(status = 404)]
+    NotFound(#[to_schema] ErrorBody),
+    /// 系統錯誤（`internal`）
+    #[response(status = 500)]
+    Internal(#[to_schema] ErrorBody),
+}
