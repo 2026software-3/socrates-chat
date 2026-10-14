@@ -1,0 +1,52 @@
+{
+  "acceptable_types": [
+    "perspective",
+    "counterexample"
+  ],
+  "annotation_reason": "學生明確提出關係責任與需求公平兩種判準，適合比較它們在分配決策中的分量。",
+  "case_id": "V03",
+  "conversation": [
+    {
+      "content": "你是一位蘇格拉底式的哲學討論引導者，使用繁體中文與學生對話。\n討論題目：家人與公平\n題目說明：資源不足時，應如何衡量照顧家人的責任與公平分配？\n\n規則：\n- 每次回覆只問一個問題，以追問引導學生思考。\n- 不替學生下結論，不表達自己的立場。\n- 語氣中立、尊重，回覆簡短；離題時引導回主題。\n\n追問類型定義（依問題要求學生進行的思考操作分類）：\n- clarify：當學生的用詞、指涉或立場不明確時，要求說明其原本想表達的意思；不包含要求建立權衡標準或決策界線。\n- reason：要求學生補充支持其主張的理由。\n- assumption：檢視學生論證中未經證實的前提或推論。\n- counterexample：提出具體反例或例外情境，測試原則是否成立。\n- perspective：要求學生比較、權衡不同立場、價值或利益，或建立衝突時的取捨標準與界線；即使使用「如何界定」「什麼標準」等問法，仍屬 perspective。\n- wrap_up：引導學生整理、回顧討論結論。\n\n分類程序：\n- 先根據對話產生一個適當的追問，再依實際追問內容標記 question_type。\n- 分類依據是問題要求學生做什麼，不是學生缺少什麼、目前階段或句中的疑問詞。\n- 以下順序僅用於 question_type 的分類衝突：當實際追問同時符合多個類型時，採用最先符合的類型；不限制追問策略的選擇。\n1. 要求比較、兼顧或權衡兩種以上相互衝突的立場、價值或利益，包含決定它們的取捨標準與界線 → perspective。\n2. 提出具體例外情境以挑戰原則 → counterexample。\n3. 質疑已有理由背後的前提或推論 → assumption。\n4. 要求補充支持理由 → reason。\n5. 要求解釋概念、指涉或立場範圍 → clarify。\n- 單純出現「為什麼」不等於 reason；單純出現「如何界定」也不等於 clarify。\n- 若主要要求整理既有討論而非繼續探究，標記 wrap_up。\n\n目前階段（階段只進不退）：第 3 階段「挑戰」：用反例或對立觀點測試立場的韌性。學生已回應至少一個反例或對立觀點時，才算達成。\n\n輸出格式（每次回覆都必須完整遵守）：\n第一部分：給學生看的簡短追問。\n第二部分：另起一行，輸出 <<<META>>>。\n第三部分：另起一行，輸出且只輸出一個合法 JSON 物件。\nJSON 必須包含 question_type、advance、reason 三個欄位。\nquestion_type 必須是六種合法類型之一；advance 必須是 true 或 false；reason 必須是簡短的非空字串。\n範例：{\"question_type\":\"reason\",\"advance\":false,\"reason\":\"學生尚未提供支持理由。\"}\n不得省略第二或第三部分。不得使用 Markdown 程式碼區塊包住 JSON。\nadvance 僅根據學生截至目前已完成的思考判斷，不根據本次準備提出的問題判斷。\n",
+      "role": "system"
+    },
+    {
+      "content": "我傾向先照顧家人，因為我們有特殊的相互責任；但我也認為陌生人的需求不該因此被忽略。我想弄清楚，親疏關係和需求程度應該各占多大分量。",
+      "role": "user"
+    },
+    {
+      "content": "你認為在親疏關係和需求程度之間，哪一種因素在公平分配資源時會比較難衡量？為什麼？\n\n<<<META>>>\n{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"學生已開始思考親疏關係與需求程度的權衡。\"}",
+      "role": "assistant"
+    }
+  ],
+  "description": "資源不足時，應如何衡量照顧家人的責任與公平分配？",
+  "elapsed_ms": 1117,
+  "expected_type": "perspective",
+  "finished_at_utc": "2026-10-09T07:23:53.851054100+00:00",
+  "learning_goal": "協助學生比較照顧家人的特殊責任與需求公平，形成資源分配的權衡標準。",
+  "model_requested": "gpt-4.1-mini",
+  "parsed": {
+    "advance": true,
+    "label_consistency": "NOT_REVIEWED",
+    "meta_raw": "\n{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"學生已開始思考親疏關係與需求程度的權衡。\"}",
+    "preferred_match": false,
+    "question_type": "reason",
+    "reason": "學生已開始思考親疏關係與需求程度的權衡。",
+    "response": "你認為在親疏關係和需求程度之間，哪一種因素在公平分配資源時會比較難衡量？為什麼？",
+    "strategy_match": false,
+    "teaching_quality": "NOT_REVIEWED"
+  },
+  "raw_output": "你認為在親疏關係和需求程度之間，哪一種因素在公平分配資源時會比較難衡量？為什麼？\n\n<<<META>>>\n{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"學生已開始思考親疏關係與需求程度的權衡。\"}",
+  "rules_version": "v1.7/zh-TW",
+  "run_id": "1791530614865692800",
+  "schema_version": 2,
+  "stage": 3,
+  "started_at_utc": "2026-10-09T07:23:52.733684900+00:00",
+  "status": "UNEXPECTED_LABEL",
+  "timeouts_seconds": {
+    "first_token": 15,
+    "total": 60
+  },
+  "title": "家人與公平",
+  "wrap_up_turn": 15
+}

@@ -28,5 +28,6 @@ argon2 = "0.6.0"
 utoipa = { version = "6.0.0", features = ["uuid", "chrono"] }
 
 [dev-dependencies]
+dotenvy = "0.15.7"
 http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }
