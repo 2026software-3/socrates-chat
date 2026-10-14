@@ -71,7 +71,15 @@ async fn release_generation(state: &AppState, id: Uuid) {
 pub type EventStream = Sse<KeepAliveStream<BoxStream<'static, Result<Event, Infallible>>>>;
 
 /// 重試：學生訊息已保存但還沒有 AI 回覆時，再開一次串流。
-async fn stream(
+#[utoipa::path(
+    get,
+    path = "/api/conversations/{id}/stream",
+    tag = "conversations",
+    summary = "重試：重新串流尚未回覆的 AI 回覆（SSE）",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "conversation_ended / reply_in_progress / nothing_to_reply", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn stream(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

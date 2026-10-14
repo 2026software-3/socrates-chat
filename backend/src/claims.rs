@@ -91,14 +91,22 @@ async fn upsert_group(pool: &PgPool, topic: &str, name: &str) -> Result<Uuid, sq
     Ok(id)
 }
 
-#[derive(Deserialize)]
-struct RegroupBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct RegroupBody {
     /// 要重新分組的題目標題（儀表板上顯示的那個）
     title: String,
 }
 
 /// 教師按「重新分組」：由 AI 把該題目下全部主張重新分一次。管理者看不到分析結果（S-02.2），不能操作。
-async fn regroup(
+#[utoipa::path(
+    post,
+    path = "/api/dashboard/class/regroup",
+    tag = "dashboard",
+    summary = "請 AI 重新分組某題目的主張",
+    request_body = RegroupBody,
+    responses((status = 204, description = "已重新分組"), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn regroup(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Json(body): Json<RegroupBody>,

@@ -191,7 +191,7 @@ async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, 
         .collect())
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct SummaryView {
     pub status: String,
     pub stance: Option<String>,
@@ -217,7 +217,15 @@ async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
         .ok_or_else(ApiError::not_found)
 }
 
-async fn end(
+#[utoipa::path(
+    post,
+    path = "/api/conversations/{id}/end",
+    tag = "summaries",
+    summary = "結束對話並在背景產生總結",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "empty_conversation / reply_in_progress", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn end(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -245,7 +253,15 @@ async fn end(
     Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
 }
 
-async fn get_summary(
+#[utoipa::path(
+    get,
+    path = "/api/conversations/{id}/summary",
+    tag = "summaries",
+    summary = "讀取總結（pending 時請輪詢）",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 200, description = "總結", body = SummaryView), crate::error::CommonErrors)
+)]
+pub(crate) async fn get_summary(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -254,7 +270,15 @@ async fn get_summary(
     Ok(Json(view(&state, id).await?))
 }
 
-async fn retry(
+#[utoipa::path(
+    post,
+    path = "/api/conversations/{id}/summary/retry",
+    tag = "summaries",
+    summary = "總結失敗後重試",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "summary_not_retryable", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn retry(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -288,8 +312,8 @@ async fn retry(
 
 // ---- 教師檢視（F-26）----
 
-#[derive(Debug, Serialize, FromRow)]
-struct TeacherRow {
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
+pub(crate) struct TeacherRow {
     conversation_id: Uuid,
     title: String,
     ended_at: Option<DateTime<Utc>>,
@@ -304,7 +328,14 @@ struct TeacherRow {
 }
 
 /// 所有修課學生已完成對話的總結，每筆連到學生與該場對話；不含對話原文。
-async fn teacher_list(
+#[utoipa::path(
+    get,
+    path = "/api/teacher/summaries",
+    tag = "summaries",
+    summary = "所有學生已完成對話的總結（不含原文）",
+    responses((status = 200, description = "總結", body = Vec<TeacherRow>), crate::error::CommonErrors)
+)]
+pub(crate) async fn teacher_list(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<TeacherRow>>, ApiError> {

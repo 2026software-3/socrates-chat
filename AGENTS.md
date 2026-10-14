@@ -31,7 +31,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
 ## 技術前提（不可超出）
 
 - **已確定**（詳見 [`docs/specs/decisions.md`](docs/specs/decisions.md)）：
-  - 後端：Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing；資料庫 PostgreSQL。
+  - 後端：Rust、Axum、Tokio、SQLx、Serde、reqwest、tracing、utoipa（OpenAPI，`GET /api/openapi.json`，新增端點要加 `#[utoipa::path]`）；資料庫 PostgreSQL。
   - 登入：系統內建電子郵件＋密碼（不開放自行註冊，密碼由管理者重設），並提供 Google 登入；皆由 Rust 自行實作，session 存 PostgreSQL（S-01.1）。
   - AI：OpenAI，後端以單一介面包裝 AI 呼叫，保留更換彈性（S-03.1）。
   - 對話 API：HTTP + SSE 串流（S-08.4），送出訊息的 POST 直接串流 AI 回覆；前端與 API 同網域部署（S-08.1）。

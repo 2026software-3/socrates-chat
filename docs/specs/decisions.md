@@ -216,6 +216,7 @@
 
 - migration 使用 `sqlx migrate`（`backend/migrations/`）。
 - 設定與秘密一律用環境變數；本機用 `.env`（不進版控），並提供 `.env.example`。
+- **API 契約採 OpenAPI 3，用 `utoipa` 由程式碼產生（2026-10 決定）**：各 handler 以 `#[utoipa::path]`、型別以 `ToSchema` 標註，文件公開在 `GET /api/openapi.json`；測試檢查每個已文件化的端點都有對應路由且受保護。人讀的補充說明在 `docs/api/api-reference.md`。
 
 ### S-08.4 對話 API 傳輸方式與錯誤邊界（已決定）
 

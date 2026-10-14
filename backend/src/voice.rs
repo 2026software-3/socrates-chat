@@ -182,18 +182,26 @@ fn iso_language(lang: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(Deserialize)]
-struct TranscribeQuery {
+#[derive(Deserialize, utoipa::IntoParams)]
+pub(crate) struct TranscribeQuery {
     language: String,
 }
 
-#[derive(Serialize)]
-struct Transcript {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Transcript {
     text: String,
 }
 
 /// 辨識上傳的音訊（請求本文就是音訊位元組）；回傳文字，音訊不保存。
-async fn transcribe(
+#[utoipa::path(
+    post,
+    path = "/api/voice/transcribe",
+    tag = "voice",
+    summary = "語音轉文字（請求本文是音訊，上限 10 MB）",
+    params(TranscribeQuery),
+    responses((status = 200, description = "辨識文字", body = Transcript), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn transcribe(
     _: RequireStudent,
     State(state): State<AppState>,
     Query(q): Query<TranscribeQuery>,
@@ -218,14 +226,22 @@ async fn transcribe(
     Ok(Json(Transcript { text }))
 }
 
-#[derive(Deserialize)]
-struct SpeechBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct SpeechBody {
     text: String,
     language: String,
 }
 
 /// 把文字合成語音（mp3）。
-async fn speech(
+#[utoipa::path(
+    post,
+    path = "/api/voice/speech",
+    tag = "voice",
+    summary = "文字轉語音",
+    request_body = SpeechBody,
+    responses((status = 200, description = "audio/mpeg", content_type = "audio/mpeg", body = Vec<u8>), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn speech(
     _: RequireStudent,
     State(state): State<AppState>,
     Json(b): Json<SpeechBody>,

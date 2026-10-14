@@ -32,7 +32,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/messages", post(send_message))
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Conversation {
     pub id: Uuid,
     pub activity_id: Option<Uuid>,
@@ -58,7 +58,7 @@ macro_rules! conversation_select {
     };
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Message {
     pub id: Uuid,
     pub role: String,
@@ -68,20 +68,28 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Deserialize)]
-struct NewConversation {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct NewConversation {
     activity_id: Option<Uuid>,
     topic_id: Option<Uuid>,
 }
 
-#[derive(Serialize)]
-struct Detail {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Detail {
     #[serde(flatten)]
     conversation: Conversation,
     messages: Vec<Message>,
 }
 
-async fn create(
+#[utoipa::path(
+    post,
+    path = "/api/conversations",
+    tag = "conversations",
+    summary = "開始對話（活動或題目）",
+    request_body = NewConversation,
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_source", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Json(b): Json<NewConversation>,
@@ -131,7 +139,14 @@ async fn create(
     Ok((StatusCode::CREATED, Json(c)))
 }
 
-async fn list(
+#[utoipa::path(
+    get,
+    path = "/api/conversations",
+    tag = "conversations",
+    summary = "我的對話列表（不含訊息）",
+    responses((status = 200, description = "對話", body = Vec<Conversation>), crate::error::CommonErrors)
+)]
+pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Conversation>>, ApiError> {
@@ -171,7 +186,15 @@ pub async fn load_messages(
     .await?)
 }
 
-async fn detail(
+#[utoipa::path(
+    get,
+    path = "/api/conversations/{id}",
+    tag = "conversations",
+    summary = "對話與全部訊息",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 200, description = "對話與訊息", body = Detail), crate::error::CommonErrors)
+)]
+pub(crate) async fn detail(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -184,14 +207,23 @@ async fn detail(
     }))
 }
 
-#[derive(Deserialize)]
-struct NewMessage {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct NewMessage {
     content: String,
     #[serde(default)]
     source: Option<String>,
 }
 
-async fn send_message(
+#[utoipa::path(
+    post,
+    path = "/api/conversations/{id}/messages",
+    tag = "conversations",
+    summary = "送出學生訊息並以 SSE 串流 AI 回覆",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    request_body = NewMessage,
+    responses((status = 200, description = "text/event-stream。事件依序：message（保存好的學生訊息，含 auto_ended）；若未達回合上限再接 delta {text}* 與 done {message_id, question_type, stage, suggest_end} 或 error {code}", content_type = "text/event-stream", body = String), (status = 400, description = "invalid_message / invalid_source", body = crate::error::ErrorBody), (status = 409, description = "conversation_ended / reply_in_progress", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn send_message(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -261,15 +293,23 @@ async fn send_message(
     reply::begin_stream(state, cu.user.id, id, first).await
 }
 
-#[derive(Serialize)]
-struct SentMessage {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct SentMessage {
     #[serde(flatten)]
     message: Message,
     /// 這則訊息達到回合上限，對話已自動結束、總結產生中。
     auto_ended: bool,
 }
 
-async fn remove(
+#[utoipa::path(
+    delete,
+    path = "/api/conversations/{id}",
+    tag = "conversations",
+    summary = "刪除我的對話",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 204, description = "已刪除"), crate::error::CommonErrors)
+)]
+pub(crate) async fn remove(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

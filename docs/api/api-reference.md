@@ -1,6 +1,7 @@
 # 後端 API 參考
 
 > 這份文件描述**目前已實作**的後端 API，供前端依循；它不是規格，規則以 [`docs/specs/`](../specs/decisions.md) 為準。
+> 機器可讀的版本是 OpenAPI 3：後端執行時公開在 `GET /api/openapi.json`，由各 handler 的 `#[utoipa::path]` 註解產生（新增或修改端點時要同步更新註解，測試會檢查文件與路由一致）。這份 Markdown 補充註解寫不下的規則與流程。
 > 所有路徑在同一網域的 `/api` 之下（S-08.1）。認證靠 `sid` HttpOnly cookie。
 
 ## 通則

@@ -57,7 +57,7 @@ fn valid_text(s: &str) -> bool {
 
 // ---- 題目庫 ----
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Topic {
     pub id: Uuid,
     pub title: String,
@@ -66,16 +66,16 @@ pub struct Topic {
     pub is_active: bool,
 }
 
-#[derive(Deserialize)]
-struct NewTopic {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct NewTopic {
     title: String,
     #[serde(default)]
     description: String,
     category: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct TopicPatch {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct TopicPatch {
     title: Option<String>,
     description: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
@@ -83,14 +83,28 @@ struct TopicPatch {
     is_active: Option<bool>,
 }
 
-async fn list_all_topics(
+#[utoipa::path(
+    get,
+    path = "/api/admin/topics",
+    tag = "admin",
+    summary = "列出全部題目",
+    responses((status = 200, description = "題目", body = Vec<Topic>), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_all_topics(
     _: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Topic>>, ApiError> {
     list_topics(&state).await
 }
 
-async fn list_topics_for_teacher(
+#[utoipa::path(
+    get,
+    path = "/api/topics",
+    tag = "topics",
+    summary = "列出全部題目",
+    responses((status = 200, description = "題目", body = Vec<Topic>), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_topics_for_teacher(
     _: RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Topic>>, ApiError> {
@@ -106,7 +120,15 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     Ok(Json(rows))
 }
 
-async fn create_topic(
+#[utoipa::path(
+    post,
+    path = "/api/admin/topics",
+    tag = "admin",
+    summary = "新增題目",
+    request_body = NewTopic,
+    responses((status = 201, description = "已建立", body = Topic), crate::error::CommonErrors)
+)]
+pub(crate) async fn create_topic(
     _: RequireAdmin,
     State(state): State<AppState>,
     Json(b): Json<NewTopic>,
@@ -114,7 +136,15 @@ async fn create_topic(
     insert_topic(&state, b).await
 }
 
-async fn create_topic_for_teacher(
+#[utoipa::path(
+    post,
+    path = "/api/topics",
+    tag = "topics",
+    summary = "新增題目",
+    request_body = NewTopic,
+    responses((status = 201, description = "已建立", body = Topic), crate::error::CommonErrors)
+)]
+pub(crate) async fn create_topic_for_teacher(
     _: RequireTeacher,
     State(state): State<AppState>,
     Json(b): Json<NewTopic>,
@@ -141,7 +171,16 @@ async fn insert_topic(
     Ok((StatusCode::CREATED, Json(t)))
 }
 
-async fn update_topic(
+#[utoipa::path(
+    patch,
+    path = "/api/admin/topics/{id}",
+    tag = "admin",
+    summary = "修改題目（merge-patch）",
+    params(("id" = Uuid, Path, description = "題目 ID")),
+    request_body = TopicPatch,
+    responses((status = 200, description = "更新後的題目", body = Topic), crate::error::CommonErrors)
+)]
+pub(crate) async fn update_topic(
     _: RequireAdmin,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -150,7 +189,16 @@ async fn update_topic(
     patch_topic(&state, id, p).await
 }
 
-async fn update_topic_for_teacher(
+#[utoipa::path(
+    patch,
+    path = "/api/topics/{id}",
+    tag = "topics",
+    summary = "修改題目（merge-patch）",
+    params(("id" = Uuid, Path, description = "題目 ID")),
+    request_body = TopicPatch,
+    responses((status = 200, description = "更新後的題目", body = Topic), crate::error::CommonErrors)
+)]
+pub(crate) async fn update_topic_for_teacher(
     _: RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -206,7 +254,7 @@ pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
 
 // ---- 活動 ----
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct Activity {
     pub id: Uuid,
     pub title: String,
@@ -225,16 +273,16 @@ macro_rules! activity_select {
     };
 }
 
-#[derive(Deserialize)]
-struct NewActivity {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct NewActivity {
     title: String,
     #[serde(default)]
     description: String,
     topic_id: Option<Uuid>,
 }
 
-#[derive(Deserialize)]
-struct ActivityPatch {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ActivityPatch {
     title: Option<String>,
     description: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
@@ -249,7 +297,14 @@ async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
     Ok(n > 0)
 }
 
-async fn list_activities(
+#[utoipa::path(
+    get,
+    path = "/api/activities",
+    tag = "activities",
+    summary = "列出活動",
+    responses((status = 200, description = "活動", body = Vec<Activity>), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_activities(
     _: RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Activity>>, ApiError> {
@@ -259,7 +314,15 @@ async fn list_activities(
     Ok(Json(rows))
 }
 
-async fn get_activity(
+#[utoipa::path(
+    get,
+    path = "/api/activities/{id}",
+    tag = "activities",
+    summary = "讀取活動",
+    params(("id" = Uuid, Path, description = "活動 ID")),
+    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+)]
+pub(crate) async fn get_activity(
     _: RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -272,7 +335,15 @@ async fn get_activity(
         .ok_or_else(ApiError::not_found)
 }
 
-async fn create_activity(
+#[utoipa::path(
+    post,
+    path = "/api/activities",
+    tag = "activities",
+    summary = "建立活動（草稿）",
+    request_body = NewActivity,
+    responses((status = 201, description = "已建立", body = Activity), crate::error::CommonErrors)
+)]
+pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Json(b): Json<NewActivity>,
@@ -298,7 +369,16 @@ async fn create_activity(
     Ok((StatusCode::CREATED, Json(a)))
 }
 
-async fn update_activity(
+#[utoipa::path(
+    patch,
+    path = "/api/activities/{id}",
+    tag = "activities",
+    summary = "修改活動（merge-patch）",
+    params(("id" = Uuid, Path, description = "活動 ID")),
+    request_body = ActivityPatch,
+    responses((status = 200, description = "更新後的活動", body = Activity), crate::error::CommonErrors)
+)]
+pub(crate) async fn update_activity(
     _: RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -346,7 +426,15 @@ async fn set_status(
     .ok_or_else(ApiError::not_found)
 }
 
-async fn publish_activity(
+#[utoipa::path(
+    post,
+    path = "/api/activities/{id}/publish",
+    tag = "activities",
+    summary = "發布（或重新開放）活動",
+    params(("id" = Uuid, Path, description = "活動 ID")),
+    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+)]
+pub(crate) async fn publish_activity(
     _: RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -354,7 +442,15 @@ async fn publish_activity(
     set_status(&state, id, "published").await
 }
 
-async fn close_activity(
+#[utoipa::path(
+    post,
+    path = "/api/activities/{id}/close",
+    tag = "activities",
+    summary = "停止開放活動",
+    params(("id" = Uuid, Path, description = "活動 ID")),
+    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+)]
+pub(crate) async fn close_activity(
     _: RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -364,15 +460,22 @@ async fn close_activity(
 
 // ---- 學生可選項目 ----
 
-#[derive(Serialize)]
-struct Available {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Available {
     /// 教師指定的活動（已發布）
     activities: Vec<Activity>,
     /// 題目庫中已啟用的題目
     topics: Vec<Topic>,
 }
 
-async fn available(
+#[utoipa::path(
+    get,
+    path = "/api/available",
+    tag = "activities",
+    summary = "學生可選的活動與題目",
+    responses((status = 200, description = "可選項目", body = Available), crate::error::CommonErrors)
+)]
+pub(crate) async fn available(
     _: RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {

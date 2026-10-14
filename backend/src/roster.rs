@@ -41,13 +41,13 @@ pub fn normalize_email(raw: &str) -> Option<String> {
 
 // ---- 教師（管理者操作）----
 
-#[derive(Deserialize)]
-struct EmailBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct EmailBody {
     email: String,
 }
 
-#[derive(Serialize)]
-struct EmailList {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct EmailList {
     emails: Vec<String>,
 }
 
@@ -61,7 +61,14 @@ async fn list_emails(pool: &PgPool, sql: &'static str) -> Result<Vec<String>, Ap
     Ok(rows.into_iter().map(|(e,)| e).collect())
 }
 
-async fn list_teachers(
+#[utoipa::path(
+    get,
+    path = "/api/admin/teachers",
+    tag = "admin",
+    summary = "列出教師",
+    responses((status = 200, description = "教師信箱", body = EmailList), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_teachers(
     _: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<EmailList>, ApiError> {
@@ -70,7 +77,15 @@ async fn list_teachers(
     }))
 }
 
-async fn add_teacher(
+#[utoipa::path(
+    post,
+    path = "/api/admin/teachers",
+    tag = "admin",
+    summary = "新增教師（重複新增也回 204）",
+    request_body = EmailBody,
+    responses((status = 204, description = "完成"), (status = 400, description = "invalid_email", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn add_teacher(
     _: RequireAdmin,
     State(state): State<AppState>,
     Json(body): Json<EmailBody>,
@@ -84,7 +99,15 @@ async fn add_teacher(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn remove_teacher(
+#[utoipa::path(
+    delete,
+    path = "/api/admin/teachers/{email}",
+    tag = "admin",
+    summary = "移除教師身分",
+    params(("email" = String, Path, description = "電子郵件")),
+    responses((status = 204, description = "已移除"), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn remove_teacher(
     _: RequireAdmin,
     State(state): State<AppState>,
     Path(email): Path<String>,
@@ -106,7 +129,14 @@ async fn delete_email(
 
 // ---- 修課名單（教師或管理者操作）----
 
-async fn list_roster(
+#[utoipa::path(
+    get,
+    path = "/api/roster",
+    tag = "roster",
+    summary = "修課名單",
+    responses((status = 200, description = "名單信箱", body = EmailList), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_roster(
     _: RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<EmailList>, ApiError> {
@@ -115,12 +145,12 @@ async fn list_roster(
     }))
 }
 
-#[derive(Deserialize)]
-struct ImportBody {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ImportBody {
     text: String,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct InvalidLine {
     pub line: usize,
     pub value: String,
@@ -158,8 +188,8 @@ pub fn parse_roster(text: &str) -> ParsedRoster {
     out
 }
 
-#[derive(Serialize)]
-struct ImportResult {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ImportResult {
     added: usize,
     existing: usize,
     invalid: Vec<InvalidLine>,
@@ -167,8 +197,8 @@ struct ImportResult {
     credentials: Vec<Credential>,
 }
 
-#[derive(Serialize)]
-struct Credential {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Credential {
     email: String,
     temporary_password: String,
 }
@@ -188,7 +218,15 @@ async fn is_staff_email(state: &AppState, email: &str) -> Result<bool, ApiError>
     Ok(staff)
 }
 
-async fn import_roster(
+#[utoipa::path(
+    post,
+    path = "/api/roster/import",
+    tag = "roster",
+    summary = "匯入修課名單（只新增）",
+    request_body = ImportBody,
+    responses((status = 200, description = "匯入結果", body = ImportResult), crate::error::CommonErrors)
+)]
+pub(crate) async fn import_roster(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Json(body): Json<ImportBody>,
@@ -229,7 +267,15 @@ async fn import_roster(
     }))
 }
 
-async fn remove_from_roster(
+#[utoipa::path(
+    delete,
+    path = "/api/roster/{email}",
+    tag = "roster",
+    summary = "移出名單（資料保留）",
+    params(("email" = String, Path, description = "電子郵件")),
+    responses((status = 204, description = "已移出"), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn remove_from_roster(
     _: RequireTeacher,
     State(state): State<AppState>,
     Path(email): Path<String>,
