@@ -1,4 +1,4 @@
-# MVP 後端 API 參考
+# 後端 API 參考
 
 > 這份文件描述**目前已實作**的後端 API，供前端依循；它不是規格，規則以 [`docs/specs/`](../specs/decisions.md) 為準。
 > 所有路徑在同一網域的 `/api` 之下（S-08.1）。認證靠 `sid` HttpOnly cookie。
@@ -82,7 +82,7 @@
 | POST | `/api/conversations/{id}/messages` | `{ content, source? }`（`text`／`speech-browser`／`speech-openai`）→ 201 訊息，另有 `auto_ended`（達回合上限，對話已自動結束、總結產生中） |
 | GET | `/api/conversations/{id}/stream` | **SSE**：送出學生訊息後開啟以取得 AI 回覆。事件：`delta` `{text}`、`done` `{message_id, question_type, stage, suggest_end}`、`error` `{code}`（`ai_unavailable`＝顯示「AI 暫時無法回覆」與重試按鈕；重試就是再開一次串流） |
 | POST | `/api/conversations/{id}/end` | 結束對話並在背景產生總結（202；已結束回 200；`empty_conversation` 409；AI 還在回覆時 `reply_in_progress` 409） |
-| GET | `/api/conversations/{id}/summary` | `{ status: pending／ready／failed, stance, reasons, turning_points, position, framework, completed_at }`；`claim` 是學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）；`framework`（主要學派，6 個倫理學派或 `other`）是 AI 標記的輔助標籤，`framework_scores`（`{ utilitarianism, deontology, virtue, contractarianism, care, existentialism }`，各為 0–5 的整數）是 AI 替這份論點總結在 6 個學派維度上打的分數，都是暫定；沒有時為 `null`（分數必須 6 項齊全才採用）；`pending` 時請輪詢 |
+| GET | `/api/conversations/{id}/summary` | `{ status: pending／ready／failed, stance, reasons, claim, framework, framework_scores, completed_at }`；`claim` 是學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）；`framework`（主要學派，6 個倫理學派或 `other`）是 AI 標記的輔助標籤，`framework_scores`（`{ utilitarianism, deontology, virtue, contractarianism, care, existentialism }`，各為 0–5 的整數）是 AI 替這份論點總結在 6 個學派維度上打的分數，都是暫定；沒有時為 `null`（分數必須 6 項齊全才採用）；`pending` 時請輪詢 |
 | POST | `/api/conversations/{id}/summary/retry` | 總結失敗後重試（202；`summary_not_retryable` 409） |
 
 對話錯誤碼：`conversation_ended`（409）、`reply_in_progress`（409，AI 回覆中不接受新訊息或第二條串流）、`nothing_to_reply`（409）、`invalid_message`（400，空白或超過 4000 字元）。
@@ -112,7 +112,7 @@
 
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
-| GET | `/api/teacher/summaries` | 所有修課學生已完成對話的總結：`[{ conversation_id, title, ended_at, student_id, student_name, student_email, stance, reasons, turning_points, position, framework }]`；**不含對話原文**。管理者身分一律看到固定字串 `message` |
+| GET | `/api/teacher/summaries` | 所有修課學生已完成對話的總結：`[{ conversation_id, title, ended_at, student_id, student_name, student_email, stance, reasons, claim, framework, framework_scores }]`；**不含對話原文**。管理者身分一律看到固定字串 `message` |
 
 ## 本機執行
 
