@@ -34,6 +34,7 @@ pub mod error;
 pub mod identity;
 pub mod openapi;
 pub mod password;
+pub mod points;
 pub mod reply;
 pub mod roster;
 pub mod summary;
@@ -93,6 +94,7 @@ pub fn app(state: AppState) -> Router {
         .merge(reply::routes())
         .merge(summary::routes())
         .merge(voice::routes())
+        .merge(points::routes())
         .fallback(fallback)
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
