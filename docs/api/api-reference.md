@@ -1,119 +1,85 @@
-# 後端 API 參考
+# 後端 API 說明
 
-> 這份文件描述**目前已實作**的後端 API，供前端依循；它不是規格，規則以 [`docs/specs/`](../specs/decisions.md) 為準。
-> 機器可讀的版本是 OpenAPI 3：後端執行時公開在 `GET /api/openapi.json`，由各 handler 的 `#[utoipa::path]` 註解產生（新增或修改端點時要同步更新註解，測試會檢查文件與路由一致）。這份 Markdown 補充註解寫不下的規則與流程。
+> 端點清單、路徑、參數與請求／回應欄位**不寫在這裡**，以 OpenAPI 3 為準：後端執行時公開在 `GET /api/openapi.json`，由各 handler 的 `#[utoipa::path]` 註解與型別的 `ToSchema` 產生（新增或修改端點時要同步改註解；`backend/tests/openapi.rs` 檢查已文件化的端點都有路由且受保護）。
+> 這份文件只補 OpenAPI 寫不下的**規則與流程**。它不是規格，規則以 [`docs/specs/`](../specs/decisions.md) 為準。
 > 所有路徑在同一網域的 `/api` 之下（S-08.1）。認證靠 `sid` HttpOnly cookie。
 
 ## 通則
 
 - **CSRF**：`POST`／`PUT`／`PATCH`／`DELETE` 必須帶 `Origin` 標頭，且等於 `APP_BASE_URL`，否則 `403 csrf`（瀏覽器會自動帶）。
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
-- **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`account_disabled`（403，帳號已被管理者停用）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。
+- **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`account_disabled`（403，帳號已被管理者停用）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。各端點特有的錯誤碼寫在 OpenAPI 的 responses 說明。
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`、活動的 `topic_id`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
-- 對話內容只有擁有者讀得到；別人（含教師、管理者）一律 `404`。
+- **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
 
 ## 登入
 
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET | `/api/auth/google/login` | 導向 Google 授權頁（303） |
-| GET | `/api/auth/google/callback` | Google 回呼；成功設定 `sid` cookie 並導回 `APP_BASE_URL`，失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`） |
-| POST | `/api/auth/login` | 內建登入，body `{ email, password }` → `{ must_change_password }` 並設定 `sid` cookie；失敗 401 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一信箱連續失敗 5 次鎖定 15 分鐘，期間回 429 `too_many_attempts` |
-| POST | `/api/auth/change-password` | body `{ current_password, new_password }` → 204；`invalid_current_password`、`invalid_new_password`（長度 8–128）、`password_unchanged`（皆 400）；成功後其他 session 失效 |
-| POST | `/api/auth/logout` | 登出，204 |
-| GET | `/api/me` | `{ id, email, display_name, is_admin, must_change_password, roles: { admin, teacher, student } }`；`must_change_password` 為 `true` 時，前端應導向改密碼頁，其他 API 會回 `password_change_required` |
-
-沒有註冊 API：內建帳號只由系統建立（管理者重設密碼、匯入修課名單、部署時的 `ADMIN_INITIAL_PASSWORD`）。
-
-`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
+- 沒有註冊 API：內建帳號只由系統建立（管理者重設密碼、管理者匯入修課名單、部署時的 `ADMIN_INITIAL_PASSWORD`）。
+- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一信箱連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`。
+- Google 回呼成功設定 `sid` cookie 並導回 `APP_BASE_URL`；失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`）。
+- 用臨時密碼登入時 `must_change_password` 為 `true`：前端導向改密碼頁，除了 `GET /api/me`、改密碼與登出，其他 API 都回 `password_change_required`。旗標在 session 上，不在使用者上。
+- 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
+- `GET /api/me` 的 `roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
 
 ## 管理（管理者）
 
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET／POST | `/api/admin/teachers` | 列出／新增教師，body `{ "email": "..." }`（204，重複新增也 204；`invalid_email` 400） |
-| DELETE | `/api/admin/teachers/{email}` | 移除教師身分（204／404） |
-| POST | `/api/admin/users/reset-password` | body `{ "email": "..." }` → `{ email, temporary_password }`（臨時密碼只出現這一次）；沒有帳號就建立；清除該使用者所有 session 與登入鎖定 |
-| GET／POST | `/api/admin/topics` | 列出全部／新增題目 `{ title, description?, category? }`（201） |
-| PATCH | `/api/admin/topics/{id}` | 修改 `{ title?, description?, category?, is_active? }`；停用後學生看不到 |
-| POST | `/api/admin/users/{email}/disable` | 停用帳號，body `{ reason? }`（204）；立即清除該帳號所有 session，資料保留；`cannot_disable_self`、`last_admin`（409）；寫入稽核日誌 |
-| POST | `/api/admin/users/{email}/enable` | 復原帳號，body `{ reason? }`（204）；寫入稽核日誌 |
+- 重設密碼：臨時密碼**只出現在這次回應**；沒有帳號就建立；同時清除該使用者所有 session 與登入鎖定。
+- 停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
+- 新增教師重複送出也回 204（冪等）。
 
-## 題庫（教師或管理者）
+## 題庫與活動
 
-教師也能放入題目（S-01.3）。介面與管理者的 `/api/admin/topics` 相同：
+- 教師也能放入題目（S-01.3）。`/api/admin/topics` 與 `/api/topics` 目前是同功能的兩組路徑（合併見 issue #292–#294）。
+- 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
+- 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
+- 學生可選清單只含已發布的活動與已啟用的題目。
 
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET／POST | `/api/topics` | 列出全部／新增題目 |
-| PATCH | `/api/topics/{id}` | 修改或啟用／停用 |
+## 修課名單與學生
 
-系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
-
-## 修課名單（教師或管理者）
-
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET | `/api/roster` | `{ emails: [...] }` |
-| POST | `/api/roster/import` | body `{ "text": "每行一個電子郵件（可有 email 標題列）" }` → `{ added, existing, invalid: [{ line, value }], credentials: [{ email, temporary_password }] }`；只新增不移除；`credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次；**只有管理者匯入才會建立**，教師匯入時為空陣列；已有帳號與教師／管理者信箱不在其中） |
-| DELETE | `/api/roster/{email}` | 移出名單（204／404）；資料保留 |
-| GET | `/api/students` | 名單上的學生與帳號狀態：`[{ email, display_name, has_account, disabled, completed_conversations }]`（只有完成對話的數量，沒有內容） |
-| POST | `/api/students/{email}/delete` | 刪除學生帳號（教師或管理者）：body `{ confirm_email }` 必須與路徑的電子郵件相同（`confirmation_mismatch` 400）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student` 409）；寫入稽核日誌（204） |
-
-## 活動（教師或管理者）與學生可選清單
-
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET／POST | `/api/activities` | 列表／建立 `{ title, description?, topic_id? }`（201，狀態 `draft`） |
-| GET／PATCH | `/api/activities/{id}` | 讀取／修改 `{ title?, description?, topic_id? }` |
-| POST | `/api/activities/{id}/publish` | 發布（`status: published`），可重新開放 |
-| POST | `/api/activities/{id}/close` | 停止開放（`status: closed`） |
-| GET | `/api/available` | 學生可選：`{ activities: [已發布活動], topics: [已啟用題目] }` |
+- 匯入只新增、不移除；每行一個電子郵件，可有 `email` 標題列。
+- 匯入結果的 `credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次）。**只有管理者匯入才會建立帳號**，教師匯入時為空陣列；已有帳號與教師／管理者的信箱不在其中。
+- 移出名單不刪資料（重新加回後照舊）。
+- 刪除學生帳號：`confirm_email` 必須與路徑的電子郵件相同（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
+- 學生列表只有完成對話的**數量**，沒有內容。
 
 ## 對話（只有修課名單內的學生）
 
-教師與管理者不參與討論：下列對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
+教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| POST | `/api/conversations` | `{ activity_id }` 或 `{ topic_id }`（201）；來源須為已發布活動／已啟用題目，否則 `400 invalid_source` |
-| GET | `/api/conversations` | 我的對話列表（不含訊息） |
-| GET | `/api/conversations/{id}` | 對話與全部訊息；含 `status`（`active`／`ended`）、`stage`（1–3）、`turn_count`、`converge_ready` |
-| DELETE | `/api/conversations/{id}` | 刪除我的對話（含訊息與總結），204 |
-| POST | `/api/conversations/{id}/messages` | `{ content, source? }`（`text`／`speech-browser`／`speech-openai`）→ **200 SSE**：保存學生訊息後直接串流 AI 回覆（S-08.4）。事件依序：`message`（保存好的學生訊息，欄位同訊息加上 `auto_ended`）；接著 `delta` `{text}`（多次）與 `done` `{message_id, question_type, stage, suggest_end}`，或 `error` `{code}`（`ai_unavailable`＝顯示「AI 暫時無法回覆」與重試按鈕）。`auto_ended` 為 `true`（達回合上限，對話已自動結束、總結產生中）時只有 `message` 事件，沒有 AI 回覆。保存前的失敗（`invalid_message`、`conversation_ended`、`reply_in_progress`…）是一般 JSON 錯誤，不是串流。 |
-| GET | `/api/conversations/{id}/stream` | **SSE，只用於重試**：最後一則是學生訊息、還沒有 AI 回覆時（例如上一次串流失敗或斷線），重新產生回覆。事件：`delta`、`done`、`error`，沒有 `message`。已有回覆回 409 `nothing_to_reply`。 |
-| POST | `/api/conversations/{id}/end` | 結束對話並在背景產生總結（202；已結束回 200；`empty_conversation` 409；AI 還在回覆時 `reply_in_progress` 409） |
-| GET | `/api/conversations/{id}/summary` | `{ status: pending／ready／failed, stance, reasons, claim, framework, framework_scores, completed_at }`；`claim` 是學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）；`framework`（主要學派，6 個倫理學派或 `other`）是 AI 標記的輔助標籤，`framework_scores`（`{ utilitarianism, deontology, virtue, contractarianism, care, existentialism }`，各為 0–5 的整數）是 AI 替這份論點總結在 6 個學派維度上打的分數，都是暫定；沒有時為 `null`（分數必須 6 項齊全才採用）；`pending` 時請輪詢 |
-| POST | `/api/conversations/{id}/summary/retry` | 總結失敗後重試（202；`summary_not_retryable` 409） |
-
-對話錯誤碼：`conversation_ended`（409）、`reply_in_progress`（409，AI 回覆中不接受新訊息或第二條串流）、`nothing_to_reply`（409）、`invalid_message`（400，空白或超過 4000 字元）。
+- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_source`。
+- 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
+- **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
+  1. `message`：保存好的學生訊息，另有 `auto_ended`。
+  2. `delta` `{text}`（多次），再 `done` `{message_id, question_type, stage, suggest_end}`；失敗則 `error` `{code}`（`ai_unavailable`＝顯示「AI 暫時無法回覆」與重試按鈕）。
+  - `auto_ended` 為 `true`（達回合上限，對話已自動結束、總結產生中）時只有 `message` 事件，沒有 AI 回覆。
+  - 保存前的失敗（`invalid_message`、`conversation_ended`、`reply_in_progress`…）是一般 JSON 錯誤，不是串流。
+- **重試**：`GET …/stream`（SSE）只用於「最後一則是學生訊息、還沒有 AI 回覆」（上次串流失敗或斷線）；事件只有 `delta`／`done`／`error`，不會再保存學生訊息。已有回覆回 `409 nothing_to_reply`。
+- 同一場對話同時只有一條回覆在產生：AI 回覆中不接受新訊息或第二條串流（`409 reply_in_progress`）。前端中途斷線時，後端仍會把完整回覆存下來。
+- 結束對話：背景產生總結（首次 202；已結束 200）；沒有訊息時 `empty_conversation`；AI 還在回覆時 `reply_in_progress`。
+- 總結：`status` 為 `pending`／`ready`／`failed`，`pending` 時請輪詢；失敗可用 `summary/retry` 重試（`summary_not_retryable`）。總結不可由學生修改。
+  - `claim`：學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）。
+  - `framework`：主要學派（6 個倫理學派或 `other`），AI 標記的輔助標籤。
+  - `framework_scores`：6 個學派維度各 0–5 的整數；必須 6 項齊全才採用，沒有時為 `null`。以上皆為暫定。
+- 刪除對話會一併刪除訊息與總結。
 
 ## 儀表板
 
-論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，同一題目下再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。`frameworks` 是各主要學派的人數（含 `unclassified`，值可為 0），只是輔助資訊。`radar` 是 6 維雷達圖的平均：`{ scored, max: 5, average: { 各學派: 0–5 平均（小數 2 位） } }`，只平均有 6 維分數的總結，`scored` 是這類總結的數量（沒有時各維度為 0）。
+論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，同一題目下再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。
 
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET | `/api/dashboard/me` | 個人：`{ total_conversations, total_turns, completed, frameworks, radar, recent: [最近完成的 10 場，含 framework_scores] }`，只算自己的資料 |
-| GET | `/api/dashboard/class` | 班上論點分布（只給教師，S-02.4 不設最小群體門檻）：`{ masked, students_total, students_participating, completed, frameworks, radar, topics: [{ title, completed, frameworks, radar, claims, ungrouped }] }`；只有數量與分類，沒有學生身分或內容。管理者身分一律 `masked: true` 且沒有分布（S-02.2）。`claims` 是該題目的主張分布：`[{ name, other, count, reasons, radar }]`，人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`radar` 是該群的 6 維平均。`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組） |
-| POST | `/api/dashboard/class/regroup` | body `{ title }`（題目標題）：教師請 AI 把該題目下全部主張重新分組（204）；沒有可分組的主張回 `409 no_claims`，AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 403 |
+- `frameworks` 是各主要學派的人數（含 `unclassified`，值可為 0），只是輔助資訊。
+- `radar`：6 維雷達圖的平均，`{ scored, max: 5, average }`；只平均有 6 維分數的總結，`scored` 是這類總結的數量（沒有時各維度為 0）。
+- 個人儀表板只算自己的資料。
+- 班上儀表板只給教師（S-02.4 不設最小群體門檻），只有數量與分類，沒有學生身分或內容。管理者身分一律 `masked: true` 且沒有分布（S-02.2）。
+- 題目的 `claims`：人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組）。
+- 重新分組：教師請 AI 把該題目下全部主張重新分組。沒有可分組的主張回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
 
 ## 語音備援（只有修課名單內的學生）
 
-瀏覽器預設用 Web Speech API；不支援時才經這裡呼叫 OpenAI（S-05.3）。**不保存原始音訊**（S-05.4）。具體語音模型尚未決定，沒設定 `OPENAI_STT_MODEL`／`OPENAI_TTS_MODEL` 時回 `503 voice_unavailable`；外部服務失敗回 `502 voice_failed`。
+瀏覽器預設用 Web Speech API；不支援時才經 `/api/voice/*` 呼叫 OpenAI（S-05.3）。**不保存原始音訊**（S-05.4）。具體語音模型尚未決定，沒設定 `OPENAI_STT_MODEL`／`OPENAI_TTS_MODEL` 時回 `503 voice_unavailable`；外部服務失敗回 `502 voice_failed`。語音辨識的請求本文是音訊位元組（`Content-Type: audio/*`，上限 10 MB），`language` 為 `zh-TW`、`en` 或 `es`；合成文字 1–4000 字元。
 
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| POST | `/api/voice/transcribe?language=zh-TW\|en\|es` | 請求本文是音訊位元組（`Content-Type: audio/*`，上限 10 MB）→ `{ text }` |
-| POST | `/api/voice/speech` | body `{ text, language }`（文字 1–4000 字元）→ `audio/mpeg` |
+## 教師檢視
 
-訊息的 `source` 為 `speech-browser`／`speech-openai` 時代表該則訊息是語音輸入（逐字稿，S-05.4）。
-
-## 教師
-
-| 方法 | 路徑 | 說明 |
-| --- | --- | --- |
-| GET | `/api/teacher/summaries` | 所有修課學生已完成對話的總結：`[{ conversation_id, title, ended_at, student_id, student_name, student_email, stance, reasons, claim, framework, framework_scores }]`；**不含對話原文**。管理者身分一律看到固定字串 `message` |
+教師檢視學生的總結**不含對話原文**（S-02.1）。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
 
 ## 本機執行
 
@@ -124,6 +90,8 @@ set -a && . ./.env && set +a   # 後端不會自行讀取 .env，需先載入環
 cd backend
 cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration
 ```
+
+啟動後可從 `http://127.0.0.1:3000/api/openapi.json` 取得 OpenAPI 文件。
 
 要連前端一起跑：在 `frontend/` 執行 `npm ci && npm run build`，並設定 `FRONTEND_DIR=../frontend/dist`，後端就會在同一個網域提供前端（找不到的路徑退回 `index.html`，`/api/*` 仍回 JSON 404）。開發前端時改用 `npm run dev`（Vite 會把 `/api` 轉給本機後端）。
 
