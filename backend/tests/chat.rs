@@ -49,8 +49,9 @@ async fn start(app: &Router, cookie: &str, activity_id: &str) -> String {
     json_body(res).await["id"].as_str().unwrap().to_string()
 }
 
+/// 送出訊息並讀完回應（成功時是 SSE，要等 AI 回覆結束才會釋放對話），回傳狀態碼。
 async fn say(app: &Router, cookie: &str, conv: &str, text: &str) -> StatusCode {
-    send(
+    let res = send(
         app,
         json_req(
             "POST",
@@ -59,8 +60,10 @@ async fn say(app: &Router, cookie: &str, conv: &str, text: &str) -> StatusCode {
             Some(json!({"content": text})),
         ),
     )
-    .await
-    .status()
+    .await;
+    let status = res.status();
+    text_body(res).await;
+    status
 }
 
 #[sqlx::test]
@@ -180,11 +183,11 @@ async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
 
     assert_eq!(
         say(&app, &a.student, &conv, "我會轉向。").await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
     assert_eq!(
         say(&app, &a.student, &conv, "因為五個人比一個人重要。").await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
 
     let d = json_body(
@@ -226,7 +229,7 @@ async fn message_validation(pool: PgPool) {
     );
     assert_eq!(
         say(&app, &a.student, &conv, &"字".repeat(MAX_MESSAGE_CHARS)).await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
     let res = send(
         &app,
@@ -238,7 +241,10 @@ async fn message_validation(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(json_body(res).await["source"], "speech-browser");
+    assert_eq!(res.status(), StatusCode::OK);
+    let events = parse_sse(&text_body(res).await);
+    assert_eq!(events[0].0, "message");
+    assert_eq!(events[0].1["source"], "speech-browser");
     let res = send(
         &app,
         json_req(

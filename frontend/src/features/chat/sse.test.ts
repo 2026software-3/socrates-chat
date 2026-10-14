@@ -2,7 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/lib/api'
 import type { StreamDone } from '@/lib/types'
-import { SseParser, readSseFrames, streamReply, type ReplyEvent } from '@/features/chat/sse'
+import { SseParser, readSseFrames, sendMessage, streamReply, type ReplyEvent } from '@/features/chat/sse'
 import { server } from '@/test/server'
 
 const enc = new TextEncoder()
@@ -157,5 +157,62 @@ describe('streamReply', () => {
     const ctrl = new AbortController()
     ctrl.abort()
     await expect(collect(streamReply('c1', ctrl.signal))).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+describe('sendMessage', () => {
+  const saved = {
+    id: 's1',
+    role: 'student',
+    content: '想法',
+    source: 'text',
+    question_type: null,
+    created_at: '2026-01-01T00:00:00Z',
+    auto_ended: false,
+  }
+  const message = (m = saved) => `event: message\ndata: ${JSON.stringify(m)}\n\n`
+  const body = { content: '想法', source: 'text' }
+
+  it('POSTs the JSON body and yields the saved message, then the reply events', async () => {
+    let posted: unknown
+    server.use(
+      http.post('/api/conversations/c1/messages', async ({ request }) => {
+        posted = await request.json()
+        return sse(message(), 'event: delta\ndata: {"text":"嗨"}\n\n', `event: done\ndata: ${JSON.stringify(done)}\n\n`)
+      }),
+    )
+    const events = await collect(sendMessage('c1', body))
+    expect(posted).toEqual(body)
+    expect(events).toEqual([
+      { type: 'sent', sent: saved },
+      { type: 'delta', text: '嗨' },
+      { type: 'done', done },
+    ])
+  })
+
+  it('ends normally after an auto_ended message (no AI reply follows)', async () => {
+    const last = { ...saved, auto_ended: true }
+    server.use(http.post('/api/conversations/c1/messages', () => sse(message(last))))
+    expect(await collect(sendMessage('c1', body))).toEqual([{ type: 'sent', sent: last }])
+  })
+
+  it('throws the API error code for HTTP errors before any event', async () => {
+    server.use(
+      http.post('/api/conversations/c1/messages', () =>
+        HttpResponse.json({ error: { code: 'reply_in_progress', request_id: 'r1' } }, { status: 409 }),
+      ),
+    )
+    await expect(collect(sendMessage('c1', body))).rejects.toMatchObject({ code: 'reply_in_progress', status: 409 })
+  })
+
+  it('throws after the saved message when the stream ends without done', async () => {
+    server.use(http.post('/api/conversations/c1/messages', () => sse(message())))
+    const seen: string[] = []
+    await expect(
+      (async () => {
+        for await (const ev of sendMessage('c1', body)) seen.push(ev.type)
+      })(),
+    ).rejects.toMatchObject({ code: 'network' })
+    expect(seen).toEqual(['sent'])
   })
 })

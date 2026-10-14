@@ -59,7 +59,7 @@ async fn finished_conversation(app: &Router, a: &Actors, source: Value, pool: &P
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
     let conv = json_body(res).await["id"].as_str().unwrap().to_string();
-    student_says(app, a, &conv, "我的想法").await;
+    seed_student_message(pool, &conv, "我的想法").await;
     send(
         app,
         json_req(

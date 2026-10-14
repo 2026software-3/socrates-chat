@@ -47,34 +47,35 @@ const sent: SentMessage = {
   auto_ended: false,
 }
 
-function mockSend(calls: unknown[], result: SentMessage = sent) {
+const messageFrame = (m: SentMessage = sent) => `event: message\ndata: ${JSON.stringify(m)}\n\n`
+
+/** POST 成功：第一個事件是保存好的學生訊息，其後是 `frames`（AI 回覆事件）。 */
+function mockSend(calls: unknown[], frames: string[] = [], result: SentMessage = sent) {
   server.use(
     http.post('/api/conversations/c1/messages', async ({ request }) => {
       calls.push(await request.json())
-      return HttpResponse.json(result, { status: 201 })
+      return sse(messageFrame(result), ...frames)
     }),
   )
 }
 
 describe('createChatAdapter', () => {
-  it('POSTs the new student message first, then streams the accumulated reply', async () => {
-    const order: string[] = []
+  it('POSTs the new student message and streams the accumulated reply from the same response', async () => {
+    const posts: unknown[] = []
+    let streams = 0
+    mockSend(posts, [delta('你'), delta('好'), doneFrame])
     server.use(
-      http.post('/api/conversations/c1/messages', async ({ request }) => {
-        order.push('post')
-        expect(await request.json()).toEqual({ content: '合成問題', source: 'text' })
-        return HttpResponse.json(sent, { status: 201 })
-      }),
       http.get('/api/conversations/c1/stream', () => {
-        order.push('stream')
-        return sse(delta('你'), delta('好'), doneFrame)
+        streams += 1
+        return sse()
       }),
     )
     const onDone = vi.fn()
     const onSent = vi.fn()
     const adapter = createChatAdapter({ conversationId: 'c1', onDone, onSent })
     const out = await drain(adapter.run(runOptions([userMsg('u1')])))
-    expect(order).toEqual(['post', 'stream'])
+    expect(posts).toEqual([{ content: '合成問題', source: 'text' }])
+    expect(streams).toBe(0)
     expect(out.map((r) => r.content)).toEqual([
       [{ type: 'text', text: '你' }],
       [{ type: 'text', text: '你好' }],
@@ -85,7 +86,7 @@ describe('createChatAdapter', () => {
 
   it('does not stream when the POST says the conversation auto-ended', async () => {
     const calls: unknown[] = []
-    mockSend(calls, { ...sent, auto_ended: true })
+    mockSend(calls, [], { ...sent, auto_ended: true })
     const onSent = vi.fn()
     const adapter = createChatAdapter({ conversationId: 'c1', onSent })
     const out = await drain(adapter.run(runOptions([userMsg('u1')])))
@@ -96,13 +97,11 @@ describe('createChatAdapter', () => {
   it('retry re-opens the stream only: an ai_unavailable error does not cause a second POST', async () => {
     const posts: unknown[] = []
     let streams = 0
-    mockSend(posts)
-    server.use(
-      http.get('/api/conversations/c1/stream', () => {
-        streams += 1
-        return streams === 1 ? sse('event: error\ndata: {"code":"ai_unavailable"}\n\n') : sse(delta('ok'), doneFrame)
-      }),
-    )
+    mockSend(posts, ['event: error\ndata: {"code":"ai_unavailable"}\n\n'])
+    server.use(http.get('/api/conversations/c1/stream', () => {
+      streams += 1
+      return sse(delta('ok'), doneFrame)
+    }))
     const adapter = createChatAdapter({ conversationId: 'c1' })
     const first = await drain(adapter.run(runOptions([userMsg('u1')])))
     expect(first).toEqual([{ status: { type: 'incomplete', reason: 'error', error: 'ai_unavailable' } }])
@@ -110,7 +109,7 @@ describe('createChatAdapter', () => {
     const second = await drain(adapter.run(runOptions([userMsg('u1')])))
     expect(second.at(-1)?.content).toEqual([{ type: 'text', text: 'ok' }])
     expect(posts).toHaveLength(1)
-    expect(streams).toBe(2)
+    expect(streams).toBe(1)
   })
 
   it('POSTs again after a failed POST (the message was not saved)', async () => {
@@ -118,9 +117,8 @@ describe('createChatAdapter', () => {
     server.use(
       http.post('/api/conversations/c1/messages', () => {
         posts += 1
-        return posts === 1 ? apiError(400, 'invalid_message') : HttpResponse.json(sent, { status: 201 })
+        return posts === 1 ? apiError(400, 'invalid_message') : sse(messageFrame(), delta('ok'), doneFrame)
       }),
-      http.get('/api/conversations/c1/stream', () => sse(delta('ok'), doneFrame)),
     )
     const adapter = createChatAdapter({ conversationId: 'c1' })
     const first = await drain(adapter.run(runOptions([userMsg('u1')])))
@@ -162,12 +160,7 @@ describe('createChatAdapter', () => {
   })
 
   it('reports conversation_ended from the stream via onEnded', async () => {
-    mockSend([])
-    server.use(
-      http.get('/api/conversations/c1/stream', () =>
-        sse(`event: error\ndata: ${JSON.stringify({ code: 'conversation_ended' })}\n\n`),
-      ),
-    )
+    mockSend([], [`event: error\ndata: ${JSON.stringify({ code: 'conversation_ended' })}\n\n`])
     const onEnded = vi.fn()
     const adapter = createChatAdapter({ conversationId: 'c1', onEnded })
     await drain(adapter.run(runOptions([userMsg('u1')])))
@@ -175,8 +168,7 @@ describe('createChatAdapter', () => {
   })
 
   it('does not fail a completed reply when the onDone callback throws', async () => {
-    mockSend([])
-    server.use(http.get('/api/conversations/c1/stream', () => sse(delta('完整'), doneFrame)))
+    mockSend([], [delta('完整'), doneFrame])
     const adapter = createChatAdapter({
       conversationId: 'c1',
       onDone: () => {

@@ -14,7 +14,13 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{AppState, auth::RequireStudent, error::ApiError, summary};
+use crate::{
+    AppState,
+    auth::RequireStudent,
+    error::ApiError,
+    reply::{self, EventStream},
+    summary,
+};
 
 /// 單則訊息的長度上限（字元），避免單次請求過大。
 pub const MAX_MESSAGE_CHARS: usize = 4000;
@@ -190,7 +196,7 @@ async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(b): Json<NewMessage>,
-) -> Result<(StatusCode, Json<SentMessage>), ApiError> {
+) -> Result<EventStream, ApiError> {
     let content = b.content.trim();
     if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
         return Err(ApiError::bad_request("invalid_message", "訊息長度不符"));
@@ -207,9 +213,11 @@ async fn send_message(
     }
     // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
     let mut tx = state.pool.begin().await?;
-    // AI 正在回覆時不接受新訊息，避免回覆對不上提問
+    // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
+    // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
     let turn: Option<(i32,)> = sqlx::query_as(
-        "UPDATE conversations SET turn_count = turn_count + 1
+        "UPDATE conversations SET turn_count = turn_count + 1,
+                generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
          WHERE id = $1 AND status = 'active'
            AND (generating_since IS NULL
                 OR generating_since < now() - make_interval(secs => $2))
@@ -217,6 +225,7 @@ async fn send_message(
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
+    .bind(state.config.max_turns as i32)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((turn,)) = turn else {
@@ -236,16 +245,20 @@ async fn send_message(
     let auto_ended = turn >= state.config.max_turns as i32
         && summary::end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
-    if auto_ended {
-        summary::spawn_generation(state.clone(), id, 1);
-    }
-    Ok((
-        StatusCode::CREATED,
-        Json(SentMessage {
+    // 第一個事件是保存好的學生訊息；之後才是 AI 回覆的 delta／done／error
+    let first = reply::event(
+        "message",
+        serde_json::to_value(SentMessage {
             message: m,
             auto_ended,
-        }),
-    ))
+        })
+        .map_err(|_| ApiError::internal())?,
+    );
+    if auto_ended {
+        summary::spawn_generation(state.clone(), id, 1);
+        return Ok(reply::single_event(first));
+    }
+    reply::begin_stream(state, cu.user.id, id, first).await
 }
 
 #[derive(Serialize)]

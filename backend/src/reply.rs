@@ -1,7 +1,8 @@
 //! AI 回覆串流（F-06.2、F-06.4、F-07；規格見 S-03.2、S-03.5、S-08.1、S-08.4）。
 //!
-//! 學生訊息先由 `POST /api/conversations/{id}/messages` 保存；前端再開啟
-//! `GET /api/conversations/{id}/stream`（SSE）取得 AI 回覆。重試按鈕就是再開一次串流。
+//! `POST /api/conversations/{id}/messages` 保存學生訊息後，直接以 SSE 串流 AI 回覆
+//! （`chat::send_message` 呼叫 `begin_stream`）。`GET /api/conversations/{id}/stream` 只用於
+//! 重試：最後一則是學生訊息、還沒有 AI 回覆時，再開一次串流。
 //! 即使前端中途斷線，後端仍會把完整回覆存下來。
 //!
 //! 同一場對話同時間只允許一條回覆串流：開始前在資料庫原子 claim（`generating_since`），
@@ -12,10 +13,10 @@ use std::convert::Infallible;
 use axum::{
     Router,
     extract::{Path, State},
-    response::sse::{Event, KeepAlive, Sse},
+    response::sse::{Event, KeepAlive, KeepAliveStream, Sse},
     routing::get,
 };
-use futures_util::{Stream, StreamExt};
+use futures_util::{StreamExt, stream::BoxStream};
 use serde_json::json;
 use tokio::{
     sync::mpsc,
@@ -42,10 +43,6 @@ pub fn routes() -> Router<AppState> {
 /// 事件通道不設上限：一則回覆很小，且這樣慢速客戶端不會拖住 AI 的逾時計時。
 type EventTx = mpsc::UnboundedSender<Event>;
 
-fn event(name: &str, data: serde_json::Value) -> Event {
-    Event::default().event(name).data(data.to_string())
-}
-
 /// 嘗試取得這場對話的「正在產生回覆」權利；已有進行中的回覆時回傳 `false`。
 pub async fn claim_generation(state: &AppState, id: Uuid) -> Result<bool, sqlx::Error> {
     let r = sqlx::query(
@@ -71,11 +68,14 @@ async fn release_generation(state: &AppState, id: Uuid) {
     }
 }
 
+pub type EventStream = Sse<KeepAliveStream<BoxStream<'static, Result<Event, Infallible>>>>;
+
+/// 重試：學生訊息已保存但還沒有 AI 回覆時，再開一次串流。
 async fn stream(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<EventStream, ApiError> {
     let conversation = owned_conversation(&state, cu.user.id, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
@@ -96,12 +96,59 @@ async fn stream(
         release_generation(&state, id).await;
         return Err(ApiError::conflict("nothing_to_reply", "沒有待回覆的訊息"));
     }
+    Ok(spawn_stream(state, conversation, messages, None))
+}
+
+/// 學生訊息剛保存、且呼叫端已取得產生權利（`generating_since`）時，開始串流 AI 回覆。
+/// `first` 是串流的第一個事件（保存好的學生訊息）。載入失敗時釋放 claim 並回傳錯誤。
+pub async fn begin_stream(
+    state: AppState,
+    user_id: Uuid,
+    id: Uuid,
+    first: Event,
+) -> Result<EventStream, ApiError> {
+    let loaded = async {
+        let conversation = owned_conversation(&state, user_id, id).await?;
+        let messages = load_messages(&state, id).await?;
+        Ok::<_, ApiError>((conversation, messages))
+    }
+    .await;
+    match loaded {
+        Ok((conversation, messages)) => {
+            Ok(spawn_stream(state, conversation, messages, Some(first)))
+        }
+        Err(e) => {
+            release_generation(&state, id).await;
+            Err(e)
+        }
+    }
+}
+
+/// 只送出一個事件就結束的串流（例如達回合上限、沒有 AI 回覆時）。
+pub fn single_event(first: Event) -> EventStream {
+    Sse::new(futures_util::stream::once(async move { Ok(first) }).boxed())
+        .keep_alive(KeepAlive::default())
+}
+
+fn spawn_stream(
+    state: AppState,
+    conversation: Conversation,
+    messages: Vec<Message>,
+    first: Option<Event>,
+) -> EventStream {
     let (tx, rx) = mpsc::unbounded_channel();
+    if let Some(first) = first {
+        let _ = tx.send(first);
+    }
     tokio::spawn(async move {
         generate(&state, &conversation, &messages, &tx).await;
         release_generation(&state, conversation.id).await;
     });
-    Ok(Sse::new(UnboundedReceiverStream::new(rx).map(Ok)).keep_alive(KeepAlive::default()))
+    Sse::new(UnboundedReceiverStream::new(rx).map(Ok).boxed()).keep_alive(KeepAlive::default())
+}
+
+pub fn event(name: &str, data: serde_json::Value) -> Event {
+    Event::default().event(name).data(data.to_string())
 }
 
 async fn generate(state: &AppState, conv: &Conversation, messages: &[Message], tx: &EventTx) {

@@ -56,7 +56,8 @@ async fn setup(pool: PgPool, scripts: Vec<Script>) -> Setup {
     Setup { app, a, ai, conv }
 }
 
-async fn say(s: &Setup, text: &str) {
+/// 送出學生訊息並讀完回應（SSE）：第一個事件是保存好的學生訊息，其餘（delta／done／error）回傳。
+async fn say(s: &Setup, text: &str) -> Vec<(String, Value)> {
     let res = send(
         &s.app,
         json_req(
@@ -67,7 +68,14 @@ async fn say(s: &Setup, text: &str) {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut events = parse_sse(&text_body(res).await);
+    let (name, saved) = events.remove(0);
+    assert_eq!(name, "message");
+    assert_eq!(saved["role"], "student");
+    assert_eq!(saved["content"], text);
+    assert_eq!(saved["auto_ended"], false);
+    events
 }
 
 async fn stream_events(s: &Setup) -> Vec<(String, Value)> {
@@ -106,8 +114,7 @@ const REPLY: [&str; 3] = [
 #[sqlx::test]
 async fn streams_reply_saves_it_and_hides_meta(pool: PgPool) {
     let s = setup(pool, vec![Reply(REPLY.to_vec())]).await;
-    say(&s, "我認為應該拉桿。").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "我認為應該拉桿。").await;
 
     let deltas: String = events
         .iter()
@@ -139,7 +146,6 @@ async fn streams_reply_saves_it_and_hides_meta(pool: PgPool) {
 async fn rules_version_is_recorded_on_ai_reply(pool: PgPool) {
     let s = setup(pool.clone(), vec![Reply(REPLY.to_vec())]).await;
     say(&s, "嗨").await;
-    stream_events(&s).await;
     let (v,): (Option<String>,) =
         sqlx::query_as("SELECT rules_version FROM messages WHERE role = 'ai'")
             .fetch_one(&pool)
@@ -162,17 +168,13 @@ async fn stage_advances_one_step_at_a_time_and_never_back(pool: PgPool) {
     };
     let s = setup(pool, vec![adv(), stay(), adv(), adv()]).await;
 
-    say(&s, "一").await;
-    assert_eq!(stream_events(&s).await.last().unwrap().1["stage"], 2);
-    say(&s, "二").await;
-    assert_eq!(stream_events(&s).await.last().unwrap().1["stage"], 2); // 不退回、也不跳級
-    say(&s, "三").await;
-    let done = stream_events(&s).await.last().unwrap().1.clone();
+    assert_eq!(say(&s, "一").await.last().unwrap().1["stage"], 2);
+    assert_eq!(say(&s, "二").await.last().unwrap().1["stage"], 2); // 不退回、也不跳級
+    let done = say(&s, "三").await.last().unwrap().1.clone();
     assert_eq!(done["stage"], 3);
     assert_eq!(done["suggest_end"], false);
     // 第 3 階段達成條件 → 符合收斂條件
-    say(&s, "四").await;
-    let done = stream_events(&s).await.last().unwrap().1.clone();
+    let done = say(&s, "四").await.last().unwrap().1.clone();
     assert_eq!(done["stage"], 3);
     assert_eq!(done["suggest_end"], true);
     assert_eq!(detail(&s).await["converge_ready"], true);
@@ -181,8 +183,7 @@ async fn stage_advances_one_step_at_a_time_and_never_back(pool: PgPool) {
 #[sqlx::test]
 async fn bad_meta_keeps_stage_and_still_saves_reply(pool: PgPool) {
     let s = setup(pool, vec![Reply(vec!["只有文字，沒有結構化段落"])]).await;
-    say(&s, "嗨").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "嗨").await;
     assert_eq!(events.last().unwrap().0, "done");
     assert_eq!(events.last().unwrap().1["stage"], 1);
     assert_eq!(detail(&s).await["messages"].as_array().unwrap().len(), 2);
@@ -191,8 +192,7 @@ async fn bad_meta_keeps_stage_and_still_saves_reply(pool: PgPool) {
 #[sqlx::test]
 async fn retries_once_when_nothing_was_streamed(pool: PgPool) {
     let s = setup(pool, vec![Fail, Reply(REPLY.to_vec())]).await;
-    say(&s, "嗨").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "嗨").await;
     assert_eq!(events.last().unwrap().0, "done");
     assert_eq!(s.ai.request_count(), 2);
 }
@@ -200,8 +200,7 @@ async fn retries_once_when_nothing_was_streamed(pool: PgPool) {
 #[sqlx::test]
 async fn gives_up_after_one_retry_and_keeps_student_message(pool: PgPool) {
     let s = setup(pool, vec![Fail, Fail, Reply(REPLY.to_vec())]).await;
-    say(&s, "我的想法很長很長").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "我的想法很長很長").await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, "error");
     assert_eq!(events[0].1["code"], "ai_unavailable");
@@ -225,8 +224,7 @@ async fn mid_stream_failure_is_not_retried_and_discards_partial(pool: PgPool) {
         vec![FailAfter(vec!["講到一半"]), Reply(REPLY.to_vec())],
     )
     .await;
-    say(&s, "嗨").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "嗨").await;
     assert_eq!(events.last().unwrap().0, "error");
     assert_eq!(s.ai.request_count(), 1);
     // 部分內容不會被保存
@@ -236,8 +234,7 @@ async fn mid_stream_failure_is_not_retried_and_discards_partial(pool: PgPool) {
 #[sqlx::test]
 async fn first_token_timeout_counts_as_failure_and_retries(pool: PgPool) {
     let s = setup(pool, vec![Hang, Hang]).await;
-    say(&s, "嗨").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "嗨").await;
     assert_eq!(events.last().unwrap().1["code"], "ai_unavailable");
     assert_eq!(s.ai.request_count(), 2);
 }
@@ -250,7 +247,6 @@ async fn nothing_to_reply_when_last_message_is_ai(pool: PgPool) {
     let res = send(&s.app, get(&url, Some(&s.a.student))).await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
     say(&s, "嗨").await;
-    stream_events(&s).await;
     // 已經回覆過，不會重複產生
     let res = send(&s.app, get(&url, Some(&s.a.student))).await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
@@ -261,7 +257,7 @@ async fn nothing_to_reply_when_last_message_is_ai(pool: PgPool) {
 #[sqlx::test]
 async fn stream_rejects_ended_conversation(pool: PgPool) {
     let s = setup(pool.clone(), vec![]).await;
-    say(&s, "嗨").await;
+    seed_student_message(&pool, &s.conv, "嗨").await;
     sqlx::query("UPDATE conversations SET status = 'ended'")
         .execute(&pool)
         .await
@@ -292,7 +288,6 @@ async fn prompt_asks_to_wrap_up_from_configured_turn(pool: PgPool) {
     .await;
     for t in ["一", "二", "三"] {
         say(&s, t).await;
-        stream_events(&s).await;
     }
     let reqs = s.ai.requests.lock().unwrap();
     assert!(!reqs[1].system.contains("開始引導學生整理"));
@@ -303,8 +298,8 @@ async fn prompt_asks_to_wrap_up_from_configured_turn(pool: PgPool) {
 
 #[sqlx::test]
 async fn stream_is_owner_only(pool: PgPool) {
-    let s = setup(pool, vec![Reply(REPLY.to_vec())]).await;
-    say(&s, "嗨").await;
+    let s = setup(pool.clone(), vec![Reply(REPLY.to_vec())]).await;
+    seed_student_message(&pool, &s.conv, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
     for cookie in [&s.a.teacher, &s.a.admin] {
         // 教師與管理者不參與討論
@@ -328,7 +323,7 @@ async fn stream_is_owner_only(pool: PgPool) {
 #[sqlx::test]
 async fn only_one_reply_stream_per_conversation(pool: PgPool) {
     let s = setup(pool.clone(), vec![Reply(REPLY.to_vec())]).await;
-    say(&s, "嗨").await;
+    seed_student_message(&pool, &s.conv, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
 
     // 已有進行中的回覆：第二條串流與新訊息都被擋下，且不會呼叫 AI
@@ -370,7 +365,7 @@ async fn only_one_reply_stream_per_conversation(pool: PgPool) {
 #[sqlx::test]
 async fn concurrent_second_stream_is_rejected_while_first_runs(pool: PgPool) {
     let s = setup(pool.clone(), vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
-    say(&s, "嗨").await;
+    seed_student_message(&pool, &s.conv, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
 
     let (app, cookie, url1) = (s.app.clone(), s.a.student.clone(), url.clone());
@@ -409,8 +404,7 @@ async fn judgement_reason_is_stored_but_never_streamed(pool: PgPool) {
         ])],
     )
     .await;
-    say(&s, "嗨").await;
-    let events = stream_events(&s).await;
+    let events = say(&s, "嗨").await;
     assert!(!format!("{events:?}").contains("尚未說明關鍵詞"));
     let (r,): (Option<String>,) =
         sqlx::query_as("SELECT advance_reason FROM messages WHERE role = 'ai'")
@@ -425,7 +419,61 @@ async fn judgement_reason_is_stored_but_never_streamed(pool: PgPool) {
 async fn failure_after_only_hidden_meta_prefix_still_retries(pool: PgPool) {
     // 只收到分隔標記的前綴就失敗：學生什麼都還沒看到，可以自動重試
     let s = setup(pool, vec![FailAfter(vec!["<<<MET"]), Reply(REPLY.to_vec())]).await;
-    say(&s, "嗨").await;
-    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+    assert_eq!(say(&s, "嗨").await.last().unwrap().0, "done");
     assert_eq!(s.ai.request_count(), 2);
+}
+
+#[sqlx::test]
+async fn posting_a_message_holds_the_claim_until_the_reply_finishes(pool: PgPool) {
+    let s = setup(pool.clone(), vec![Hang, Hang]).await;
+    let url = format!("/api/conversations/{}/messages", s.conv);
+
+    let (app, cookie, url1) = (s.app.clone(), s.a.student.clone(), url.clone());
+    let first = tokio::spawn(async move {
+        let req = json_req("POST", &url1, Some(&cookie), Some(json!({"content": "嗨"})));
+        text_body(send(&app, req).await).await
+    });
+    // 等第一則訊息的串流確實取得 claim，避免依賴固定時間
+    let mut claimed = false;
+    for _ in 0..200 {
+        let (g,): (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT generating_since FROM conversations")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if g.is_some() {
+            claimed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(claimed, "POST never claimed the conversation");
+
+    // 第一則的回覆還在產生：第二則被擋下，且不計回合、不保存
+    let res = send(
+        &s.app,
+        json_req(
+            "POST",
+            &url,
+            Some(&s.a.student),
+            Some(json!({"content": "插話"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"]["code"], "reply_in_progress");
+
+    let events = parse_sse(&first.await.unwrap());
+    assert_eq!(events[0].0, "message");
+    assert_eq!(events.last().unwrap().1["code"], "ai_unavailable");
+    let d = detail(&s).await;
+    assert_eq!(d["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(d["turn_count"], 1);
+    // 串流結束後釋放
+    let (g,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT generating_since FROM conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(g.is_none());
 }
