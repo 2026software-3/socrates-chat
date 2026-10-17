@@ -121,3 +121,65 @@ pub enum CommonErrors {
     #[response(status = 500)]
     Internal(#[to_schema] ErrorBody),
 }
+
+/// 過濾敏感日誌的函數 (目前是空的，為了讓測試先失敗)
+pub fn filter_sensitive_log(raw_log: &str) -> String {
+    // 嘗試將文字解析為 JSON 格式
+    if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(raw_log) {
+        // 如果成功解析為 JSON 物件，就進行欄位替換
+        if let Some(obj) = json_val.as_object_mut() {
+            
+            // 1. 電子郵件：完全不記錄 (替換成 *** 遮蔽)
+            if obj.contains_key("user_email") {
+                obj.insert("user_email".to_string(), serde_json::json!("***"));
+            }
+            
+            // 2. 密碼與金鑰：不記錄 (替換成 ***)
+            if obj.contains_key("password") {
+                obj.insert("password".to_string(), serde_json::json!("***"));
+            }
+            
+            // 3. 對話訊息：依 S-02.2 規定替換成 "message"
+            if obj.contains_key("chat_message") {
+                obj.insert("chat_message".to_string(), serde_json::json!("message"));
+            }
+        }
+        // 將過濾後的 JSON 物件重新轉回字串並回傳
+        return json_val.to_string();
+    }
+    
+    // 如果傳入的不是 JSON 格式，就原封不動回傳
+    raw_log.to_string()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_sensitive_data_filtering() {
+        // 準備帶有敏感資訊的合成資料
+        let raw_log = r#"{
+            "user_email": "student@ntnu.edu.tw",
+            "password": "secret_password_123",
+            "chat_message": "老師，我覺得存在主義很難懂",
+            "status": 200
+        }"#;
+
+        // 呼叫過濾函數
+        let filtered_log = filter_sensitive_log(raw_log);
+
+        // 斷言：日誌連電子郵件也不記錄
+        assert!(!filtered_log.contains("student@ntnu.edu.tw"), "Email should be filtered!");
+        
+        // 斷言：不記錄密碼
+        assert!(!filtered_log.contains("secret_password_123"), "Password should be filtered!");
+        
+        // 斷言：對話訊息原文必須被過濾掉 (依據 S-02.2 規定替換)
+        assert!(!filtered_log.contains("老師，我覺得存在主義很難懂"), "Chat message should be filtered!");
+        
+        // 斷言：原本正常的狀態碼應該要保留
+        assert!(filtered_log.contains("200"), "Status code should be kept!");
+    }
+}
