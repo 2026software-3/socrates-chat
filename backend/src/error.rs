@@ -122,7 +122,7 @@ pub enum CommonErrors {
     Internal(#[to_schema] ErrorBody),
 }
 
-/// 過濾敏感日誌的函數 (目前是空的，為了讓測試先失敗)
+
 pub fn filter_sensitive_log(raw_log: &str) -> String {
     // 嘗試將文字解析為 JSON 格式
     if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(raw_log) {
