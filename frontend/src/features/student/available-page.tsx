@@ -27,7 +27,7 @@ export function AvailablePage() {
   const navigate = useNavigate()
   const auth = useAuth()
   const welcomeName = auth.status === 'authed' ? (auth.me.display_name ?? auth.me.email) : ''
-  const { data, error, loading, reload } = useFetch<Available>('/api/available')
+  const { data, error, loading, reload } = useFetch<Available>('/api/catalog')
   const [startingKey, setStartingKey] = useState<string>()
   const [startError, setStartError] = useState<unknown>()
   const busy = useRef(false)

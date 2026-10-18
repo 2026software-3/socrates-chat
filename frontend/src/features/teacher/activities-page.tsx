@@ -206,8 +206,8 @@ function ActivityRow({
 export function ActivitiesPage() {
   const t = useT()
   const list = useFetch<Activity[]>('/api/activities')
-  // 教師不能呼叫 /api/admin/topics，題目清單來自 /api/available
-  const available = useFetch<Available>('/api/available')
+  // 教師不能呼叫 /api/admin/topics，題目清單來自 /api/catalog
+  const available = useFetch<Available>('/api/catalog')
   const topics = available.data?.topics ?? []
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
