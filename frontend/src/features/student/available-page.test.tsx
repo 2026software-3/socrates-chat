@@ -144,7 +144,7 @@ describe('student available page', () => {
         loads += 1
         return loads === 1 ? HttpResponse.json(AVAILABLE) : apiError(500, 'internal')
       }),
-      http.post('/api/conversations', () => apiError(400, 'invalid_source')),
+      http.post('/api/conversations', () => apiError(400, 'invalid_conversation_source')),
     )
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
@@ -152,14 +152,14 @@ describe('student available page', () => {
     expect(screen.getByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
   })
 
-  it('shows invalid_source and reloads the list', async () => {
+  it('shows invalid_conversation_source and reloads the list', async () => {
     let loads = 0
     server.use(
       http.get('/api/available', () => {
         loads += 1
         return HttpResponse.json(loads === 1 ? AVAILABLE : { activities: [], topics: AVAILABLE.topics })
       }),
-      http.post('/api/conversations', () => apiError(400, 'invalid_source')),
+      http.post('/api/conversations', () => apiError(400, 'invalid_conversation_source')),
     )
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
