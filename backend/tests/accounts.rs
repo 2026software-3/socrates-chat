@@ -21,7 +21,8 @@ async fn students(app: &Router, cookie: &str) -> Value {
 }
 
 async fn audit_actions(pool: &PgPool) -> Vec<(String, String, Option<String>)> {
-    sqlx::query_as("SELECT action, target_email, reason FROM audit_logs ORDER BY created_at, id")
+    sqlx::query_as("SELECT action, target_email, reason FROM audit_logs
+         WHERE action IN ('account_disabled', 'account_enabled', 'student_deleted') ORDER BY created_at, id")
         .fetch_all(pool)
         .await
         .unwrap()

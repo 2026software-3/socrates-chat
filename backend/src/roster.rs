@@ -11,6 +11,7 @@ use sqlx::PgPool;
 
 use crate::{
     AppState,
+    accounts::audit,
     auth::{RequireAdmin, RequireTeacher, hash_blocking},
     auth_store,
     error::ApiError,
@@ -86,16 +87,22 @@ pub(crate) async fn list_teachers(
     responses((status = 204, description = "完成"), (status = 400, description = "invalid_email", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn add_teacher(
-    _: RequireAdmin,
+    RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Json(body): Json<EmailBody>,
 ) -> Result<StatusCode, ApiError> {
     let email = normalize_email(&body.email)
         .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))?;
-    sqlx::query("INSERT INTO teachers (email) VALUES ($1) ON CONFLICT DO NOTHING")
-        .bind(email)
-        .execute(&state.pool)
+    let mut tx = state.pool.begin().await?;
+    let r = sqlx::query("INSERT INTO teachers (email) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(&email)
+        .execute(&mut *tx)
         .await?;
+    // 重複新增沒有改變任何事，不重複記錄
+    if r.rows_affected() > 0 {
+        audit(&mut *tx, cu.user.id, "teacher_added", &email, None).await?;
+    }
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -108,22 +115,34 @@ pub(crate) async fn add_teacher(
     responses((status = 204, description = "已移除"), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn remove_teacher(
-    _: RequireAdmin,
+    RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Path(email): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    delete_email(&state.pool, DELETE_TEACHER, &email).await
+    delete_email(
+        &state.pool,
+        DELETE_TEACHER,
+        &email,
+        cu.user.id,
+        "teacher_removed",
+    )
+    .await
 }
 
 async fn delete_email(
     pool: &PgPool,
     sql: &'static str,
     email: &str,
+    actor: uuid::Uuid,
+    action: &str,
 ) -> Result<StatusCode, ApiError> {
-    let r = sqlx::query(sql).bind(email).execute(pool).await?;
+    let mut tx = pool.begin().await?;
+    let r = sqlx::query(sql).bind(email).execute(&mut *tx).await?;
     if r.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
+    audit(&mut *tx, actor, action, &email.to_lowercase(), None).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -244,6 +263,7 @@ pub(crate) async fn import_roster(
             continue;
         }
         added += 1;
+        audit(&state.pool, cu.user.id, "roster_added", email, None).await?;
         // 只有管理者匯入時才建立內建帳號並取得臨時密碼：知道臨時密碼等於能用該學生的身分登入，
         // 教師不能看到對話原文（S-02.1），所以教師匯入只加名單，學生用 Google 登入或請管理者重設密碼。
         // 教師與管理者的信箱也不在這裡建帳號，避免有人搶先替他們建好帳號。
@@ -276,9 +296,16 @@ pub(crate) async fn import_roster(
     responses((status = 204, description = "已移出"), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn remove_from_roster(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(email): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    delete_email(&state.pool, DELETE_ROSTER, &email).await
+    delete_email(
+        &state.pool,
+        DELETE_ROSTER,
+        &email,
+        cu.user.id,
+        "roster_removed",
+    )
+    .await
 }

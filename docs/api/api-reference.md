@@ -144,7 +144,7 @@
 - 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
 - 沒看到全域 request body 大小限制與請求逾時（`tower_http` 只用在靜態檔）。語音有 10 MB 上限，其餘靠 axum 預設 2 MB；建議明確設定並加 `TimeoutLayer`（SSE 路由除外）。
 - `/health` 之外沒有 `/ready`（見「規劃中的端點」）。
-- 管理者操作的稽核只有 disable／enable／delete；reset-password 與日後的調價（S-07 §5 要求）也要進 `audit_logs`，請確認 reset-password 已寫入。
+- 稽核（`audit_logs`）涵蓋登入、disable／enable／delete、教師與名單異動、reset-password（F-22.1）；日後的調價（S-07 §5 要求）也要進 `audit_logs`。
 
 ## 建議的處理順序
 
