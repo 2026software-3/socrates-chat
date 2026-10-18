@@ -33,6 +33,7 @@ pub mod dashboard;
 pub mod error;
 pub mod identity;
 pub mod openapi;
+pub mod pagination;
 pub mod password;
 pub mod reply;
 pub mod roster;

@@ -207,3 +207,6 @@ export type StreamDone = {
   stage: 1 | 2 | 3
   suggest_end: boolean
 }
+
+/** Keyset 分頁列表。 */
+export type Page<T> = { items: T[]; next_cursor: string | null }

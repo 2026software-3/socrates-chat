@@ -26,7 +26,7 @@ CREATE TABLE conversations (
     ended_at     timestamptz
 );
 
-CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC);
+CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);
 
 CREATE TABLE messages (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
