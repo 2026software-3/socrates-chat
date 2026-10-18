@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    AppState, auth_store,
+    AppState,
+    accounts::audit,
+    auth_store,
     auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
     error::ApiError,
     password,
@@ -330,6 +332,9 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     auth_store::create_session(&state.pool, user.id, &hash_token(&token))
         .await
         .map_err(|_| "login_failed")?;
+    audit(&state.pool, user.id, "login", &user.email, None)
+        .await
+        .map_err(|_| "login_failed")?;
     Ok(token)
 }
 
@@ -463,6 +468,7 @@ pub(crate) async fn password_login(
     let token = new_token();
     let session =
         auth_store::create_password_session(&state.pool, account.id, &hash_token(&token)).await?;
+    audit(&state.pool, account.id, "login", &email, None).await?;
     Ok((
         [(
             header::SET_COOKIE,
@@ -545,7 +551,7 @@ pub(crate) struct ResetResponse {
     responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse), crate::error::CommonErrors)
 )]
 pub(crate) async fn reset_password(
-    _: RequireAdmin,
+    RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Json(body): Json<ResetBody>,
 ) -> Result<Json<ResetResponse>, ApiError> {
@@ -553,7 +559,10 @@ pub(crate) async fn reset_password(
         .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))?;
     let temporary_password = password::generate_temporary();
     let hash = hash_blocking(temporary_password.clone()).await?;
-    auth_store::reset_password(&state.pool, &email, &hash).await?;
+    let mut tx = state.pool.begin().await?;
+    auth_store::reset_password(&mut tx, &email, &hash).await?;
+    audit(&mut *tx, cu.user.id, "password_reset", &email, None).await?;
+    tx.commit().await?;
     Ok(Json(ResetResponse {
         email,
         temporary_password,

@@ -74,8 +74,8 @@ fn email_or_400(raw: &str) -> Result<String, ApiError> {
     normalize_email(raw).ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))
 }
 
-async fn audit(
-    conn: &mut sqlx::PgConnection,
+pub(crate) async fn audit(
+    conn: impl sqlx::PgExecutor<'_>,
     actor: Uuid,
     action: &str,
     target_email: &str,
@@ -175,7 +175,7 @@ pub(crate) async fn disable_user(
         .execute(&mut *tx)
         .await?;
     audit(
-        &mut tx,
+        &mut *tx,
         cu.user.id,
         "account_disabled",
         &email,
@@ -224,7 +224,7 @@ pub(crate) async fn enable_user(
         };
     }
     audit(
-        &mut tx,
+        &mut *tx,
         cu.user.id,
         "account_enabled",
         &email,
@@ -293,7 +293,7 @@ pub(crate) async fn delete_student(
         .bind(&email)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, cu.user.id, "student_deleted", &email, None).await?;
+    audit(&mut *tx, cu.user.id, "student_deleted", &email, None).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

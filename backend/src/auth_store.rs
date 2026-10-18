@@ -299,10 +299,13 @@ pub async fn record_login_failure(
     Ok(())
 }
 
-pub async fn clear_login_failures(pool: &PgPool, email: &str) -> Result<(), sqlx::Error> {
+pub async fn clear_login_failures(
+    conn: impl sqlx::PgExecutor<'_>,
+    email: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM login_failures WHERE email = lower($1)")
         .bind(email)
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(())
 }
@@ -339,7 +342,7 @@ pub async fn set_password(
 
 /// 刪除使用者的 session；`keep` 指定要保留的那一個（改密碼時保留目前登入）。
 pub async fn delete_sessions_except(
-    pool: &PgPool,
+    conn: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     keep: Option<&[u8]>,
 ) -> Result<(), sqlx::Error> {
@@ -348,15 +351,16 @@ pub async fn delete_sessions_except(
     )
     .bind(user_id)
     .bind(keep)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
 
 /// 管理者重設密碼：沒有帳號就建立（不是管理者、沒有 Google 綁定）；有就更新。
 /// 設定臨時密碼、清除所有 session 與鎖定。回傳使用者 id。
+/// 呼叫端須傳入交易中的連線，並與稽核紀錄一起提交。
 pub async fn reset_password(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     email: &str,
     password_hash: &str,
 ) -> Result<Uuid, sqlx::Error> {
@@ -369,16 +373,16 @@ pub async fn reset_password(
     )
     .bind(email)
     .bind(password_hash)
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await?;
-    delete_sessions_except(pool, id, None).await?;
-    clear_login_failures(pool, email).await?;
+    delete_sessions_except(&mut *conn, id, None).await?;
+    clear_login_failures(&mut *conn, email).await?;
     Ok(id)
 }
 
 /// 匯入名單時為新加入的學生建立內建帳號；信箱已有帳號（例如用 Google 登入過）時不動，回傳 `false`。
 pub async fn create_account_if_absent(
-    pool: &PgPool,
+    conn: impl sqlx::PgExecutor<'_>,
     email: &str,
     password_hash: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -388,7 +392,7 @@ pub async fn create_account_if_absent(
     )
     .bind(email)
     .bind(password_hash)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(r.rows_affected() > 0)
 }
