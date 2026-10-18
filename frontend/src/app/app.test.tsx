@@ -98,6 +98,13 @@ describe('app shell', () => {
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
 
+  it('lets a teacher open classroom management', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderApp(null, { route: '/teacher/classrooms' })
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
+  })
+
   function mockOpsData() {
     server.use(
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
@@ -123,7 +130,7 @@ describe('app shell', () => {
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '系統維運' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
-    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教師管理', '修課名單', '題目庫'])
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教室管理', '教師管理', '修課名單', '題目庫'])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })
 

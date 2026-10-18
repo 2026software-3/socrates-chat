@@ -43,6 +43,13 @@
 - DELETE 刻意保留 JSON body，以沿用確認欄位與驗證規則；前端 fetch 與後端 Axum 均支援。部署的 proxy／client 必須保留 DELETE body。
 - 學生列表只有完成對話的**數量**，沒有內容。
 
+## 教室（F-28.1）
+
+- 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空名稱回 `400 invalid_classroom_name`。
+- `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。
+- 管理者可管理所有教室，但不能建立教室；建立者欄位固定為建立請求的教師。教室名稱唯一性由資料庫約束保證，併發建立相同名稱時僅一個成功。
+- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。封存、名單與活動歸屬尚未包含在此切片。
+
 ## 對話（只有修課名單內的學生）
 
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
@@ -98,7 +105,6 @@
 | F-13 | 思辨標籤 | `GET /api/conversations/{id}/labels` | S-04.5 未定 |
 | F-14 | 閱讀推薦、教師書單 | `GET /api/conversations/{id}/recommendations`、`GET·POST·DELETE /api/books` | S-06.3 未定 |
 | F-10.3 | 雙方逐字稿同步 | 現有 `messages.source` 已部分涵蓋；是否需新端點待 F-10.3 釐清 | |
-| F-28 | 教室（跨年度） | `/api/classrooms`、`/api/classrooms/{id}/roster`… | 與「系統只服務一門課、沒有班級」的前提衝突，需先改規格 |
 | F-27 / S-13 | 名詞解釋 | `GET /api/glossary?lang=` | 來源未定 |
 | S-09 | 營運探針 | `GET /ready`（含 DB 檢查） | 目前只有 `/health` |
 

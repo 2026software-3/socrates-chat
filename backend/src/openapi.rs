@@ -7,7 +7,7 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, auth, catalog, chat, claims, dashboard,
+    accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard,
     error::{CommonErrors, ErrorBody},
     reply, roster, summary, voice,
 };
@@ -35,6 +35,8 @@ impl Modify for SessionCookie {
     paths(
         auth::login, auth::callback, auth::password_login, auth::change_password, auth::logout,
         auth::me, auth::reset_password,
+        classrooms::list_classrooms, classrooms::create_classroom,
+        classrooms::get_classroom, classrooms::update_classroom,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::disable_user, accounts::enable_user,
@@ -50,7 +52,7 @@ impl Modify for SessionCookie {
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech,
     ),
-    components(schemas(ErrorBody)),
+    components(schemas(ErrorBody, classroom_store::Classroom)),
     modifiers(&SessionCookie),
     security(("session" = []))
 )]

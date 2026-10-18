@@ -28,6 +28,8 @@ pub mod auth_store;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_store;
+pub mod classrooms;
 pub mod config;
 pub mod dashboard;
 pub mod error;
@@ -85,6 +87,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/openapi.json", get(openapi_json))
         .merge(auth::routes())
         .merge(roster::routes())
+        .merge(classrooms::routes())
         .merge(accounts::routes())
         .merge(dashboard::routes())
         .merge(claims::routes())
