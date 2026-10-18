@@ -21,7 +21,7 @@ function mockTopics(initial: Topic[]) {
   const topics = [...initial]
   const calls: { method: string; url: string; body: unknown }[] = []
   server.use(
-    http.get('/api/admin/topics', () => HttpResponse.json(topics)),
+    http.get('/api/topics', () => HttpResponse.json(topics)),
     http.post('/api/admin/topics', async ({ request }) => {
       const body = (await request.json()) as Partial<Topic>
       calls.push({ method: 'POST', url: '/api/admin/topics', body })
@@ -65,7 +65,7 @@ describe('TopicsPage', () => {
   })
 
   it('shows an error with retry', async () => {
-    server.use(http.get('/api/admin/topics', () => apiError(500, 'internal')))
+    server.use(http.get('/api/topics', () => apiError(500, 'internal')))
     render()
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
     mockTopics([topic('1')])
@@ -297,7 +297,7 @@ describe('TopicsPage', () => {
     await userEvent.click(screen.getByRole('switch', { name: '啟用「Topic 1」' }))
     await screen.findByText('已停用')
     // 別的管理者把它改回啟用、改了標題，然後這裡新增題目觸發重新載入
-    server.use(http.get('/api/admin/topics', () => HttpResponse.json([topic('1', { title: 'Server title' }), topic('2')])))
+    server.use(http.get('/api/topics', () => HttpResponse.json([topic('1', { title: 'Server title' }), topic('2')])))
     await userEvent.type(screen.getByLabelText('標題'), 'N')
     await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('Server title')).toBeInTheDocument()
@@ -326,7 +326,7 @@ describe('TopicsPage', () => {
     mockTopics([topic('1')])
     render()
     await screen.findByText('Topic 1')
-    server.use(http.get('/api/admin/topics', () => apiError(500, 'internal')))
+    server.use(http.get('/api/topics', () => apiError(500, 'internal')))
     await userEvent.type(screen.getByLabelText('標題'), 'N')
     await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()

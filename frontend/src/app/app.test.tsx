@@ -113,7 +113,7 @@ describe('app shell', () => {
           })),
         ),
       ),
-      http.get('/api/admin/topics', () => HttpResponse.json([])),
+      http.get('/api/topics', () => HttpResponse.json([])),
     )
   }
 

@@ -60,8 +60,15 @@ async fn only_admin_manages_topics(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), expected);
-        let res = send(&app, get("/api/admin/topics", cookie)).await;
-        assert_eq!(res.status(), expected);
+        let res = send(&app, get("/api/topics", cookie)).await;
+        assert_eq!(
+            res.status(),
+            if cookie == Some(a.teacher.as_str()) {
+                StatusCode::OK
+            } else {
+                expected
+            }
+        );
     }
 
     let res = send(
@@ -110,7 +117,7 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
     let avail = json_body(send(&app, get("/api/catalog", Some(&a.student))).await).await;
     assert!(ids(&avail, "topics").is_empty());
     // 管理者仍看得到停用的題目
-    let all = json_body(send(&app, get("/api/admin/topics", Some(&a.admin))).await).await;
+    let all = json_body(send(&app, get("/api/topics", Some(&a.admin))).await).await;
     assert_eq!(all.as_array().unwrap().len(), 1);
 
     let res = send(
