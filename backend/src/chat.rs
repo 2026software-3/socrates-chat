@@ -88,7 +88,7 @@ pub(crate) struct Detail {
     tag = "conversations",
     summary = "開始對話（活動或題目）",
     request_body = NewConversation,
-    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_source", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
@@ -118,11 +118,17 @@ pub(crate) async fn create(
             .await?
             .map(|(id, title, desc): (Uuid, String, String)| (None, Some(id), title, desc)),
             (None, None) => {
-                return Err(ApiError::bad_request("invalid_source", "請選擇活動或題目"));
+                return Err(ApiError::bad_request(
+                    "invalid_conversation_source",
+                    "請選擇活動或題目",
+                ));
             }
         };
     let Some((activity_id, topic_id, title, description)) = source else {
-        return Err(ApiError::bad_request("invalid_source", "活動或題目不可用"));
+        return Err(ApiError::bad_request(
+            "invalid_conversation_source",
+            "活動或題目不可用",
+        ));
     };
     let c = sqlx::query_as(
         "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)

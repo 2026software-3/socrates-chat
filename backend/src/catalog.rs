@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    auth::{RequireAdmin, RequireStudent, RequireTeacher},
+    auth::{RequireStudent, RequireTeacher},
     error::ApiError,
 };
 
@@ -31,8 +31,6 @@ where
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/admin/topics", get(list_all_topics).post(create_topic))
-        .route("/api/admin/topics/{id}", patch(update_topic))
         .route(
             "/api/topics",
             get(list_topics_for_teacher).post(create_topic_for_teacher),
@@ -48,7 +46,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/activities/{id}/publish", post(publish_activity))
         .route("/api/activities/{id}/close", post(close_activity))
-        .route("/api/available", get(available))
+        .route("/api/catalog", get(available))
 }
 
 fn valid_text(s: &str) -> bool {
@@ -85,20 +83,6 @@ pub(crate) struct TopicPatch {
 
 #[utoipa::path(
     get,
-    path = "/api/admin/topics",
-    tag = "admin",
-    summary = "列出全部題目",
-    responses((status = 200, description = "題目", body = Vec<Topic>), crate::error::CommonErrors)
-)]
-pub(crate) async fn list_all_topics(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<Topic>>, ApiError> {
-    list_topics(&state).await
-}
-
-#[utoipa::path(
-    get,
     path = "/api/topics",
     tag = "topics",
     summary = "列出全部題目",
@@ -118,22 +102,6 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/admin/topics",
-    tag = "admin",
-    summary = "新增題目",
-    request_body = NewTopic,
-    responses((status = 201, description = "已建立", body = Topic), crate::error::CommonErrors)
-)]
-pub(crate) async fn create_topic(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-    Json(b): Json<NewTopic>,
-) -> Result<(StatusCode, Json<Topic>), ApiError> {
-    insert_topic(&state, b).await
 }
 
 #[utoipa::path(
@@ -169,24 +137,6 @@ async fn insert_topic(
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
-}
-
-#[utoipa::path(
-    patch,
-    path = "/api/admin/topics/{id}",
-    tag = "admin",
-    summary = "修改題目（merge-patch）",
-    params(("id" = Uuid, Path, description = "題目 ID")),
-    request_body = TopicPatch,
-    responses((status = 200, description = "更新後的題目", body = Topic), crate::error::CommonErrors)
-)]
-pub(crate) async fn update_topic(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(p): Json<TopicPatch>,
-) -> Result<Json<Topic>, ApiError> {
-    patch_topic(&state, id, p).await
 }
 
 #[utoipa::path(
@@ -470,7 +420,7 @@ pub(crate) struct Available {
 
 #[utoipa::path(
     get,
-    path = "/api/available",
+    path = "/api/catalog",
     tag = "activities",
     summary = "學生可選的活動與題目",
     responses((status = 200, description = "可選項目", body = Available), crate::error::CommonErrors)

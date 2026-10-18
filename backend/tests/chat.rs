@@ -98,7 +98,7 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
             &app,
             json_req(
                 "POST",
-                "/api/admin/topics",
+                "/api/topics",
                 Some(&a.admin),
                 Some(json!({"title": "自由意志"})),
             ),
@@ -125,7 +125,7 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
         &app,
         json_req(
             "PATCH",
-            &format!("/api/admin/topics/{id}"),
+            &format!("/api/topics/{id}"),
             Some(&a.admin),
             Some(json!({"is_active": false})),
         ),
@@ -142,6 +142,10 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(res).await["error"]["code"],
+        "invalid_conversation_source"
+    );
 }
 
 #[sqlx::test]
@@ -171,6 +175,10 @@ async fn unavailable_sources_are_rejected(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(res).await["error"]["code"],
+            "invalid_conversation_source"
+        );
     }
 }
 
@@ -256,6 +264,7 @@ async fn message_validation(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_source");
 }
 
 #[sqlx::test]

@@ -29,10 +29,10 @@
 
 ## 題庫與活動
 
-- 教師也能放入題目（S-01.3）。`/api/admin/topics` 與 `/api/topics` 目前是同功能的兩組路徑（合併見 issue #292–#294）。
+- 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
-- 學生可選清單只含已發布的活動與已啟用的題目。
+- `GET /api/catalog` 回傳 `{ activities, topics }`，只含已發布的活動與已啟用的題目；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生
 
@@ -48,7 +48,7 @@
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
 - `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。
-- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_source`。
+- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
   1. `message`：保存好的學生訊息，另有 `auto_ended`。
@@ -122,11 +122,11 @@
 
 - `POST /api/admin/users/{email}/disable|enable` 可收斂成 `PUT /api/admin/users/{email}/status` `{ disabled: bool, reason? }`，冪等且只有一條路由；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
 - 資源識別用 email 放在 path：停用／復原帳號的對象一定有帳號，改用 user id（UUID，#290）；名單與教師項目可能沒有帳號，維持 email。目前後端沒有掛 request logging（無 `TraceLayer`），路徑不會進日誌；日後加上時要過濾路徑中的 email。
-- `GET /api/available` 名稱不明確，建議 `GET /api/catalog` 或 `GET /api/conversation-sources`。
+- #291 已完成：學生可選清單改為 `GET /api/catalog`。
 
 ### 同一資源兩組路徑【中】（#292、#293、#294）
 
-`/api/admin/topics` 與 `/api/topics` 行為相同（`catalog.rs` 兩組 handler）。**建議**只留 `/api/topics`，用角色決定能做什麼；admin 前綴留給「只有管理者」的功能。少一倍測試與文件維護。
+#292–#294 已完成：題庫只保留 `/api/topics`，權限由角色決定；admin 前綴留給只有管理者能使用的功能。
 
 ### 角色與資源的混合命名【中】（#285 `/api/summaries`）
 
@@ -140,7 +140,7 @@
 ### 其他細節【低】
 
 - `POST /api/conversations/{id}/end` 回 202（首次）與 200（已結束）：狀態碼雙義，對前端是額外分支。建議一律 202 或一律 200 + body `{ status }`。
-- `POST /api/conversations` 的 `invalid_source`（活動／題目不可用）與 `send_message` 的 `invalid_source`（`source` 欄位非法）同名不同義。`send_message` 的碼與欄位名一致，應保留；建議改 `create` 的碼：`invalid_conversation_source`，或拆成 `activity_unavailable`／`topic_unavailable`。前端只依賴 `create` 的碼（`common.messages.ts` 三語翻譯與 `available-page.test.tsx`），`send_message` 的碼前端沒有翻譯。
+- `POST /api/conversations` 的來源錯誤回 `invalid_conversation_source`；`POST …/messages` 的非法 `source` 仍回 `invalid_source`。
 - `POST /api/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅管理者，OK；但回應建議加 `Cache-Control: no-store`。
 - 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
 - 沒看到全域 request body 大小限制與請求逾時（`tower_http` 只用在靜態檔）。語音有 10 MB 上限，其餘靠 axum 預設 2 MB；建議明確設定並加 `TimeoutLayer`（SSE 路由除外）。
