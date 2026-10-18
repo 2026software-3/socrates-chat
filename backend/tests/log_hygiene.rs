@@ -115,18 +115,19 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         output.contains("AI provider returned an error status"),
         "擷取到會寫日誌的路徑，才能證明下面的斷言有意義：{output}"
     );
-    for secret in [
-        STUDENT_MESSAGE,
-        WRONG_PASSWORD,
-        PROVIDER_BODY,
-        "SECRETAPIKEY",
-        "test-secret",
-        "student@example.com",
-        "teacher@example.com",
-        "reset@example.com",
-        "admin@example.com",
-        temporary_password.as_str(),
+    // 失敗訊息只印名稱，不印值（值本身是機敏資料，也不把整段日誌印出來）
+    for (name, secret) in [
+        ("學生訊息", STUDENT_MESSAGE),
+        ("錯誤密碼", WRONG_PASSWORD),
+        ("AI 服務回應本文", PROVIDER_BODY),
+        ("API key", "SECRETAPIKEY"),
+        ("Google client secret", "test-secret"),
+        ("學生電子郵件", "student@example.com"),
+        ("教師電子郵件", "teacher@example.com"),
+        ("重設對象電子郵件", "reset@example.com"),
+        ("管理者電子郵件", "admin@example.com"),
+        ("臨時密碼", temporary_password.as_str()),
     ] {
-        assert!(!output.contains(secret), "日誌不應包含 {secret}：{output}");
+        assert!(!output.contains(secret), "日誌不應包含：{name}");
     }
 }
