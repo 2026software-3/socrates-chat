@@ -31,7 +31,10 @@ where
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/admin/topics", get(list_all_topics).post(create_topic))
+        .route(
+            "/api/admin/topics",
+            post(create_topic).fallback(crate::fallback),
+        )
         .route("/api/admin/topics/{id}", patch(update_topic))
         .route(
             "/api/topics",
@@ -81,20 +84,6 @@ pub(crate) struct TopicPatch {
     #[serde(default, deserialize_with = "nullable")]
     category: Option<Option<String>>,
     is_active: Option<bool>,
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/admin/topics",
-    tag = "admin",
-    summary = "列出全部題目",
-    responses((status = 200, description = "題目", body = Vec<Topic>), crate::error::CommonErrors)
-)]
-pub(crate) async fn list_all_topics(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<Topic>>, ApiError> {
-    list_topics(&state).await
 }
 
 #[utoipa::path(

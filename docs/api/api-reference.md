@@ -29,7 +29,7 @@
 
 ## 題庫與活動
 
-- 教師也能放入題目（S-01.3）。`/api/admin/topics` 與 `/api/topics` 目前是同功能的兩組路徑（合併見 issue #292–#294）。
+- 題庫的 GET 已統一為 `/api/topics`，舊 admin 路徑的 GET 回 404（#292）。教師也能放入題目（S-01.3）。`/api/admin/topics` 與 `/api/topics` 目前是同功能的兩組路徑（合併見 issue #292–#294）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
 - 學生可選清單只含已發布的活動與已啟用的題目。
@@ -125,7 +125,7 @@
 
 ### 同一資源兩組路徑【中】（#292、#293、#294）
 
-`/api/admin/topics` 與 `/api/topics` 行為相同（`catalog.rs` 兩組 handler）。**建議**只留 `/api/topics`，用角色決定能做什麼；admin 前綴留給「只有管理者」的功能。少一倍測試與文件維護。
+`/api/admin/topics` 與 `/api/topics` 行為相同（`catalog.rs` 兩組 handler）。GET 已合併（#292）；其餘操作依各自 Issue 處理。**建議**只留 `/api/topics`，用角色決定能做什麼；admin 前綴留給「只有管理者」的功能。少一倍測試與文件維護。
 
 ### 角色與資源的混合命名【中】（#285 `/api/summaries`）
 
