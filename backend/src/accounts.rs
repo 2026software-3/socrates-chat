@@ -10,7 +10,7 @@ use axum::{
     body::Bytes,
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -26,7 +26,7 @@ use crate::{
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/students", get(list_students))
-        .route("/api/students/{email}/delete", post(delete_student))
+        .route("/api/students/{email}", delete(delete_student))
         .route("/api/admin/users/{email}/disable", post(disable_user))
         .route("/api/admin/users/{email}/enable", post(enable_user))
 }
@@ -243,8 +243,8 @@ pub(crate) struct DeleteBody {
 
 /// 刪除學生帳號：一併刪除對話、總結與修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除。
 #[utoipa::path(
-    post,
-    path = "/api/students/{email}/delete",
+    delete,
+    path = "/api/students/{email}",
     tag = "roster",
     summary = "刪除學生帳號與其資料",
     params(("email" = String, Path, description = "電子郵件")),

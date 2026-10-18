@@ -309,13 +309,18 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     seed_student_message(&pool, &conv, "我會拉桿").await;
+    sqlx::query("INSERT INTO summaries (conversation_id) VALUES ($1)")
+        .bind(uuid::Uuid::parse_str(&conv).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 沒有再次確認（電子郵件不符）不能刪
     let res = send(
         &app,
         json_req(
-            "POST",
-            "/api/students/student@example.com/delete",
+            "DELETE",
+            "/api/students/student@example.com",
             Some(&a.teacher),
             Some(json!({"confirm_email": "other@example.com"})),
         ),
@@ -334,8 +339,8 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
     let res = send(
         &app,
         json_req(
-            "POST",
-            "/api/students/student@example.com/delete",
+            "DELETE",
+            "/api/students/student@example.com",
             Some(&a.teacher),
             Some(json!({"confirm_email": " Student@Example.com "})),
         ),
@@ -354,6 +359,7 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
         "SELECT count(*) FROM users WHERE email = 'student@example.com'",
         "SELECT count(*) FROM conversations",
         "SELECT count(*) FROM messages",
+        "SELECT count(*) FROM summaries",
     ] {
         let (n,): (i64,) = sqlx::query_as(sql).fetch_one(&pool).await.unwrap();
         assert_eq!(n, 0, "{sql}");
@@ -375,8 +381,8 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
     let res = send(
         &app,
         json_req(
-            "POST",
-            "/api/students/student@example.com/delete",
+            "DELETE",
+            "/api/students/student@example.com",
             Some(&a.admin),
             Some(json!({"confirm_email": "student@example.com"})),
         ),
@@ -396,13 +402,17 @@ async fn delete_is_limited_to_teachers_and_never_removes_staff(pool: PgPool) {
         (None, StatusCode::UNAUTHORIZED),
     ] {
         assert_eq!(
-            post(
+            send(
                 &app,
-                "/api/students/student@example.com/delete",
-                cookie,
-                body("student@example.com")
+                json_req(
+                    "DELETE",
+                    "/api/students/student@example.com",
+                    cookie,
+                    body("student@example.com")
+                )
             )
-            .await,
+            .await
+            .status(),
             status
         );
     }
@@ -411,8 +421,8 @@ async fn delete_is_limited_to_teachers_and_never_removes_staff(pool: PgPool) {
         let res = send(
             &app,
             json_req(
-                "POST",
-                &format!("/api/students/{email}/delete"),
+                "DELETE",
+                &format!("/api/students/{email}"),
                 Some(&a.admin),
                 body(email),
             ),
@@ -425,4 +435,26 @@ async fn delete_is_limited_to_teachers_and_never_removes_staff(pool: PgPool) {
         send(&app, get("/api/me", Some(&a.teacher))).await.status(),
         StatusCode::OK
     );
+}
+
+#[sqlx::test]
+async fn legacy_student_delete_route_is_removed(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let status = post(
+        &app,
+        "/api/students/student@example.com/delete",
+        Some(&a.teacher),
+        Some(json!({"confirm_email": "student@example.com"})),
+    )
+    .await;
+    assert!(matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ));
+    assert_eq!(
+        students(&app, &a.teacher).await.as_array().unwrap().len(),
+        1
+    );
+    assert!(audit_actions(&pool).await.is_empty());
 }
