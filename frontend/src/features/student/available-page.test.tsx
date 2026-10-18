@@ -31,7 +31,7 @@ const AVAILABLE: Available = {
 }
 
 function mockAvailable(data: Available = AVAILABLE) {
-  server.use(http.get('/api/available', () => HttpResponse.json(data)))
+  server.use(http.get('/api/catalog', () => HttpResponse.json(data)))
 }
 
 function renderPage() {
@@ -140,7 +140,7 @@ describe('student available page', () => {
   it('shows the fetch error when the reload after a failed start also fails', async () => {
     let loads = 0
     server.use(
-      http.get('/api/available', () => {
+      http.get('/api/catalog', () => {
         loads += 1
         return loads === 1 ? HttpResponse.json(AVAILABLE) : apiError(500, 'internal')
       }),
@@ -155,7 +155,7 @@ describe('student available page', () => {
   it('shows invalid_source and reloads the list', async () => {
     let loads = 0
     server.use(
-      http.get('/api/available', () => {
+      http.get('/api/catalog', () => {
         loads += 1
         return HttpResponse.json(loads === 1 ? AVAILABLE : { activities: [], topics: AVAILABLE.topics })
       }),
@@ -184,7 +184,7 @@ describe('student available page', () => {
 
   it('shows an error with retry', async () => {
     let fail = true
-    server.use(http.get('/api/available', () => (fail ? apiError(500, 'internal') : HttpResponse.json(AVAILABLE))))
+    server.use(http.get('/api/catalog', () => (fail ? apiError(500, 'internal') : HttpResponse.json(AVAILABLE))))
     renderPage()
     expect(await screen.findByRole('alert')).toHaveTextContent('系統發生錯誤，請稍後再試。')
     fail = false
@@ -194,7 +194,7 @@ describe('student available page', () => {
 
   it('shows a loading state first', async () => {
     server.use(
-      http.get('/api/available', async () => {
+      http.get('/api/catalog', async () => {
         await new Promise((r) => setTimeout(r, 50))
         return HttpResponse.json(AVAILABLE)
       }),

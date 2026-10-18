@@ -40,7 +40,7 @@ describe('app shell', () => {
 
   it('takes students straight to topic selection from the home page', async () => {
     mockMe(makeMe({ student: true }))
-    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
   })
@@ -147,7 +147,7 @@ describe('app shell', () => {
 
   it('switches language without reloading', async () => {
     mockMe(makeMe({ student: true }))
-    server.use(http.get('/api/available', () => HttpResponse.json({ activities: [], topics: [] })))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
     await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')

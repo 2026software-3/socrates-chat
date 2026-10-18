@@ -48,7 +48,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/activities/{id}/publish", post(publish_activity))
         .route("/api/activities/{id}/close", post(close_activity))
-        .route("/api/available", get(available))
+        .route("/api/catalog", get(available))
 }
 
 fn valid_text(s: &str) -> bool {
@@ -470,7 +470,7 @@ pub(crate) struct Available {
 
 #[utoipa::path(
     get,
-    path = "/api/available",
+    path = "/api/catalog",
     tag = "activities",
     summary = "學生可選的活動與題目",
     responses((status = 200, description = "可選項目", body = Available), crate::error::CommonErrors)
