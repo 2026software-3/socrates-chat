@@ -2,10 +2,7 @@
 
 mod common;
 
-use axum::{
-    Router,
-    http::{Request, StatusCode},
-};
+use axum::{Router, http::StatusCode};
 use common::*;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -60,27 +57,209 @@ async fn student_list_shows_account_state_to_teachers_and_admins_only(pool: PgPo
     }
 }
 
+async fn user_id(pool: &PgPool, email: &str) -> uuid::Uuid {
+    sqlx::query_scalar("SELECT id FROM users WHERE email=$1")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[sqlx::test]
-async fn admin_disables_and_restores_an_account_with_audit_trail(pool: PgPool) {
+async fn status_put_is_idempotent_revokes_sessions_and_audits(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-
-    let path = "/api/admin/users/student@example.com";
-    assert_eq!(
-        post(
+    let extra = login_as(&app, "sub-student", "student@example.com").await;
+    let id = user_id(&pool, "student@example.com").await;
+    let path = format!("/api/admin/users/{id}/status");
+    for disabled in [true, true, false, false] {
+        let res = send(
             &app,
-            &format!("{path}/disable"),
-            Some(&a.admin),
-            Some(json!({"reason": "  測試停用  "}))
+            json_req(
+                "PUT",
+                &path,
+                Some(&a.admin),
+                Some(json!({"disabled":disabled,"reason":" synthetic "})),
+            ),
         )
-        .await,
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        if disabled {
+            for cookie in [&a.student, &extra] {
+                assert_eq!(
+                    send(&app, get("/api/me", Some(cookie))).await.status(),
+                    StatusCode::UNAUTHORIZED
+                );
+            }
+        }
+    }
+    let actions = audit_actions(&pool).await;
+    assert_eq!(actions.len(), 2);
+    assert_eq!(
+        actions[0],
+        (
+            "account_disabled".into(),
+            "student@example.com".into(),
+            Some("synthetic".into())
+        )
+    );
+    assert_eq!(actions[1].0, "account_enabled");
+    let cookie = login_as(&app, "sub-student", "student@example.com").await;
+    assert_eq!(
+        send(
+            &app,
+            get(&format!("/api/conversations/{conv}"), Some(&cookie))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(students(&app, &a.admin).await[0]["id"], id.to_string());
+    for suffix in ["disable", "enable"] {
+        assert_eq!(
+            post(
+                &app,
+                &format!("/api/admin/users/student@example.com/{suffix}"),
+                Some(&a.admin),
+                None
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[sqlx::test]
+async fn status_put_requires_admin_and_existing_uuid(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let id = user_id(&pool, "student@example.com").await;
+    for disabled in [true, false] {
+        for (cookie, status) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some(a.teacher.as_str()), StatusCode::FORBIDDEN),
+            (Some(a.student.as_str()), StatusCode::FORBIDDEN),
+            (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
+        ] {
+            let res = send(
+                &app,
+                json_req(
+                    "PUT",
+                    &format!("/api/admin/users/{id}/status"),
+                    cookie,
+                    Some(json!({"disabled":disabled})),
+                ),
+            )
+            .await;
+            assert_eq!(res.status(), status);
+        }
+        assert_eq!(
+            send(
+                &app,
+                json_req(
+                    "PUT",
+                    &format!("/api/admin/users/{}/status", uuid::Uuid::new_v4()),
+                    Some(&a.admin),
+                    Some(json!({"disabled":disabled}))
+                )
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert!(audit_actions(&pool).await.is_empty());
+    assert_eq!(
+        send(
+            &app,
+            json_req(
+                "PUT",
+                &format!("/api/admin/users/{id}/status"),
+                Some(&a.admin),
+                Some(json!({}))
+            )
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+#[sqlx::test]
+async fn status_put_preserves_admin_safety_under_concurrency(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let id = user_id(&pool, "admin@example.com").await;
+    let res = send(
+        &app,
+        json_req(
+            "PUT",
+            &format!("/api/admin/users/{id}/status"),
+            Some(&a.admin),
+            Some(json!({"disabled":true})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"]["code"], "cannot_disable_self");
+    let mut cfg = test_config();
+    cfg.admin_emails.push("admin2@example.com".into());
+    let app2 = test_app_with_config(pool.clone(), FakeAi::with(vec![]), cfg);
+    let admin2 = login_as(&app2, "sub-admin2", "admin2@example.com").await;
+    let id2 = user_id(&pool, "admin2@example.com").await;
+    let req1 = json_req(
+        "PUT",
+        &format!("/api/admin/users/{id2}/status"),
+        Some(&a.admin),
+        Some(json!({"disabled":true})),
+    );
+    let req2 = json_req(
+        "PUT",
+        &format!("/api/admin/users/{id}/status"),
+        Some(&admin2),
+        Some(json!({"disabled":true})),
+    );
+    let (r1, r2) = tokio::join!(send(&app, req1), send(&app, req2));
+    let statuses = [r1.status(), r2.status()];
+    assert!(statuses.contains(&StatusCode::NO_CONTENT));
+    assert!(statuses.iter().all(|s| {
+        [
+            StatusCode::NO_CONTENT,
+            StatusCode::CONFLICT,
+            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
+        ]
+        .contains(s)
+    }));
+    let active: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE is_admin AND disabled_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(active, 1);
+}
+
+#[sqlx::test]
+async fn disabled_account_cannot_use_google_login(pool: PgPool) {
+    use axum::http::Request;
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let id = user_id(&pool, "student@example.com").await;
+    assert_eq!(
+        send(
+            &app,
+            json_req(
+                "PUT",
+                &format!("/api/admin/users/{id}/status"),
+                Some(&a.admin),
+                Some(json!({"disabled":true}))
+            )
+        )
+        .await
+        .status(),
         StatusCode::NO_CONTENT
     );
-
-    // 立即失效：原本的 session 不能再用，並看到「帳號已停用」
-    let res = send(&app, get("/api/me", Some(&a.student))).await;
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "session 已被清除");
     let res = send(
         &app,
         Request::get("/api/auth/google/login")
@@ -100,43 +279,42 @@ async fn admin_disables_and_restores_an_account_with_audit_trail(pool: PgPool) {
     .await;
     assert!(location(&res).ends_with("/login?error=account_disabled"));
     assert!(session_cookie(&res).is_none());
+}
 
-    let list = students(&app, &a.teacher).await;
-    assert_eq!(list[0]["disabled"], true);
-
-    // 復原後角色與資料照舊
-    assert_eq!(
-        post(&app, &format!("{path}/enable"), Some(&a.admin), None).await,
-        StatusCode::NO_CONTENT
-    );
-    let cookie = login_as(&app, "sub-student", "student@example.com").await;
+#[sqlx::test]
+async fn status_audit_failure_rolls_back_account_and_sessions(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let id = user_id(&pool, "student@example.com").await;
+    sqlx::raw_sql("CREATE FUNCTION reject_status_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic failure'; END $$; CREATE TRIGGER reject_status_audit BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION reject_status_audit();").execute(&pool).await.unwrap();
     let res = send(
         &app,
-        get(&format!("/api/conversations/{conv}"), Some(&cookie)),
+        json_req(
+            "PUT",
+            &format!("/api/admin/users/{id}/status"),
+            Some(&a.admin),
+            Some(json!({"disabled":true})),
+        ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::OK);
-
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(json_body(res).await["error"]["code"], "internal");
     assert_eq!(
-        audit_actions(&pool).await,
-        vec![
-            (
-                "account_disabled".to_string(),
-                "student@example.com".to_string(),
-                Some("測試停用".to_string())
-            ),
-            (
-                "account_enabled".to_string(),
-                "student@example.com".to_string(),
-                None
-            ),
-        ]
+        send(&app, get("/api/me", Some(&a.student))).await.status(),
+        StatusCode::OK
     );
+    let disabled: bool =
+        sqlx::query_scalar("SELECT disabled_at IS NOT NULL FROM users WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!disabled);
 }
 
 #[sqlx::test]
 async fn disabled_account_cannot_use_password_login(pool: PgPool) {
-    let app = test_app(pool);
+    let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let res = send(
         &app,
@@ -152,13 +330,21 @@ async fn disabled_account_cannot_use_password_login(pool: PgPool) {
         .as_str()
         .unwrap()
         .to_string();
-    post(
-        &app,
-        "/api/admin/users/student@example.com/disable",
-        Some(&a.admin),
-        None,
-    )
-    .await;
+    let id = user_id(&pool, "student@example.com").await;
+    assert_eq!(
+        send(
+            &app,
+            json_req(
+                "PUT",
+                &format!("/api/admin/users/{id}/status"),
+                Some(&a.admin),
+                Some(json!({"disabled":true}))
+            )
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
 
     let login = |pw: String| {
         send(
@@ -177,129 +363,6 @@ async fn disabled_account_cannot_use_password_login(pool: PgPool) {
     // 密碼不對時不揭露帳號狀態
     let res = login("wrong-password".into()).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[sqlx::test]
-async fn only_admins_can_disable_and_restore(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    for p in ["disable", "enable"] {
-        let path = format!("/api/admin/users/student@example.com/{p}");
-        for (cookie, status) in [
-            (Some(a.teacher.as_str()), StatusCode::FORBIDDEN),
-            (Some(a.student.as_str()), StatusCode::FORBIDDEN),
-            (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
-            (None, StatusCode::UNAUTHORIZED),
-        ] {
-            assert_eq!(post(&app, &path, cookie, None).await, status);
-        }
-    }
-    // 沒被擋下來亂動：學生仍可使用
-    assert_eq!(
-        send(&app, get("/api/me", Some(&a.student))).await.status(),
-        StatusCode::OK
-    );
-}
-
-#[sqlx::test]
-async fn cannot_disable_yourself_or_the_last_active_admin(pool: PgPool) {
-    let app = test_app(pool.clone());
-    let a = seed_actors(&app).await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/admin/users/admin@example.com/disable",
-            Some(&a.admin),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::CONFLICT);
-    assert_eq!(json_body(res).await["error"]["code"], "cannot_disable_self");
-
-    // 第二位管理者可以被停用，但停用後唯一剩下的管理者受保護
-    let admin2 = {
-        let mut cfg = test_config();
-        cfg.admin_emails.push("admin2@example.com".into());
-        let app2 = test_app_with_config(pool.clone(), FakeAi::with(vec![]), cfg);
-        login_as(&app2, "sub-admin2", "admin2@example.com").await
-    };
-    assert_eq!(
-        post(
-            &app,
-            "/api/admin/users/admin2@example.com/disable",
-            Some(&a.admin),
-            None
-        )
-        .await,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        send(&app, get("/api/me", Some(&admin2))).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    // admin2 復原後，由 admin2 嘗試停用 admin：admin 還在，所以可以；但再停用 admin2 自己不行
-    post(
-        &app,
-        "/api/admin/users/admin2@example.com/enable",
-        Some(&a.admin),
-        None,
-    )
-    .await;
-    let admin2 = {
-        let mut cfg = test_config();
-        cfg.admin_emails.push("admin2@example.com".into());
-        let app2 = test_app_with_config(pool, FakeAi::with(vec![]), cfg);
-        login_as(&app2, "sub-admin2", "admin2@example.com").await
-    };
-    assert_eq!(
-        post(
-            &app,
-            "/api/admin/users/admin@example.com/disable",
-            Some(&admin2),
-            None
-        )
-        .await,
-        StatusCode::NO_CONTENT
-    );
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/admin/users/admin2@example.com/disable",
-            Some(&admin2),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::CONFLICT);
-}
-
-#[sqlx::test]
-async fn unknown_account_is_404_and_bad_email_is_400(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    assert_eq!(
-        post(
-            &app,
-            "/api/admin/users/nobody@example.com/disable",
-            Some(&a.admin),
-            None
-        )
-        .await,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        post(
-            &app,
-            "/api/admin/users/not-an-email/disable",
-            Some(&a.admin),
-            None
-        )
-        .await,
-        StatusCode::BAD_REQUEST
-    );
 }
 
 #[sqlx::test]

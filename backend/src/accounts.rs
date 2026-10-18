@@ -7,10 +7,9 @@
 
 use axum::{
     Json, Router,
-    body::Bytes,
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, put},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -27,12 +26,13 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/students", get(list_students))
         .route("/api/students/{email}", delete(delete_student))
-        .route("/api/admin/users/{email}/disable", post(disable_user))
-        .route("/api/admin/users/{email}/enable", post(enable_user))
+        .route("/api/admin/users/{id}/status", put(set_status))
 }
 
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub(crate) struct StudentRow {
+    /// 使用者 UUID；尚未建立帳號時為 null。
+    id: Option<Uuid>,
     email: String,
     display_name: Option<String>,
     /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
@@ -55,7 +55,7 @@ pub(crate) async fn list_students(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<StudentRow>>, ApiError> {
     let rows = sqlx::query_as(
-        "SELECT e.email, u.display_name,
+        "SELECT u.id, e.email, u.display_name,
                 (u.id IS NOT NULL) AS has_account,
                 COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
                 COALESCE((SELECT count(*) FROM summaries s
@@ -101,57 +101,51 @@ fn clean_reason(reason: Option<String>) -> Option<String> {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
-pub(crate) struct ReasonBody {
+pub(crate) struct StatusBody {
+    disabled: bool,
     reason: Option<String>,
 }
 
-/// 原因為選填：沒有 body、空 body 或格式不符都視為沒有原因。
-fn reason_from(body: &Bytes) -> Option<String> {
-    clean_reason(
-        serde_json::from_slice::<ReasonBody>(body)
-            .ok()
-            .and_then(|b| b.reason),
-    )
-}
-
 #[utoipa::path(
-    post,
-    path = "/api/admin/users/{email}/disable",
+    put,
+    path = "/api/admin/users/{id}/status",
     tag = "admin",
-    summary = "停用帳號",
-    params(("email" = String, Path, description = "電子郵件")),
-    request_body = Option<ReasonBody>,
-    responses((status = 204, description = "已停用"), (status = 409, description = "cannot_disable_self / last_admin", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    summary = "設定帳號停用狀態（冪等）",
+    params(("id" = Uuid, Path, description = "使用者 ID")),
+    request_body = StatusBody,
+    responses((status = 204, description = "狀態已設定；相同狀態不重複稽核"), (status = 409, description = "cannot_disable_self / last_admin", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
-pub(crate) async fn disable_user(
+pub(crate) async fn set_status(
     RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
-    Path(email): Path<String>,
-    body: Bytes,
+    Path(id): Path<Uuid>,
+    Json(body): Json<StatusBody>,
 ) -> Result<StatusCode, ApiError> {
-    let email = email_or_400(&email)?;
-    let reason = reason_from(&body);
-    if email == cu.user.email {
+    if body.disabled && id == cu.user.id {
         return Err(ApiError::conflict(
             "cannot_disable_self",
             "不能停用自己的帳號",
         ));
     }
+    let reason = clean_reason(body.reason);
     let mut tx = state.pool.begin().await?;
-    let target: Option<(Uuid, bool, bool)> = sqlx::query_as(
-        "SELECT id, is_admin, disabled_at IS NOT NULL FROM users WHERE email = $1 FOR UPDATE",
+    // 以相同順序鎖住管理者，避免並行操作把最後兩位管理者同時停用。
+    sqlx::query("SELECT id FROM users WHERE is_admin ORDER BY id FOR UPDATE")
+        .fetch_all(&mut *tx)
+        .await?;
+    let target: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT email, is_admin, disabled_at IS NOT NULL FROM users WHERE id = $1 FOR UPDATE",
     )
-    .bind(&email)
+    .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((id, is_admin, already)) = target else {
+    let Some((email, is_admin, disabled)) = target else {
         return Err(ApiError::not_found());
     };
-    if already {
+    if disabled == body.disabled {
         return Ok(StatusCode::NO_CONTENT);
     }
-    if is_admin {
-        // 系統至少保留 1 位啟用中的管理者（S-01.3）
+    if body.disabled && is_admin {
         let (others,): (i64,) = sqlx::query_as(
             "SELECT count(*) FROM users WHERE is_admin AND disabled_at IS NULL AND id <> $1",
         )
@@ -165,68 +159,22 @@ pub(crate) async fn disable_user(
             ));
         }
     }
-    sqlx::query("UPDATE users SET disabled_at = now(), updated_at = now() WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    // 立即清除所有 session
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    audit(
-        &mut *tx,
-        cu.user.id,
-        "account_disabled",
-        &email,
-        reason.as_deref(),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/admin/users/{email}/enable",
-    tag = "admin",
-    summary = "復原帳號",
-    params(("email" = String, Path, description = "電子郵件")),
-    request_body = Option<ReasonBody>,
-    responses((status = 204, description = "已復原"), crate::error::CommonErrors)
-)]
-pub(crate) async fn enable_user(
-    RequireAdmin(cu): RequireAdmin,
-    State(state): State<AppState>,
-    Path(email): Path<String>,
-    body: Bytes,
-) -> Result<StatusCode, ApiError> {
-    let email = email_or_400(&email)?;
-    let reason = reason_from(&body);
-    let mut tx = state.pool.begin().await?;
-    let r = sqlx::query(
-        "UPDATE users SET disabled_at = NULL, updated_at = now()
-         WHERE email = $1 AND disabled_at IS NOT NULL",
-    )
-    .bind(&email)
-    .execute(&mut *tx)
-    .await?;
-    if r.rows_affected() == 0 {
-        let (exists,): (bool,) =
-            sqlx::query_as("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)")
-                .bind(&email)
-                .fetch_one(&mut *tx)
-                .await?;
-        return if exists {
-            Ok(StatusCode::NO_CONTENT)
-        } else {
-            Err(ApiError::not_found())
-        };
+    sqlx::query("UPDATE users SET disabled_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now() WHERE id = $1")
+        .bind(id).bind(body.disabled).execute(&mut *tx).await?;
+    if body.disabled {
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
     audit(
         &mut *tx,
         cu.user.id,
-        "account_enabled",
+        if body.disabled {
+            "account_disabled"
+        } else {
+            "account_enabled"
+        },
         &email,
         reason.as_deref(),
     )

@@ -57,6 +57,7 @@ async function request<T>(method: Method, path: string, body?: unknown, signal?:
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  put: <T = void>(path: string, body?: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   delete: <T = void>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 }

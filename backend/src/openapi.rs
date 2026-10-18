@@ -37,7 +37,7 @@ impl Modify for SessionCookie {
         auth::me, auth::reset_password,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
-        accounts::list_students, accounts::disable_user, accounts::enable_user,
+        accounts::list_students, accounts::set_status,
         accounts::delete_student,
         catalog::list_topics_for_teacher,
         catalog::create_topic_for_teacher,
