@@ -11,6 +11,7 @@ import { server } from '@/test/server'
 const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => ({
   email,
   display_name: null,
+  id: '11111111-1111-4111-8111-111111111111',
   has_account: true,
   disabled: false,
   completed_conversations: 0,
@@ -19,7 +20,7 @@ const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => (
 
 const roster = [
   student('active@example.com', { display_name: 'Ada', completed_conversations: 3 }),
-  student('later@example.com', { has_account: false }),
+  student('later@example.com', { id: null, has_account: false }),
   student('off@example.com', { disabled: true }),
 ]
 
@@ -55,7 +56,7 @@ describe('student account management', () => {
     mockStudents()
     let call: { url: string; body: unknown } | undefined
     server.use(
-      http.post('/api/admin/users/:email/disable', async ({ request }) => {
+      http.put('/api/admin/users/:id/status', async ({ request }) => {
         call = { url: new URL(request.url).pathname, body: await request.json() }
         return new HttpResponse(null, { status: 204 })
       }),
@@ -69,15 +70,17 @@ describe('student account management', () => {
     await userEvent.type(within(dialog).getByLabelText(/原因/u), '測試')
     await userEvent.click(within(dialog).getByRole('button', { name: '停用' }))
     expect(await screen.findByText('帳號已停用。')).toBeInTheDocument()
-    expect(call).toEqual({ url: '/api/admin/users/active%40example.com/disable', body: { reason: '測試' } })
+    expect(call).toEqual({ url: '/api/admin/users/11111111-1111-4111-8111-111111111111/status', body: { disabled: true, reason: '測試' } })
   })
 
   it('an admin restores a disabled account', async () => {
     mockStudents()
     let url = ''
+    let body: unknown
     server.use(
-      http.post('/api/admin/users/:email/enable', ({ request }) => {
+      http.put('/api/admin/users/:id/status', async ({ request }) => {
         url = new URL(request.url).pathname
+        body = await request.json()
         return new HttpResponse(null, { status: 204 })
       }),
     )
@@ -85,12 +88,13 @@ describe('student account management', () => {
     await screen.findByText('off@example.com')
     await userEvent.click(screen.getByRole('button', { name: '復原 off@example.com' }))
     expect(await screen.findByText('帳號已復原。')).toBeInTheDocument()
-    expect(url).toBe('/api/admin/users/off%40example.com/enable')
+    expect(url).toBe('/api/admin/users/11111111-1111-4111-8111-111111111111/status')
+    expect(body).toEqual({ disabled: false })
   })
 
   it('shows a translated message when the last admin cannot be disabled', async () => {
     mockStudents()
-    server.use(http.post('/api/admin/users/:email/disable', () => apiError(409, 'last_admin')))
+    server.use(http.put('/api/admin/users/:id/status', () => apiError(409, 'last_admin')))
     renderTeacherPage(<RosterPage />, undefined, { admin: true })
     await screen.findByText('active@example.com')
     await userEvent.click(screen.getByRole('button', { name: '停用 active@example.com' }))

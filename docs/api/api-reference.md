@@ -24,12 +24,12 @@
 ## 管理（管理者）
 
 - 重設密碼：臨時密碼**只出現在這次回應**；沒有帳號就建立；同時清除該使用者所有 session 與登入鎖定。
-- 停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
+- `PUT /api/admin/users/{id}/status` 接受 `{ disabled, reason? }`，id 為使用者 UUID（學生列表的 `id`，沒有帳號時為 null）；舊 disable／enable POST 已移除。同值重送回 204 且不重複稽核。停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
 - 新增教師重複送出也回 204（冪等）。
 
 ## 題庫與活動
 
-- 題庫的 GET 已統一為 `/api/topics`，舊 admin 路徑的 GET 回 404（#292）。教師也能放入題目（S-01.3）。`/api/admin/topics` 與 `/api/topics` 目前是同功能的兩組路徑（合併見 issue #292–#294）。
+- 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
 - `GET /api/catalog` 回傳 `{ activities, topics }`，只含已發布的活動與已啟用的題目；舊的 `/api/available` 已移除。
@@ -47,6 +47,7 @@
 
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
+- `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。
 - 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
@@ -114,18 +115,18 @@
 
 ### 沒有分頁／上限【高】（#284 對話、#285 總結、#286 學生、#287 名單、#288 活動）
 
-`GET /api/conversations`、`/api/teacher/summaries`、`/api/students`、`/api/roster`、`/api/activities` 全部 `fetch_all`。`teacher/summaries` 還 JOIN 三表且隨全班歷史成長，會是第一個變慢的端點。
+`GET /api/conversations`、`/api/teacher/summaries`、`/api/students`、`/api/roster`、`/api/activities` 除 #284 對話已完成 keyset 分頁外，其餘仍一次 `fetch_all`。`teacher/summaries` 還 JOIN 三表且隨全班歷史成長，會是第一個變慢的端點。
 **建議**：統一 `?limit=&cursor=`（keyset，依 `ended_at, id`），回 `{ items, next_cursor }`。教師端再加 `?student=`、`?topic=` 篩選。因為還沒上線，現在改成本最低。
 
 ### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）
 
-- `POST /api/admin/users/{email}/disable|enable` 可收斂成 `PUT /api/admin/users/{email}/status` `{ disabled: bool, reason? }`，冪等且只有一條路由；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
+- #290 已完成：`PUT /api/admin/users/{id}/status` 設定啟用狀態；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
 - 資源識別用 email 放在 path：停用／復原帳號的對象一定有帳號，改用 user id（UUID，#290）；名單與教師項目可能沒有帳號，維持 email。目前後端沒有掛 request logging（無 `TraceLayer`），路徑不會進日誌；日後加上時要過濾路徑中的 email。
 - #291 已完成：學生可選清單改為 `GET /api/catalog`。
 
 ### 同一資源兩組路徑【中】（#292、#293、#294）
 
-`/api/admin/topics` 與 `/api/topics` 行為相同（`catalog.rs` 兩組 handler）。GET 已合併（#292）；其餘操作依各自 Issue 處理。POST 已合併（#293）；其餘操作依各自 Issue 處理。**建議**只留 `/api/topics`，用角色決定能做什麼；admin 前綴留給「只有管理者」的功能。少一倍測試與文件維護。
+#292–#294 已完成：題庫只保留 `/api/topics`，權限由角色決定；admin 前綴留給只有管理者能使用的功能。
 
 ### 角色與資源的混合命名【中】（#285 `/api/summaries`）
 

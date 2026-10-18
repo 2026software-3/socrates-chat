@@ -29,9 +29,9 @@ function mockTopics(initial: Topic[]) {
       topics.push(created)
       return HttpResponse.json(created, { status: 201 })
     }),
-    http.patch('/api/admin/topics/:id', async ({ request, params }) => {
+    http.patch('/api/topics/:id', async ({ request, params }) => {
       const body = (await request.json()) as Partial<Topic>
-      calls.push({ method: 'PATCH', url: `/api/admin/topics/${String(params.id)}`, body })
+      calls.push({ method: 'PATCH', url: `/api/topics/${String(params.id)}`, body })
       const i = topics.findIndex((x) => x.id === params.id)
       topics[i] = { ...topics[i], ...body }
       return HttpResponse.json(topics[i])
@@ -145,13 +145,13 @@ describe('TopicsPage', () => {
     await userEvent.type(title, 'Renamed')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { title: 'Renamed' } }])
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { title: 'Renamed' } }])
     expect(screen.getByText('Renamed')).toBeInTheDocument()
   })
 
   it('shows invalid_title in the edit dialog and keeps it open', async () => {
     mockTopics([topic('1')])
-    server.use(http.patch('/api/admin/topics/:id', () => apiError(400, 'invalid_title')))
+    server.use(http.patch('/api/topics/:id', () => apiError(400, 'invalid_title')))
     render()
     await screen.findByText('Topic 1')
     await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
@@ -168,13 +168,13 @@ describe('TopicsPage', () => {
     const sw = await screen.findByRole('switch', { name: '啟用「Topic 1」' })
     await userEvent.click(sw)
     await waitFor(() => expect(screen.getByRole('switch', { name: '啟用「Topic 1」' })).not.toBeChecked())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { is_active: false } }])
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { is_active: false } }])
     expect(screen.getByText('已停用')).toBeInTheDocument()
   })
 
   it('reverts the switch and shows the translated error when the toggle fails', async () => {
     mockTopics([topic('1')])
-    server.use(http.patch('/api/admin/topics/:id', () => apiError(500, 'internal')))
+    server.use(http.patch('/api/topics/:id', () => apiError(500, 'internal')))
     render()
     const sw = await screen.findByRole('switch', { name: '啟用「Topic 1」' })
     await userEvent.click(sw)
@@ -234,7 +234,7 @@ describe('TopicsPage', () => {
     await userEvent.clear(within(dialog).getByLabelText('分類'))
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { category: null } }])
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { category: null } }])
     expect(within(screen.getByRole('list', { name: '題目清單' })).queryByText('Ethics')).not.toBeInTheDocument()
   })
 

@@ -9,19 +9,25 @@ import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { useDateFormat } from '@/features/chat/format'
 import { useI18n, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
-import type { Conversation } from '@/lib/types'
+import type { Conversation, Page as PageResult } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 /** 我的對話列表（不含訊息）；可刪除對話。 */
 export function ConversationListPage() {
+  const [cursors, setCursors] = useState<(string | null)[]>([null])
+  const cursor = cursors[cursors.length - 1]
+  return <ConversationList key={cursor ?? ''} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} />
+}
+
+function ConversationList({ cursor, onNext, onPrevious }: { cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {
   const t = useT()
-  const { data, error, loading, reload } = useFetch<Conversation[]>('/api/conversations')
+  const { data, error, loading, reload } = useFetch<PageResult<Conversation>>(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`)
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set())
   const [target, setTarget] = useState<Conversation>()
   const [pending, setPending] = useState(false)
   const [deleteError, setDeleteError] = useState<unknown>()
 
-  const items = data?.filter((c) => !removed.has(c.id))
+  const items = data?.items.filter((c) => !removed.has(c.id))
 
   async function confirmDelete() {
     if (!target || pending) return
@@ -71,6 +77,10 @@ export function ConversationListPage() {
           ))}
         </ul>
       ) : null}
+      {data || onPrevious ? <div className="flex gap-2">
+        {onPrevious ? <Button variant="outline" onClick={onPrevious}>{t('chat.list.previous')}</Button> : null}
+        {data?.next_cursor ? <Button variant="outline" disabled={loading} onClick={() => onNext(data.next_cursor!)}>{t('chat.list.next')}</Button> : null}
+      </div> : null}
       <ConfirmDialog
         open={target !== undefined}
         onOpenChange={(o) => {

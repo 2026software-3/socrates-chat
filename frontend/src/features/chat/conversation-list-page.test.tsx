@@ -10,7 +10,7 @@ import { server } from '@/test/server'
 function setup(list: Conversation[] | 'error') {
   mockMe(makeMe({ student: true }))
   server.use(
-    http.get('/api/conversations', () => (list === 'error' ? apiError(500, 'internal') : HttpResponse.json(list))),
+    http.get('/api/conversations', () => (list === 'error' ? apiError(500, 'internal') : HttpResponse.json({ items: list, next_cursor: null }))),
   )
 }
 
@@ -48,7 +48,7 @@ describe('ConversationListPage', () => {
     setup('error')
     renderApp(null, { route: '/conversations' })
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
-    server.use(http.get('/api/conversations', () => HttpResponse.json([makeConversation()])))
+    server.use(http.get('/api/conversations', () => HttpResponse.json({items: [makeConversation()], next_cursor: null})))
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
     expect(await screen.findByRole('link', { name: /開啟對話/ })).toBeInTheDocument()
   })
@@ -111,4 +111,24 @@ describe('ConversationListPage', () => {
     await screen.findByRole('link', { name: /開啟對話/ })
     expect(screen.queryByText(/建立於/)).not.toBeInTheDocument()
   })
+  it('navigates next and previous pages using the opaque cursor', async () => {
+    mockMe(makeMe({ student: true }))
+    const cursors: (string | null)[] = []
+    server.use(http.get('/api/conversations', ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      cursors.push(cursor)
+      return HttpResponse.json(cursor
+        ? { items: [makeConversation({ id: 'c2', title: 'Second page' })], next_cursor: null }
+        : { items: [makeConversation({ title: 'First page' })], next_cursor: 'opaque+/=' })
+    }))
+    renderApp(null, { route: '/conversations' })
+    await screen.findByRole('link', { name: '開啟對話：First page' })
+    await userEvent.click(screen.getByRole('button', { name: '下一頁' }))
+    await screen.findByRole('link', { name: '開啟對話：Second page' })
+    expect(screen.queryByRole('button', { name: '下一頁' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '上一頁' }))
+    await screen.findByRole('link', { name: '開啟對話：First page' })
+    expect(cursors).toEqual([null, 'opaque+/=', null])
+  })
+
 })
