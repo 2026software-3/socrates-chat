@@ -428,7 +428,7 @@ async fn password_reset_audit_failure_preserves_password_sessions_and_lock(pool:
             .fetch_one(&pool)
             .await
             .unwrap();
-    let old_hash = password::hash("Synthetic-old-password-1").unwrap();
+    let old_hash = password::hash(&password::generate_temporary()).unwrap();
     auth_store::set_password(&pool, user_id, &old_hash, false)
         .await
         .unwrap();
