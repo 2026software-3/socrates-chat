@@ -61,3 +61,18 @@ async fn documents_the_session_cookie_and_error_shape(pool: PgPool) {
     );
     assert!(doc["components"]["schemas"]["ErrorBody"].is_object());
 }
+
+#[sqlx::test]
+async fn student_deletion_documents_delete_with_confirmation_body(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let operation = &doc["paths"]["/api/students/{email}"]["delete"];
+    assert!(operation.is_object());
+    assert_eq!(operation["requestBody"]["required"], true);
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/DeleteBody"
+    );
+    assert!(operation["responses"]["204"].is_object());
+    assert!(doc["paths"].get("/api/students/{email}/delete").is_none());
+}

@@ -39,7 +39,8 @@
 - 匯入只新增、不移除；每行一個電子郵件，可有 `email` 標題列。
 - 匯入結果的 `credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次）。**只有管理者匯入才會建立帳號**，教師匯入時為空陣列；已有帳號與教師／管理者的信箱不在其中。
 - 移出名單不刪資料（重新加回後照舊）。
-- 刪除學生帳號：`confirm_email` 必須與路徑的電子郵件相同（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
+- 刪除學生帳號：使用 DELETE，JSON body 的 `confirm_email` 必須與路徑的電子郵件相同（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
+- DELETE 刻意保留 JSON body，以沿用確認欄位與驗證規則；前端 fetch 與後端 Axum 均支援。部署的 proxy／client 必須保留 DELETE body。
 - 學生列表只有完成對話的**數量**，沒有內容。
 
 ## 對話（只有修課名單內的學生）
@@ -116,9 +117,8 @@
 `GET /api/conversations`、`/api/teacher/summaries`、`/api/students`、`/api/roster`、`/api/activities` 全部 `fetch_all`。`teacher/summaries` 還 JOIN 三表且隨全班歷史成長，會是第一個變慢的端點。
 **建議**：統一 `?limit=&cursor=`（keyset，依 `ended_at, id`），回 `{ items, next_cursor }`。教師端再加 `?student=`、`?topic=` 篩選。因為還沒上線，現在改成本最低。
 
-### 動作式路徑與動詞誤用【中】（#289 刪除學生、#290 帳號啟用狀態、#291 可選清單）
+### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）
 
-- `POST /api/students/{email}/delete` 應為 `DELETE /api/students/{email}`（需要 `confirm_email` body 的話，可用 `DELETE` + body，或改為 `?confirm=`／`X-Confirm-Email` header；若顧慮 DELETE body 相容性，現狀可接受但要在文件註明是刻意）。
 - `POST /api/admin/users/{email}/disable|enable` 可收斂成 `PUT /api/admin/users/{email}/status` `{ disabled: bool, reason? }`，冪等且只有一條路由；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
 - 資源識別用 email 放在 path：停用／復原帳號的對象一定有帳號，改用 user id（UUID，#290）；名單與教師項目可能沒有帳號，維持 email。目前後端沒有掛 request logging（無 `TraceLayer`），路徑不會進日誌；日後加上時要過濾路徑中的 email。
 - `GET /api/available` 名稱不明確，建議 `GET /api/catalog` 或 `GET /api/conversation-sources`。

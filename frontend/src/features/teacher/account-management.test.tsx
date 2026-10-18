@@ -103,7 +103,7 @@ describe('student account management', () => {
     mockStudents()
     let call: { url: string; body: unknown } | undefined
     server.use(
-      http.post('/api/students/:email/delete', async ({ request }) => {
+      http.delete('/api/students/:email', async ({ request }) => {
         call = { url: new URL(request.url).pathname, body: await request.json() }
         return new HttpResponse(null, { status: 204 })
       }),
@@ -122,7 +122,7 @@ describe('student account management', () => {
     await userEvent.click(confirm)
     expect(await screen.findByText('學生帳號已刪除。')).toBeInTheDocument()
     expect(call).toEqual({
-      url: '/api/students/active%40example.com/delete',
+      url: '/api/students/active%40example.com',
       body: { confirm_email: 'Active@example.com' },
     })
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
@@ -132,7 +132,7 @@ describe('student account management', () => {
     mockStudents()
     let called = false
     server.use(
-      http.post('/api/students/:email/delete', () => {
+      http.delete('/api/students/:email', () => {
         called = true
         return new HttpResponse(null, { status: 204 })
       }),

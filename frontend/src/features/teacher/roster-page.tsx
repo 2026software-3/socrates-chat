@@ -441,7 +441,7 @@ export function RosterPage() {
         error={action?.kind === 'delete' ? actionError : undefined}
         onConfirm={() =>
           void run(
-            () => api.post(`/api/students/${encodeURIComponent(target)}/delete`, { confirm_email: confirmText.trim() }),
+            () => api.delete(`/api/students/${encodeURIComponent(target)}`, { confirm_email: confirmText.trim() }),
             'teacher.roster.deletedToast',
           )
         }
