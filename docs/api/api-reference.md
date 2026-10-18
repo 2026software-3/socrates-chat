@@ -47,7 +47,7 @@
 
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
-- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_source`。
+- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
   1. `message`：保存好的學生訊息，另有 `auto_ended`。
@@ -139,7 +139,7 @@
 ### 其他細節【低】
 
 - `POST /api/conversations/{id}/end` 回 202（首次）與 200（已結束）：狀態碼雙義，對前端是額外分支。建議一律 202 或一律 200 + body `{ status }`。
-- `POST /api/conversations` 的 `invalid_source`（活動／題目不可用）與 `send_message` 的 `invalid_source`（`source` 欄位非法）同名不同義。`send_message` 的碼與欄位名一致，應保留；建議改 `create` 的碼：`invalid_conversation_source`，或拆成 `activity_unavailable`／`topic_unavailable`。前端只依賴 `create` 的碼（`common.messages.ts` 三語翻譯與 `available-page.test.tsx`），`send_message` 的碼前端沒有翻譯。
+- `POST /api/conversations` 的來源錯誤回 `invalid_conversation_source`；`POST …/messages` 的非法 `source` 仍回 `invalid_source`。
 - `POST /api/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅管理者，OK；但回應建議加 `Cache-Control: no-store`。
 - 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
 - 沒看到全域 request body 大小限制與請求逾時（`tower_http` 只用在靜態檔）。語音有 10 MB 上限，其餘靠 axum 預設 2 MB；建議明確設定並加 `TimeoutLayer`（SSE 路由除外）。
