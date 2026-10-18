@@ -125,7 +125,7 @@
 
 ### 同一資源兩組路徑【中】（#292、#293、#294）
 
-`/api/admin/topics` 與 `/api/topics` 行為相同（`catalog.rs` 兩組 handler）。GET 已合併（#292）；其餘操作依各自 Issue 處理。**建議**只留 `/api/topics`，用角色決定能做什麼；admin 前綴留給「只有管理者」的功能。少一倍測試與文件維護。
+`/api/admin/topics` 與 `/api/topics` 行為相同（`catalog.rs` 兩組 handler）。GET 已合併（#292）；其餘操作依各自 Issue 處理。POST 已合併（#293）；其餘操作依各自 Issue 處理。**建議**只留 `/api/topics`，用角色決定能做什麼；admin 前綴留給「只有管理者」的功能。少一倍測試與文件維護。
 
 ### 角色與資源的混合命名【中】（#285 `/api/summaries`）
 

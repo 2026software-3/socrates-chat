@@ -98,7 +98,7 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
             &app,
             json_req(
                 "POST",
-                "/api/admin/topics",
+                "/api/topics",
                 Some(&a.admin),
                 Some(json!({"title": "自由意志"})),
             ),

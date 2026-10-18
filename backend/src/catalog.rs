@@ -31,10 +31,6 @@ where
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/admin/topics",
-            post(create_topic).fallback(crate::fallback),
-        )
         .route("/api/admin/topics/{id}", patch(update_topic))
         .route(
             "/api/topics",
@@ -107,22 +103,6 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/admin/topics",
-    tag = "admin",
-    summary = "新增題目",
-    request_body = NewTopic,
-    responses((status = 201, description = "已建立", body = Topic), crate::error::CommonErrors)
-)]
-pub(crate) async fn create_topic(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-    Json(b): Json<NewTopic>,
-) -> Result<(StatusCode, Json<Topic>), ApiError> {
-    insert_topic(&state, b).await
 }
 
 #[utoipa::path(
