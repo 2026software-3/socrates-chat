@@ -193,6 +193,15 @@ export type ClassDashboard = Distribution & {
 
 export type EmailList = { emails: string[] }
 
+export type Classroom = {
+  id: string
+  name: string
+  year_label: string | null
+  description: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type RosterImportResult = {
   added: number
   existing: number
