@@ -107,7 +107,7 @@ describe('app shell', () => {
           ['a@example.com', 'b@example.com'].map((email) => ({
             email,
             display_name: null,
-            has_account: true,
+            id: '11111111-1111-4111-8111-111111111111', has_account: true,
             disabled: false,
             completed_conversations: 0,
           })),

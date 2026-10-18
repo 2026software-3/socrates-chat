@@ -215,9 +215,9 @@ async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
     assert_eq!(msgs[0]["source"], "text");
 
     let list = json_body(send(&app, get("/api/conversations", Some(&a.student))).await).await;
-    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
     // 列表不含訊息原文
-    assert!(list[0].get("messages").is_none());
+    assert!(list["items"][0].get("messages").is_none());
 }
 
 #[sqlx::test]

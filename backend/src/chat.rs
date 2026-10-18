@@ -5,7 +5,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -18,6 +18,7 @@ use crate::{
     AppState,
     auth::RequireStudent,
     error::ApiError,
+    pagination::{self, Page, Pagination},
     reply::{self, EventStream},
     summary,
 };
@@ -150,19 +151,37 @@ pub(crate) async fn create(
     path = "/api/conversations",
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
-    responses((status = 200, description = "對話", body = Vec<Conversation>), crate::error::CommonErrors)
+    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor")),
+    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = Page<Conversation>), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
-) -> Result<Json<Vec<Conversation>>, ApiError> {
-    let rows = sqlx::query_as(conversation_select!(
-        "WHERE user_id = $1 ORDER BY created_at DESC, id"
-    ))
-    .bind(cu.user.id)
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(rows))
+    Query(query): Query<Pagination>,
+) -> Result<Json<Page<Conversation>>, ApiError> {
+    let limit = query.limit()?;
+    let cursor: Option<(DateTime<Utc>, Uuid)> = query.cursor("conversations")?;
+    let rows = if let Some((time, id)) = cursor {
+        sqlx::query_as(conversation_select!(
+            "WHERE user_id = $1 AND created_at <= $2 AND (created_at < $2 OR id > $3) ORDER BY created_at DESC, id ASC LIMIT $4"
+        ))
+        .bind(cu.user.id).bind(time).bind(id).bind((limit + 1) as i64)
+        .fetch_all(&state.pool).await?
+    } else {
+        sqlx::query_as(conversation_select!(
+            "WHERE user_id = $1 ORDER BY created_at DESC, id ASC LIMIT $2"
+        ))
+        .bind(cu.user.id)
+        .bind((limit + 1) as i64)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    Ok(Json(pagination::page(
+        rows,
+        limit,
+        "conversations",
+        |row: &Conversation| (row.created_at, row.id),
+    )?))
 }
 
 /// 取得「自己的」對話；別人的或不存在的一律 404。

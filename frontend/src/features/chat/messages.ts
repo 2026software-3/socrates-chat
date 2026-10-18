@@ -4,6 +4,8 @@ export const chatMessages = defineMessages({
   'zh-TW': {
     'chat.nav.conversations': '我的對話',
     'chat.list.title': '我的對話',
+    'chat.list.previous': '上一頁',
+    'chat.list.next': '下一頁',
     'chat.list.empty': '你還沒有任何對話。',
     'chat.list.browse': '選擇題目開始討論',
     'chat.list.turns': '{count} 回合',
@@ -56,6 +58,8 @@ export const chatMessages = defineMessages({
   en: {
     'chat.nav.conversations': 'My conversations',
     'chat.list.title': 'My conversations',
+    'chat.list.previous': 'Previous page',
+    'chat.list.next': 'Next page',
     'chat.list.empty': 'You have no conversations yet.',
     'chat.list.browse': 'Pick a topic to start discussing',
     'chat.list.turns': '{count} turns',
@@ -108,6 +112,8 @@ export const chatMessages = defineMessages({
   es: {
     'chat.nav.conversations': 'Mis conversaciones',
     'chat.list.title': 'Mis conversaciones',
+    'chat.list.previous': 'Página anterior',
+    'chat.list.next': 'Página siguiente',
     'chat.list.empty': 'Todavía no tienes conversaciones.',
     'chat.list.browse': 'Elige un tema para empezar a debatir',
     'chat.list.turns': '{count} turnos',
