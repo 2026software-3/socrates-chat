@@ -405,7 +405,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
         StatusCode::NO_CONTENT
     );
     // 名單內學生可以進入學生功能
-    let res = send(&app, get("/api/available", Some(&cookie))).await;
+    let res = send(&app, get("/api/catalog", Some(&cookie))).await;
     assert_ne!(res.status(), StatusCode::FORBIDDEN);
     assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
 

@@ -32,7 +32,7 @@
 - 教師也能放入題目（S-01.3）。`/api/admin/topics` 與 `/api/topics` 目前是同功能的兩組路徑（合併見 issue #292–#294）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
-- 學生可選清單只含已發布的活動與已啟用的題目。
+- `GET /api/catalog` 回傳 `{ activities, topics }`，只含已發布的活動與已啟用的題目；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生
 
@@ -121,7 +121,7 @@
 
 - `POST /api/admin/users/{email}/disable|enable` 可收斂成 `PUT /api/admin/users/{email}/status` `{ disabled: bool, reason? }`，冪等且只有一條路由；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
 - 資源識別用 email 放在 path：停用／復原帳號的對象一定有帳號，改用 user id（UUID，#290）；名單與教師項目可能沒有帳號，維持 email。目前後端沒有掛 request logging（無 `TraceLayer`），路徑不會進日誌；日後加上時要過濾路徑中的 email。
-- `GET /api/available` 名稱不明確，建議 `GET /api/catalog` 或 `GET /api/conversation-sources`。
+- #291 已完成：學生可選清單改為 `GET /api/catalog`。
 
 ### 同一資源兩組路徑【中】（#292、#293、#294）
 
