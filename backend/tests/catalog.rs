@@ -62,8 +62,15 @@ async fn only_admin_manages_topics(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), expected);
-        let res = send(&app, get("/api/admin/topics", cookie)).await;
-        assert_eq!(res.status(), expected);
+        let res = send(&app, get("/api/topics", cookie)).await;
+        assert_eq!(
+            res.status(),
+            if cookie == Some(a.teacher.as_str()) {
+                StatusCode::OK
+            } else {
+                expected
+            }
+        );
     }
 
     let res = send(
@@ -95,7 +102,7 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
     .await;
     let id = json_body(res).await["id"].as_str().unwrap().to_string();
 
-    let avail = json_body(send(&app, get("/api/available", Some(&a.student))).await).await;
+    let avail = json_body(send(&app, get("/api/catalog", Some(&a.student))).await).await;
     assert_eq!(ids(&avail, "topics"), vec![id.clone()]);
 
     let res = send(
@@ -109,10 +116,10 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let avail = json_body(send(&app, get("/api/available", Some(&a.student))).await).await;
+    let avail = json_body(send(&app, get("/api/catalog", Some(&a.student))).await).await;
     assert!(ids(&avail, "topics").is_empty());
     // 管理者仍看得到停用的題目
-    let all = json_body(send(&app, get("/api/admin/topics", Some(&a.admin))).await).await;
+    let all = json_body(send(&app, get("/api/topics", Some(&a.admin))).await).await;
     assert_eq!(all.as_array().unwrap().len(), 1);
 
     let res = send(
@@ -151,7 +158,7 @@ async fn activity_visibility_follows_publish_and_close(pool: PgPool) {
         let app = app.clone();
         async move {
             ids(
-                &json_body(send(&app, get("/api/available", Some(&cookie))).await).await,
+                &json_body(send(&app, get("/api/catalog", Some(&cookie))).await).await,
                 "activities",
             )
         }
@@ -369,16 +376,16 @@ async fn activity_management_is_teacher_only(pool: PgPool) {
 async fn available_list_requires_enrollment(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let res = send(&app, get("/api/available", Some(&a.outsider))).await;
+    let res = send(&app, get("/api/catalog", Some(&a.outsider))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
     assert_eq!(json_body(res).await["error"]["code"], "not_enrolled");
     assert_eq!(
-        send(&app, get("/api/available", None)).await.status(),
+        send(&app, get("/api/catalog", None)).await.status(),
         StatusCode::UNAUTHORIZED
     );
     // 教師與管理者不參與討論：即使不在名單內也不能用學生功能
     for cookie in [&a.teacher, &a.admin] {
-        let res = send(&app, get("/api/available", Some(cookie))).await;
+        let res = send(&app, get("/api/catalog", Some(cookie))).await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         assert_eq!(json_body(res).await["error"]["code"], "forbidden");
     }
@@ -394,6 +401,18 @@ async fn available_list_requires_enrollment(pool: PgPool) {
         ),
     )
     .await;
-    let res = send(&app, get("/api/available", Some(&a.student))).await;
+    let res = send(&app, get("/api/catalog", Some(&a.student))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn legacy_available_route_is_removed(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    assert_eq!(
+        send(&app, get("/api/available", Some(&a.student)))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 }

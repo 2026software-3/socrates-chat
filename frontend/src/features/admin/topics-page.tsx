@@ -111,13 +111,13 @@ function TopicForm({
 }
 
 /**
- * 題目庫：新增、編輯、啟用／停用題目。POST 統一走 `/api/topics`；其他操作依 base
+ * 題目庫：新增、編輯、啟用／停用題目。GET、POST 統一走 `/api/topics`；PATCH 依 base
  * （教師也能放入題目，S-01.3），畫面相同。
  */
 export function TopicsPage({ base = '/api/admin/topics' }: { base?: string } = {}) {
   const t = useT()
   const { lang } = useI18n()
-  const { data, error, loading, reload } = useFetch<Topic[]>(base)
+  const { data, error, loading, reload } = useFetch<Topic[]>('/api/topics')
 
   // 成功的修改先套在本機，不必等重新載入；資料重新載入（data 換了）就作廢，以伺服器為準
   const [patchState, setPatchState] = useState<{ base: Topic[] | undefined; map: Record<string, Partial<Topic>> }>({
