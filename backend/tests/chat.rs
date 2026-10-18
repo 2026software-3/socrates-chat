@@ -125,7 +125,7 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
         &app,
         json_req(
             "PATCH",
-            &format!("/api/admin/topics/{id}"),
+            &format!("/api/topics/{id}"),
             Some(&a.admin),
             Some(json!({"is_active": false})),
         ),

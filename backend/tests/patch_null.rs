@@ -30,7 +30,7 @@ async fn null_clears_topic_category_and_absent_keeps_it(pool: PgPool) {
         json!({"title": "T", "category": "倫理學"}),
     )
     .await;
-    let path = format!("/api/admin/topics/{id}");
+    let path = format!("/api/topics/{id}");
 
     let body = patch(&app, &a.admin, &path, json!({"title": "T2"})).await;
     assert_eq!(body["category"], "倫理學");

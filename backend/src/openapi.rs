@@ -40,7 +40,7 @@ impl Modify for SessionCookie {
         accounts::list_students, accounts::disable_user, accounts::enable_user,
         accounts::delete_student,
         catalog::list_all_topics, catalog::list_topics_for_teacher, catalog::create_topic,
-        catalog::create_topic_for_teacher, catalog::update_topic,
+        catalog::create_topic_for_teacher,
         catalog::update_topic_for_teacher, catalog::list_activities, catalog::create_activity,
         catalog::get_activity, catalog::update_activity, catalog::publish_activity,
         catalog::close_activity, catalog::available,
