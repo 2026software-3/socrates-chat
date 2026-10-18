@@ -1,7 +1,5 @@
 # F-07.1-AI 追問行為評估
 
-本文件預計放在 `backend/eval/README.md`，說明固定情境評估的執行方式、判定規則與已知結果。
-
 對應 [Issue #183：追問類型選擇：AI 提示與行為評估](https://github.com/2026software-3/socrates-chat/issues/183)。專案規則以 `docs/specs/` 的 S-03.2、S-03.4 為準；本文記錄目前評估實作，不新增或取代產品規格。
 
 ## 評估目的
