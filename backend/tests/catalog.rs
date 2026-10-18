@@ -24,12 +24,7 @@ async fn only_admin_manages_topics(pool: PgPool) {
 
     let res = send(
         &app,
-        json_req(
-            "POST",
-            "/api/admin/topics",
-            Some(&a.admin),
-            Some(body.clone()),
-        ),
+        json_req("POST", "/api/topics", Some(&a.admin), Some(body.clone())),
     )
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
@@ -45,21 +40,35 @@ async fn only_admin_manages_topics(pool: PgPool) {
     ] {
         let res = send(
             &app,
-            json_req("POST", "/api/admin/topics", cookie, Some(body.clone())),
+            json_req("POST", "/api/topics", cookie, Some(body.clone())),
         )
         .await;
-        assert_eq!(res.status(), expected);
+        assert_eq!(
+            res.status(),
+            if cookie == Some(a.teacher.as_str()) {
+                StatusCode::CREATED
+            } else {
+                expected
+            }
+        );
         let res = send(
             &app,
             json_req(
                 "PATCH",
-                &format!("/api/admin/topics/{id}"),
+                &format!("/api/topics/{id}"),
                 cookie,
                 Some(json!({"title": "x"})),
             ),
         )
         .await;
-        assert_eq!(res.status(), expected);
+        assert_eq!(
+            res.status(),
+            if cookie == Some(a.teacher.as_str()) {
+                StatusCode::OK
+            } else {
+                expected
+            }
+        );
         let res = send(&app, get("/api/topics", cookie)).await;
         assert_eq!(
             res.status(),
@@ -75,7 +84,7 @@ async fn only_admin_manages_topics(pool: PgPool) {
         &app,
         json_req(
             "POST",
-            "/api/admin/topics",
+            "/api/topics",
             Some(&a.admin),
             Some(json!({"title": "  "})),
         ),
@@ -92,7 +101,7 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
         &app,
         json_req(
             "POST",
-            "/api/admin/topics",
+            "/api/topics",
             Some(&a.admin),
             Some(json!({"title": "T1"})),
         ),
@@ -107,7 +116,7 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
         &app,
         json_req(
             "PATCH",
-            &format!("/api/admin/topics/{id}"),
+            &format!("/api/topics/{id}"),
             Some(&a.admin),
             Some(json!({"is_active": false})),
         ),
@@ -124,7 +133,7 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
         &app,
         json_req(
             "PATCH",
-            &format!("/api/admin/topics/{}", uuid::Uuid::new_v4()),
+            &format!("/api/topics/{}", uuid::Uuid::new_v4()),
             Some(&a.admin),
             Some(json!({})),
         ),
@@ -287,7 +296,7 @@ async fn activity_validation_and_topic_link(pool: PgPool) {
             &app,
             json_req(
                 "POST",
-                "/api/admin/topics",
+                "/api/topics",
                 Some(&a.admin),
                 Some(json!({"title": "T"})),
             ),

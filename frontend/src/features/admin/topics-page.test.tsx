@@ -22,16 +22,16 @@ function mockTopics(initial: Topic[]) {
   const calls: { method: string; url: string; body: unknown }[] = []
   server.use(
     http.get('/api/topics', () => HttpResponse.json(topics)),
-    http.post('/api/admin/topics', async ({ request }) => {
+    http.post('/api/topics', async ({ request }) => {
       const body = (await request.json()) as Partial<Topic>
-      calls.push({ method: 'POST', url: '/api/admin/topics', body })
+      calls.push({ method: 'POST', url: '/api/topics', body })
       const created = topic(`n${topics.length + 1}`, { title: body.title, description: body.description ?? '', category: body.category ?? null })
       topics.push(created)
       return HttpResponse.json(created, { status: 201 })
     }),
-    http.patch('/api/admin/topics/:id', async ({ request, params }) => {
+    http.patch('/api/topics/:id', async ({ request, params }) => {
       const body = (await request.json()) as Partial<Topic>
-      calls.push({ method: 'PATCH', url: `/api/admin/topics/${String(params.id)}`, body })
+      calls.push({ method: 'PATCH', url: `/api/topics/${String(params.id)}`, body })
       const i = topics.findIndex((x) => x.id === params.id)
       topics[i] = { ...topics[i], ...body }
       return HttpResponse.json(topics[i])
@@ -83,7 +83,7 @@ describe('TopicsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('New topic')).toBeInTheDocument()
     expect(calls).toEqual([
-      { method: 'POST', url: '/api/admin/topics', body: { title: 'New topic', description: 'About it', category: 'Logic' } },
+      { method: 'POST', url: '/api/topics', body: { title: 'New topic', description: 'About it', category: 'Logic' } },
     ])
     expect(screen.getByLabelText('標題')).toHaveValue('')
     expect(screen.getByText('已新增題目「New topic」。')).toBeInTheDocument()
@@ -102,7 +102,7 @@ describe('TopicsPage', () => {
 
   it('shows invalid_title inline and keeps the input', async () => {
     mockTopics([])
-    server.use(http.post('/api/admin/topics', () => apiError(400, 'invalid_title')))
+    server.use(http.post('/api/topics', () => apiError(400, 'invalid_title')))
     render()
     await screen.findByText('題目庫還沒有題目。請在上方新增。')
     await userEvent.type(screen.getByLabelText('標題'), 'x')
@@ -117,7 +117,7 @@ describe('TopicsPage', () => {
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
     server.use(
-      http.post('/api/admin/topics', async () => {
+      http.post('/api/topics', async () => {
         posts += 1
         await gate
         return HttpResponse.json(topic('n1'), { status: 201 })
@@ -145,13 +145,13 @@ describe('TopicsPage', () => {
     await userEvent.type(title, 'Renamed')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { title: 'Renamed' } }])
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { title: 'Renamed' } }])
     expect(screen.getByText('Renamed')).toBeInTheDocument()
   })
 
   it('shows invalid_title in the edit dialog and keeps it open', async () => {
     mockTopics([topic('1')])
-    server.use(http.patch('/api/admin/topics/:id', () => apiError(400, 'invalid_title')))
+    server.use(http.patch('/api/topics/:id', () => apiError(400, 'invalid_title')))
     render()
     await screen.findByText('Topic 1')
     await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
@@ -168,13 +168,13 @@ describe('TopicsPage', () => {
     const sw = await screen.findByRole('switch', { name: '啟用「Topic 1」' })
     await userEvent.click(sw)
     await waitFor(() => expect(screen.getByRole('switch', { name: '啟用「Topic 1」' })).not.toBeChecked())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { is_active: false } }])
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { is_active: false } }])
     expect(screen.getByText('已停用')).toBeInTheDocument()
   })
 
   it('reverts the switch and shows the translated error when the toggle fails', async () => {
     mockTopics([topic('1')])
-    server.use(http.patch('/api/admin/topics/:id', () => apiError(500, 'internal')))
+    server.use(http.patch('/api/topics/:id', () => apiError(500, 'internal')))
     render()
     const sw = await screen.findByRole('switch', { name: '啟用「Topic 1」' })
     await userEvent.click(sw)
@@ -234,7 +234,7 @@ describe('TopicsPage', () => {
     await userEvent.clear(within(dialog).getByLabelText('分類'))
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/admin/topics/1', body: { category: null } }])
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { category: null } }])
     expect(within(screen.getByRole('list', { name: '題目清單' })).queryByText('Ethics')).not.toBeInTheDocument()
   })
 
@@ -262,7 +262,7 @@ describe('TopicsPage', () => {
     await userEvent.type(within(dialog).getByLabelText('說明'), '   ')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'POST', url: '/api/admin/topics', body: { title: 'T', description: 'hi' } }])
+    expect(calls).toEqual([{ method: 'POST', url: '/api/topics', body: { title: 'T', description: 'hi' } }])
   })
 
   it('clears the create notice on the next submit', async () => {
@@ -272,7 +272,7 @@ describe('TopicsPage', () => {
     await userEvent.type(screen.getByLabelText('標題'), 'A')
     await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('已新增題目「A」。')).toBeInTheDocument()
-    server.use(http.post('/api/admin/topics', () => apiError(500, 'internal')))
+    server.use(http.post('/api/topics', () => apiError(500, 'internal')))
     await userEvent.type(screen.getByLabelText('標題'), 'B')
     await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
     await screen.findByText('系統發生錯誤，請稍後再試。')
@@ -281,7 +281,7 @@ describe('TopicsPage', () => {
 
   it('shows a 500 on create inline and keeps the input', async () => {
     mockTopics([])
-    server.use(http.post('/api/admin/topics', () => apiError(500, 'internal')))
+    server.use(http.post('/api/topics', () => apiError(500, 'internal')))
     render()
     await screen.findByText('題目庫還沒有題目。請在上方新增。')
     await userEvent.type(screen.getByLabelText('標題'), 'x')

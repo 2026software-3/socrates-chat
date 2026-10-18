@@ -111,7 +111,7 @@ function TopicForm({
 }
 
 /**
- * 題目庫：新增、編輯、啟用／停用題目。GET 統一走 `/api/topics`；其他操作依 base
+ * 題目庫：新增、編輯、啟用／停用題目。GET、POST、PATCH 統一走 `/api/topics`
  * （教師也能放入題目，S-01.3），畫面相同。
  */
 export function TopicsPage({ base = '/api/admin/topics' }: { base?: string } = {}) {
@@ -162,7 +162,7 @@ export function TopicsPage({ base = '/api/admin/topics' }: { base?: string } = {
     if (v.description.trim()) body.description = v.description.trim()
     if (v.category.trim()) body.category = v.category.trim()
     setNotice(undefined)
-    await api.post(base, body)
+    await api.post('/api/topics', body)
     setNotice(t('admin.topics.created', { title: body.title }))
     reload()
   }
@@ -175,7 +175,7 @@ export function TopicsPage({ base = '/api/admin/topics' }: { base?: string } = {
     const category = v.category.trim()
     if (category !== (topic.category ?? '')) body.category = category === '' ? null : category
     if (Object.keys(body).length > 0) {
-      await api.patch(`${base}/${encodeURIComponent(topic.id)}`, body)
+      await api.patch(`${base.replace('/api/admin/topics', '/api/topics')}/${encodeURIComponent(topic.id)}`, body)
       patch(topic.id, body)
     }
     setEditing(undefined)
@@ -187,7 +187,7 @@ export function TopicsPage({ base = '/api/admin/topics' }: { base?: string } = {
     setToggling((s) => new Set(s).add(topic.id))
     patch(topic.id, { is_active: next }) // 樂觀更新
     try {
-      await api.patch(`${base}/${encodeURIComponent(topic.id)}`, { is_active: next })
+      await api.patch(`${base.replace('/api/admin/topics', '/api/topics')}/${encodeURIComponent(topic.id)}`, { is_active: next })
     } catch (err) {
       patch(topic.id, { is_active: !next }) // 失敗就還原
       setActionError(err)

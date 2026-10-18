@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    auth::{RequireAdmin, RequireStudent, RequireTeacher},
+    auth::{RequireStudent, RequireTeacher},
     error::ApiError,
 };
 
@@ -31,11 +31,6 @@ where
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/admin/topics",
-            post(create_topic).fallback(crate::fallback),
-        )
-        .route("/api/admin/topics/{id}", patch(update_topic))
         .route(
             "/api/topics",
             get(list_topics_for_teacher).post(create_topic_for_teacher),
@@ -111,22 +106,6 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
 
 #[utoipa::path(
     post,
-    path = "/api/admin/topics",
-    tag = "admin",
-    summary = "新增題目",
-    request_body = NewTopic,
-    responses((status = 201, description = "已建立", body = Topic), crate::error::CommonErrors)
-)]
-pub(crate) async fn create_topic(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-    Json(b): Json<NewTopic>,
-) -> Result<(StatusCode, Json<Topic>), ApiError> {
-    insert_topic(&state, b).await
-}
-
-#[utoipa::path(
-    post,
     path = "/api/topics",
     tag = "topics",
     summary = "新增題目",
@@ -158,24 +137,6 @@ async fn insert_topic(
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
-}
-
-#[utoipa::path(
-    patch,
-    path = "/api/admin/topics/{id}",
-    tag = "admin",
-    summary = "修改題目（merge-patch）",
-    params(("id" = Uuid, Path, description = "題目 ID")),
-    request_body = TopicPatch,
-    responses((status = 200, description = "更新後的題目", body = Topic), crate::error::CommonErrors)
-)]
-pub(crate) async fn update_topic(
-    _: RequireAdmin,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(p): Json<TopicPatch>,
-) -> Result<Json<Topic>, ApiError> {
-    patch_topic(&state, id, p).await
 }
 
 #[utoipa::path(

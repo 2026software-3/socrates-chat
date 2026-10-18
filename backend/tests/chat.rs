@@ -98,7 +98,7 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
             &app,
             json_req(
                 "POST",
-                "/api/admin/topics",
+                "/api/topics",
                 Some(&a.admin),
                 Some(json!({"title": "自由意志"})),
             ),
@@ -125,7 +125,7 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
         &app,
         json_req(
             "PATCH",
-            &format!("/api/admin/topics/{id}"),
+            &format!("/api/topics/{id}"),
             Some(&a.admin),
             Some(json!({"is_active": false})),
         ),
@@ -215,9 +215,9 @@ async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
     assert_eq!(msgs[0]["source"], "text");
 
     let list = json_body(send(&app, get("/api/conversations", Some(&a.student))).await).await;
-    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
     // 列表不含訊息原文
-    assert!(list[0].get("messages").is_none());
+    assert!(list["items"][0].get("messages").is_none());
 }
 
 #[sqlx::test]
