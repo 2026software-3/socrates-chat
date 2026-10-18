@@ -26,7 +26,7 @@ async fn null_clears_topic_category_and_absent_keeps_it(pool: PgPool) {
     let id = create(
         &app,
         &a.admin,
-        "/api/admin/topics",
+        "/api/topics",
         json!({"title": "T", "category": "倫理學"}),
     )
     .await;
@@ -47,7 +47,7 @@ async fn null_clears_topic_category_and_absent_keeps_it(pool: PgPool) {
 async fn null_unlinks_activity_topic_and_absent_keeps_it(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let topic = create(&app, &a.admin, "/api/admin/topics", json!({"title": "T"})).await;
+    let topic = create(&app, &a.admin, "/api/topics", json!({"title": "T"})).await;
     let id = create(
         &app,
         &a.teacher,

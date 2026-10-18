@@ -129,7 +129,7 @@ async fn teachers_manage_the_topic_bank(pool: PgPool) {
     )
     .await;
     assert_eq!(json_body(res).await["is_active"], false);
-    let avail = json_body(send(&app, get("/api/available", Some(&a.student))).await).await;
+    let avail = json_body(send(&app, get("/api/catalog", Some(&a.student))).await).await;
     assert!(avail["topics"].as_array().unwrap().is_empty());
 
     let blank = send(
@@ -177,7 +177,7 @@ async fn builtin_trolley_problem_is_seeded_once_and_respects_edits(pool: PgPool)
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
 
-    let avail = json_body(send(&app, get("/api/available", Some(&a.student))).await).await;
+    let avail = json_body(send(&app, get("/api/catalog", Some(&a.student))).await).await;
     let topics = avail["topics"].as_array().unwrap();
     assert_eq!(topics.len(), 1, "重複啟動不會重複建立");
     assert_eq!(topics[0]["title"], "電車難題");
@@ -302,7 +302,7 @@ async fn teachers_and_admins_cannot_take_part_in_discussions(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
-        for path in ["/api/available", "/api/conversations", "/api/dashboard/me"] {
+        for path in ["/api/catalog", "/api/conversations", "/api/dashboard/me"] {
             let res = send(&app, get(path, Some(cookie))).await;
             assert_eq!(res.status(), StatusCode::FORBIDDEN, "{path}");
             assert_eq!(json_body(res).await["error"]["code"], "forbidden");
