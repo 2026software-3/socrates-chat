@@ -69,13 +69,7 @@ async fn classroom_store_database_index_serializes_concurrent_duplicate_names(po
     );
 
     let outcomes = [first, second];
-    assert_eq!(
-        outcomes
-            .iter()
-            .filter(|result| matches!(result, Ok(_)))
-            .count(),
-        1
-    );
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
     assert_eq!(
         outcomes
             .iter()

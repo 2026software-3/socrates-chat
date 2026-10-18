@@ -163,7 +163,7 @@ pub(crate) async fn update_classroom(
     Json(body): Json<ClassroomPatch>,
 ) -> Result<Json<Classroom>, ApiError> {
     let id = parse_id(&raw_id)?;
-    let name = body.name.map(|value| normalized_name(value)).transpose()?;
+    let name = body.name.map(normalized_name).transpose()?;
     let changes = ClassroomChanges {
         name,
         year_label: body.year_label,
