@@ -559,8 +559,10 @@ pub(crate) async fn reset_password(
         .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))?;
     let temporary_password = password::generate_temporary();
     let hash = hash_blocking(temporary_password.clone()).await?;
-    auth_store::reset_password(&state.pool, &email, &hash).await?;
-    audit(&state.pool, cu.user.id, "password_reset", &email, None).await?;
+    let mut tx = state.pool.begin().await?;
+    auth_store::reset_password(&mut tx, &email, &hash).await?;
+    audit(&mut *tx, cu.user.id, "password_reset", &email, None).await?;
+    tx.commit().await?;
     Ok(Json(ResetResponse {
         email,
         temporary_password,

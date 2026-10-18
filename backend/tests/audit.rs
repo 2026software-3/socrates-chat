@@ -318,3 +318,177 @@ async fn rejected_requests_leave_no_audit_entries(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(trail(&pool).await.len(), before);
 }
+
+/// 只在本測試的隔離資料庫拒絕指定動作，模擬稽核寫入失敗。
+async fn reject_audit(pool: &PgPool, action: &str) {
+    sqlx::query(
+        "CREATE FUNCTION reject_test_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.action = TG_ARGV[0] THEN
+                 RAISE EXCEPTION 'synthetic audit failure';
+             END IF;
+             RETURN NEW;
+         END $$",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let sql = match action {
+        "roster_added" => {
+            "CREATE TRIGGER reject_test_audit BEFORE INSERT ON audit_logs
+                          FOR EACH ROW EXECUTE FUNCTION reject_test_audit('roster_added')"
+        }
+        "password_reset" => {
+            "CREATE TRIGGER reject_test_audit BEFORE INSERT ON audit_logs
+                            FOR EACH ROW EXECUTE FUNCTION reject_test_audit('password_reset')"
+        }
+        _ => panic!("unsupported test action"),
+    };
+    sqlx::query(sql).execute(pool).await.unwrap();
+}
+
+#[sqlx::test]
+async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    reject_audit(&pool, "roster_added").await;
+    let body = json!({"text": "retry@example.com"});
+    assert_eq!(
+        post(&app, "/api/roster/import", &admin, body.clone()).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let enrolled: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM enrollments WHERE email = 'retry@example.com')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!enrolled, "失敗的匯入不得留下名單");
+    sqlx::query("DROP TRIGGER reject_test_audit ON audit_logs")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = send(
+        &app,
+        json_req("POST", "/api/roster/import", Some(&admin), Some(body)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let result = json_body(res).await;
+    assert_eq!(result["added"], 1);
+    assert_eq!(result["existing"], 0);
+    assert_eq!(result["credentials"][0]["email"], "retry@example.com");
+    assert!(trail(&pool).await.contains(&entry(
+        "admin@example.com",
+        "roster_added",
+        "retry@example.com"
+    )));
+}
+
+#[sqlx::test]
+async fn roster_import_rolls_back_batch_and_audits_when_account_creation_fails(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    // 第二筆帳號建立失敗：第一筆名單、帳號與稽核也應回滾，避免遺失一次性的臨時密碼。
+    sqlx::query(
+        "ALTER TABLE users ADD CONSTRAINT reject_test_account
+         CHECK (email <> 'fail@example.com') NOT VALID",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = trail(&pool).await;
+    assert_eq!(
+        post(
+            &app,
+            "/api/roster/import",
+            &admin,
+            json!({"text": "first@example.com\nfail@example.com"})
+        )
+        .await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    for sql in [
+        "SELECT count(*) FROM users WHERE email IN ('first@example.com', 'fail@example.com')",
+        "SELECT count(*) FROM enrollments WHERE email IN ('first@example.com', 'fail@example.com')",
+    ] {
+        let count: i64 = sqlx::query_scalar(sql).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 0, "失敗的匯入不得留下名單或帳號資料");
+    }
+    assert_eq!(trail(&pool).await, before);
+}
+
+#[sqlx::test]
+async fn password_reset_audit_failure_preserves_password_sessions_and_lock(pool: PgPool) {
+    use socrates_chat_backend::{auth_store, password};
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let old_hash = password::hash("Synthetic-old-password-1").unwrap();
+    auth_store::set_password(&pool, user_id, &old_hash, false)
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    for _ in 0..auth_store::MAX_LOGIN_FAILURES {
+        auth_store::record_login_failure(&pool, "student@example.com", now)
+            .await
+            .unwrap();
+    }
+    let before = trail(&pool).await;
+    reject_audit(&pool, "password_reset").await;
+    assert_eq!(
+        post(
+            &app,
+            "/api/admin/users/reset-password",
+            &a.admin,
+            json!({"email": "student@example.com"})
+        )
+        .await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let (hash, must_change): (String, bool) =
+        sqlx::query_as("SELECT password_hash, must_change_password FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(hash == old_hash, "失敗的重設必須保留原密碼");
+    assert!(!must_change);
+    assert!(
+        auth_store::is_locked(&pool, "student@example.com", now)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        send(&app, get("/api/me", Some(&a.student))).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(trail(&pool).await, before);
+}
+
+#[sqlx::test]
+async fn password_reset_audit_failure_does_not_create_an_account(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    reject_audit(&pool, "password_reset").await;
+    assert_eq!(
+        post(
+            &app,
+            "/api/admin/users/reset-password",
+            &admin,
+            json!({"email": "new@example.com"})
+        )
+        .await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = 'new@example.com')")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!exists, "失敗的重設不得留下新帳號");
+}
