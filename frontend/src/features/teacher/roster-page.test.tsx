@@ -11,7 +11,7 @@ const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
 
 /** 名單上的學生（已有帳號、使用中）。 */
 const rows = (list: string[]) =>
-  list.map((email) => ({ email, display_name: null, has_account: true, disabled: false, completed_conversations: 0 }))
+  list.map((email) => ({ email, display_name: null, id: '11111111-1111-4111-8111-111111111111', has_account: true, disabled: false, completed_conversations: 0 }))
 
 function mockRoster(list: string[] = emails) {
   server.use(http.get('/api/students', () => HttpResponse.json(rows(list))))

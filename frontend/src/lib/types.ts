@@ -123,6 +123,7 @@ export type TeacherSummary = {
 
 /** 修課名單上的學生與帳號狀態（GET /api/students）。 */
 export type StudentRow = {
+  id: string | null
   email: string
   display_name: string | null
   /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */

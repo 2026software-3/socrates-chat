@@ -179,7 +179,7 @@ function ImportPanel({ onImported }: { onImported: () => void }) {
   )
 }
 
-type AccountAction = { kind: 'remove'; email: string } | { kind: 'disable'; email: string } | { kind: 'delete'; email: string }
+type AccountAction = { kind: 'remove'; email: string } | { kind: 'disable'; email: string; id: string } | { kind: 'delete'; email: string }
 
 function statusOf(s: StudentRow): 'disabled' | 'pending' | 'active' {
   return s.disabled ? 'disabled' : s.has_account ? 'active' : 'pending'
@@ -244,8 +244,8 @@ export function RosterPage() {
     }
   }
 
-  async function enable(email: string) {
-    await run(() => api.post(`/api/admin/users/${encodeURIComponent(email)}/enable`), 'teacher.roster.enabledToast')
+  async function enable(id: string) {
+    await run(() => api.put(`/api/admin/users/${encodeURIComponent(id)}/status`, { disabled: false }), 'teacher.roster.enabledToast')
   }
 
   /** 每位學生可做的操作：管理者另有重設密碼、停用與復原。 */
@@ -261,14 +261,14 @@ export function RosterPage() {
           {t('admin.reset.resetConfirm')}
         </Button>
       ) : null}
-      {isAdmin && s.has_account ? (
+      {isAdmin && s.id ? (
         s.disabled ? (
           <Button
             variant="outline"
             size="sm"
             disabled={pending}
             aria-label={t('teacher.roster.enableLabel', { email: s.email })}
-            onClick={() => void enable(s.email)}
+            onClick={() => void enable(s.id!)}
           >
             {t('teacher.roster.enable')}
           </Button>
@@ -277,7 +277,7 @@ export function RosterPage() {
             variant="outline"
             size="sm"
             aria-label={t('teacher.roster.disableLabel', { email: s.email })}
-            onClick={() => open({ kind: 'disable', email: s.email })}
+            onClick={() => open({ kind: 'disable', email: s.email, id: s.id! })}
           >
             {t('teacher.roster.disable')}
           </Button>
@@ -418,7 +418,7 @@ export function RosterPage() {
         error={action?.kind === 'disable' ? actionError : undefined}
         onConfirm={() =>
           void run(
-            () => api.post(`/api/admin/users/${encodeURIComponent(target)}/disable`, reason.trim() ? { reason: reason.trim() } : undefined),
+            () => api.put(`/api/admin/users/${encodeURIComponent(action?.kind === 'disable' ? action.id : '')}/status`, { disabled: true, ...(reason.trim() ? { reason: reason.trim() } : {}) }),
             'teacher.roster.disabledToast',
           )
         }

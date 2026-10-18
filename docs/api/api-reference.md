@@ -24,7 +24,7 @@
 ## 管理（管理者）
 
 - 重設密碼：臨時密碼**只出現在這次回應**；沒有帳號就建立；同時清除該使用者所有 session 與登入鎖定。
-- 停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
+- `PUT /api/admin/users/{id}/status` 接受 `{ disabled, reason? }`，id 為使用者 UUID（學生列表的 `id`，沒有帳號時為 null）；舊 disable／enable POST 已移除。同值重送回 204 且不重複稽核。停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
 - 新增教師重複送出也回 204（冪等）。
 
 ## 題庫與活動
@@ -119,7 +119,7 @@
 
 ### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）
 
-- `POST /api/admin/users/{email}/disable|enable` 可收斂成 `PUT /api/admin/users/{email}/status` `{ disabled: bool, reason? }`，冪等且只有一條路由；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
+- #290 已完成：`PUT /api/admin/users/{id}/status` 設定啟用狀態；`end`／`publish`／`close` 這類狀態轉換用動作式 POST 是常見務實做法，可保留，但同一組資源請擇一風格。
 - 資源識別用 email 放在 path：停用／復原帳號的對象一定有帳號，改用 user id（UUID，#290）；名單與教師項目可能沒有帳號，維持 email。目前後端沒有掛 request logging（無 `TraceLayer`），路徑不會進日誌；日後加上時要過濾路徑中的 email。
 - `GET /api/available` 名稱不明確，建議 `GET /api/catalog` 或 `GET /api/conversation-sources`。
 
