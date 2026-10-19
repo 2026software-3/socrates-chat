@@ -70,6 +70,18 @@ async fn openapi_describes_parameters_and_errors_accurately() {
 }
 
 #[tokio::test]
+async fn api_docs_uses_the_wireframe_design_tokens() {
+    let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
+    let app = test_app(pool);
+
+    // 色票與字型來自 Figma wireframe 的 Style Guideline（wf/text、wf/surface、wf/border、wf/muted、Noto Sans TC）
+    let page = text_body(send(&app, get("/api/docs", None)).await).await;
+    for token in ["#18181b", "#f4f4f5", "#d4d4d8", "#71717a", "Noto Sans TC"] {
+        assert!(page.contains(token), "theme should use {token}");
+    }
+}
+
+#[tokio::test]
 async fn api_docs_does_not_depend_on_external_hosts_and_serves_its_own_bundle() {
     let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
     let app = test_app(pool);

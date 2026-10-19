@@ -8,6 +8,8 @@
       body {
         margin: 0;
         padding: 0;
+        background: #ffffff;
+        color: #18181b;
       }
     </style>
   </head>
@@ -17,9 +19,41 @@
     <!-- 由後端自己提供 Redoc 2.5.4（見 src/redoc/），不依賴外部 CDN；Redoc 3 的 bundle 需以 module 載入，utoipa-redoc 的範本不相容 -->
     <script src="/api/docs/redoc.standalone.js"></script>
     <script>
+      // 色票與字型取自 Figma wireframe 的 Style Guideline：
+      // wf/bg #ffffff、wf/surface #f4f4f5、wf/border #d4d4d8、wf/muted #71717a、wf/text #18181b；
+      // 字型 Noto Sans TC（不載入網路字型，未安裝時退回系統字型）；Title/H1–H3、Text/Body 的字級與行高。
+      const fontFamily =
+        '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif';
+      const theme = {
+        colors: {
+          primary: { main: "#18181b" },
+          text: { primary: "#18181b", secondary: "#71717a" },
+          border: { dark: "#d4d4d8", light: "#f4f4f5" },
+          responses: {
+            success: { color: "#18181b" },
+            error: { color: "#dc2626" },
+          },
+        },
+        typography: {
+          fontFamily,
+          fontSize: "14px",
+          lineHeight: "20px",
+          headings: { fontFamily, fontWeight: "600" },
+          code: { fontSize: "12px", color: "#18181b", backgroundColor: "#f4f4f5" },
+        },
+        sidebar: {
+          width: "280px",
+          backgroundColor: "#f4f4f5",
+          textColor: "#18181b",
+          activeTextColor: "#18181b",
+          groupItems: { textTransform: "none" },
+        },
+        rightPanel: { backgroundColor: "#18181b" },
+        schema: { nestedBackground: "#f4f4f5" },
+      };
       Redoc.init(
         $spec,
-        $config,
+        Object.assign({}, $config, { theme }),
         document.getElementById("redoc-container")
       );
     </script>
