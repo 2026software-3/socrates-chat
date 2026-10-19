@@ -236,7 +236,7 @@ impl FromRequestParts<AppState> for RequireStudent {
     tag = "auth",
     summary = "導向 Google 授權頁",
     security(()),
-    responses((status = 303, description = "重新導向到 Google"), crate::error::CommonErrors)
+    responses((status = 303, description = "重新導向到 Google"))
 )]
 pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, ApiError> {
     let req = state.identity.start();
@@ -245,6 +245,7 @@ pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, Api
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
@@ -262,7 +263,7 @@ fn login_error(state: &AppState, code: &str) -> Response {
     summary = "Google 回呼（成功設定 sid cookie 並導回；失敗導回 /login?error=code）",
     params(CallbackParams),
     security(()),
-    responses((status = 303, description = "重新導向"), crate::error::CommonErrors)
+    responses((status = 303, description = "重新導向"))
 )]
 pub(crate) async fn callback(
     State(state): State<AppState>,
@@ -344,7 +345,7 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     tag = "auth",
     summary = "登出",
     security(()),
-    responses((status = 204, description = "已登出"), crate::error::CommonErrors)
+    responses((status = 204, description = "已登出"))
 )]
 pub(crate) async fn logout(
     State(state): State<AppState>,
@@ -375,7 +376,7 @@ pub(crate) struct MeResponse {
     path = "/api/me",
     tag = "auth",
     summary = "目前登入者與角色",
-    responses((status = 200, description = "目前使用者", body = MeResponse), crate::error::CommonErrors)
+    responses((status = 200, description = "目前使用者", body = MeResponse))
 )]
 pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
     let u = cu.user;
@@ -435,7 +436,7 @@ pub(crate) struct LoginResponse {
     summary = "內建帳號登入",
     request_body = LoginBody,
     security(()),
-    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn password_login(
     State(state): State<AppState>,
@@ -493,7 +494,7 @@ pub(crate) struct ChangePasswordBody {
     tag = "auth",
     summary = "更改自己的密碼",
     request_body = ChangePasswordBody,
-    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn change_password(
     AnyCurrentUser(cu): AnyCurrentUser,
@@ -548,7 +549,7 @@ pub(crate) struct ResetResponse {
     tag = "admin",
     summary = "重設密碼（僅管理者；沒有帳號就建立）",
     request_body = ResetBody,
-    responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse), crate::error::CommonErrors)
+    responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse))
 )]
 pub(crate) async fn reset_password(
     RequireAdmin(cu): RequireAdmin,

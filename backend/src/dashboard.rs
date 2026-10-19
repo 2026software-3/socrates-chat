@@ -115,6 +115,7 @@ impl RadarScores {
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Distribution {
     completed: i64,
+    #[schema(inline)]
     frameworks: Counts,
     radar: RadarScores,
 }
@@ -148,6 +149,7 @@ pub(crate) struct RecentRow {
     /// 學生最終主張的一句短句（AI 寫的，暫定）
     claim: Option<String>,
     framework: Option<String>,
+    #[schema(value_type = Option<std::collections::BTreeMap<String, u8>>)]
     framework_scores: Option<serde_json::Value>,
 }
 
@@ -166,7 +168,7 @@ pub(crate) struct Personal {
     path = "/api/dashboard/me",
     tag = "dashboard",
     summary = "個人儀表板",
-    responses((status = 200, description = "個人統計", body = Personal), crate::error::CommonErrors)
+    responses((status = 200, description = "個人統計", body = Personal))
 )]
 pub(crate) async fn personal(
     RequireStudent(cu): RequireStudent,
@@ -260,7 +262,7 @@ struct ClassRow {
     path = "/api/dashboard/class",
     tag = "dashboard",
     summary = "全班論點分布（只有教師）",
-    responses((status = 200, description = "班級統計", body = Class), crate::error::CommonErrors)
+    responses((status = 200, description = "班級統計", body = Class))
 )]
 pub(crate) async fn class(
     RequireTeacher(cu): RequireTeacher,

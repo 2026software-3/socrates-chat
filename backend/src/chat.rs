@@ -69,6 +69,14 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
 }
 
+/// 對話分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ConversationPage {
+    items: Vec<Conversation>,
+    next_cursor: Option<String>,
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct NewConversation {
     activity_id: Option<Uuid>,
@@ -88,7 +96,7 @@ pub(crate) struct Detail {
     tag = "conversations",
     summary = "開始對話（活動或題目）",
     request_body = NewConversation,
-    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
@@ -152,7 +160,7 @@ pub(crate) async fn create(
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
     params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor")),
-    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = Page<Conversation>), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
@@ -217,7 +225,7 @@ pub async fn load_messages(
     tag = "conversations",
     summary = "對話與全部訊息",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 200, description = "對話與訊息", body = Detail), crate::error::CommonErrors)
+    responses((status = 200, description = "對話與訊息", body = Detail))
 )]
 pub(crate) async fn detail(
     RequireStudent(cu): RequireStudent,
@@ -246,7 +254,7 @@ pub(crate) struct NewMessage {
     summary = "送出學生訊息並以 SSE 串流 AI 回覆",
     params(("id" = Uuid, Path, description = "對話 ID")),
     request_body = NewMessage,
-    responses((status = 200, description = "text/event-stream。事件依序：message（保存好的學生訊息，含 auto_ended）；若未達回合上限再接 delta {text}* 與 done {message_id, question_type, stage, suggest_end} 或 error {code}", content_type = "text/event-stream", body = String), (status = 400, description = "invalid_message / invalid_source", body = crate::error::ErrorBody), (status = 409, description = "conversation_ended / reply_in_progress", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "text/event-stream。事件依序：message（保存好的學生訊息，含 auto_ended）；若未達回合上限再接 delta {text}* 與 done {message_id, question_type, stage, suggest_end} 或 error {code}", content_type = "text/event-stream", body = String), (status = 400, description = "invalid_message / invalid_source", body = crate::error::ErrorBody), (status = 409, description = "conversation_ended / reply_in_progress", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn send_message(
     RequireStudent(cu): RequireStudent,
@@ -332,7 +340,7 @@ pub(crate) struct SentMessage {
     tag = "conversations",
     summary = "刪除我的對話",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 204, description = "已刪除"), crate::error::CommonErrors)
+    responses((status = 204, description = "已刪除"))
 )]
 pub(crate) async fn remove(
     RequireStudent(cu): RequireStudent,

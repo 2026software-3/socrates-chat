@@ -67,7 +67,7 @@ async fn list_emails(pool: &PgPool, sql: &'static str) -> Result<Vec<String>, Ap
     path = "/api/admin/teachers",
     tag = "admin",
     summary = "列出教師",
-    responses((status = 200, description = "教師信箱", body = EmailList), crate::error::CommonErrors)
+    responses((status = 200, description = "教師信箱", body = EmailList))
 )]
 pub(crate) async fn list_teachers(
     _: RequireAdmin,
@@ -84,7 +84,7 @@ pub(crate) async fn list_teachers(
     tag = "admin",
     summary = "新增教師（重複新增也回 204）",
     request_body = EmailBody,
-    responses((status = 204, description = "完成"), (status = 400, description = "invalid_email", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "完成"), (status = 400, description = "invalid_email", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn add_teacher(
     RequireAdmin(cu): RequireAdmin,
@@ -112,7 +112,7 @@ pub(crate) async fn add_teacher(
     tag = "admin",
     summary = "移除教師身分",
     params(("email" = String, Path, description = "電子郵件")),
-    responses((status = 204, description = "已移除"), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已移除"), (status = 404, description = "not_found", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn remove_teacher(
     RequireAdmin(cu): RequireAdmin,
@@ -153,7 +153,7 @@ async fn delete_email(
     path = "/api/roster",
     tag = "roster",
     summary = "修課名單",
-    responses((status = 200, description = "名單信箱", body = EmailList), crate::error::CommonErrors)
+    responses((status = 200, description = "名單信箱", body = EmailList))
 )]
 pub(crate) async fn list_roster(
     _: RequireTeacher,
@@ -247,7 +247,7 @@ async fn is_staff_email(
     tag = "roster",
     summary = "匯入修課名單（只新增）",
     request_body = ImportBody,
-    responses((status = 200, description = "匯入結果", body = ImportResult), crate::error::CommonErrors)
+    responses((status = 200, description = "匯入結果", body = ImportResult))
 )]
 pub(crate) async fn import_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -300,7 +300,7 @@ pub(crate) async fn import_roster(
     tag = "roster",
     summary = "移出名單（資料保留）",
     params(("email" = String, Path, description = "電子郵件")),
-    responses((status = 204, description = "已移出"), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已移出"), (status = 404, description = "not_found", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn remove_from_roster(
     RequireTeacher(cu): RequireTeacher,

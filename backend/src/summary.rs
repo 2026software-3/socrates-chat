@@ -201,6 +201,7 @@ pub struct SummaryView {
     /// 立場方向與倫理學派分類（暫定，供論點分布）；沒有分類時為 `None`
     pub framework: Option<String>,
     /// 6 個學派維度的分數（各 0–5）；沒有分數時為 `None`
+    #[schema(value_type = Option<std::collections::BTreeMap<String, u8>>)]
     pub framework_scores: Option<serde_json::Value>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -220,10 +221,10 @@ async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
 #[utoipa::path(
     post,
     path = "/api/conversations/{id}/end",
-    tag = "summaries",
+    tag = "conversations",
     summary = "結束對話並在背景產生總結",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "empty_conversation / reply_in_progress", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn end(
     RequireStudent(cu): RequireStudent,
@@ -256,10 +257,10 @@ pub(crate) async fn end(
 #[utoipa::path(
     get,
     path = "/api/conversations/{id}/summary",
-    tag = "summaries",
+    tag = "conversations",
     summary = "讀取總結（pending 時請輪詢）",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 200, description = "總結", body = SummaryView), crate::error::CommonErrors)
+    responses((status = 200, description = "總結", body = SummaryView))
 )]
 pub(crate) async fn get_summary(
     RequireStudent(cu): RequireStudent,
@@ -273,10 +274,10 @@ pub(crate) async fn get_summary(
 #[utoipa::path(
     post,
     path = "/api/conversations/{id}/summary/retry",
-    tag = "summaries",
+    tag = "conversations",
     summary = "總結失敗後重試",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "summary_not_retryable", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "summary_not_retryable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn retry(
     RequireStudent(cu): RequireStudent,
@@ -324,6 +325,7 @@ pub(crate) struct TeacherRow {
     reasons: Option<String>,
     claim: Option<String>,
     framework: Option<String>,
+    #[schema(value_type = Option<std::collections::BTreeMap<String, u8>>)]
     framework_scores: Option<serde_json::Value>,
 }
 
@@ -333,7 +335,7 @@ pub(crate) struct TeacherRow {
     path = "/api/teacher/summaries",
     tag = "summaries",
     summary = "所有學生已完成對話的總結（不含原文）",
-    responses((status = 200, description = "總結", body = Vec<TeacherRow>), crate::error::CommonErrors)
+    responses((status = 200, description = "總結", body = Vec<TeacherRow>))
 )]
 pub(crate) async fn teacher_list(
     RequireTeacher(cu): RequireTeacher,
