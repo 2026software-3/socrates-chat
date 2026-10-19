@@ -68,3 +68,38 @@ async fn openapi_describes_parameters_and_errors_accurately() {
         assert_eq!(tags, serde_json::json!(["conversations"]), "{path}");
     }
 }
+
+#[tokio::test]
+async fn api_docs_does_not_depend_on_external_hosts_and_serves_its_own_bundle() {
+    let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
+    let app = test_app(pool);
+
+    // 頁面不引用任何外部主機
+    let page = text_body(send(&app, get("/api/docs", None)).await).await;
+    assert!(
+        !page.contains("cdn.redoc.ly"),
+        "page must not load from the Redoc CDN"
+    );
+    assert!(
+        !page.contains("googleapis.com"),
+        "page must not load external fonts"
+    );
+    assert!(page.contains("/api/docs/redoc.standalone.js"));
+
+    // bundle 由後端提供：公開、JavaScript、可快取，且確實是 Redoc 2.5.4
+    let res = send(&app, get("/api/docs/redoc.standalone.js", None)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let content_type = res.headers()[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(
+        content_type.starts_with("text/javascript"),
+        "{content_type}"
+    );
+    assert!(res.headers().contains_key(header::CACHE_CONTROL));
+    let js = text_body(res).await;
+    assert!(js.contains("Redoc"), "bundle should define Redoc");
+    assert!(
+        js.len() > 500_000,
+        "bundle looks truncated: {} bytes",
+        js.len()
+    );
+}

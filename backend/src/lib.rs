@@ -95,7 +95,8 @@ pub fn app(state: AppState) -> Router {
         .merge(reply::routes())
         .merge(summary::routes())
         .merge(voice::routes())
-        // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開
+        // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
+        .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
             Redoc::with_url("/api/docs", openapi::document())
                 .custom_html(include_str!("redoc.html")),
@@ -105,6 +106,18 @@ pub fn app(state: AppState) -> Router {
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))
         .with_state(state)
+}
+
+/// Redoc 2.5.4 的 bundle（MIT，來源與授權見 `src/redoc/` 與 docs/THIRD-PARTY-NOTICES.md），
+/// 由後端自己提供，讓 API reference 不依賴外部 CDN。
+async fn redoc_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("redoc/redoc.standalone.js"),
+    )
 }
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {

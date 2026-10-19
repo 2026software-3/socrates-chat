@@ -14,8 +14,8 @@
 
   <body>
     <div id="redoc-container"></div>
-    <!-- 鎖定 2.x：Redoc 3 的 bundle 需以 module 載入，utoipa-redoc 的範本與 `latest` 會因此整頁空白 -->
-    <script src="https://cdn.redoc.ly/redoc/v2.5.4/bundles/redoc.standalone.js"></script>
+    <!-- 由後端自己提供 Redoc 2.5.4（見 src/redoc/），不依賴外部 CDN；Redoc 3 的 bundle 需以 module 載入，utoipa-redoc 的範本不相容 -->
+    <script src="/api/docs/redoc.standalone.js"></script>
     <script>
       Redoc.init(
         $spec,
