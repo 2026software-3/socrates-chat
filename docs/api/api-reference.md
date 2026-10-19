@@ -1,6 +1,7 @@
 # 後端 API 說明
 
 > 端點清單、路徑、參數與請求／回應欄位**不寫在這裡**，以 OpenAPI 3 為準：後端執行時公開在 `GET /api/openapi.json`，由各 handler 的 `#[utoipa::path]` 註解與型別的 `ToSchema` 產生（新增或修改端點時要同步改註解；CI 會失敗的檢查有兩個：`backend/tests/openapi.rs` 檢查已文件化的端點都有路由且受保護；`backend/tests/openapi_coverage.rs` 掃描原始碼的 `.route(`，路由漏標註或標註沒有對應路由都會失敗）。
+> 渲染後可瀏覽的 API reference 在 `GET /api/docs`（Redoc，公開、不需登入，內容由同一份 OpenAPI 即時產生；Redoc 的 JS 由後端自己提供，不依賴外部 CDN）。頁面的色票與字型取自 Figma wireframe 的 Style Guideline，設定在 `backend/src/redoc.html`。
 > 這份文件只補 OpenAPI 寫不下的**規則與流程**。它不是規格，規則以 [`docs/specs/`](../specs/decisions.md) 為準。
 > 所有路徑在同一網域的 `/api` 之下（S-08.1）。認證靠 `sid` HttpOnly cookie。
 
