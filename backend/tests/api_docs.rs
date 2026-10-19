@@ -16,6 +16,11 @@ async fn api_docs_page_is_public_html_rendered_from_openapi() {
     let content_type = res.headers()[header::CONTENT_TYPE].to_str().unwrap();
     assert!(content_type.starts_with("text/html"), "{content_type}");
     let body = text_body(res).await;
+    // Redoc 腳本必須鎖版本：`latest` 在 3.0 後改為 module，頁面會整頁空白
+    assert!(
+        !body.contains("/latest/"),
+        "Redoc bundle must be version-pinned"
+    );
     assert!(
         body.contains("Socrates Chat API"),
         "page should embed the spec"

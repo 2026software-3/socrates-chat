@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Socrates Chat API</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="redoc-container"></div>
+    <!-- 鎖定 2.x：Redoc 3 的 bundle 需以 module 載入，utoipa-redoc 的範本與 `latest` 會因此整頁空白 -->
+    <script src="https://cdn.redoc.ly/redoc/v2.5.4/bundles/redoc.standalone.js"></script>
+    <script>
+      Redoc.init(
+        $spec,
+        $config,
+        document.getElementById("redoc-container")
+      );
+    </script>
+  </body>
+</html>

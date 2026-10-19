@@ -96,7 +96,10 @@ pub fn app(state: AppState) -> Router {
         .merge(summary::routes())
         .merge(voice::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開
-        .merge(Redoc::with_url("/api/docs", openapi::document()))
+        .merge(
+            Redoc::with_url("/api/docs", openapi::document())
+                .custom_html(include_str!("redoc.html")),
+        )
         .fallback(fallback)
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
