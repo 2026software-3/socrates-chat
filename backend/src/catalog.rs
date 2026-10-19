@@ -86,7 +86,7 @@ pub(crate) struct TopicPatch {
     path = "/api/topics",
     tag = "topics",
     summary = "列出全部題目",
-    responses((status = 200, description = "題目", body = Vec<Topic>), crate::error::CommonErrors)
+    responses((status = 200, description = "題目", body = Vec<Topic>))
 )]
 pub(crate) async fn list_topics_for_teacher(
     _: RequireTeacher,
@@ -110,7 +110,7 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     tag = "topics",
     summary = "新增題目",
     request_body = NewTopic,
-    responses((status = 201, description = "已建立", body = Topic), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Topic))
 )]
 pub(crate) async fn create_topic_for_teacher(
     _: RequireTeacher,
@@ -146,7 +146,7 @@ async fn insert_topic(
     summary = "修改題目（merge-patch）",
     params(("id" = Uuid, Path, description = "題目 ID")),
     request_body = TopicPatch,
-    responses((status = 200, description = "更新後的題目", body = Topic), crate::error::CommonErrors)
+    responses((status = 200, description = "更新後的題目", body = Topic))
 )]
 pub(crate) async fn update_topic_for_teacher(
     _: RequireTeacher,
@@ -252,7 +252,7 @@ async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
     path = "/api/activities",
     tag = "activities",
     summary = "列出活動",
-    responses((status = 200, description = "活動", body = Vec<Activity>), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Vec<Activity>))
 )]
 pub(crate) async fn list_activities(
     _: RequireTeacher,
@@ -270,7 +270,7 @@ pub(crate) async fn list_activities(
     tag = "activities",
     summary = "讀取活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity))
 )]
 pub(crate) async fn get_activity(
     _: RequireTeacher,
@@ -291,7 +291,7 @@ pub(crate) async fn get_activity(
     tag = "activities",
     summary = "建立活動（草稿）",
     request_body = NewActivity,
-    responses((status = 201, description = "已建立", body = Activity), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Activity))
 )]
 pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -326,7 +326,7 @@ pub(crate) async fn create_activity(
     summary = "修改活動（merge-patch）",
     params(("id" = Uuid, Path, description = "活動 ID")),
     request_body = ActivityPatch,
-    responses((status = 200, description = "更新後的活動", body = Activity), crate::error::CommonErrors)
+    responses((status = 200, description = "更新後的活動", body = Activity))
 )]
 pub(crate) async fn update_activity(
     _: RequireTeacher,
@@ -382,7 +382,7 @@ async fn set_status(
     tag = "activities",
     summary = "發布（或重新開放）活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity))
 )]
 pub(crate) async fn publish_activity(
     _: RequireTeacher,
@@ -398,7 +398,7 @@ pub(crate) async fn publish_activity(
     tag = "activities",
     summary = "停止開放活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity))
 )]
 pub(crate) async fn close_activity(
     _: RequireTeacher,
@@ -421,9 +421,9 @@ pub(crate) struct Available {
 #[utoipa::path(
     get,
     path = "/api/catalog",
-    tag = "activities",
+    tag = "catalog",
     summary = "學生可選的活動與題目",
-    responses((status = 200, description = "可選項目", body = Available), crate::error::CommonErrors)
+    responses((status = 200, description = "可選項目", body = Available))
 )]
 pub(crate) async fn available(
     _: RequireStudent,

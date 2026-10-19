@@ -46,3 +46,13 @@ Geist 字型（`@fontsource-variable/geist`）會被打包進前端建置產物�
 Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)。
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1. 授權全文與 FAQ：https://openfontlicense.org 。完整文字也隨套件放在 `node_modules/@fontsource-variable/geist/LICENSE`。
+
+## 由後端提供的 Redoc
+
+API reference 頁面（`GET /api/docs`）使用的 Redoc 2.5.4 bundle 被複製進原始碼並由後端自己提供，不依賴外部 CDN。
+
+| 來源 | 本專案中的位置 | 版權 |
+| --- | --- | --- |
+| [Redoc](https://github.com/Redocly/redoc) 2.5.4（npm 套件 `redoc`，MIT；`redoc.standalone.js` 與 npm 套件內容逐位元相同） | `backend/src/redoc/redoc.standalone.js` | Copyright (c) 2015-present, Rebilly, Inc. |
+
+Redoc 的授權文字在 `backend/src/redoc/LICENSE`；bundle 內含的其他套件的授權聲明在 `backend/src/redoc/redoc.standalone.js.LICENSE.txt`。
