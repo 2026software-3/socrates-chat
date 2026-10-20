@@ -27,6 +27,8 @@ CREATE TABLE conversations (
 );
 
 CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);
+-- 總結列表（GET /api/summaries）依 ended_at DESC, id 做 keyset 分頁，只列已結束的對話。
+CREATE INDEX conversations_ended_idx ON conversations (ended_at DESC, id) WHERE ended_at IS NOT NULL;
 
 CREATE TABLE messages (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
