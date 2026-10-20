@@ -1,0 +1,203 @@
+[
+  {
+    "id": "N01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "嗯 我覺得 那個 應該要拉感 就是 拉一下"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "「拉感」是「拉桿」的同音辨識錯誤，搭配贅詞，原意清楚；應直接承接立場追問，不提錯字。"
+  },
+  {
+    "id": "N02",
+    "stage": 2,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我會拉桿。"
+      },
+      {
+        "role": "assistant",
+        "content": "你說的「應該拉桿」，是指在這個情境下有道德上的義務，還是只是比較好的選擇？"
+      },
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得是義務 因為這個比較符合 效益主意 就是讓最多人活下來"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "「效益主意」是「效益主義」的同音錯字，前後文清楚；應追問理由或假設，不糾正用詞。"
+  },
+  {
+    "id": "N03",
+    "stage": 1,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "我覺得 我覺得可以 呃 如果是為了保護朋友 的話 說謊 說謊是可以的"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "重複與停頓是口語特徵，立場清楚；應承接立場追問，不評論表達方式。"
+  },
+  {
+    "id": "N04",
+    "stage": 2,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我認為不應該說謊。"
+      },
+      {
+        "role": "assistant",
+        "content": "你說「不應該說謊」，是指任何情況下都不行嗎？"
+      },
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "對 任何情況都不行 因為康得說 說謊會讓人 不能被信任 依務論就是這樣"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "「康得」「依務論」為「康德」「義務論」的辨識錯誤，原意清楚；應依論點追問，不糾正人名或術語。"
+  },
+  {
+    "id": "N05",
+    "stage": 1,
+    "title": "校園手機管理",
+    "description": "學校是否應禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "應該禁止 不對 我是說 不應該完全禁止 可以有一些限制"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "學生自我修正，最後立場明確為「不完全禁止、可有限制」；應依修正後的立場追問，不糾結於前半句。"
+  },
+  {
+    "id": "N06",
+    "stage": 3,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我會拉桿，因為救五個人比救一個人好。"
+      },
+      {
+        "role": "assistant",
+        "content": "如果那一個人是醫生，未來能救更多人，你的判斷會改變嗎？"
+      },
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "嗯 這樣的話 我可能會猶豫 因為 那個 他未來可能救更多人 所以只看現在的人數好像不夠"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "學生已口語化地回應反例並修正理由，意思清楚；應承接其修正繼續探究，不因口語化降低評價。"
+  },
+  {
+    "id": "A01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得拉桿的人 沒 有責任 嗯"
+      }
+    ],
+    "ambiguity": "material",
+    "annotation_reason": "斷句使原意可能是「沒有責任」或「有責任」，兩者立場相反且影響後續討論；應以一個簡短問題請學生確認。"
+  },
+  {
+    "id": "A02",
+    "stage": 1,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "我覺得這種謊話是 有力 的"
+      }
+    ],
+    "ambiguity": "material",
+    "annotation_reason": "「有力」可能是「有理（合理）」或「有利（有好處）」的辨識錯誤，分別指向正當性與後果，影響討論方向；應請學生確認原意。"
+  },
+  {
+    "id": "A03",
+    "stage": 1,
+    "title": "校園手機管理",
+    "description": "學校是否應禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得應該 嗯 禁 不 呃 那個"
+      }
+    ],
+    "ambiguity": "material",
+    "annotation_reason": "辨識結果中斷，無法判斷學生支持或反對禁止；應簡短請學生確認或補完立場，而不是自行推定。"
+  },
+  {
+    "id": "T01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我不會拉桿，因為我不想親手讓別人死。"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "文字輸入的對照組；應照一般方式追問，不提到語音或逐字稿。"
+  },
+  {
+    "id": "T02",
+    "stage": 2,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得可以說謊 嗯 如果朋友會受傷的話"
+      },
+      {
+        "role": "assistant",
+        "content": "你所說的「受傷」，是指身體上的傷害，還是也包括心理上的？"
+      },
+      {
+        "role": "user",
+        "source": "text",
+        "content": "兩種都算，只要會讓朋友受到明顯的傷害。"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "語音與文字混合；最後一則為文字，應自然承接，不提到語音輸入或系統標記。"
+  }
+]

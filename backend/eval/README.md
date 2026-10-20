@@ -1,5 +1,7 @@
 # F-07.1-AI 追問行為評估
 
+> F-10.1-AI（語音逐字稿處理）的評估另見 [`f10_1_README.md`](f10_1_README.md)。
+
 對應 [Issue #183：追問類型選擇：AI 提示與行為評估](https://github.com/2026software-3/socrates-chat/issues/183)。專案規則以 `docs/specs/` 的 S-03.2、S-03.4 為準；本文記錄目前評估實作，不新增或取代產品規格。
 
 ## 評估目的
@@ -21,7 +23,7 @@
 | 項目 | 位置／目前版本 |
 | --- | --- |
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
-| 提示詞版本 | `RULES_VERSION`：`v1.10/zh-TW` |
+| 提示詞版本 | `RULES_VERSION`：`v1.11/zh-TW`（v1.11 只新增 F-10.1 語音逐字稿規則，追問分類規則與 v1.10 相同；下方紀錄皆為 v1.10 的結果） |
 | 評估 runner | `backend/examples/try_f07.rs` |
 | 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v4` |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT` |

@@ -511,19 +511,20 @@ async fn speech_transcripts_are_marked_for_the_ai_but_stored_verbatim(pool: PgPo
     say_from(&s, "因為五個人比一個人多", "text").await;
     say_from(&s, "就是 救比較多人", "speech-openai").await;
 
-    let reqs = s.ai.requests.lock().unwrap();
-    assert_eq!(reqs.len(), 3);
-    // 系統提示說明語音標記的意義與處理方式
-    assert!(reqs[0].system.contains("【語音輸入】"));
-    assert!(reqs[0].system.contains("語音辨識的逐字稿"));
-    let last = &reqs[2].messages;
-    assert_eq!(last.len(), 5);
-    assert_eq!(last[0].content, "【語音輸入】嗯 我覺得那個 應該要拉感");
-    assert_eq!(last[2].content, "因為五個人比一個人多");
-    assert_eq!(last[4].content, "【語音輸入】就是 救比較多人");
-    // AI 自己的回覆不加標記
-    assert!(!last[1].content.contains("【語音輸入】"));
-    drop(reqs);
+    {
+        let reqs = s.ai.requests.lock().unwrap();
+        assert_eq!(reqs.len(), 3);
+        // 系統提示說明語音標記的意義與處理方式
+        assert!(reqs[0].system.contains("【語音輸入】"));
+        assert!(reqs[0].system.contains("語音辨識的逐字稿"));
+        let last = &reqs[2].messages;
+        assert_eq!(last.len(), 5);
+        assert_eq!(last[0].content, "【語音輸入】嗯 我覺得那個 應該要拉感");
+        assert_eq!(last[2].content, "因為五個人比一個人多");
+        assert_eq!(last[4].content, "【語音輸入】就是 救比較多人");
+        // AI 自己的回覆不加標記
+        assert!(!last[1].content.contains("【語音輸入】"));
+    }
 
     let d = detail(&s).await;
     let msgs = d["messages"].as_array().unwrap();
