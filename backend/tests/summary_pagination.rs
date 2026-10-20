@@ -229,6 +229,71 @@ async fn q_searches_name_email_and_title_across_all_pages(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn cursor_only_works_with_the_filters_that_produced_it(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let (s1, _, _) = seed_many(&pool).await;
+    let next = |query: String| {
+        let (app, cookie) = (app.clone(), a.teacher.clone());
+        async move {
+            let page = json_body(
+                send(
+                    &app,
+                    get(&format!("/api/summaries?limit=1&{query}"), Some(&cookie)),
+                )
+                .await,
+            )
+            .await;
+            page["next_cursor"].as_str().unwrap().to_string()
+        }
+    };
+    let status_with = |query: String, cursor: String| {
+        let (app, cookie) = (app.clone(), a.teacher.clone());
+        async move {
+            let res = send(
+                &app,
+                get(
+                    &format!("/api/summaries?limit=1&{query}&cursor={cursor}"),
+                    Some(&cookie),
+                ),
+            )
+            .await;
+            let status = res.status();
+            (status, json_body(res).await)
+        }
+    };
+    let topic_a = next("topic=Topic%20A".to_string()).await;
+    // 條件不同（換題目、拿掉、加上其他條件）：拒絕
+    for query in [
+        "topic=Topic%20B".to_string(),
+        "x=1".to_string(),
+        format!("topic=Topic%20A&student={s1}"),
+        "topic=Topic%20A&q=topic".to_string(),
+        "q=topic".to_string(),
+    ] {
+        let (status, body) = status_with(query.clone(), topic_a.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"]["code"], "invalid_cursor", "{query}");
+    }
+    // 沒有條件的游標不能套到有條件的請求
+    let unfiltered = next("x=1".to_string()).await;
+    let (status, _) = status_with("topic=Topic%20A".to_string(), unfiltered.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // 條件相同（題目不分大小寫、q 前後空白與大小寫不影響）：照常使用
+    let (status, _) = status_with("topic=tOPIC%20a".to_string(), topic_a).await;
+    assert_eq!(status, StatusCode::OK);
+    let q = next("q=%20STUDENT2%40example%20".to_string()).await;
+    let (status, _) = status_with("q=student2%40EXAMPLE".to_string(), q.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    // 游標不帶出搜尋字串（姓名、電子郵件）
+    let decoded = String::from_utf8(
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &q).unwrap(),
+    )
+    .unwrap();
+    assert!(!decoded.to_lowercase().contains("student2"), "{decoded}");
+}
+
+#[sqlx::test]
 async fn validates_input(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;

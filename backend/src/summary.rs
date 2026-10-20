@@ -10,8 +10,10 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
@@ -372,6 +374,19 @@ struct Filters<'a> {
     student: Option<Uuid>,
     topic: Option<&'a str>,
     search: Option<String>,
+    /// 篩選條件的指紋；放進游標，換條件後沿用舊游標會被拒絕。
+    fingerprint: String,
+}
+
+/// 篩選條件（正規化後）的雜湊，不可逆，所以游標裡不會帶出姓名或電子郵件。
+fn fingerprint(student: Option<Uuid>, topic: Option<&str>, q: Option<&str>) -> String {
+    let normalized = (
+        student,
+        topic.map(str::to_lowercase),
+        q.map(str::to_lowercase),
+    );
+    let bytes = serde_json::to_vec(&normalized).unwrap_or_default();
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(bytes)[..8])
 }
 
 impl SummaryQuery {
@@ -386,17 +401,18 @@ impl SummaryQuery {
             Some(t) if t.trim().is_empty() => return Err(invalid()),
             Some(t) => Some(t),
         };
-        let search = match self.q.as_deref().map(str::trim) {
+        let q = match self.q.as_deref().map(str::trim) {
             None => None,
             Some(q) if q.is_empty() || q.chars().count() > MAX_SEARCH_CHARS => {
                 return Err(invalid());
             }
-            Some(q) => Some(like_pattern(q)),
+            Some(q) => Some(q),
         };
         Ok(Filters {
             student,
             topic,
-            search,
+            search: q.map(like_pattern),
+            fingerprint: fingerprint(student, topic, q),
         })
     }
 }
@@ -410,7 +426,7 @@ impl SummaryQuery {
     summary = "所有學生已完成對話的總結（不含原文）",
     params(
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
-        ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 student／topic／q 有效，換條件要從第一頁開始"),
         ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
@@ -423,13 +439,18 @@ pub(crate) async fn list(
     Query(query): Query<SummaryQuery>,
 ) -> Result<Json<Page<SummaryRow>>, ApiError> {
     let limit = query.page.limit()?;
-    let cursor: Option<(DateTime<Utc>, Uuid)> = query.page.cursor("summaries")?;
     let Filters {
         student,
         topic,
         search,
+        fingerprint,
     } = query.filters()?;
-    let (after_time, after_id) = cursor.unzip();
+    let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor("summaries")?;
+    // 游標只對產生它時的篩選條件有效；換條件要從第一頁開始
+    if cursor.as_ref().is_some_and(|c| c.2 != fingerprint) {
+        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+    }
+    let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
     // 已完成的總結一定已結束（end_conversation 同時寫入 ended_at）；仍排除空值以保持 keyset 正確
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.title, c.ended_at,
@@ -474,6 +495,6 @@ pub(crate) async fn list(
         rows,
         limit,
         "summaries",
-        |row: &SummaryRow| (row.ended_at, row.conversation_id),
+        |row: &SummaryRow| (row.ended_at, row.conversation_id, fingerprint),
     )?))
 }
