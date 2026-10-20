@@ -13,7 +13,7 @@ import { formatDate } from '@/features/teacher/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Activity, ActivityStatus, Available, Topic } from '@/lib/types'
-import { useFetch } from '@/lib/use-fetch'
+import { useFetch, useFetchAll } from '@/lib/use-fetch'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
   draft: 'secondary',
@@ -205,7 +205,7 @@ function ActivityRow({
 /** 教師／管理者：建立、編輯、發布、停止開放討論活動。 */
 export function ActivitiesPage() {
   const t = useT()
-  const list = useFetch<Activity[]>('/api/activities')
+  const list = useFetchAll<Activity>('/api/activities')
   // 教師不能呼叫 /api/admin/topics，題目清單來自 /api/catalog
   const available = useFetch<Available>('/api/catalog')
   const topics = available.data?.topics ?? []

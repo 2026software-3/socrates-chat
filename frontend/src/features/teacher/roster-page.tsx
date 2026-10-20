@@ -26,7 +26,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { errorText, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
 import type { RosterImportResult, StudentRow } from '@/lib/types'
-import { useFetch } from '@/lib/use-fetch'
+import { useFetchAll } from '@/lib/use-fetch'
 
 /** 匯入表單：貼上文字或載入檔案內容到文字框（檔案本身不上傳）。 */
 function ImportPanel({ onImported }: { onImported: () => void }) {
@@ -197,7 +197,8 @@ function StatusBadge({ status }: { status: 'disabled' | 'pending' | 'active' }) 
 /** 教師與管理者：學生帳號管理——名單與帳號狀態、匯入、移出名單、刪除帳號；管理者另可重設密碼、停用與復原。 */
 export function RosterPage() {
   const t = useT()
-  const roster = useFetch<StudentRow[]>('/api/students')
+  // 搜尋與人數要涵蓋全部學生，所以跟著 next_cursor 取完所有分頁
+  const roster = useFetchAll<StudentRow>('/api/students')
   const [query, setQuery] = useState('')
   const auth = useAuth()
   const isAdmin = auth.status === 'authed' && auth.me.roles.admin

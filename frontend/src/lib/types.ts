@@ -193,6 +193,9 @@ export type ClassDashboard = Distribution & {
 
 export type EmailList = { emails: string[] }
 
+/** 修課名單的一筆（GET /api/roster 分頁的項目）。 */
+export type RosterEntry = { email: string }
+
 export type RosterImportResult = {
   added: number
   existing: number
