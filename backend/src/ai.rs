@@ -10,7 +10,20 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
-pub const RULES_VERSION: &str = "v1.10/zh-TW";
+pub const RULES_VERSION: &str = "v1.11/zh-TW";
+
+/// 語音逐字稿送給 AI 時加在學生訊息前的標記（F-10.1、S-05.4）。只出現在送往 AI 的請求裡，
+/// 資料庫與學生看到的內容維持原文。
+pub const SPEECH_MARK: &str = "【語音輸入】";
+
+/// 學生訊息送給 AI 時的內容：語音來源（`speech-browser`、`speech-openai`）加上 [`SPEECH_MARK`]，
+/// 讓模型以口語逐字稿的方式理解；文字輸入維持原文。
+pub fn student_turn_content(content: &str, source: &str) -> String {
+    match source {
+        "speech-browser" | "speech-openai" => format!("{SPEECH_MARK}{content}"),
+        _ => content.to_string(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
@@ -237,6 +250,15 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         \n\
         上述 assumption 或 perspective 問題即使附加「為什麼」，分類也不會變成 reason。\n\
         \n\
+        語音輸入（F-10.1）：\n\
+        以「{speech_mark}」開頭的學生訊息是語音辨識的逐字稿，學生已確認後送出；標記由系統加上，不是學生說的話。\n\
+        逐字稿可能有同音錯字、贅詞（例如「嗯」「那個」「就是」）、重複、自我修正或缺少標點。\n\
+        - 依最合理的原意理解，直接承接學生的論點追問。\n\
+        - 不指出、糾正或評論錯字、贅詞與標點，也不要求學生改用文字輸入。\n\
+        - 只有在辨識錯誤讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
+        - 不在回覆中提到或照抄「{speech_mark}」。\n\
+        - 判斷 advance 時，依學生實際表達的思考，不因口語化或贅詞而降低或提高。\n\
+        \n\
         目前階段（階段只進不退）：{stage}{wrap}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
         第一部分：給學生看的簡短追問。\n\
@@ -264,6 +286,7 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         stage = stage,
         wrap = wrap,
         delim = META_DELIM,
+        speech_mark = SPEECH_MARK,
     )
 }
 
@@ -939,5 +962,39 @@ mod tests {
         let p = build_system_prompt(&PromptContext { turn: 15, ..c });
 
         assert!(p.contains("開始引導學生整理"));
+    }
+
+    #[test]
+    fn speech_transcripts_get_the_mark_and_text_stays_verbatim() {
+        assert_eq!(
+            student_turn_content("嗯 應該拉感", "speech-browser"),
+            "【語音輸入】嗯 應該拉感"
+        );
+        assert_eq!(
+            student_turn_content("嗯 應該拉感", "speech-openai"),
+            "【語音輸入】嗯 應該拉感"
+        );
+        assert_eq!(student_turn_content("應該拉桿", "text"), "應該拉桿");
+    }
+
+    #[test]
+    fn prompt_explains_how_to_read_speech_transcripts() {
+        let p = build_system_prompt(&PromptContext {
+            title: "T",
+            description: "D",
+            stage: 1,
+            turn: 1,
+            wrap_up_turn: 15,
+        });
+        // 規則存在即可；模型實際行為由 eval/f10_1_cases.json 評估。
+        for rule in [
+            SPEECH_MARK,
+            "語音辨識的逐字稿",
+            "不指出、糾正或評論錯字、贅詞與標點",
+            "才用一個簡短問題請學生確認原意",
+            "不在回覆中提到或照抄",
+        ] {
+            assert!(p.contains(rule), "缺少語音規則：{rule}");
+        }
     }
 }
