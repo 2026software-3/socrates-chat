@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { StudentRow } from '@/lib/types'
-import { apiError } from '@/test/render'
+import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
 
 const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => ({
@@ -25,7 +25,7 @@ const roster = [
 ]
 
 function mockStudents(rows: StudentRow[] = roster) {
-  server.use(http.get('/api/students', () => HttpResponse.json(rows)))
+  server.use(http.get('/api/students', () => pageOf(rows)))
 }
 
 describe('student account management', () => {

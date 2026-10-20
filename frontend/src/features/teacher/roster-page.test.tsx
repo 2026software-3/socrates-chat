@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
-import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
+import { apiError, makeMe, mockMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
@@ -14,7 +14,7 @@ const rows = (list: string[]) =>
   list.map((email) => ({ email, display_name: null, id: '11111111-1111-4111-8111-111111111111', has_account: true, disabled: false, completed_conversations: 0 }))
 
 function mockRoster(list: string[] = emails) {
-  server.use(http.get('/api/students', () => HttpResponse.json(rows(list))))
+  server.use(http.get('/api/students', () => pageOf(rows(list))))
 }
 
 function setup() {
@@ -28,6 +28,23 @@ describe('RosterPage', () => {
     expect(await screen.findByText('alice@example.com')).toBeInTheDocument()
     expect(screen.getByText('學生人數：3')).toBeInTheDocument()
     expect(screen.getByText('carol@example.org')).toBeInTheDocument()
+  })
+
+  it('follows next_cursor so the count and search cover every page', async () => {
+    const requests: string[] = []
+    server.use(
+      http.get('/api/students', ({ request }) => {
+        const url = new URL(request.url)
+        requests.push(url.search)
+        return url.searchParams.get('cursor') === 'opaque+/='
+          ? pageOf(rows(['carol@example.org']))
+          : pageOf(rows(['alice@example.com', 'bob@example.com']), 'opaque+/=')
+      }),
+    )
+    setup()
+    expect(await screen.findByText('carol@example.org')).toBeInTheDocument()
+    expect(screen.getByText('學生人數：3')).toBeInTheDocument()
+    expect(requests).toEqual(['?limit=200', '?limit=200&cursor=opaque%2B%2F%3D'])
   })
 
   it('filters as you type and shows a no-match message', async () => {
@@ -54,7 +71,7 @@ describe('RosterPage', () => {
     server.use(
       http.get('/api/students', () => {
         calls += 1
-        return calls === 1 ? apiError(500, 'internal') : HttpResponse.json(rows(emails))
+        return calls === 1 ? apiError(500, 'internal') : pageOf(rows(emails))
       }),
     )
     setup()
@@ -128,7 +145,7 @@ describe('RosterPage', () => {
     let list = [...emails]
     let deleted = ''
     server.use(
-      http.get('/api/students', () => HttpResponse.json(rows(list))),
+      http.get('/api/students', () => pageOf(rows(list))),
       http.delete('/api/roster/:email', ({ request, params }) => {
         deleted = new URL(request.url).pathname
         list = list.filter((e) => e !== String(params.email))
@@ -166,7 +183,7 @@ describe('RosterPage', () => {
 
   it('shows a translated message for a non-404 removal failure', async () => {
     server.use(
-      http.get('/api/students', () => HttpResponse.json(rows(emails))),
+      http.get('/api/students', () => pageOf(rows(emails))),
       http.delete('/api/roster/:email', () => apiError(500, 'internal')),
     )
     setup()
@@ -215,7 +232,7 @@ describe('RosterPage', () => {
     server.use(
       http.get('/api/students', () => {
         calls += 1
-        return calls === 2 ? apiError(500, 'internal') : HttpResponse.json(rows(emails))
+        return calls === 2 ? apiError(500, 'internal') : pageOf(rows(emails))
       }),
       http.post('/api/roster/import', () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
     )
@@ -230,7 +247,7 @@ describe('RosterPage', () => {
   it('shows a translated message and refreshes when removal returns 404', async () => {
     let list = [...emails]
     server.use(
-      http.get('/api/students', () => HttpResponse.json(rows(list))),
+      http.get('/api/students', () => pageOf(rows(list))),
       http.delete('/api/roster/:email', () => {
         list = list.filter((e) => e !== 'bob@example.com')
         return apiError(404, 'not_found')

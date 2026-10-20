@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ActivitiesPage } from '@/features/teacher/activities-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Activity, Topic } from '@/lib/types'
-import { apiError } from '@/test/render'
+import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
 
 const topics: Topic[] = [
@@ -45,7 +45,7 @@ afterEach(() => {
 
 function mockList(list: Activity[]) {
   server.use(
-    http.get('/api/activities', () => HttpResponse.json(list)),
+    http.get('/api/activities', () => pageOf(list)),
     http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
   )
 }
@@ -64,6 +64,20 @@ describe('ActivitiesPage', () => {
     expect(screen.getByText('題目：電車難題')).toBeInTheDocument()
   })
 
+  it('loads every page of activities by following next_cursor', async () => {
+    server.use(
+      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/activities', ({ request }) =>
+        new URL(request.url).searchParams.get('cursor') === 'next'
+          ? pageOf([act({ id: 'a2', title: '第二頁的活動' })])
+          : pageOf([act()], 'next'),
+      ),
+    )
+    setup()
+    expect(await screen.findByText('第二頁的活動')).toBeInTheDocument()
+    expect(screen.getByText('第一週討論')).toBeInTheDocument()
+  })
+
   it('shows loading, then an empty state', async () => {
     mockList([])
     setup()
@@ -77,7 +91,7 @@ describe('ActivitiesPage', () => {
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
       http.get('/api/activities', () => {
         calls += 1
-        return calls === 1 ? apiError(500, 'internal') : HttpResponse.json([act()])
+        return calls === 1 ? apiError(500, 'internal') : pageOf([act()])
       }),
     )
     setup()
@@ -108,7 +122,7 @@ describe('ActivitiesPage', () => {
     let body: unknown
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json(list)),
+      http.get('/api/activities', () => pageOf(list)),
       http.post('/api/activities', async ({ request }) => {
         body = await request.json()
         list = [act({ title: '新活動', topic_id: 't2' })]
@@ -161,7 +175,7 @@ describe('ActivitiesPage', () => {
     let body: unknown
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json(list)),
+      http.get('/api/activities', () => pageOf(list)),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
         list = [act({ title: '改名', topic_id: 't2' })]
@@ -192,7 +206,7 @@ describe('ActivitiesPage', () => {
     let body: unknown
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json([act()])),
+      http.get('/api/activities', () => pageOf([act()])),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
         return HttpResponse.json(act())
@@ -211,7 +225,7 @@ describe('ActivitiesPage', () => {
     let body: unknown
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json([act()])),
+      http.get('/api/activities', () => pageOf([act()])),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
         return HttpResponse.json(act({ topic_id: null }))
@@ -242,7 +256,7 @@ describe('ActivitiesPage', () => {
   it('keeps the dialog open and shows the error when saving fails', async () => {
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json([act()])),
+      http.get('/api/activities', () => pageOf([act()])),
       http.patch('/api/activities/a1', () => apiError(400, 'invalid_topic')),
     )
     setup()
@@ -260,7 +274,7 @@ describe('ActivitiesPage', () => {
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
       http.get('/api/activities', () => {
         calls += 1
-        return calls === 2 ? apiError(500, 'internal') : HttpResponse.json([act()])
+        return calls === 2 ? apiError(500, 'internal') : pageOf([act()])
       }),
       http.post('/api/activities/a1/publish', () => HttpResponse.json(act({ status: 'published' }))),
     )
@@ -289,7 +303,7 @@ describe('ActivitiesPage', () => {
     const calls: string[] = []
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json([act({ status })])),
+      http.get('/api/activities', () => pageOf([act({ status })])),
       http.post('/api/activities/a1/publish', () => {
         calls.push('publish')
         status = 'published'
@@ -316,7 +330,7 @@ describe('ActivitiesPage', () => {
     let count = 0
     server.use(
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
-      http.get('/api/activities', () => HttpResponse.json([act()])),
+      http.get('/api/activities', () => pageOf([act()])),
       http.post('/api/activities/a1/publish', async () => {
         count += 1
         await new Promise((r) => setTimeout(r, 60))
@@ -336,7 +350,7 @@ describe('ActivitiesPage', () => {
 
   it('still works when the topic list fails to load', async () => {
     server.use(
-      http.get('/api/activities', () => HttpResponse.json([])),
+      http.get('/api/activities', () => pageOf([])),
       http.get('/api/catalog', () => apiError(500, 'internal')),
     )
     setup()

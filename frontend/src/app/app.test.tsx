@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
+import { apiError, makeMe, mockMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 describe('app shell', () => {
@@ -101,9 +101,9 @@ describe('app shell', () => {
   function mockOpsData() {
     server.use(
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
-      http.get('/api/roster', () => HttpResponse.json({ emails: ['a@example.com', 'b@example.com'] })),
+      http.get('/api/roster', () => pageOf([{ email: 'a@example.com' }, { email: 'b@example.com' }])),
       http.get('/api/students', () =>
-        HttpResponse.json(
+        pageOf(
           ['a@example.com', 'b@example.com'].map((email) => ({
             email,
             display_name: null,
