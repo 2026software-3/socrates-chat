@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -105,20 +105,60 @@ describe('SummariesPage', () => {
     expect(seen.some((p) => p.startsWith('/api/conversations'))).toBe(false)
   })
 
-  it('filters by student name, email or title', async () => {
-    setup()
+  it('sends the search to the API and shows the server results, not a client-side filter', async () => {
+    const seen: (string | null)[] = []
+    server.use(
+      http.get('/api/summaries', ({ request }) => {
+        const q = new URL(request.url).searchParams.get('q')
+        seen.push(q)
+        return HttpResponse.json(page(q ? [rows[1]] : [rows[0]]))
+      }),
+    )
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+    // 目前這頁沒有的學生，也要搜得到（結果由後端決定）
+    await userEvent.type(screen.getByLabelText('搜尋學生或題目'), '  anon@  {enter}')
+    expect(await screen.findByText('anon@example.com')).toBeInTheDocument()
+    expect(screen.queryByText('王小明')).not.toBeInTheDocument()
+    expect(seen).toEqual([null, 'anon@'])
+  })
+
+  it('shows the no-match state, keeps the search box, and clearing it restores the list', async () => {
+    server.use(
+      http.get('/api/summaries', ({ request }) => {
+        const q = new URL(request.url).searchParams.get('q')
+        return HttpResponse.json(page(q ? [] : rows))
+      }),
+    )
+    renderTeacherPage(<SummariesPage />)
     await screen.findByText('王小明')
     const search = screen.getByLabelText('搜尋學生或題目')
-    await userEvent.type(search, '自由')
-    expect(screen.queryByText('王小明')).not.toBeInTheDocument()
-    expect(screen.getByText('anon@example.com')).toBeInTheDocument()
+    await userEvent.type(search, 'nothing-here{enter}')
+    expect(await screen.findByText('沒有符合的總結。')).toBeInTheDocument()
+    expect(screen.queryByText('還沒有學生完成對話。')).not.toBeInTheDocument()
     await userEvent.clear(search)
-    await userEvent.type(search, 'MING@')
-    expect(screen.getByText('王小明')).toBeInTheDocument()
-    expect(screen.queryByText('anon@example.com')).not.toBeInTheDocument()
-    await userEvent.clear(search)
-    await userEvent.type(search, 'nothing-here')
-    expect(screen.getByText('沒有符合的總結。')).toBeInTheDocument()
+    await userEvent.keyboard('{enter}')
+    expect(await screen.findByText('王小明')).toBeInTheDocument()
+  })
+
+  it('goes back to the first page when the search changes', async () => {
+    const seen: { cursor: string | null; q: string | null }[] = []
+    server.use(
+      http.get('/api/summaries', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        seen.push({ cursor: params.get('cursor'), q: params.get('q') })
+        if (params.get('q')) return HttpResponse.json(page([rows[1]]))
+        return HttpResponse.json(params.get('cursor') ? page([rows[1]]) : page([rows[0]], 'c2'))
+      }),
+    )
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+    await userEvent.click(screen.getByRole('button', { name: '下一頁' }))
+    await screen.findByText('anon@example.com')
+    expect(screen.getByRole('button', { name: '上一頁' })).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('搜尋學生或題目'), 'anon{enter}')
+    await waitFor(() => expect(seen.at(-1)).toEqual({ cursor: null, q: 'anon' }))
+    expect(screen.queryByRole('button', { name: '上一頁' })).not.toBeInTheDocument()
   })
 
   it('renders the admin masking string as is', async () => {

@@ -84,11 +84,12 @@
 
 教師檢視學生的總結**不含對話原文**（S-02.1）。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
 
-- `GET /api/summaries?limit=&cursor=&student=&topic=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。管理者的每一頁都遮蔽。
+- `GET /api/summaries?limit=&cursor=&student=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。管理者的每一頁都遮蔽。
 - `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
 - `topic`：題目標題，**完全相符**（區分大小寫）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
 - 兩個篩選可同時使用，也可與分頁一起用（換篩選時從第一頁開始）。格式錯誤（`student` 不是 UUID、`student` 或 `topic` 為空白）回 `400 invalid_filter`；格式正確但沒有符合的學生或題目，回空頁 `{ "items": [], "next_cursor": null }`，不洩漏學生或題目是否存在。
-- 前端總結頁依 `next_cursor` 前後翻頁；頁內搜尋只套用在目前這一頁。
+- `q`：搜尋學生姓名、電子郵件或題目標題，不分大小寫的子字串；`%`、`_`、`\` 當一般字元處理。搜尋在後端對**所有頁**進行（不是只篩目前這一頁），可與 `student`、`topic` 並用。前後空白會被忽略，空白或超過 100 字元回 `400 invalid_filter`。查詢字串帶得到姓名與電子郵件，但應用程式的請求日誌只記路徑（不含查詢字串），反向代理等外部元件另行遵守 S-09.3 的日誌規則。
+- 前端總結頁依 `next_cursor` 前後翻頁；搜尋框送出時把關鍵字放進 `q`，並從第一頁開始。
 
 ## 規劃中的端點（尚未實作）
 
@@ -122,7 +123,7 @@
 
 ### 沒有分頁／上限【高】（#284 對話、#285 總結、#286 學生、#287 名單、#288 活動）
 
-#284 對話與 #285 總結已完成 keyset 分頁：`GET /api/conversations`、`GET /api/summaries`（依 `ended_at DESC, conversation_id ASC`，另有 `?student=`、`?topic=` 篩選，見「教師檢視」）。`/api/students`、`/api/roster`、`/api/activities` 仍一次 `fetch_all`。
+#284 對話與 #285 總結已完成 keyset 分頁：`GET /api/conversations`、`GET /api/summaries`（依 `ended_at DESC, conversation_id ASC`，另有 `?student=`、`?topic=` 篩選與 `?q=` 搜尋，見「教師檢視」）。`/api/students`、`/api/roster`、`/api/activities` 仍一次 `fetch_all`。
 **建議**：其餘端點統一 `?limit=&cursor=`（keyset），回 `{ items, next_cursor }`。因為還沒上線，現在改成本最低。
 
 ### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState, type FormEvent } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -56,61 +56,81 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
   )
 }
 
-/** 教師：學生的 AI 總結列表。只有總結，沒有也不請求對話原文（S-02.1）。依後端的不透明游標前後翻頁。 */
+/** 教師：學生的 AI 總結列表。只有總結，沒有也不請求對話原文（S-02.1）。依後端的不透明游標前後翻頁；搜尋交給後端（`q`），涵蓋所有頁。 */
 export function SummariesPage() {
+  const t = useT()
+  const [draft, setDraft] = useState('')
+  const [search, setSearch] = useState('')
   const [cursors, setCursors] = useState<(string | null)[]>([null])
   const cursor = cursors[cursors.length - 1]
-  return (
-    <SummaryList
-      key={cursor ?? ''}
-      cursor={cursor}
-      onNext={(next) => setCursors((previous) => [...previous, next])}
-      onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
-    />
-  )
-}
 
-function SummaryList({ cursor, onNext, onPrevious }: { cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {
-  const t = useT()
-  const summaries = useFetch<PageResult<TeacherSummary>>(`/api/summaries${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`)
-  const [query, setQuery] = useState('')
-  const data = summaries.data?.items
-  const nextCursor = summaries.data?.next_cursor
-
-  // 搜尋只套用在目前這一頁
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return data ?? []
-    return (data ?? []).filter((r) => [r.student_name ?? '', r.student_email, r.title].some((s) => s.toLowerCase().includes(q)))
-  }, [data, query])
+  // 換搜尋條件時游標失去意義，從第一頁開始
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    setSearch(draft.trim())
+    setCursors([null])
+  }
 
   return (
     <Page title={t('teacher.summaries.title')}>
       <Alert>
         <AlertDescription>{t('teacher.summaries.privacyNote')}</AlertDescription>
       </Alert>
+      <form role="search" onSubmit={submit} className="flex max-w-sm items-end gap-2">
+        <div className="flex-1 space-y-1.5">
+          <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
+          <Input id="summaries-search" type="search" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        </div>
+        <Button type="submit" variant="outline">
+          {t('teacher.summaries.search')}
+        </Button>
+      </form>
+      <SummaryList
+        key={`${search}\n${cursor ?? ''}`}
+        search={search}
+        cursor={cursor}
+        onNext={(next) => setCursors((previous) => [...previous, next])}
+        onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
+      />
+    </Page>
+  )
+}
+
+function summariesPath(search: string, cursor: string | null): string {
+  const params = new URLSearchParams()
+  if (search) params.set('q', search)
+  if (cursor) params.set('cursor', cursor)
+  const query = params.toString()
+  return `/api/summaries${query ? `?${query}` : ''}`
+}
+
+function SummaryList({
+  search,
+  cursor,
+  onNext,
+  onPrevious,
+}: {
+  search: string
+  cursor: string | null
+  onNext: (cursor: string) => void
+  onPrevious?: () => void
+}) {
+  const t = useT()
+  const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor))
+  const data = summaries.data?.items
+  const nextCursor = summaries.data?.next_cursor
+
+  return (
+    <>
       {summaries.loading && !data ? <LoadingBlock /> : null}
       {summaries.error ? <ErrorBlock error={summaries.error} onRetry={summaries.reload} /> : null}
-      {data && data.length === 0 ? <EmptyBlock>{t('teacher.summaries.empty')}</EmptyBlock> : null}
+      {data && data.length === 0 ? <EmptyBlock>{search ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
       {data && data.length > 0 ? (
-        <>
-          <div className="max-w-sm space-y-1.5">
-            <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
-            <Input id="summaries-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} aria-describedby="summaries-search-scope" />
-            <p id="summaries-search-scope" className="text-muted-foreground text-xs">
-              {t('teacher.summaries.searchScope')}
-            </p>
-          </div>
-          {filtered.length === 0 ? (
-            <EmptyBlock>{t('teacher.summaries.noMatch')}</EmptyBlock>
-          ) : (
-            <ul className="space-y-3">
-              {filtered.map((r) => (
-                <SummaryCard key={r.conversation_id} row={r} />
-              ))}
-            </ul>
-          )}
-        </>
+        <ul className="space-y-3">
+          {data.map((r) => (
+            <SummaryCard key={r.conversation_id} row={r} />
+          ))}
+        </ul>
       ) : null}
       {onPrevious || nextCursor ? (
         <div className="flex gap-2">
@@ -126,6 +146,6 @@ function SummaryList({ cursor, onNext, onPrevious }: { cursor: string | null; on
           ) : null}
         </div>
       ) : null}
-    </Page>
+    </>
   )
 }

@@ -338,7 +338,7 @@ pub(crate) struct SummaryPage {
     next_cursor: Option<String>,
 }
 
-/// 分頁參數加上兩個選用篩選。
+/// 分頁參數加上選用篩選與搜尋。
 #[derive(Deserialize)]
 pub(crate) struct SummaryQuery {
     #[serde(flatten)]
@@ -347,10 +347,35 @@ pub(crate) struct SummaryQuery {
     student: Option<String>,
     /// 對話複製來的題目標題，完全相符（與論點分布、主張分組以標題分題目一致）
     topic: Option<String>,
+    /// 搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串），涵蓋所有頁
+    q: Option<String>,
+}
+
+/// 搜尋字串長度上限（字元數）。
+const MAX_SEARCH_CHARS: usize = 100;
+
+/// 把搜尋字串轉成 `ILIKE ... ESCAPE '\'` 的樣式：跳脫萬用字元，前後加 `%`。
+fn like_pattern(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() + 2);
+    out.push('%');
+    for c in q.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+struct Filters<'a> {
+    student: Option<Uuid>,
+    topic: Option<&'a str>,
+    search: Option<String>,
 }
 
 impl SummaryQuery {
-    fn filters(&self) -> Result<(Option<Uuid>, Option<&str>), ApiError> {
+    fn filters(&self) -> Result<Filters<'_>, ApiError> {
         let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
         let student = match self.student.as_deref() {
             None => None,
@@ -361,7 +386,18 @@ impl SummaryQuery {
             Some(t) if t.trim().is_empty() => return Err(invalid()),
             Some(t) => Some(t),
         };
-        Ok((student, topic))
+        let search = match self.q.as_deref().map(str::trim) {
+            None => None,
+            Some(q) if q.is_empty() || q.chars().count() > MAX_SEARCH_CHARS => {
+                return Err(invalid());
+            }
+            Some(q) => Some(like_pattern(q)),
+        };
+        Ok(Filters {
+            student,
+            topic,
+            search,
+        })
     }
 }
 
@@ -377,6 +413,7 @@ impl SummaryQuery {
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
         ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符）"),
+        ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
     responses((status = 200, description = "總結分頁，依 ended_at DESC, conversation_id ASC", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody))
 )]
@@ -387,7 +424,11 @@ pub(crate) async fn list(
 ) -> Result<Json<Page<SummaryRow>>, ApiError> {
     let limit = query.page.limit()?;
     let cursor: Option<(DateTime<Utc>, Uuid)> = query.page.cursor("summaries")?;
-    let (student, topic) = query.filters()?;
+    let Filters {
+        student,
+        topic,
+        search,
+    } = query.filters()?;
     let (after_time, after_id) = cursor.unzip();
     // 已完成的總結一定已結束（end_conversation 同時寫入 ended_at）；仍排除空值以保持 keyset 正確
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
@@ -400,13 +441,18 @@ pub(crate) async fn list(
          WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
            AND ($1::uuid IS NULL OR u.id = $1)
            AND ($2::text IS NULL OR c.title = $2)
-           AND ($3::timestamptz IS NULL
-                OR c.ended_at < $3 OR (c.ended_at = $3 AND s.conversation_id > $4))
+           AND ($3::text IS NULL
+                OR u.display_name ILIKE $3 ESCAPE '\\'
+                OR u.email ILIKE $3 ESCAPE '\\'
+                OR c.title ILIKE $3 ESCAPE '\\')
+           AND ($4::timestamptz IS NULL
+                OR c.ended_at < $4 OR (c.ended_at = $4 AND s.conversation_id > $5))
          ORDER BY c.ended_at DESC, s.conversation_id ASC
-         LIMIT $5",
+         LIMIT $6",
     )
     .bind(student)
     .bind(topic)
+    .bind(search)
     .bind(after_time)
     .bind(after_id)
     .bind((limit + 1) as i64)

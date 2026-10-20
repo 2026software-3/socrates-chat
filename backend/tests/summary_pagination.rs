@@ -189,6 +189,43 @@ async fn filters_combine_with_pagination(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn q_searches_name_email_and_title_across_all_pages(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let (s1, s2, expected) = seed_many(&pool).await;
+    let pick = |f: &dyn Fn(&(Uuid, Uuid, &str)) -> bool| -> Vec<String> {
+        expected
+            .iter()
+            .filter(|e| f(e))
+            .map(|e| e.0.to_string())
+            .collect()
+    };
+    for (query, want) in [
+        // 電子郵件，不分大小寫
+        ("q=STUDENT2%40EXAMPLE", pick(&|e| e.1 == s2)),
+        // 顯示名稱（Synthetic two），子字串
+        ("q=thetic%20TWO", pick(&|e| e.1 == s2)),
+        // 題目標題，不分大小寫
+        ("q=topic%20a", pick(&|e| e.2 == "Topic A")),
+        // 與 student 篩選並用
+        (
+            "q=topic%20b&student=SELF",
+            pick(&|e| e.1 == s1 && e.2 == "Topic B"),
+        ),
+        // 兩邊都不符
+        ("q=no-such-text", vec![]),
+        // LIKE 萬用字元要當成一般字元
+        ("q=%25", vec![]),
+        ("q=_", vec![]),
+    ] {
+        let query = query.replace("SELF", &s1.to_string());
+        // limit=1 逐頁走完：搜尋要涵蓋所有頁，不只是第一頁
+        let pages = all_pages(&app, &format!("/api/summaries?limit=1&{query}"), &a.teacher).await;
+        assert_eq!(ids(&pages), want, "{query}");
+    }
+}
+
+#[sqlx::test]
 async fn validates_input(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
@@ -205,6 +242,8 @@ async fn validates_input(pool: PgPool) {
         ("student=", "invalid_filter"),
         ("topic=", "invalid_filter"),
         ("topic=%20%20", "invalid_filter"),
+        ("q=", "invalid_filter"),
+        ("q=%20%20", "invalid_filter"),
     ] {
         let res = send(
             &app,
@@ -214,6 +253,14 @@ async fn validates_input(pool: PgPool) {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{query}");
         assert_eq!(json_body(res).await["error"]["code"], code, "{query}");
     }
+    let too_long = "a".repeat(101);
+    let res = send(
+        &app,
+        get(&format!("/api/summaries?q={too_long}"), Some(&a.teacher)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_filter");
     // 對話列表的游標不能拿來用
     let user = user_id(&pool, "student@example.com").await;
     sqlx::query(
