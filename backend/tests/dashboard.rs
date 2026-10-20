@@ -205,7 +205,8 @@ async fn builtin_trolley_problem_is_seeded_once_and_respects_edits(pool: PgPool)
 #[sqlx::test]
 async fn summary_carries_ai_classification_and_tolerates_missing_one(pool: PgPool) {
     let (app, a) = seeded(pool).await;
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     let mut pairs: Vec<(Value, Value)> = list
         .as_array()
         .unwrap()

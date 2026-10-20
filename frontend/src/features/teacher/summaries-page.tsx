@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { FrameworkBadge } from '@/features/dashboard/framework-badge'
 import { formatDate } from '@/features/teacher/format'
 import { useI18n, useT } from '@/i18n'
-import type { TeacherSummary } from '@/lib/types'
+import type { Page as PageResult, TeacherSummary } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 function Field({ label, value }: { label: string; value: string | null }) {
@@ -55,13 +56,28 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
   )
 }
 
-/** 教師：學生的 AI 總結列表。只有總結，沒有也不請求對話原文（S-02.1）。 */
+/** 教師：學生的 AI 總結列表。只有總結，沒有也不請求對話原文（S-02.1）。依後端的不透明游標前後翻頁。 */
 export function SummariesPage() {
-  const t = useT()
-  const summaries = useFetch<TeacherSummary[]>('/api/teacher/summaries')
-  const [query, setQuery] = useState('')
-  const data = summaries.data
+  const [cursors, setCursors] = useState<(string | null)[]>([null])
+  const cursor = cursors[cursors.length - 1]
+  return (
+    <SummaryList
+      key={cursor ?? ''}
+      cursor={cursor}
+      onNext={(next) => setCursors((previous) => [...previous, next])}
+      onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
+    />
+  )
+}
 
+function SummaryList({ cursor, onNext, onPrevious }: { cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {
+  const t = useT()
+  const summaries = useFetch<PageResult<TeacherSummary>>(`/api/summaries${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`)
+  const [query, setQuery] = useState('')
+  const data = summaries.data?.items
+  const nextCursor = summaries.data?.next_cursor
+
+  // 搜尋只套用在目前這一頁
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return data ?? []
@@ -80,7 +96,10 @@ export function SummariesPage() {
         <>
           <div className="max-w-sm space-y-1.5">
             <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
-            <Input id="summaries-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <Input id="summaries-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} aria-describedby="summaries-search-scope" />
+            <p id="summaries-search-scope" className="text-muted-foreground text-xs">
+              {t('teacher.summaries.searchScope')}
+            </p>
           </div>
           {filtered.length === 0 ? (
             <EmptyBlock>{t('teacher.summaries.noMatch')}</EmptyBlock>
@@ -92,6 +111,20 @@ export function SummariesPage() {
             </ul>
           )}
         </>
+      ) : null}
+      {onPrevious || nextCursor ? (
+        <div className="flex gap-2">
+          {onPrevious ? (
+            <Button variant="outline" onClick={onPrevious}>
+              {t('teacher.summaries.previous')}
+            </Button>
+          ) : null}
+          {nextCursor ? (
+            <Button variant="outline" disabled={summaries.loading} onClick={() => onNext(nextCursor)}>
+              {t('teacher.summaries.next')}
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </Page>
   )

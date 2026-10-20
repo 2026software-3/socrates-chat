@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SummariesPage } from '@/features/teacher/summaries-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
-import type { TeacherSummary } from '@/lib/types'
+import type { Page, TeacherSummary } from '@/lib/types'
 import { apiError } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -20,6 +20,10 @@ function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
     reasons: '拯救較多人',
     ...over,
   }
+}
+
+function page(items: TeacherSummary[], next_cursor: string | null = null): Page<TeacherSummary> {
+  return { items, next_cursor }
 }
 
 const rows = [
@@ -46,18 +50,20 @@ function cardOf(el: HTMLElement): HTMLElement {
 }
 
 function setup(data: TeacherSummary[] = rows) {
-  server.use(http.get('/api/teacher/summaries', () => HttpResponse.json(data)))
+  server.use(http.get('/api/summaries', () => HttpResponse.json(page(data))))
   return renderTeacherPage(<SummariesPage />)
 }
 
 describe('SummariesPage classification', () => {
   it('shows the claim and main school, and the masked text for admins as-is', async () => {
     server.use(
-      http.get('/api/teacher/summaries', () =>
-        HttpResponse.json([
-          row({ claim: '該拉桿', framework: 'deontology' }),
-          row({ conversation_id: 'c9', title: '管理者視角', claim: 'message', framework: 'message' }),
-        ]),
+      http.get('/api/summaries', () =>
+        HttpResponse.json(
+          page([
+            row({ claim: '該拉桿', framework: 'deontology' }),
+            row({ conversation_id: 'c9', title: '管理者視角', claim: 'message', framework: 'message' }),
+          ]),
+        ),
       ),
     )
     renderTeacherPage(<SummariesPage />)
@@ -130,9 +136,9 @@ describe('SummariesPage', () => {
   it('shows an error and retries', async () => {
     let calls = 0
     server.use(
-      http.get('/api/teacher/summaries', () => {
+      http.get('/api/summaries', () => {
         calls += 1
-        return calls === 1 ? apiError(403, 'forbidden') : HttpResponse.json(rows)
+        return calls === 1 ? apiError(403, 'forbidden') : HttpResponse.json(page(rows))
       }),
     )
     renderTeacherPage(<SummariesPage />)
@@ -141,8 +147,29 @@ describe('SummariesPage', () => {
     expect(await screen.findByText('王小明')).toBeInTheDocument()
   })
 
+  it('navigates next and previous pages using the opaque cursor', async () => {
+    const cursors: (string | null)[] = []
+    server.use(
+      http.get('/api/summaries', ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        cursors.push(cursor)
+        return HttpResponse.json(cursor ? page([rows[1]]) : page([rows[0]], 'opaque+/='))
+      }),
+    )
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+    expect(screen.queryByRole('button', { name: '上一頁' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '下一頁' }))
+    expect(await screen.findByText('anon@example.com')).toBeInTheDocument()
+    expect(screen.queryByText('王小明')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '下一頁' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '上一頁' }))
+    expect(await screen.findByText('王小明')).toBeInTheDocument()
+    expect(cursors).toEqual([null, 'opaque+/=', null])
+  })
+
   it('formats the date in the active language', async () => {
-    server.use(http.get('/api/teacher/summaries', () => HttpResponse.json([row()])))
+    server.use(http.get('/api/summaries', () => HttpResponse.json(page([row()]))))
     renderTeacherPage(<SummariesPage />, 'en')
     expect(await screen.findByText(/Ended Mar 5, 2026/)).toBeInTheDocument()
   })

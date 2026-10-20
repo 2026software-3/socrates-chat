@@ -304,9 +304,9 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let res = send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await;
+    let res = send(&app, get("/api/summaries", Some(&a.teacher))).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let list = json_body(res).await;
+    let list = json_body(res).await["items"].clone();
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["conversation_id"], conv);
@@ -326,7 +326,8 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
         ),
     )
     .await;
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1);
 }
 
@@ -340,7 +341,8 @@ async fn admin_view_of_summaries_is_masked(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     let row = &list[0];
     for f in ["stance", "reasons"] {
         assert_eq!(row[f], "message");
@@ -358,9 +360,7 @@ async fn teacher_summary_list_denies_everyone_else(pool: PgPool) {
         (None, StatusCode::UNAUTHORIZED),
     ] {
         assert_eq!(
-            send(&app, get("/api/teacher/summaries", cookie))
-                .await
-                .status(),
+            send(&app, get("/api/summaries", cookie)).await.status(),
             expected
         );
     }
@@ -386,7 +386,8 @@ async fn deleting_conversation_removes_summary_from_teacher_view(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert!(list.as_array().unwrap().is_empty());
 }
 
@@ -411,7 +412,8 @@ async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     assert_eq!(list[0]["stance"], "message");
     assert!(!list.to_string().contains("會拉桿"));
 }
@@ -461,7 +463,8 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     let ids: Vec<&str> = list
         .as_array()
         .unwrap()

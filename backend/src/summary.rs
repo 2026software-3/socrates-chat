@@ -6,12 +6,12 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
@@ -24,6 +24,7 @@ use crate::{
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
     error::{ApiError, db_error_class},
+    pagination::{self, Page, Pagination},
 };
 
 /// 6 維分數 → 存進資料庫與回給前端的 JSON 物件（鍵為學派）。
@@ -44,7 +45,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/end", post(end))
         .route("/api/conversations/{id}/summary", get(get_summary))
         .route("/api/conversations/{id}/summary/retry", post(retry))
-        .route("/api/teacher/summaries", get(teacher_list))
+        .route("/api/summaries", get(list))
 }
 
 /// 結束對話並建立「產生中」的總結；回傳是否真的由這次呼叫結束。
@@ -311,13 +312,13 @@ pub(crate) async fn retry(
     Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
 }
 
-// ---- 教師檢視（F-26）----
+// ---- 教師與管理者檢視（F-26、#285）----
 
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
-pub(crate) struct TeacherRow {
+pub(crate) struct SummaryRow {
     conversation_id: Uuid,
     title: String,
-    ended_at: Option<DateTime<Utc>>,
+    ended_at: DateTime<Utc>,
     student_id: Uuid,
     student_name: Option<String>,
     student_email: String,
@@ -329,32 +330,90 @@ pub(crate) struct TeacherRow {
     framework_scores: Option<serde_json::Value>,
 }
 
-/// 所有修課學生已完成對話的總結，每筆連到學生與該場對話；不含對話原文。
+/// 總結分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct SummaryPage {
+    items: Vec<SummaryRow>,
+    next_cursor: Option<String>,
+}
+
+/// 分頁參數加上兩個選用篩選。
+#[derive(Deserialize)]
+pub(crate) struct SummaryQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    /// 學生的使用者 ID（即列表項目的 `student_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
+    student: Option<String>,
+    /// 對話複製來的題目標題，完全相符（與論點分布、主張分組以標題分題目一致）
+    topic: Option<String>,
+}
+
+impl SummaryQuery {
+    fn filters(&self) -> Result<(Option<Uuid>, Option<&str>), ApiError> {
+        let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
+        let student = match self.student.as_deref() {
+            None => None,
+            Some(s) => Some(Uuid::parse_str(s).map_err(|_| invalid())?),
+        };
+        let topic = match self.topic.as_deref() {
+            None => None,
+            Some(t) if t.trim().is_empty() => return Err(invalid()),
+            Some(t) => Some(t),
+        };
+        Ok((student, topic))
+    }
+}
+
+/// 所有學生已完成對話的總結，每筆連到學生與該場對話；不含對話原文。
+/// 教師與管理者可用；管理者看到的敏感欄位一律是 `message`（S-02.2）。
 #[utoipa::path(
     get,
-    path = "/api/teacher/summaries",
+    path = "/api/summaries",
     tag = "summaries",
     summary = "所有學生已完成對話的總結（不含原文）",
-    responses((status = 200, description = "總結", body = Vec<TeacherRow>))
+    params(
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
+        ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
+        ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符）"),
+    ),
+    responses((status = 200, description = "總結分頁，依 ended_at DESC, conversation_id ASC", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody))
 )]
-pub(crate) async fn teacher_list(
+pub(crate) async fn list(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<Vec<TeacherRow>>, ApiError> {
-    let mut rows: Vec<TeacherRow> = sqlx::query_as(
+    Query(query): Query<SummaryQuery>,
+) -> Result<Json<Page<SummaryRow>>, ApiError> {
+    let limit = query.page.limit()?;
+    let cursor: Option<(DateTime<Utc>, Uuid)> = query.page.cursor("summaries")?;
+    let (student, topic) = query.filters()?;
+    let (after_time, after_id) = cursor.unzip();
+    // 已完成的總結一定已結束（end_conversation 同時寫入 ended_at）；仍排除空值以保持 keyset 正確
+    let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.title, c.ended_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
                 s.stance, s.reasons, s.claim, s.framework, s.framework_scores
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN users u ON u.id = c.user_id
-         WHERE s.status = 'ready'
-         ORDER BY c.ended_at DESC, s.conversation_id",
+         WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
+           AND ($1::uuid IS NULL OR u.id = $1)
+           AND ($2::text IS NULL OR c.title = $2)
+           AND ($3::timestamptz IS NULL
+                OR c.ended_at < $3 OR (c.ended_at = $3 AND s.conversation_id > $4))
+         ORDER BY c.ended_at DESC, s.conversation_id ASC
+         LIMIT $5",
     )
+    .bind(student)
+    .bind(topic)
+    .bind(after_time)
+    .bind(after_id)
+    .bind((limit + 1) as i64)
     .fetch_all(&state.pool)
     .await?;
     // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），
-    // 即使同一帳號也是教師。
+    // 即使同一帳號也是教師。每一頁都在輸出前遮蔽。
     if cu.roles.admin {
         for r in &mut rows {
             r.stance = Some(MASKED.into());
@@ -365,5 +424,10 @@ pub(crate) async fn teacher_list(
             r.framework_scores = None;
         }
     }
-    Ok(Json(rows))
+    Ok(Json(pagination::page(
+        rows,
+        limit,
+        "summaries",
+        |row: &SummaryRow| (row.ended_at, row.conversation_id),
+    )?))
 }
