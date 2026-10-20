@@ -1,4 +1,4 @@
-//! F-19.1 點數帳本與防重複入帳（S-07.2）：資料存取層、唯讀 API 與授權（合成資料）。
+//! F-19.1 點數帳本與防重複入帳（S-07.2）：資料存取層、餘額 API 與授權（合成資料）。
 
 mod common;
 
@@ -118,67 +118,20 @@ async fn balance_is_the_sum_of_credits_and_debits(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn new_student_has_zero_balance_and_empty_ledger(pool: PgPool) {
+async fn new_student_has_zero_balance(pool: PgPool) {
     let (app, a, _) = seeded(&pool).await;
     let body = my_points(&app, &a.student).await;
-    assert_eq!(body, json!({"balance": 0, "ledger": []}));
+    assert_eq!(body, json!({"balance": 0}));
 }
 
 #[sqlx::test]
-async fn ledger_shape_is_fixed_and_carries_no_content(pool: PgPool) {
+async fn students_see_only_their_balance_not_the_ledger(pool: PgPool) {
     let (app, a, student) = seeded(&pool).await;
     let conv = Uuid::new_v4().to_string();
     record(&pool, &conversation_entry(student, &conv)).await;
 
-    let body = my_points(&app, &a.student).await;
-    let keys: Vec<&str> = body
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(keys, ["balance", "ledger"]);
-    let entry = &body["ledger"][0];
-    let mut keys: Vec<&str> = entry
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    // 只有 ID 與數值；沒有對話標題、訊息或總結（S-02.2）
-    assert_eq!(
-        keys,
-        [
-            "created_at",
-            "delta",
-            "reason",
-            "source_id",
-            "source_type",
-            "unit_price"
-        ]
-    );
-    assert_eq!(entry["delta"], 10);
-    assert_eq!(entry["reason"], "conversation_completed");
-    assert_eq!(entry["source_type"], "conversation");
-    assert_eq!(entry["source_id"], conv.as_str());
-    assert_eq!(entry["unit_price"], Value::Null);
-}
-
-#[sqlx::test]
-async fn ledger_lists_newest_first(pool: PgPool) {
-    let (app, a, student) = seeded(&pool).await;
-    for id in ["first", "second", "third"] {
-        record(&pool, &conversation_entry(student, id)).await;
-    }
-    let body = my_points(&app, &a.student).await;
-    let ids: Vec<&str> = body["ledger"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["source_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(ids, ["third", "second", "first"]);
+    // 只有餘額；不回帳本明細，也沒有對話標題、訊息或總結（S-02.2）
+    assert_eq!(my_points(&app, &a.student).await, json!({"balance": 10}));
 }
 
 #[sqlx::test]
@@ -200,9 +153,8 @@ async fn deleting_a_conversation_keeps_its_points(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
     // 不追回點數，帳本紀錄仍在（S-07.2 2.5）
-    let body = my_points(&app, &a.student).await;
-    assert_eq!(body["balance"], 10);
-    assert_eq!(body["ledger"][0]["source_id"], conv.as_str());
+    assert_eq!(my_points(&app, &a.student).await["balance"], 10);
+    assert_eq!(ledger_rows(&pool, student).await, 1);
 }
 
 #[sqlx::test]
@@ -213,8 +165,8 @@ async fn deleting_the_account_removes_its_ledger(pool: PgPool) {
     let res = send(
         &app,
         json_req(
-            "POST",
-            "/api/students/student@example.com/delete",
+            "DELETE",
+            "/api/students/student@example.com",
             Some(&a.teacher),
             Some(json!({"confirm_email": "student@example.com"})),
         ),
@@ -244,10 +196,7 @@ async fn students_only_see_their_own_points(pool: PgPool) {
     record(&pool, &conversation_entry(other, "theirs")).await;
     record(&pool, &conversation_entry(other, "theirs-2")).await;
 
-    let mine = my_points(&app, &a.student).await;
-    assert_eq!(mine["balance"], 10);
-    assert_eq!(mine["ledger"].as_array().unwrap().len(), 1);
-    assert_eq!(mine["ledger"][0]["source_id"], "mine");
+    assert_eq!(my_points(&app, &a.student).await["balance"], 10);
     assert_eq!(my_points(&app, &other_cookie).await["balance"], 20);
 }
 
@@ -295,6 +244,71 @@ async fn the_database_rejects_unknown_sources_and_negative_prices(pool: PgPool) 
         assert!(
             r.is_err(),
             "{source_type} / {unit_price:?} should be rejected"
+        );
+    }
+}
+
+/// 直接寫入資料庫，繞過應用程式，確認約束由資料庫本身保證。
+async fn insert_raw(
+    pool: &PgPool,
+    user_id: Uuid,
+    source_type: &str,
+    delta: i32,
+    unit_price: Option<i32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id, unit_price)
+         VALUES ($1, $2, 'test', $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind(delta)
+    .bind(source_type)
+    .bind(Uuid::new_v4().to_string())
+    .bind(unit_price)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+#[sqlx::test]
+async fn the_database_keeps_delta_and_unit_price_consistent(pool: PgPool) {
+    let (_, _, student) = seeded(&pool).await;
+
+    // 購買：扣的點數等於當下價格；0 點的免費部件也允許（S-07 §5）
+    // 管理者調整可正可負（S-07.2 2.4）
+    for (source_type, delta, unit_price) in [
+        ("purchase", -30, Some(30)),
+        ("purchase", 0, Some(0)),
+        ("conversation", 10, None),
+        ("task", 5, None),
+        ("admin_adjustment", 3, None),
+        ("admin_adjustment", -3, None),
+    ] {
+        assert!(
+            insert_raw(&pool, student, source_type, delta, unit_price)
+                .await
+                .is_ok(),
+            "{source_type} / {delta} / {unit_price:?} should be accepted"
+        );
+    }
+
+    for (source_type, delta, unit_price) in [
+        // 購買變成加點、扣點與價格不符、沒有記錄價格
+        ("purchase", 30, Some(30)),
+        ("purchase", -10, Some(30)),
+        ("purchase", -30, None),
+        // 沒有變動的紀錄會佔掉 UNIQUE 位置，之後無法補發
+        ("conversation", 0, None),
+        ("admin_adjustment", 0, None),
+        // 只有扣除記錄價格
+        ("conversation", 10, Some(10)),
+        ("admin_adjustment", -5, Some(5)),
+    ] {
+        assert!(
+            insert_raw(&pool, student, source_type, delta, unit_price)
+                .await
+                .is_err(),
+            "{source_type} / {delta} / {unit_price:?} should be rejected"
         );
     }
 }

@@ -16,6 +16,12 @@ CREATE TABLE point_ledger (
     -- 扣除時記錄當下的實際價格；0 表示免費
     unit_price  integer CHECK (unit_price >= 0),
     created_at  timestamptz NOT NULL DEFAULT now(),
+    -- 欄位之間的一致性（S-07.2 2.1）：購買一定記錄價格且扣的點數等於價格（免費部件皆為 0）；
+    -- 其他來源不記錄價格且一定有變動。管理者調整可正可負（2.4）
+    CHECK (
+        (source_type = 'purchase' AND unit_price IS NOT NULL AND delta = -unit_price)
+        OR (source_type <> 'purchase' AND unit_price IS NULL AND delta <> 0)
+    ),
     -- 防重複由資料庫保證：同一事件只入帳一次。也作為依使用者查餘額與帳本的索引
     UNIQUE (user_id, source_type, source_id)
 );

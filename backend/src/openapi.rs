@@ -7,8 +7,8 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, auth, catalog, chat, claims, dashboard, error::ErrorBody, reply, roster, summary,
-    voice,
+    accounts, auth, catalog, chat, claims, dashboard, error::ErrorBody, points, reply, roster,
+    summary, voice,
 };
 
 struct SessionCookie;
@@ -127,6 +127,7 @@ impl Modify for SessionCookie {
         summary::end, summary::get_summary, summary::retry, summary::teacher_list,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech,
+        points::mine,
     ),
     components(schemas(ErrorBody)),
     modifiers(&SessionCookie, &CommonErrorResponses),

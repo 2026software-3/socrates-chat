@@ -4,9 +4,8 @@
 //! 入帳函式接受連線而非連線池，讓呼叫端把入帳與觸發它的事件放在同一個交易內（S-07.2 2.2）。
 
 use axum::{Json, Router, extract::State, routing::get};
-use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{FromRow, PgConnection};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::{AppState, auth::RequireStudent, error::ApiError};
@@ -86,42 +85,26 @@ pub async fn balance(conn: &mut PgConnection, user_id: Uuid) -> Result<i64, sqlx
     .await
 }
 
-/// 回給學生的一筆帳本紀錄：只有 ID 與數值。
-#[derive(Serialize, FromRow)]
-pub struct LedgerRow {
-    pub delta: i32,
-    pub reason: String,
-    pub source_type: String,
-    pub source_id: String,
-    pub unit_price: Option<i32>,
-    pub created_at: DateTime<Utc>,
-}
-
-/// 使用者的帳本，新的在前。
-pub async fn ledger(conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<LedgerRow>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT delta, reason, source_type, source_id, unit_price, created_at
-         FROM point_ledger WHERE user_id = $1
-         ORDER BY created_at DESC, id DESC",
-    )
-    .bind(user_id)
-    .fetch_all(conn)
-    .await
-}
-
-#[derive(Serialize)]
-struct Points {
+/// 學生看到的點數：只有餘額，不提供帳本明細。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Points {
+    /// 帳本 delta 的加總
     balance: i64,
-    ledger: Vec<LedgerRow>,
 }
 
-/// 學生查看自己的餘額與帳本。沒有查詢他人點數的路徑，教師與管理者也不能讀（S-07.2 2.5）。
-async fn mine(
+/// 學生查看自己的餘額。沒有查詢他人點數的路徑，教師與管理者也不能讀（S-07.2 2.5）。
+#[utoipa::path(
+    get,
+    path = "/api/points",
+    tag = "points",
+    summary = "我的點數餘額",
+    responses((status = 200, description = "餘額", body = Points))
+)]
+pub(crate) async fn mine(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Points>, ApiError> {
     let mut conn = state.pool.acquire().await?;
     let balance = balance(&mut conn, cu.user.id).await?;
-    let ledger = ledger(&mut conn, cu.user.id).await?;
-    Ok(Json(Points { balance, ledger }))
+    Ok(Json(Points { balance }))
 }
