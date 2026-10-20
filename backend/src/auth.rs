@@ -19,6 +19,7 @@ use crate::{
     accounts::audit,
     auth_store,
     auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
+    catalog::nullable,
     error::ApiError,
     password,
 };
@@ -46,7 +47,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/auth/change-password", post(change_password))
         .route("/api/admin/users/reset-password", post(reset_password))
         .route("/api/auth/logout", post(logout))
-        .route("/api/me", get(me))
+        .route("/api/me", get(me).patch(update_me))
 }
 
 /// 256 位元隨機 token（base64url）。
@@ -387,6 +388,64 @@ pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
         must_change_password: cu.must_change_password,
         roles: cu.roles,
     })
+}
+
+/// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
+const DISPLAY_NAME_MAX_CHARS: usize = 20;
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct MePatch {
+    /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，字元不限制。
+    #[serde(default, deserialize_with = "nullable")]
+    display_name: Option<Option<String>>,
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/me",
+    tag = "auth",
+    summary = "修改自己的顯示名稱（學生）",
+    request_body = MePatch,
+    responses(
+        (status = 200, description = "更新後的使用者", body = MeResponse),
+        (status = 400, description = "名稱超過 20 個字元（invalid_display_name）"),
+        (status = 403, description = "不是修課名單內的學生"),
+    )
+)]
+pub(crate) async fn update_me(
+    RequireStudent(cu): RequireStudent,
+    State(state): State<AppState>,
+    Json(p): Json<MePatch>,
+) -> Result<Json<MeResponse>, ApiError> {
+    let mut u = cu.user;
+    if let Some(name) = p.display_name {
+        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        if name
+            .as_deref()
+            .is_some_and(|n| n.chars().count() > DISPLAY_NAME_MAX_CHARS)
+        {
+            return Err(ApiError::bad_request(
+                "invalid_display_name",
+                "顯示名稱最多 20 個字元",
+            ));
+        }
+        u.display_name = sqlx::query_scalar(
+            "UPDATE users SET display_name = $2, updated_at = now()
+             WHERE id = $1 RETURNING display_name",
+        )
+        .bind(u.id)
+        .bind(name)
+        .fetch_one(&state.pool)
+        .await?;
+    }
+    Ok(Json(MeResponse {
+        id: u.id,
+        email: u.email,
+        display_name: u.display_name,
+        is_admin: u.is_admin,
+        must_change_password: cu.must_change_password,
+        roles: cu.roles,
+    }))
 }
 
 // ---- 內建帳號密碼登入（S-08.2 第 1 節）----

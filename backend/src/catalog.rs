@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// PATCH 的三態欄位：沒帶＝`None`（保留）、`null`＝`Some(None)`（清除）、有值＝`Some(Some(v))`。
-fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
