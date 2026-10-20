@@ -393,9 +393,14 @@ pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
 /// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
 const DISPLAY_NAME_MAX_CHARS: usize = 20;
 
+/// 去頭尾空白後的名稱是否可用：不超過上限，且不含控制字元（換行、tab、NUL 等）。
+fn valid_display_name(name: &str) -> bool {
+    name.chars().count() <= DISPLAY_NAME_MAX_CHARS && !name.chars().any(char::is_control)
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct MePatch {
-    /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，字元不限制。
+    /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，不可含控制字元，其他字元不限制。
     #[serde(default, deserialize_with = "nullable")]
     display_name: Option<Option<String>>,
 }
@@ -408,7 +413,7 @@ pub(crate) struct MePatch {
     request_body = MePatch,
     responses(
         (status = 200, description = "更新後的使用者", body = MeResponse),
-        (status = 400, description = "名稱超過 20 個字元（invalid_display_name）"),
+        (status = 400, description = "名稱超過 20 個字元或含控制字元（invalid_display_name）"),
         (status = 403, description = "不是修課名單內的學生"),
     )
 )]
@@ -420,13 +425,10 @@ pub(crate) async fn update_me(
     let mut u = cu.user;
     if let Some(name) = p.display_name {
         let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-        if name
-            .as_deref()
-            .is_some_and(|n| n.chars().count() > DISPLAY_NAME_MAX_CHARS)
-        {
+        if name.as_deref().is_some_and(|n| !valid_display_name(n)) {
             return Err(ApiError::bad_request(
                 "invalid_display_name",
-                "顯示名稱最多 20 個字元",
+                "顯示名稱最多 20 個字元，且不可包含控制字元",
             ));
         }
         u.display_name = sqlx::query_scalar(

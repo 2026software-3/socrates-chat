@@ -109,6 +109,29 @@ async fn length_limit_is_20_characters_not_bytes(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn control_characters_inside_the_name_are_rejected(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    // 換行、tab、NUL、DEL、C1 控制字元（U+0085）；頭尾的空白會先被去掉，不算在內
+    for name in ["小\n明", "小\t明", "小\u{0}明", "小\u{7f}明", "小\u{85}明"] {
+        let (status, body) = rename(&app, Some(&a.student), json!({"display_name": name})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(body["error"]["code"], "invalid_display_name");
+    }
+    assert_eq!(me_name(&app, &a.student).await, "User sub-student");
+}
+
+#[sqlx::test]
+async fn other_unusual_characters_are_still_allowed(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let name = "Ünï 小明 😀·-";
+    let (status, body) = rename(&app, Some(&a.student), json!({"display_name": name})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], name);
+}
+
+#[sqlx::test]
 async fn length_is_counted_after_trimming(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;

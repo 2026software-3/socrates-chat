@@ -73,7 +73,7 @@ describe('profile form on the personal dashboard', () => {
     renderApp(null, { route: '/dashboard' })
     await userEvent.type(await screen.findByLabelText('顯示名稱'), '1')
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱太長')
+    expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱太長或含有不允許的字元')
   })
 
   it('does not link the name for teachers, who cannot rename', async () => {
