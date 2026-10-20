@@ -37,10 +37,12 @@ describe('profile form on the personal dashboard', () => {
     expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/dashboard')
   })
 
-  it('limits the input to 20 characters', async () => {
-    mockProfileApi('小明')
+  it('limits the input to 20 Unicode characters, counting an emoji as one', async () => {
+    mockProfileApi(null)
     renderApp(null, { route: '/dashboard' })
-    expect(await screen.findByLabelText('顯示名稱')).toHaveAttribute('maxlength', '20')
+    const input = await screen.findByLabelText('顯示名稱')
+    await userEvent.type(input, '😀'.repeat(21))
+    expect(Array.from((input as HTMLInputElement).value)).toHaveLength(20)
   })
 
   it('saves the new name and updates the header', async () => {
@@ -71,7 +73,7 @@ describe('profile form on the personal dashboard', () => {
     renderApp(null, { route: '/dashboard' })
     await userEvent.type(await screen.findByLabelText('顯示名稱'), '1')
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱最多 20 個字元')
+    expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱太長')
   })
 
   it('does not link the name for teachers, who cannot rename', async () => {

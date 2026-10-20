@@ -12,14 +12,17 @@ import type { Me } from '@/lib/types'
 /** 顯示名稱的長度上限；後端才是準則（S-08.2），這裡只是方便使用者。 */
 const DISPLAY_NAME_MAX = 20
 
+/** 與後端一樣以 Unicode 字元計（emoji 算 1，不像 maxLength 以 UTF-16 計）。 */
+const clip = (value: string) => Array.from(value).slice(0, DISPLAY_NAME_MAX).join('')
+
 /** 個人儀表板上的顯示名稱設定：留空會清除，介面回到顯示電子郵件。 */
 export function ProfileForm() {
   const auth = useAuth()
   // 登入者載入完成前不顯示（外框保證實際使用時一定已登入）
-  return auth.status === 'authed' ? <Form me={auth.me} refresh={auth.refresh} /> : null
+  return auth.status === 'authed' ? <Form me={auth.me} update={auth.update} /> : null
 }
 
-function Form({ me, refresh }: { me: Me; refresh: () => Promise<void> }) {
+function Form({ me, update }: { me: Me; update: (me: Me) => void }) {
   const t = useT()
   const [name, setName] = useState(me.display_name ?? '')
   const [saving, setSaving] = useState(false)
@@ -35,7 +38,7 @@ function Form({ me, refresh }: { me: Me; refresh: () => Promise<void> }) {
       const updated = await api.patch<Me>('/api/me', { display_name: name.trim() || null })
       setName(updated.display_name ?? '')
       setSaved(true)
-      await refresh()
+      update(updated)
     } catch (err) {
       setError(err)
     } finally {
@@ -59,11 +62,10 @@ function Form({ me, refresh }: { me: Me; refresh: () => Promise<void> }) {
             <Label htmlFor="profile-name">{t('profile.name')}</Label>
             <Input
               id="profile-name"
-              maxLength={DISPLAY_NAME_MAX}
               autoComplete="nickname"
               value={name}
               onChange={(e) => {
-                setName(e.target.value)
+                setName(clip(e.target.value))
                 setSaved(false)
               }}
             />
