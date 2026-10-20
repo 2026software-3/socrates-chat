@@ -112,8 +112,17 @@ async fn length_limit_is_20_characters_not_bytes(pool: PgPool) {
 async fn control_characters_inside_the_name_are_rejected(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    // 換行、tab、NUL、DEL、C1 控制字元（U+0085）；頭尾的空白會先被去掉，不算在內
-    for name in ["小\n明", "小\t明", "小\u{0}明", "小\u{7f}明", "小\u{85}明"] {
+    // 換行、tab、NUL、DEL、C1 控制字元（U+0085），以及行／段落分隔字元（U+2028、U+2029，類別 Zl／Zp，
+    // 不屬於 is_control 但同樣會破壞排版）；頭尾的空白會先被去掉，不算在內
+    for name in [
+        "小\n明",
+        "小\t明",
+        "小\u{0}明",
+        "小\u{7f}明",
+        "小\u{85}明",
+        "小\u{2028}明",
+        "小\u{2029}明",
+    ] {
         let (status, body) = rename(&app, Some(&a.student), json!({"display_name": name})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name:?}");
         assert_eq!(body["error"]["code"], "invalid_display_name");

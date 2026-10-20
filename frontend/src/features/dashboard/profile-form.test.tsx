@@ -37,12 +37,44 @@ describe('profile form on the personal dashboard', () => {
     expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/dashboard')
   })
 
-  it('limits the input to 20 Unicode characters, counting an emoji as one', async () => {
+  it('counts Unicode characters (an emoji is one) and never rewrites what the user typed', async () => {
     mockProfileApi(null)
     renderApp(null, { route: '/dashboard' })
     const input = await screen.findByLabelText('顯示名稱')
-    await userEvent.type(input, '😀'.repeat(21))
-    expect(Array.from((input as HTMLInputElement).value)).toHaveLength(20)
+    await userEvent.type(input, '😀'.repeat(20))
+    expect(screen.getByText('20 / 20')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '儲存' })).toBeEnabled()
+    await userEvent.type(input, '😀')
+    expect((input as HTMLInputElement).value).toBe('😀'.repeat(21))
+    expect(screen.getByText('21 / 20')).toBeInTheDocument()
+    expect(input).toBeInvalid()
+    expect(screen.getByRole('button', { name: '儲存' })).toBeDisabled()
+  })
+
+  it('warns instead of silently truncating a long paste, and recovers once shortened', async () => {
+    const patches = mockProfileApi(null)
+    renderApp(null, { route: '/dashboard' })
+    const input = await screen.findByLabelText('顯示名稱')
+    await userEvent.click(input)
+    await userEvent.paste('字'.repeat(25))
+    expect((input as HTMLInputElement).value).toBe('字'.repeat(25))
+    expect(screen.getByText('25 / 20')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '儲存' })).toBeDisabled()
+    await userEvent.type(input, '{Backspace}'.repeat(5))
+    expect(screen.getByRole('button', { name: '儲存' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
+    expect(patches).toEqual([{ display_name: '字'.repeat(20) }])
+  })
+
+  it('measures the length after trimming, like the backend', async () => {
+    mockProfileApi(null)
+    renderApp(null, { route: '/dashboard' })
+    const input = await screen.findByLabelText('顯示名稱')
+    await userEvent.click(input)
+    await userEvent.paste(`  ${'字'.repeat(20)}  `)
+    expect(screen.getByText('20 / 20')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '儲存' })).toBeEnabled()
   })
 
   it('saves the new name and updates the header', async () => {

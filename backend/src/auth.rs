@@ -394,8 +394,10 @@ pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
 const DISPLAY_NAME_MAX_CHARS: usize = 20;
 
 /// 去頭尾空白後的名稱是否可用：不超過上限，且不含控制字元（換行、tab、NUL 等）。
+/// U+2028／U+2029（行／段落分隔，類別 Zl／Zp）不屬於 `is_control`，但同樣會破壞清單排版，一併拒絕。
 fn valid_display_name(name: &str) -> bool {
-    name.chars().count() <= DISPLAY_NAME_MAX_CHARS && !name.chars().any(char::is_control)
+    let breaks_layout = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    name.chars().count() <= DISPLAY_NAME_MAX_CHARS && !name.chars().any(breaks_layout)
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
