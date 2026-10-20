@@ -2,6 +2,12 @@ import { defineMessages } from '@/i18n/define'
 
 export const studentMessages = defineMessages({
   'zh-TW': {
+    'profile.title': '個人設定',
+    'profile.name': '顯示名稱',
+    'profile.hint': '最多 {max} 個字元；留空則顯示你的電子郵件。其他同學可能會看到這個名稱。',
+    'profile.save': '儲存',
+    'profile.saved': '已儲存',
+    'error.invalid_display_name': '顯示名稱最多 20 個字元',
     'student.nav.available': '選擇題目',
     'student.available.myConversations': '我的對話',
     'student.available.activities': '教師活動',
@@ -18,6 +24,12 @@ export const studentMessages = defineMessages({
     'student.available.badgeTopic': '題庫',
   },
   en: {
+    'profile.title': 'Profile settings',
+    'profile.name': 'Display name',
+    'profile.hint': 'Up to {max} characters; leave empty to show your email. Other students may see this name.',
+    'profile.save': 'Save',
+    'profile.saved': 'Saved',
+    'error.invalid_display_name': 'The display name can be at most 20 characters',
     'student.nav.available': 'Choose a topic',
     'student.available.myConversations': 'My conversations',
     'student.available.activities': 'Teacher activities',
@@ -34,6 +46,12 @@ export const studentMessages = defineMessages({
     'student.available.badgeTopic': 'Topic bank',
   },
   es: {
+    'profile.title': 'Configuración personal',
+    'profile.name': 'Nombre visible',
+    'profile.hint': 'Hasta {max} caracteres; déjalo vacío para mostrar tu correo. Otros estudiantes podrían ver este nombre.',
+    'profile.save': 'Guardar',
+    'profile.saved': 'Guardado',
+    'error.invalid_display_name': 'El nombre visible puede tener como máximo 20 caracteres',
     'student.nav.available': 'Elegir un tema',
     'student.available.myConversations': 'Mis conversaciones',
     'student.available.activities': 'Actividades del profesor',
