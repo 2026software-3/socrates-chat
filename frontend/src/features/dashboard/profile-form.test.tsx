@@ -10,6 +10,7 @@ function mockProfileApi(initial: string | null) {
   let name = initial
   const patches: unknown[] = []
   server.use(
+    http.get('/api/dashboard/me', () => HttpResponse.json({ total_conversations: 0, completed: 0, total_turns: 0, radar: [], recent: [] })),
     http.get('/api/me', () => HttpResponse.json(makeMe({ student: true }, { display_name: name }))),
     http.patch('/api/me', async ({ request }) => {
       const body = (await request.json()) as { display_name: string | null }
@@ -21,7 +22,7 @@ function mockProfileApi(initial: string | null) {
   return patches
 }
 
-describe('student profile page', () => {
+describe('profile form on the personal dashboard', () => {
   it('is reached from the header name and starts with the current name', async () => {
     mockProfileApi('小明')
     renderApp(null, { route: '/' })
@@ -33,18 +34,18 @@ describe('student profile page', () => {
   it('links the email when there is no name yet', async () => {
     mockProfileApi(null)
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/settings')
+    expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/dashboard')
   })
 
   it('limits the input to 20 characters', async () => {
     mockProfileApi('小明')
-    renderApp(null, { route: '/settings' })
+    renderApp(null, { route: '/dashboard' })
     expect(await screen.findByLabelText('顯示名稱')).toHaveAttribute('maxlength', '20')
   })
 
   it('saves the new name and updates the header', async () => {
     const patches = mockProfileApi('小明')
-    renderApp(null, { route: '/settings' })
+    renderApp(null, { route: '/dashboard' })
     const input = await screen.findByLabelText('顯示名稱')
     await userEvent.clear(input)
     await userEvent.type(input, '阿華')
@@ -56,7 +57,7 @@ describe('student profile page', () => {
 
   it('clearing the field sends null and the header falls back to the email', async () => {
     const patches = mockProfileApi('小明')
-    renderApp(null, { route: '/settings' })
+    renderApp(null, { route: '/dashboard' })
     await userEvent.clear(await screen.findByLabelText('顯示名稱'))
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
@@ -67,7 +68,7 @@ describe('student profile page', () => {
   it('shows a translated message when the server rejects the name', async () => {
     mockProfileApi('小明')
     server.use(http.patch('/api/me', () => apiError(400, 'invalid_display_name')))
-    renderApp(null, { route: '/settings' })
+    renderApp(null, { route: '/dashboard' })
     await userEvent.type(await screen.findByLabelText('顯示名稱'), '1')
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱最多 20 個字元')

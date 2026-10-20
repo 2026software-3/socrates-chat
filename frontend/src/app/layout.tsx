@@ -24,7 +24,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
           </Link>
           <div className="ml-auto flex flex-wrap items-center gap-3">
             {me.roles.student ? (
-              <Link to="/settings" className="text-sm underline-offset-4 hover:underline">
+              <Link to="/dashboard" className="text-sm underline-offset-4 hover:underline">
                 {me.display_name ?? me.email}
               </Link>
             ) : (
