@@ -1,16 +1,19 @@
-//! 全域請求限制（#324）：超過 body 上限一律回 413 與統一的 JSON 錯誤格式（S-08.1）。
-//! 全部使用合成資料。
+//! 全域請求限制：超過 body 上限回 413（#324）、一般 API 請求逾時回 408（#325），
+//! 兩者都用統一的 JSON 錯誤格式（S-08.1）。全部使用合成資料。
 
 mod common;
+
+use std::time::{Duration, Instant};
 
 use axum::{
     body::{Body, Bytes},
     http::{Request, Response, StatusCode, header},
 };
+use common::Script::*;
 use common::*;
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use serde_json::json;
-use socrates_chat_backend::MAX_BODY_BYTES;
+use socrates_chat_backend::{MAX_BODY_BYTES, config::Config};
 use sqlx::PgPool;
 
 /// 介於全域上限與 axum 預設 2 MB 之間的大小：證明上限是明確設定的，不是沿用預設。
@@ -80,4 +83,76 @@ async fn body_within_the_limit_is_still_handled(pool: PgPool) {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_credentials");
+}
+
+/// 一般請求逾時很短的設定。登入等前置步驟要用一般設定的 app 先做好，再換成這個。
+fn short_timeout() -> Config {
+    Config {
+        request_timeout: Duration::from_millis(300),
+        ai_first_token_timeout: Duration::from_secs(3),
+        ai_total_timeout: Duration::from_secs(5),
+        ..test_config()
+    }
+}
+
+#[sqlx::test]
+async fn stalled_body_times_out_with_json_408(pool: PgPool) {
+    let app = test_app_with_config(pool, FakeAi::with(vec![]), short_timeout());
+    // 送出半個 JSON 後就不再送：模擬慢速（slow-loris）客戶端
+    let body = stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"{\"email\":")) })
+        .chain(stream::pending());
+    let started = Instant::now();
+    // 測試自己的保險：沒有逾時機制時不要永遠卡住
+    let res = tokio::time::timeout(
+        Duration::from_secs(5),
+        send(&app, login_req(Body::from_stream(body))),
+    )
+    .await
+    .expect("server should time out a stalled request body");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+    let rid = res.headers()["x-request-id"].to_str().unwrap().to_string();
+    let body = json_body(res).await;
+    assert_eq!(body["error"]["code"], "request_timeout");
+    assert_eq!(body["error"]["request_id"], rid);
+}
+
+#[sqlx::test]
+async fn sse_reply_is_not_cut_off_by_the_general_timeout(pool: PgPool) {
+    let seed = test_app(pool.clone());
+    let a = seed_actors(&seed).await;
+    let conv = start_conversation(&seed, &a).await;
+    // AI 回覆比一般請求逾時慢得多，串流仍要完整送完
+    let ai = FakeAi::with(vec![Delayed(Duration::from_millis(1000), "慢慢想")]);
+    let app = test_app_with_config(pool, ai, short_timeout());
+    let (status, events) = student_says_events(&app, &a, &conv, "我會拉桿").await;
+    assert_eq!(status, StatusCode::OK);
+    let events = events.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|(n, d)| n == "delta" && d["text"] == "慢慢想")
+    );
+    assert_eq!(events.last().unwrap().0, "done");
+}
+
+#[sqlx::test]
+async fn retry_stream_is_not_cut_off_by_the_general_timeout(pool: PgPool) {
+    let seed = test_app(pool.clone());
+    let a = seed_actors(&seed).await;
+    let conv = start_conversation(&seed, &a).await;
+    seed_student_message(&pool, &conv, "我會拉桿").await;
+    let ai = FakeAi::with(vec![Delayed(Duration::from_millis(1000), "慢慢想")]);
+    let app = test_app_with_config(pool, ai, short_timeout());
+    let res = send(
+        &app,
+        get(
+            &format!("/api/conversations/{conv}/stream"),
+            Some(&a.student),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let events = parse_sse(&text_body(res).await);
+    assert_eq!(events.last().unwrap().0, "done");
 }

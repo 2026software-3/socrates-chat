@@ -88,6 +88,7 @@ pub fn test_config() -> Config {
         // 縮短逾時讓逾時測試很快跑完
         ai_first_token_timeout: Duration::from_millis(200),
         ai_total_timeout: Duration::from_millis(1000),
+        request_timeout: Duration::from_secs(10),
     }
 }
 
@@ -101,6 +102,8 @@ pub enum Script {
     FailAfter(Vec<&'static str>),
     /// 永遠不回應
     Hang,
+    /// 等一段時間後才給出這段文字並正常結束（慢速的 AI）
+    Delayed(Duration, &'static str),
 }
 
 /// 假的 AI：依序執行腳本（用完後一律失敗），並記錄收到的請求。
@@ -140,6 +143,11 @@ impl AiProvider for FakeAi {
             )
             .boxed()),
             Some(Script::Hang) => std::future::pending().await,
+            Some(Script::Delayed(wait, text)) => Ok(stream::once(async move {
+                tokio::time::sleep(wait).await;
+                Ok(text.to_string())
+            })
+            .boxed()),
             Some(Script::Fail) | None => Err(AiError),
         }
     }

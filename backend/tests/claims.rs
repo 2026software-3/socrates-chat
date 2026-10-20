@@ -9,6 +9,7 @@ use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
 use serde_json::{Value, json};
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
 
 fn summary(claim: &str, reasons: &str, utilitarianism: u8) -> String {
@@ -258,4 +259,29 @@ async fn students_and_teachers_see_the_claim_but_admins_get_the_masked_text(pool
     assert_eq!(list[0]["claim"], "message");
     let me = json_body(send(&app, get("/api/dashboard/me", Some(&a.student))).await).await;
     assert_eq!(me["recent"][0]["claim"], "該拉桿");
+}
+
+#[sqlx::test]
+async fn regroup_may_wait_for_the_ai_longer_than_the_general_timeout(pool: PgPool) {
+    // 重新分組會同步等 AI；一般請求逾時（#325）比 AI 逾時短時，仍要等到 AI 的結果
+    let s1 = summary("該拉桿", "理由甲", 4);
+    let ai = FakeAi::with(vec![
+        Reply(vec![Box::leak(s1.into_boxed_str())]),
+        Reply(vec!["{\"group\":\"拉桿\"}"]),
+        Hang,
+    ]);
+    let seed = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&seed).await;
+    finish(&seed, &a, &ai, &pool, 2).await;
+
+    let config = Config {
+        request_timeout: Duration::from_millis(300),
+        ai_first_token_timeout: Duration::from_millis(1000),
+        ai_total_timeout: Duration::from_secs(2),
+        ..test_config()
+    };
+    let app = test_app_with_config(pool, ai, config);
+    let (status, body) = regroup(&app, Some(&a.teacher)).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "ai_unavailable");
 }
