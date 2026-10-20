@@ -345,7 +345,7 @@ pub(crate) struct SummaryQuery {
     page: Pagination,
     /// 學生的使用者 ID（即列表項目的 `student_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
     student: Option<String>,
-    /// 對話複製來的題目標題，完全相符（與論點分布、主張分組以標題分題目一致）
+    /// 對話複製來的題目標題，完全相符但不分大小寫（以標題分題目，與論點分布、主張分組一致）
     topic: Option<String>,
     /// 搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串），涵蓋所有頁
     q: Option<String>,
@@ -412,7 +412,7 @@ impl SummaryQuery {
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
         ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
-        ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符）"),
+        ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
     responses((status = 200, description = "總結分頁，依 ended_at DESC, conversation_id ASC", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody))
@@ -440,7 +440,7 @@ pub(crate) async fn list(
          JOIN users u ON u.id = c.user_id
          WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
            AND ($1::uuid IS NULL OR u.id = $1)
-           AND ($2::text IS NULL OR c.title = $2)
+           AND ($2::text IS NULL OR lower(c.title) = lower($2))
            AND ($3::text IS NULL
                 OR u.display_name ILIKE $3 ESCAPE '\\'
                 OR u.email ILIKE $3 ESCAPE '\\'

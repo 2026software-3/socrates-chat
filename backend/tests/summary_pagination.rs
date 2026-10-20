@@ -158,6 +158,8 @@ async fn filters_combine_with_pagination(pool: PgPool) {
         (format!("student={s1}"), pick(&|e| e.1 == s1)),
         (format!("student={s2}"), pick(&|e| e.1 == s2)),
         ("topic=Topic%20A".to_string(), pick(&|e| e.2 == "Topic A")),
+        // 題目標題不分大小寫
+        ("topic=tOPIC%20a".to_string(), pick(&|e| e.2 == "Topic A")),
         (
             format!("student={s1}&topic=Topic%20A"),
             pick(&|e| e.1 == s1 && e.2 == "Topic A"),
@@ -174,7 +176,8 @@ async fn filters_combine_with_pagination(pool: PgPool) {
     for query in [
         format!("student={}", Uuid::from_u128(12345)),
         "topic=No%20such%20topic".to_string(),
-        "topic=topic%20a".to_string(),
+        // 完全相符：子字串不算
+        "topic=Topic".to_string(),
     ] {
         let page = json_body(
             send(
