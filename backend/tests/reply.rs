@@ -477,3 +477,71 @@ async fn posting_a_message_holds_the_claim_until_the_reply_finishes(pool: PgPool
             .unwrap();
     assert!(g.is_none());
 }
+
+/// 以指定來源送出學生訊息並讀完 SSE 回應。
+async fn say_from(s: &Setup, text: &str, source: &str) -> Vec<(String, Value)> {
+    let res = send(
+        &s.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/messages", s.conv),
+            Some(&s.a.student),
+            Some(json!({"content": text, "source": source})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    parse_sse(&text_body(res).await)
+}
+
+#[sqlx::test]
+async fn speech_transcripts_are_marked_for_the_ai_but_stored_verbatim(pool: PgPool) {
+    // F-10.1-AI：語音逐字稿送給 AI 時加上系統標記，讓 AI 以口語逐字稿的方式理解；
+    // 文字訊息不加標記；資料庫與學生看到的內容維持原文。
+    let s = setup(
+        pool,
+        vec![
+            Reply(REPLY.to_vec()),
+            Reply(REPLY.to_vec()),
+            Reply(REPLY.to_vec()),
+        ],
+    )
+    .await;
+    say_from(&s, "嗯 我覺得那個 應該要拉感", "speech-browser").await;
+    say_from(&s, "因為五個人比一個人多", "text").await;
+    say_from(&s, "就是 救比較多人", "speech-openai").await;
+
+    let reqs = s.ai.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3);
+    // 系統提示說明語音標記的意義與處理方式
+    assert!(reqs[0].system.contains("【語音輸入】"));
+    assert!(reqs[0].system.contains("語音辨識的逐字稿"));
+    let last = &reqs[2].messages;
+    assert_eq!(last.len(), 5);
+    assert_eq!(last[0].content, "【語音輸入】嗯 我覺得那個 應該要拉感");
+    assert_eq!(last[2].content, "因為五個人比一個人多");
+    assert_eq!(last[4].content, "【語音輸入】就是 救比較多人");
+    // AI 自己的回覆不加標記
+    assert!(!last[1].content.contains("【語音輸入】"));
+    drop(reqs);
+
+    let d = detail(&s).await;
+    let msgs = d["messages"].as_array().unwrap();
+    assert_eq!(msgs[0]["content"], "嗯 我覺得那個 應該要拉感");
+    assert_eq!(msgs[0]["source"], "speech-browser");
+    assert_eq!(msgs[4]["content"], "就是 救比較多人");
+}
+
+#[sqlx::test]
+async fn text_only_conversation_has_no_speech_marks(pool: PgPool) {
+    let s = setup(pool, vec![Reply(REPLY.to_vec()), Reply(REPLY.to_vec())]).await;
+    say(&s, "我認為應該拉桿。").await;
+    say(&s, "因為能救更多人。").await;
+    let reqs = s.ai.requests.lock().unwrap();
+    assert!(
+        reqs[1]
+            .messages
+            .iter()
+            .all(|m| !m.content.contains("【語音輸入】"))
+    );
+}
