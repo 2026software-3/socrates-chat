@@ -2,6 +2,13 @@ import { defineMessages } from '@/i18n/define'
 
 export const dashboardMessages = defineMessages({
   'zh-TW': {
+    'profile.title': '個人設定',
+    'profile.name': '顯示名稱',
+    'profile.hint': '最多 {max} 個字元；留空則顯示你的電子郵件。其他同學可能會看到這個名稱。',
+    'profile.save': '儲存',
+    'profile.saved': '已儲存',
+    'profile.tooLong': '顯示名稱最多 {max} 個字元，請縮短後再儲存。',
+    'error.invalid_display_name': '顯示名稱太長或含有不允許的字元，請修改後再試',
     'dashboard.nav.me': '我的儀表板',
     'dashboard.completed': '已完成對話',
     'dashboard.frameworks': '論證傾向',
@@ -48,6 +55,13 @@ export const dashboardMessages = defineMessages({
     'error.no_claims': '這個題目還沒有可分組的主張。',
   },
   en: {
+    'profile.title': 'Profile settings',
+    'profile.name': 'Display name',
+    'profile.hint': 'Up to {max} characters; leave empty to show your email. Other students may see this name.',
+    'profile.save': 'Save',
+    'profile.saved': 'Saved',
+    'profile.tooLong': 'The display name can have at most {max} characters. Shorten it to save.',
+    'error.invalid_display_name': 'The display name is too long or contains disallowed characters. Please change it and try again',
     'dashboard.nav.me': 'My dashboard',
     'dashboard.completed': 'Completed conversations',
     'dashboard.frameworks': 'Reasoning approach',
@@ -94,6 +108,13 @@ export const dashboardMessages = defineMessages({
     'error.no_claims': 'This topic has no claims to group yet.',
   },
   es: {
+    'profile.title': 'Configuración personal',
+    'profile.name': 'Nombre visible',
+    'profile.hint': 'Hasta {max} caracteres; déjalo vacío para mostrar tu correo. Otros estudiantes podrían ver este nombre.',
+    'profile.save': 'Guardar',
+    'profile.saved': 'Guardado',
+    'profile.tooLong': 'El nombre visible puede tener como máximo {max} caracteres. Acórtalo para guardar.',
+    'error.invalid_display_name': 'El nombre visible es demasiado largo o contiene caracteres no permitidos. Cámbialo e inténtalo de nuevo',
     'dashboard.nav.me': 'Mi panel',
     'dashboard.completed': 'Conversaciones completadas',
     'dashboard.frameworks': 'Enfoque de razonamiento',

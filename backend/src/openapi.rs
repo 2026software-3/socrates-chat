@@ -112,7 +112,7 @@ impl Modify for SessionCookie {
     ),
     paths(
         auth::login, auth::callback, auth::password_login, auth::change_password, auth::logout,
-        auth::me, auth::reset_password,
+        auth::me, auth::update_me, auth::reset_password,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
