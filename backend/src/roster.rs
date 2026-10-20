@@ -2,7 +2,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post},
 };
@@ -15,6 +15,7 @@ use crate::{
     auth::{RequireAdmin, RequireTeacher, hash_blocking},
     auth_store,
     error::ApiError,
+    pagination::{self, Page, Pagination},
     password,
 };
 
@@ -53,7 +54,6 @@ pub(crate) struct EmailList {
 }
 
 const LIST_TEACHERS: &str = "SELECT email FROM teachers ORDER BY email";
-const LIST_ROSTER: &str = "SELECT email FROM enrollments ORDER BY email";
 const DELETE_TEACHER: &str = "DELETE FROM teachers WHERE email = lower($1)";
 const DELETE_ROSTER: &str = "DELETE FROM enrollments WHERE email = lower($1)";
 
@@ -148,20 +148,53 @@ async fn delete_email(
 
 // ---- 修課名單（教師或管理者操作）----
 
+/// 名單上的一筆；以物件包裝，之後要加欄位不必再改契約。
+#[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub(crate) struct RosterEntry {
+    email: String,
+}
+
+/// 名單分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct RosterPage {
+    items: Vec<RosterEntry>,
+    next_cursor: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/roster",
     tag = "roster",
     summary = "修課名單",
-    responses((status = 200, description = "名單信箱", body = EmailList))
+    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor")),
+    responses((status = 200, description = "名單分頁，依 email 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list_roster(
     _: RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<EmailList>, ApiError> {
-    Ok(Json(EmailList {
-        emails: list_emails(&state.pool, LIST_ROSTER).await?,
-    }))
+    Query(query): Query<Pagination>,
+) -> Result<Json<Page<RosterEntry>>, ApiError> {
+    let limit = query.limit()?;
+    let cursor: Option<String> = query.cursor("roster")?;
+    let rows = if let Some(email) = cursor {
+        sqlx::query_as("SELECT email FROM enrollments WHERE email > $1 ORDER BY email LIMIT $2")
+            .bind(email)
+            .bind((limit + 1) as i64)
+            .fetch_all(&state.pool)
+            .await?
+    } else {
+        sqlx::query_as("SELECT email FROM enrollments ORDER BY email LIMIT $1")
+            .bind((limit + 1) as i64)
+            .fetch_all(&state.pool)
+            .await?
+    };
+    Ok(Json(pagination::page(
+        rows,
+        limit,
+        "roster",
+        |row: &RosterEntry| row.email.clone(),
+    )?))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]

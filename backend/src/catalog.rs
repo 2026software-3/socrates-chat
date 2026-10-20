@@ -5,7 +5,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, patch, post},
 };
@@ -18,6 +18,7 @@ use crate::{
     AppState,
     auth::{RequireStudent, RequireTeacher},
     error::ApiError,
+    pagination::{self, Page, Pagination},
 };
 
 /// PATCH 的三態欄位：沒帶＝`None`（保留）、`null`＝`Some(None)`（清除）、有值＝`Some(Some(v))`。
@@ -247,21 +248,52 @@ async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
     Ok(n > 0)
 }
 
+/// 活動分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ActivityPage {
+    items: Vec<Activity>,
+    next_cursor: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/activities",
     tag = "activities",
-    summary = "列出活動",
-    responses((status = 200, description = "活動", body = Vec<Activity>))
+    summary = "列出活動（草稿、已發布、已停止開放）",
+    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor")),
+    responses((status = 200, description = "活動分頁，依 created_at DESC, id ASC", body = ActivityPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list_activities(
     _: RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<Vec<Activity>>, ApiError> {
-    let rows = sqlx::query_as(activity_select!("ORDER BY created_at DESC, id"))
+    Query(query): Query<Pagination>,
+) -> Result<Json<Page<Activity>>, ApiError> {
+    let limit = query.limit()?;
+    let cursor: Option<(DateTime<Utc>, Uuid)> = query.cursor("activities")?;
+    let rows = if let Some((time, id)) = cursor {
+        sqlx::query_as(activity_select!(
+            "WHERE created_at <= $1 AND (created_at < $1 OR id > $2) ORDER BY created_at DESC, id ASC LIMIT $3"
+        ))
+        .bind(time)
+        .bind(id)
+        .bind((limit + 1) as i64)
         .fetch_all(&state.pool)
-        .await?;
-    Ok(Json(rows))
+        .await?
+    } else {
+        sqlx::query_as(activity_select!(
+            "ORDER BY created_at DESC, id ASC LIMIT $1"
+        ))
+        .bind((limit + 1) as i64)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    Ok(Json(pagination::page(
+        rows,
+        limit,
+        "activities",
+        |row: &Activity| (row.created_at, row.id),
+    )?))
 }
 
 #[utoipa::path(

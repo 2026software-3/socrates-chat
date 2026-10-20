@@ -76,3 +76,35 @@ async fn student_deletion_documents_delete_with_confirmation_body(pool: PgPool) 
     assert!(operation["responses"]["204"].is_object());
     assert!(doc["paths"].get("/api/students/{email}/delete").is_none());
 }
+
+/// 分頁列表都要記載 limit／cursor、400，並以 `$ref` 指向具名的分頁 schema。
+#[sqlx::test]
+async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    for (path, schema) in [
+        ("/api/conversations", "ConversationPage"),
+        ("/api/students", "StudentPage"),
+        ("/api/roster", "RosterPage"),
+        ("/api/activities", "ActivityPage"),
+    ] {
+        let op = &doc["paths"][path]["get"];
+        let params: Vec<&str> = op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(params, ["limit", "cursor"], "{path}");
+        assert_eq!(
+            op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "{path}"
+        );
+        assert!(op["responses"]["400"].is_object(), "{path}");
+        assert!(
+            doc["components"]["schemas"][schema]["properties"]["next_cursor"].is_object(),
+            "{path}"
+        );
+    }
+}

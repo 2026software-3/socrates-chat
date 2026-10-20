@@ -13,8 +13,9 @@ async fn post(app: &Router, path: &str, cookie: Option<&str>, body: Option<Value
         .status()
 }
 
+/// 第一頁的學生（測試資料遠少於預設分頁大小）。
 async fn students(app: &Router, cookie: &str) -> Value {
-    json_body(send(app, get("/api/students", Some(cookie))).await).await
+    json_body(send(app, get("/api/students", Some(cookie))).await).await["items"].take()
 }
 
 async fn audit_actions(pool: &PgPool) -> Vec<(String, String, Option<String>)> {

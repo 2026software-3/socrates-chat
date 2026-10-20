@@ -7,7 +7,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, put},
 };
@@ -19,6 +19,7 @@ use crate::{
     AppState,
     auth::{RequireAdmin, RequireTeacher},
     error::ApiError,
+    pagination::{self, Page, Pagination},
     roster::normalize_email,
 };
 
@@ -42,32 +43,66 @@ pub(crate) struct StudentRow {
     completed_conversations: i64,
 }
 
+/// 學生分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct StudentPage {
+    items: Vec<StudentRow>,
+    next_cursor: Option<String>,
+}
+
+macro_rules! student_select {
+    ($tail:literal) => {
+        concat!(
+            "SELECT u.id, e.email, u.display_name,
+                    (u.id IS NOT NULL) AS has_account,
+                    COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
+                    COALESCE((SELECT count(*) FROM summaries s
+                              JOIN conversations c ON c.id = s.conversation_id
+                              WHERE c.user_id = u.id AND s.status = 'ready'), 0)
+                        AS completed_conversations
+             FROM enrollments e LEFT JOIN users u ON u.email = e.email ",
+            $tail
+        )
+    };
+}
+
 /// 修課名單上的學生與帳號狀態。
 #[utoipa::path(
     get,
     path = "/api/students",
     tag = "roster",
     summary = "名單上的學生與帳號狀態",
-    responses((status = 200, description = "學生列表", body = Vec<StudentRow>))
+    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor")),
+    responses((status = 200, description = "學生分頁，依 email 排序", body = StudentPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list_students(
     _: RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<Vec<StudentRow>>, ApiError> {
-    let rows = sqlx::query_as(
-        "SELECT u.id, e.email, u.display_name,
-                (u.id IS NOT NULL) AS has_account,
-                COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
-                COALESCE((SELECT count(*) FROM summaries s
-                          JOIN conversations c ON c.id = s.conversation_id
-                          WHERE c.user_id = u.id AND s.status = 'ready'), 0)
-                    AS completed_conversations
-         FROM enrollments e LEFT JOIN users u ON u.email = e.email
-         ORDER BY e.email",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(rows))
+    Query(query): Query<Pagination>,
+) -> Result<Json<Page<StudentRow>>, ApiError> {
+    let limit = query.limit()?;
+    let cursor: Option<String> = query.cursor("students")?;
+    let rows = if let Some(email) = cursor {
+        sqlx::query_as(student_select!(
+            "WHERE e.email > $1 ORDER BY e.email LIMIT $2"
+        ))
+        .bind(email)
+        .bind((limit + 1) as i64)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as(student_select!("ORDER BY e.email LIMIT $1"))
+            .bind((limit + 1) as i64)
+            .fetch_all(&state.pool)
+            .await?
+    };
+    Ok(Json(pagination::page(
+        rows,
+        limit,
+        "students",
+        |row: &StudentRow| row.email.clone(),
+    )?))
 }
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
