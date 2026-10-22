@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
-pub const RULES_VERSION: &str = "v1.11/zh-TW";
+pub const RULES_VERSION: &str = "v1.12/zh-TW";
 
 /// 語音逐字稿送給 AI 時加在學生訊息前的標記（F-10.1、S-05.4）。只出現在送往 AI 的請求裡，
 /// 資料庫與學生看到的內容維持原文。
@@ -258,6 +258,14 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         - 只有在辨識錯誤讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
         - 不在回覆中提到或照抄「{speech_mark}」。\n\
         - 判斷 advance 時，依學生實際表達的思考，不因口語化或贅詞而降低或提高。\n\
+        \n\
+        語音對話（F-10.2）：\n\
+        若最新一則學生訊息以「{speech_mark}」開頭，你的回覆會以語音朗讀給學生聽：\n\
+        - 用口語、完整的短句，整體控制在兩三句內，把問題放在最後。\n\
+        - 不使用 Markdown、條列、編號、表格、表情符號、網址或括號補充，也不用只適合閱讀的符號（例如 →、/、*）。\n\
+        語音可能在學生還沒說完時就送出（學生停頓幾秒就會自動送出）。\n\
+        - 若最新訊息明顯中斷（例如停在「因為」「所以」「但是」「如果……的話」，或句子沒有完成），不要依半句話推論或提出新的追問；簡短請學生把剛才的想法說完，可以提到他說到哪裡，此時標記 clarify。\n\
+        - 停頓、贅詞或句子簡短不代表沒說完；意思已經完整時照常追問。\n\
         \n\
         目前階段（階段只進不退）：{stage}{wrap}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
@@ -995,6 +1003,28 @@ mod tests {
             "不在回覆中提到或照抄",
         ] {
             assert!(p.contains(rule), "缺少語音規則：{rule}");
+        }
+    }
+
+    #[test]
+    fn prompt_makes_spoken_replies_listenable_and_handles_cut_off_speech() {
+        let p = build_system_prompt(&PromptContext {
+            title: "T",
+            description: "D",
+            stage: 2,
+            turn: 2,
+            wrap_up_turn: 15,
+        });
+        // F-10.2：輪流語音對話的回覆會被朗讀，學生也可能話沒說完就被自動送出。
+        // 只檢查規則存在；模型實際行為由 eval/f10_2_cases.json 評估。
+        for rule in [
+            "回覆會以語音朗讀給學生聽",
+            "不使用 Markdown、條列、編號、表格、表情符號、網址",
+            "學生還沒說完時就送出",
+            "簡短請學生把剛才的想法說完",
+            "停頓、贅詞或句子簡短不代表沒說完",
+        ] {
+            assert!(p.contains(rule), "缺少語音對話規則：{rule}");
         }
     }
 }
