@@ -1,9 +1,11 @@
-//! 主張分組（F-15，暫定；對應 S-04）。
+//! 主張分組（F-15，暫定；對應 S-04.7）。
 //!
-//! 每場對話的總結有一句「最終主張」。同一題目下，AI 把意思相近的主張歸成一群並命名，
+//! 每場對話的總結有一句「最終主張」。同一個活動下，AI 把意思相近的主張歸成一群並命名，
 //! 分組結果存在資料庫（不在每次看儀表板時重算）：
-//! - 新總結進來時，把既有群組名稱一併交給 AI，要求優先歸入既有群組，歸不進去才開新群；
-//! - 教師可按「重新分組」，由 AI 把該題目的全部主張重新分一次。
+//! - 新總結進來時，把該活動既有群組名稱一併交給 AI，要求優先歸入既有群組，歸不進去才開新群；
+//! - 教師可按「重新分組」，由 AI 把該活動的全部主張重新分一次。
+//!
+//! 從題目庫開始的個人練習沒有活動，不分組。
 //!
 //! 送給 AI 的只有主張短句與題目標題，不含姓名、電子郵件或對話原文。分組失敗不影響總結本身，
 //! 該場只是暫時沒有群組。
@@ -28,8 +30,14 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// 把一場對話的主張歸入群組（背景呼叫，盡力而為）。
-pub async fn assign_group(state: &AppState, conversation: Uuid, topic: &str, claim: &str) {
-    if let Err(e) = try_assign(state, conversation, topic, claim).await {
+pub async fn assign_group(
+    state: &AppState,
+    conversation: Uuid,
+    activity: Uuid,
+    topic: &str,
+    claim: &str,
+) {
+    if let Err(e) = try_assign(state, conversation, activity, topic, claim).await {
         tracing::warn!(class = %db_error_class(&e), "claim grouping bookkeeping failed");
     }
 }
@@ -37,13 +45,14 @@ pub async fn assign_group(state: &AppState, conversation: Uuid, topic: &str, cla
 async fn try_assign(
     state: &AppState,
     conversation: Uuid,
+    activity: Uuid,
     topic: &str,
     claim: &str,
 ) -> Result<(), sqlx::Error> {
     let existing: Vec<(String,)> = sqlx::query_as(
-        "SELECT name FROM claim_groups WHERE topic_title = $1 ORDER BY created_at, name",
+        "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
     )
-    .bind(topic)
+    .bind(activity)
     .fetch_all(&state.pool)
     .await?;
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
@@ -64,7 +73,7 @@ async fn try_assign(
     let Some(name) = raw.ok().and_then(|r| parse_group_name(&r, &existing)) else {
         return Ok(()); // 分組失敗：這場暫時沒有群組
     };
-    let group = upsert_group(&state.pool, topic, &name).await?;
+    let group = upsert_group(&state.pool, activity, &name).await?;
     sqlx::query("UPDATE summaries SET claim_group_id = $2 WHERE conversation_id = $1")
         .bind(conversation)
         .bind(group)
@@ -73,18 +82,18 @@ async fn try_assign(
     Ok(())
 }
 
-async fn upsert_group(pool: &PgPool, topic: &str, name: &str) -> Result<Uuid, sqlx::Error> {
+async fn upsert_group(pool: &PgPool, activity: Uuid, name: &str) -> Result<Uuid, sqlx::Error> {
     // 同時進來的兩場對話可能搶著建立同名群組：靠唯一約束，輸的人改讀現有的
     sqlx::query(
-        "INSERT INTO claim_groups (topic_title, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "INSERT INTO claim_groups (activity_id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
-    .bind(topic)
+    .bind(activity)
     .bind(name)
     .execute(pool)
     .await?;
     let (id,): (Uuid,) =
-        sqlx::query_as("SELECT id FROM claim_groups WHERE topic_title = $1 AND name = $2")
-            .bind(topic)
+        sqlx::query_as("SELECT id FROM claim_groups WHERE activity_id = $1 AND name = $2")
+            .bind(activity)
             .bind(name)
             .fetch_one(pool)
             .await?;
@@ -93,16 +102,16 @@ async fn upsert_group(pool: &PgPool, topic: &str, name: &str) -> Result<Uuid, sq
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct RegroupBody {
-    /// 要重新分組的題目標題（儀表板上顯示的那個）
-    title: String,
+    /// 要重新分組的活動（儀表板上顯示的那個）
+    activity_id: Uuid,
 }
 
-/// 教師按「重新分組」：由 AI 把該題目下全部主張重新分一次。管理者看不到分析結果（S-02.2），不能操作。
+/// 教師按「重新分組」：由 AI 把該活動下全部主張重新分一次。管理者看不到分析結果（S-02.2），不能操作。
 #[utoipa::path(
     post,
     path = "/api/dashboard/class/regroup",
     tag = "dashboard",
-    summary = "請 AI 重新分組某題目的主張",
+    summary = "請 AI 重新分組某活動的主張",
     request_body = RegroupBody,
     responses((status = 204, description = "已重新分組"), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
 )]
@@ -114,24 +123,27 @@ pub(crate) async fn regroup(
     if cu.roles.admin {
         return Err(ApiError::forbidden("forbidden", "沒有權限"));
     }
-    let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT s.conversation_id, s.claim
-         FROM summaries s JOIN conversations c ON c.id = s.conversation_id
-         WHERE s.status = 'ready' AND c.title = $1 AND s.claim IS NOT NULL
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT s.conversation_id, s.claim, a.title
+         FROM summaries s
+         JOIN conversations c ON c.id = s.conversation_id
+         JOIN activities a ON a.id = c.activity_id
+         WHERE s.status = 'ready' AND c.activity_id = $1 AND s.claim IS NOT NULL
          ORDER BY c.ended_at, s.conversation_id",
     )
-    .bind(&body.title)
+    .bind(body.activity_id)
     .fetch_all(&state.pool)
     .await?;
-    if rows.is_empty() {
+    let Some((_, _, title)) = rows.first() else {
         return Err(ApiError::conflict(
             "no_claims",
-            "這個題目還沒有可分組的主張",
+            "這個活動還沒有可分組的主張",
         ));
-    }
-    let claims: Vec<String> = rows.iter().map(|(_, c)| c.clone()).collect();
+    };
+    let title = title.clone();
+    let claims: Vec<String> = rows.iter().map(|(_, c, _)| c.clone()).collect();
     let req = AiRequest {
-        system: build_regroup_prompt(&body.title, &claims),
+        system: build_regroup_prompt(&title, &claims),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: "請分組。".into(),
@@ -154,15 +166,15 @@ pub(crate) async fn regroup(
         ))?;
     let mut tx = state.pool.begin().await?;
     // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定
-    sqlx::query("DELETE FROM claim_groups WHERE topic_title = $1")
-        .bind(&body.title)
+    sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1")
+        .bind(body.activity_id)
         .execute(&mut *tx)
         .await?;
     for (name, members) in groups {
         let (gid,): (Uuid,) = sqlx::query_as(
-            "INSERT INTO claim_groups (topic_title, name) VALUES ($1, $2) RETURNING id",
+            "INSERT INTO claim_groups (activity_id, name) VALUES ($1, $2) RETURNING id",
         )
-        .bind(&body.title)
+        .bind(body.activity_id)
         .bind(&name)
         .fetch_one(&mut *tx)
         .await?;

@@ -17,7 +17,8 @@ CREATE TABLE activities (
     title       text NOT NULL CHECK (btrim(title) <> ''),
     -- 教師給學生的說明／討論題目內容
     description text NOT NULL DEFAULT '',
-    topic_id    uuid REFERENCES topics (id) ON DELETE SET NULL,
+    -- 活動必須選題庫題目（S-04.7）；活動已有對話後不能更換題目，由 API 檢查
+    topic_id    uuid NOT NULL REFERENCES topics (id),
     -- draft：草稿；published：開放學生選擇；closed：停止開放
     status      text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'closed')),
     created_by  uuid REFERENCES users (id) ON DELETE SET NULL,

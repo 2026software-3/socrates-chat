@@ -10,7 +10,7 @@
 - **CSRF**：`POST`／`PUT`／`PATCH`／`DELETE` 必須帶 `Origin` 標頭，且等於 `APP_BASE_URL`，否則 `403 csrf`（瀏覽器會自動帶）。
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
 - **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`account_disabled`（403，帳號已被管理者停用）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。各端點特有的錯誤碼寫在 OpenAPI 的 responses 說明。
-- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`、活動的 `topic_id`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
+- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
 
 ## 登入
@@ -33,6 +33,7 @@
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
+- 活動必須選題庫題目（S-04.7）：建立時 `topic_id` 必填，沒帶、為 `null` 或題目不存在都回 `400 invalid_topic`，`PATCH` 也不能清除。活動已有學生開始的對話後，換成不同題目回 `409 activity_topic_locked`（同一個題目、只改標題或說明不受限；對話被刪除後又可更換）。
 - `GET /api/catalog` 回傳 `{ activities, topics }`，只含已發布的活動與已啟用的題目；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生
@@ -50,6 +51,7 @@
 
 - `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。
 - 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。
+- 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）：已有時以該活動開始對話回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個。刪除該場對話後可重新開始；只帶 `topic_id` 的個人練習不受限。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
   1. `message`：保存好的學生訊息，另有 `auto_ended`。
@@ -61,21 +63,18 @@
 - 結束對話：背景產生總結（首次 202；已結束 200）；沒有訊息時 `empty_conversation`；AI 還在回覆時 `reply_in_progress`。
 - 總結：`status` 為 `pending`／`ready`／`failed`，`pending` 時請輪詢；失敗可用 `summary/retry` 重試（`summary_not_retryable`）。總結不可由學生修改。
   - `claim`：學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）。
-  - `framework`：主要學派（6 個倫理學派或 `other`），AI 標記的輔助標籤。
-  - `framework_scores`：6 個學派維度各 0–5 的整數；必須 6 項齊全才採用，沒有時為 `null`。以上皆為暫定。
-  - **S-04.6 已決定改版（尚未實作）**：維度改為與題目綁定、由 AI 產生，分數以語言中立的維度識別碼為 key，`framework` 與固定學派取消。實作時再更新本節。
+  - 固定學派的 `framework`（主要學派）與 `framework_scores`（6 維分數）已取消（S-04.6）。題目綁定的新維度與分數由後續功能（F-03.4、F-24）加入，屆時再更新本節。
 - 刪除對話會一併刪除訊息與總結。
 
 ## 儀表板
 
-論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，同一題目下再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。
+論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，同一個活動下再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。教師儀表板以活動為彙整單位（S-04.7）：每位學生在一個活動至多一場對話；從題目庫開始的個人練習不屬於任何活動，不列入。
 
-- `frameworks` 是各主要學派的人數（含 `unclassified`，值可為 0），只是輔助資訊。
-- `radar`：6 維雷達圖的平均，`{ scored, max: 5, average }`；只平均有 6 維分數的總結，`scored` 是這類總結的數量（沒有時各維度為 0）。S-04.6 已決定個人儀表板不再有雷達圖，S-04.7 已決定班級與主張群的平均改為以單一活動為單位（活動內每位學生至多一場對話），論點分布與主張分組也改為活動內彙整（尚未實作）。
-- 個人儀表板只算自己的資料。
+- `GET /api/dashboard/me`：`{ total_conversations, total_turns, completed, recent }`，只算自己的資料；`recent` 是最近完成的 10 場（含主張與立場）。固定學派的雷達圖與學派人數已取消（S-04.6）。
+- `GET /api/dashboard/class`：`{ masked, students_total, students_participating, completed, activities }`；`activities` 每項為 `{ activity_id, title, completed, claims, ungrouped }`，完成場數多的在前。
 - 班上儀表板只給教師（S-02.4 不設最小群體門檻），只有數量與分類，沒有學生身分或內容。管理者身分一律 `masked: true` 且沒有分布（S-02.2）。
-- 題目的 `claims`：人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組）。
-- 重新分組：教師請 AI 把該題目下全部主張重新分組。沒有可分組的主張回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
+- 活動的 `claims`：人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組）。
+- 重新分組：`POST /api/dashboard/class/regroup`，本文 `{ activity_id }`，教師請 AI 把該活動下全部主張重新分組。沒有可分組的主張（含不存在的活動）回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
 
 ## 語音備援（只有修課名單內的學生）
 

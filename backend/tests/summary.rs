@@ -422,27 +422,7 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
     let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     // 教師不參與討論：不能開對話
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "試用"})),
-        ),
-    )
-    .await;
-    let act = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/activities/{act}/publish"),
-            Some(&a.teacher),
-            None,
-        ),
-    )
-    .await;
+    let act = published_activity_with_topic(&app, &a, "試用").await;
     let res = send(
         &app,
         json_req(

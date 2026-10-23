@@ -247,20 +247,42 @@ pub struct Actors {
     pub outsider: String,
 }
 
-/// 教師建立並發布一個活動，學生從中開始一場對話，回傳對話 id。
-pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+/// 教師建立一個題目，回傳 id。
+pub async fn create_topic(app: &Router, a: &Actors, title: &str) -> String {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/topics",
+            Some(&a.teacher),
+            Some(serde_json::json!({"title": title, "description": "你會拉桿嗎？"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 教師以指定題目建立活動（草稿），回傳 id。
+pub async fn create_activity(app: &Router, a: &Actors, title: &str, topic_id: &str) -> String {
     let res = send(
         app,
         json_req(
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(serde_json::json!({"title": "電車難題", "description": "你會拉桿嗎？"})),
+            Some(serde_json::json!({"title": title, "description": "你會拉桿嗎？", "topic_id": topic_id})),
         ),
     )
     .await;
-    let act = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 教師以指定題目建立並發布一個活動，回傳 id。
+pub async fn publish_activity(app: &Router, a: &Actors, title: &str, topic_id: &str) -> String {
+    let act = create_activity(app, a, title, topic_id).await;
+    let res = send(
         app,
         json_req(
             "POST",
@@ -270,17 +292,52 @@ pub async fn start_conversation(app: &Router, a: &Actors) -> String {
         ),
     )
     .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    act
+}
+
+/// 教師建立題目與活動並發布，回傳活動 id（題目標題與活動標題相同）。
+pub async fn published_activity_with_topic(app: &Router, a: &Actors, title: &str) -> String {
+    let topic = create_topic(app, a, title).await;
+    publish_activity(app, a, title, &topic).await
+}
+
+/// 學生從活動開始一場對話，回傳對話 id。
+pub async fn start_from_activity(app: &Router, cookie: &str, activity_id: &str) -> String {
     let res = send(
         app,
         json_req(
             "POST",
             "/api/conversations",
-            Some(&a.student),
-            Some(serde_json::json!({"activity_id": act})),
+            Some(cookie),
+            Some(serde_json::json!({"activity_id": activity_id})),
         ),
     )
     .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
     json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 管理者把另一位學生加進修課名單並讓他登入，回傳 session cookie。
+pub async fn add_student(app: &Router, a: &Actors, sub: &str, email: &str) -> String {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/roster/import",
+            Some(&a.admin),
+            Some(serde_json::json!({"text": email})),
+        ),
+    )
+    .await;
+    assert!(res.status().is_success());
+    login_as(app, sub, email).await
+}
+
+/// 教師建立並發布一個活動，學生從中開始一場對話，回傳對話 id。
+pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+    let act = published_activity_with_topic(app, a, "電車難題").await;
+    start_from_activity(app, &a.student, &act).await
 }
 
 /// 學生在對話中送出一則訊息。成功時回應是 SSE：讀完整條串流（等 AI 回覆結束），

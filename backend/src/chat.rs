@@ -96,33 +96,34 @@ pub(crate) struct Detail {
     tag = "conversations",
     summary = "開始對話（活動或題目）",
     request_body = NewConversation,
-    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source", body = crate::error::ErrorBody))
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source", body = crate::error::ErrorBody), (status = 409, description = "activity_already_started", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Json(b): Json<NewConversation>,
 ) -> Result<(StatusCode, Json<Conversation>), ApiError> {
-    // 來源必須是已發布的活動，或已啟用的題目
+    // 來源必須是已發布的活動，或已啟用的題目。
+    // 活動列以 FOR SHARE 鎖住到交易結束：教師更換活動題目時會鎖同一列再檢查有沒有對話，
+    // 所以新對話與更換題目不會同時成立（S-04.7）。
+    let mut tx = state.pool.begin().await?;
     let source: Option<(Option<Uuid>, Option<Uuid>, String, String)> =
         match (b.activity_id, b.topic_id) {
             (Some(a), _) => sqlx::query_as(
                 "SELECT id, topic_id, title, description FROM activities
-                 WHERE id = $1 AND status = 'published'",
+                 WHERE id = $1 AND status = 'published' FOR SHARE",
             )
             .bind(a)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?
-            .map(
-                |(id, topic, title, desc): (Uuid, Option<Uuid>, String, String)| {
-                    (Some(id), topic, title, desc)
-                },
-            ),
+            .map(|(id, topic, title, desc): (Uuid, Uuid, String, String)| {
+                (Some(id), Some(topic), title, desc)
+            }),
             (None, Some(t)) => sqlx::query_as(
                 "SELECT id, title, description FROM topics WHERE id = $1 AND is_active",
             )
             .bind(t)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?
             .map(|(id, title, desc): (Uuid, String, String)| (None, Some(id), title, desc)),
             (None, None) => {
@@ -138,7 +139,8 @@ pub(crate) async fn create(
             "活動或題目不可用",
         ));
     };
-    let c = sqlx::query_as(
+    // 每位學生在每個活動至多一場對話（S-04.7）：靠唯一索引，同時送出的兩個請求也只會成功一個
+    let created = sqlx::query_as(
         "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id, activity_id, topic_id, title, description, language, status, stage,
@@ -149,8 +151,21 @@ pub(crate) async fn create(
     .bind(topic_id)
     .bind(title)
     .bind(description)
-    .fetch_one(&state.pool)
-    .await?;
+    .fetch_one(&mut *tx)
+    .await;
+    let c: Conversation = match created {
+        Ok(c) => c,
+        Err(sqlx::Error::Database(e))
+            if e.constraint() == Some("conversations_user_activity_uniq") =>
+        {
+            return Err(ApiError::conflict(
+                "activity_already_started",
+                "這個活動你已經開始過了",
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    tx.commit().await?;
     Ok((StatusCode::CREATED, Json(c)))
 }
 

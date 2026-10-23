@@ -18,23 +18,13 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, RULES_VERSION, SCHOOLS, build_summary_prompt, collect,
+        AiRequest, ChatRole, ChatTurn, RULES_VERSION, build_summary_prompt, collect,
         format_transcript, parse_summary,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
     error::{ApiError, db_error_class},
 };
-
-/// 6 維分數 → 存進資料庫與回給前端的 JSON 物件（鍵為學派）。
-pub fn scores_json(scores: [u8; 6]) -> serde_json::Value {
-    SCHOOLS
-        .iter()
-        .zip(scores)
-        .map(|(k, v)| ((*k).to_string(), serde_json::Value::from(v)))
-        .collect::<serde_json::Map<_, _>>()
-        .into()
-}
 
 /// 管理者介面看到的固定替代字串（S-02.2）。
 pub const MASKED: &str = "message";
@@ -106,8 +96,8 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let (title, description): (String, String) =
-        sqlx::query_as("SELECT title, description FROM conversations WHERE id = $1")
+    let (title, description, activity_id): (String, String, Option<Uuid>) =
+        sqlx::query_as("SELECT title, description, activity_id FROM conversations WHERE id = $1")
             .bind(id)
             .fetch_one(&state.pool)
             .await?;
@@ -138,8 +128,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
         Some(s) => {
             sqlx::query(
                 "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
-                        rules_version = $4, completed_at = now(),
-                        framework = $6, framework_scores = $7, claim = $8
+                        rules_version = $4, completed_at = now(), claim = $6
                  WHERE conversation_id = $1 AND attempt = $5 AND status = 'pending'",
             )
             .bind(id)
@@ -147,14 +136,12 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(s.reasons)
             .bind(RULES_VERSION)
             .bind(attempt)
-            .bind(s.framework)
-            .bind(s.scores.map(scores_json))
             .bind(s.claim.as_deref())
             .execute(&state.pool)
             .await?;
-            // 主張分組：盡力而為，失敗不影響總結
-            if let Some(claim) = s.claim.as_deref() {
-                crate::claims::assign_group(state, id, &title, claim).await;
+            // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
+            if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
+                crate::claims::assign_group(state, id, activity, &title, claim).await;
             }
         }
         None => {
@@ -198,16 +185,10 @@ pub struct SummaryView {
     pub reasons: Option<String>,
     /// 學生最終主張的一句短句（暫定）
     pub claim: Option<String>,
-    /// 立場方向與倫理學派分類（暫定，供論點分布）；沒有分類時為 `None`
-    pub framework: Option<String>,
-    /// 6 個學派維度的分數（各 0–5）；沒有分數時為 `None`
-    #[schema(value_type = Option<std::collections::BTreeMap<String, u8>>)]
-    pub framework_scores: Option<serde_json::Value>,
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-const SUMMARY_VIEW: &str = "SELECT status, stance, reasons, claim, framework,
-                                   framework_scores, completed_at
+const SUMMARY_VIEW: &str = "SELECT status, stance, reasons, claim, completed_at
                             FROM summaries WHERE conversation_id = $1";
 
 async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
@@ -327,9 +308,6 @@ pub(crate) struct TeacherRow {
     stance: Option<String>,
     reasons: Option<String>,
     claim: Option<String>,
-    framework: Option<String>,
-    #[schema(value_type = Option<std::collections::BTreeMap<String, u8>>)]
-    framework_scores: Option<serde_json::Value>,
 }
 
 /// 所有修課學生已完成對話的總結，每筆連到學生與該場對話；不含對話原文。
@@ -347,7 +325,7 @@ pub(crate) async fn teacher_list(
     let mut rows: Vec<TeacherRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.title, c.ended_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
-                s.stance, s.reasons, s.claim, s.framework, s.framework_scores
+                s.stance, s.reasons, s.claim
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN users u ON u.id = c.user_id
@@ -363,9 +341,6 @@ pub(crate) async fn teacher_list(
             r.stance = Some(MASKED.into());
             r.reasons = Some(MASKED.into());
             r.claim = Some(MASKED.into());
-            // 分析結果同屬敏感欄位（S-02.2）
-            r.framework = Some(MASKED.into());
-            r.framework_scores = None;
         }
     }
     Ok(Json(rows))
