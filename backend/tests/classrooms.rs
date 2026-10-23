@@ -221,6 +221,39 @@ async fn classroom_fields_with_invalid_or_excessive_lengths_are_rejected(pool: P
 }
 
 #[sqlx::test]
+async fn classroom_fields_at_the_length_limits_are_accepted_and_counted_in_characters(
+    pool: PgPool,
+) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    for (name, year_label, description) in [
+        ("x".repeat(255), "y".repeat(100), "d".repeat(2000)),
+        ("名".repeat(255), "年".repeat(100), "說".repeat(2000)),
+    ] {
+        let response = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/classrooms",
+                Some(&teacher),
+                Some(json!({
+                    "name": name,
+                    "year_label": year_label,
+                    "description": description
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created: Value = json_body(response).await;
+        assert_eq!(created["name"], name);
+        assert_eq!(created["year_label"], year_label);
+        assert_eq!(created["description"], description);
+    }
+}
+
+#[sqlx::test]
 async fn excessively_long_renamed_classroom_is_rejected(pool: PgPool) {
     let app = test_app(pool);
     let (teacher, _) = teacher_and_admin(&app).await;

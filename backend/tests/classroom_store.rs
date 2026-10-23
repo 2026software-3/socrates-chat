@@ -78,3 +78,51 @@ async fn classroom_store_database_index_serializes_concurrent_duplicate_names(po
         1
     );
 }
+
+#[sqlx::test]
+async fn database_rejects_classroom_fields_over_the_length_limits(pool: PgPool) {
+    let owner: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email) VALUES ('limit-owner@example.com') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    for (name, year_label, description) in [
+        ("x".repeat(256), None, None),
+        ("Room".to_owned(), Some("y".repeat(101)), None),
+        ("Room".to_owned(), None, Some("d".repeat(2001))),
+    ] {
+        let result = sqlx::query(
+            "INSERT INTO classrooms (name, year_label, description, created_by)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&name)
+        .bind(&year_label)
+        .bind(&description)
+        .bind(owner)
+        .execute(&pool)
+        .await;
+        let error = result.expect_err("over-limit classroom row must be rejected");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|db| db.code())
+                .as_deref(),
+            Some("23514"),
+            "expected a check violation"
+        );
+    }
+
+    sqlx::query(
+        "INSERT INTO classrooms (name, year_label, description, created_by)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind("名".repeat(255))
+    .bind("年".repeat(100))
+    .bind("說".repeat(2000))
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .expect("rows at the limits are accepted");
+}
