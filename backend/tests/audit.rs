@@ -163,11 +163,12 @@ async fn teacher_changes_are_recorded_and_idempotent_calls_are_not_repeated(pool
 async fn roster_changes_are_recorded_per_student_and_skip_existing_entries(pool: PgPool) {
     let app = test_app(pool.clone());
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     let import = |text: &'static str| json!({ "text": text });
     assert_eq!(
         post(
             &app,
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             &admin,
             import("a@x.com\nb@x.com\nbad-line")
         )
@@ -178,7 +179,7 @@ async fn roster_changes_are_recorded_per_student_and_skip_existing_entries(pool:
     assert_eq!(
         post(
             &app,
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             &admin,
             import("b@x.com\nc@x.com")
         )
@@ -187,13 +188,23 @@ async fn roster_changes_are_recorded_per_student_and_skip_existing_entries(pool:
     );
     let res = send(
         &app,
-        json_req("DELETE", "/api/roster/a@x.com", Some(&admin), None),
+        json_req(
+            "DELETE",
+            &format!("/api/classrooms/{room}/roster/a@x.com"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
     let res = send(
         &app,
-        json_req("DELETE", "/api/roster/a@x.com", Some(&admin), None),
+        json_req(
+            "DELETE",
+            &format!("/api/classrooms/{room}/roster/a@x.com"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -201,7 +212,7 @@ async fn roster_changes_are_recorded_per_student_and_skip_existing_entries(pool:
     let mut changes: Vec<_> = trail(&pool)
         .await
         .into_iter()
-        .filter(|e| e.1 != "login")
+        .filter(|e| e.1.starts_with("roster_"))
         .map(|e| (e.1, e.2))
         .collect();
     let removed = changes.pop().unwrap();
@@ -227,7 +238,7 @@ async fn teacher_roster_changes_name_the_teacher_as_actor(pool: PgPool) {
     assert_eq!(
         post(
             &app,
-            "/api/roster/import",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
             &a.teacher,
             json!({"text": "new@x.com"})
         )
@@ -286,7 +297,10 @@ async fn rejected_requests_leave_no_audit_entries(pool: PgPool) {
             "/api/admin/users/reset-password",
             json!({"email": "x@x.com"}),
         ),
-        ("/api/roster/import", json!({"text": "x@x.com"})),
+        (
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
+            json!({"text": "x@x.com"}),
+        ),
     ];
     for (path, body) in attempts {
         for cookie in [&a.student, &a.outsider] {
@@ -351,10 +365,17 @@ async fn reject_audit(pool: &PgPool, action: &str) {
 async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPool) {
     let app = test_app(pool.clone());
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     reject_audit(&pool, "roster_added").await;
     let body = json!({"text": "retry@example.com"});
     assert_eq!(
-        post(&app, "/api/roster/import", &admin, body.clone()).await,
+        post(
+            &app,
+            &format!("/api/classrooms/{room}/roster/import"),
+            &admin,
+            body.clone()
+        )
+        .await,
         StatusCode::INTERNAL_SERVER_ERROR
     );
     let enrolled: bool = sqlx::query_scalar(
@@ -370,7 +391,12 @@ async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPo
         .unwrap();
     let res = send(
         &app,
-        json_req("POST", "/api/roster/import", Some(&admin), Some(body)),
+        json_req(
+            "POST",
+            &format!("/api/classrooms/{room}/roster/import"),
+            Some(&admin),
+            Some(body),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -389,6 +415,7 @@ async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPo
 async fn roster_import_rolls_back_batch_and_audits_when_account_creation_fails(pool: PgPool) {
     let app = test_app(pool.clone());
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     // 第二筆帳號建立失敗：第一筆名單、帳號與稽核也應回滾，避免遺失一次性的臨時密碼。
     sqlx::query(
         "ALTER TABLE users ADD CONSTRAINT reject_test_account
@@ -401,7 +428,7 @@ async fn roster_import_rolls_back_batch_and_audits_when_account_creation_fails(p
     assert_eq!(
         post(
             &app,
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             &admin,
             json!({"text": "first@example.com\nfail@example.com"})
         )

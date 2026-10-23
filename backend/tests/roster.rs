@@ -153,10 +153,16 @@ async fn invalid_teacher_email_is_rejected(pool: PgPool) {
 async fn roster_import_reports_added_existing_and_invalid(pool: PgPool) {
     let app = test_app(pool);
     let admin = admin_cookie(&app).await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     let body = json!({"text": "email\nA@x.com\n\nb@x.com\nbad-line\na@x.com\n"});
     let res = send(
         &app,
-        json_req("POST", "/api/roster/import", Some(&admin), Some(body)),
+        json_req(
+            "POST",
+            &format!("/api/classrooms/{room}/roster/import"),
+            Some(&admin),
+            Some(body),
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -170,14 +176,26 @@ async fn roster_import_reports_added_existing_and_invalid(pool: PgPool) {
     let r = json_body(
         send(
             &app,
-            json_req("POST", "/api/roster/import", Some(&admin), Some(body)),
+            json_req(
+                "POST",
+                &format!("/api/classrooms/{room}/roster/import"),
+                Some(&admin),
+                Some(body),
+            ),
         )
         .await,
     )
     .await;
     assert_eq!(r["added"], 1);
     assert_eq!(r["existing"], 1);
-    let list = json_body(send(&app, get("/api/roster", Some(&admin))).await).await;
+    let list = json_body(
+        send(
+            &app,
+            get(&format!("/api/classrooms/{room}/roster"), Some(&admin)),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(list["emails"], json!(["a@x.com", "b@x.com", "c@x.com"]));
 }
 
@@ -185,6 +203,7 @@ async fn roster_import_reports_added_existing_and_invalid(pool: PgPool) {
 async fn enrolled_student_gets_student_role_and_removal_is_immediate(pool: PgPool) {
     let app = test_app(pool);
     let admin = admin_cookie(&app).await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     let s = login_as(&app, "sub-s", "s@x.com").await;
     assert_eq!(roles_of(&app, &s).await["student"], false);
 
@@ -192,7 +211,7 @@ async fn enrolled_student_gets_student_role_and_removal_is_immediate(pool: PgPoo
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
             Some(json!({"text": "s@x.com"})),
         ),
@@ -202,7 +221,12 @@ async fn enrolled_student_gets_student_role_and_removal_is_immediate(pool: PgPoo
 
     let res = send(
         &app,
-        json_req("DELETE", "/api/roster/s@x.com", Some(&admin), None),
+        json_req(
+            "DELETE",
+            &format!("/api/classrooms/{room}/roster/s@x.com"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
@@ -213,7 +237,7 @@ async fn enrolled_student_gets_student_role_and_removal_is_immediate(pool: PgPoo
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
             Some(json!({"text": "s@x.com"})),
         ),
@@ -223,7 +247,12 @@ async fn enrolled_student_gets_student_role_and_removal_is_immediate(pool: PgPoo
 
     let res = send(
         &app,
-        json_req("DELETE", "/api/roster/ghost@x.com", Some(&admin), None),
+        json_req(
+            "DELETE",
+            &format!("/api/classrooms/{room}/roster/ghost@x.com"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -244,11 +273,12 @@ async fn roster_management_requires_teacher_or_admin(pool: PgPool) {
     )
     .await;
     let teacher = login_as(&app, "sub-t", "t@x.com").await;
+    let room = create_classroom(&app, &teacher, "room").await;
     send(
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
             Some(json!({"text": "s@x.com"})),
         ),
@@ -262,7 +292,7 @@ async fn roster_management_requires_teacher_or_admin(pool: PgPool) {
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&teacher),
             Some(json!({"text": "n@x.com"})),
         ),
@@ -276,13 +306,13 @@ async fn roster_management_requires_teacher_or_admin(pool: PgPool) {
         (Some(outsider.as_str()), StatusCode::FORBIDDEN),
         (None, StatusCode::UNAUTHORIZED),
     ] {
-        let res = send(&app, get("/api/roster", cookie)).await;
+        let res = send(&app, get(&format!("/api/classrooms/{room}/roster"), cookie)).await;
         assert_eq!(res.status(), expected);
         let res = send(
             &app,
             json_req(
                 "POST",
-                "/api/roster/import",
+                &format!("/api/classrooms/{room}/roster/import"),
                 cookie,
                 Some(json!({"text": "z@x.com"})),
             ),
@@ -291,7 +321,12 @@ async fn roster_management_requires_teacher_or_admin(pool: PgPool) {
         assert_eq!(res.status(), expected);
         let res = send(
             &app,
-            json_req("DELETE", "/api/roster/s@x.com", cookie, None),
+            json_req(
+                "DELETE",
+                &format!("/api/classrooms/{room}/roster/s@x.com"),
+                cookie,
+                None,
+            ),
         )
         .await;
         assert_eq!(res.status(), expected);

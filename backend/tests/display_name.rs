@@ -45,7 +45,14 @@ async fn student_renames_self_and_it_shows_in_me_and_students(pool: PgPool) {
     assert_eq!(body["display_name"], "小明");
     assert_eq!(me_name(&app, &a.student).await, "小明");
 
-    let res = send(&app, get("/api/students", Some(&a.teacher))).await;
+    let res = send(
+        &app,
+        get(
+            &format!("/api/classrooms/{}/students", a.classroom),
+            Some(&a.teacher),
+        ),
+    )
+    .await;
     let list = json_body(res).await;
     let row = list
         .as_array()

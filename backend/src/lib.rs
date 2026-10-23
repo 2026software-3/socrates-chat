@@ -40,6 +40,7 @@ pub mod pagination;
 pub mod password;
 pub mod reply;
 pub mod roster;
+pub mod roster_store;
 pub mod summary;
 pub mod voice;
 

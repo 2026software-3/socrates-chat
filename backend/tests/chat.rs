@@ -301,7 +301,7 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.admin),
             Some(json!({"text": "other@example.com"})),
         ),

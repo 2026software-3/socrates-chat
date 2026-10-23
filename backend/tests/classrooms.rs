@@ -389,11 +389,15 @@ async fn other_teachers_cannot_view_or_edit_a_classroom_but_admin_can(pool: PgPo
 async fn only_teachers_and_admins_can_access_classroom_management(pool: PgPool) {
     let app = test_app(pool);
     let (teacher, admin) = teacher_and_admin(&app).await;
+    let room = create_classroom(&app, &teacher, "Teacher room").await;
     send(
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!(
+                "/api/classrooms/{}/roster/import",
+                room["id"].as_str().unwrap()
+            ),
             Some(&admin),
             Some(json!({"text": "student@example.com"})),
         ),
@@ -401,7 +405,6 @@ async fn only_teachers_and_admins_can_access_classroom_management(pool: PgPool) 
     .await;
     let student = login_as(&app, "classroom-student", "student@example.com").await;
     let outsider = login_as(&app, "classroom-outsider", "outsider@example.com").await;
-    create_classroom(&app, &teacher, "Teacher room").await;
 
     let classroom_id = json_body(send(&app, get("/api/classrooms", Some(&teacher))).await).await[0]
         ["id"]

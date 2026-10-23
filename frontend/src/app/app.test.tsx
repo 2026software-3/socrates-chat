@@ -106,18 +106,7 @@ describe('app shell', () => {
   function mockOpsData() {
     server.use(
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
-      http.get('/api/roster', () => HttpResponse.json({ emails: ['a@example.com', 'b@example.com'] })),
-      http.get('/api/students', () =>
-        HttpResponse.json(
-          ['a@example.com', 'b@example.com'].map((email) => ({
-            email,
-            display_name: null,
-            id: '11111111-1111-4111-8111-111111111111', has_account: true,
-            disabled: false,
-            completed_conversations: 0,
-          })),
-        ),
-      ),
+      http.get('/api/dashboard/class', () => HttpResponse.json({ ...emptyClass, masked: true, students_total: 2 })),
       http.get('/api/topics', () => HttpResponse.json([])),
     )
   }
