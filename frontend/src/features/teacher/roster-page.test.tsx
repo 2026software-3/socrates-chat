@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { renderTeacherPage } from '@/features/teacher/test-helpers'
+import { classroom, mockClassrooms, renderTeacherPage, ROOM_A, ROOM_B } from '@/features/teacher/test-helpers'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -13,11 +13,14 @@ const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
 const rows = (list: string[]) =>
   list.map((email) => ({ email, display_name: null, id: '11111111-1111-4111-8111-111111111111', has_account: true, disabled: false, completed_conversations: 0 }))
 
+const students = (room: string) => `/api/classrooms/${room}/students`
+
 function mockRoster(list: string[] = emails) {
-  server.use(http.get('/api/students', () => HttpResponse.json(rows(list))))
+  server.use(http.get(students(ROOM_A), () => HttpResponse.json(rows(list))))
 }
 
 function setup() {
+  mockClassrooms()
   return renderTeacherPage(<RosterPage />)
 }
 
@@ -52,7 +55,7 @@ describe('RosterPage', () => {
   it('shows an error with retry', async () => {
     let calls = 0
     server.use(
-      http.get('/api/students', () => {
+      http.get(students(ROOM_A), () => {
         calls += 1
         return calls === 1 ? apiError(500, 'internal') : HttpResponse.json(rows(emails))
       }),
@@ -67,7 +70,7 @@ describe('RosterPage', () => {
     mockRoster()
     let body: unknown
     server.use(
-      http.post('/api/roster/import', async ({ request }) => {
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, async ({ request }) => {
         body = await request.json()
         return HttpResponse.json({
           added: 2,
@@ -99,7 +102,7 @@ describe('RosterPage', () => {
     mockRoster()
     let count = 0
     server.use(
-      http.post('/api/roster/import', async () => {
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, async () => {
         count += 1
         await new Promise((r) => setTimeout(r, 60))
         return apiError(403, 'forbidden')
@@ -128,8 +131,8 @@ describe('RosterPage', () => {
     let list = [...emails]
     let deleted = ''
     server.use(
-      http.get('/api/students', () => HttpResponse.json(rows(list))),
-      http.delete('/api/roster/:email', ({ request, params }) => {
+      http.get(students(ROOM_A), () => HttpResponse.json(rows(list))),
+      http.delete(`/api/classrooms/${ROOM_A}/roster/:email`, ({ request, params }) => {
         deleted = new URL(request.url).pathname
         list = list.filter((e) => e !== String(params.email))
         return new HttpResponse(null, { status: 204 })
@@ -142,14 +145,14 @@ describe('RosterPage', () => {
     expect(within(dialog).getByText(/學生已有的對話與總結資料會保留/)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: '移除' }))
     expect(await screen.findByText('已移出修課名單。')).toBeInTheDocument()
-    expect(deleted).toBe('/api/roster/alice%40example.com')
+    expect(deleted).toBe(`/api/classrooms/${ROOM_A}/roster/alice%40example.com`)
     await waitFor(() => expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument())
   })
 
   it('cancelling the confirm dialog sends nothing', async () => {
     let deleted = false
     server.use(
-      http.delete('/api/roster/:email', () => {
+      http.delete(`/api/classrooms/${ROOM_A}/roster/:email`, () => {
         deleted = true
         return new HttpResponse(null, { status: 204 })
       }),
@@ -166,8 +169,8 @@ describe('RosterPage', () => {
 
   it('shows a translated message for a non-404 removal failure', async () => {
     server.use(
-      http.get('/api/students', () => HttpResponse.json(rows(emails))),
-      http.delete('/api/roster/:email', () => apiError(500, 'internal')),
+      http.get(students(ROOM_A), () => HttpResponse.json(rows(emails))),
+      http.delete(`/api/classrooms/${ROOM_A}/roster/:email`, () => apiError(500, 'internal')),
     )
     setup()
     await screen.findByText('bob@example.com')
@@ -193,7 +196,7 @@ describe('RosterPage', () => {
     mockRoster()
     let calls = 0
     server.use(
-      http.post('/api/roster/import', () => {
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => {
         calls += 1
         return calls === 1 ? HttpResponse.json({ added: 1, existing: 0, invalid: [] }) : apiError(403, 'forbidden')
       }),
@@ -213,11 +216,11 @@ describe('RosterPage', () => {
   it('shows an error with retry when a reload fails while old data is on screen', async () => {
     let calls = 0
     server.use(
-      http.get('/api/students', () => {
+      http.get(students(ROOM_A), () => {
         calls += 1
         return calls === 2 ? apiError(500, 'internal') : HttpResponse.json(rows(emails))
       }),
-      http.post('/api/roster/import', () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
     )
     setup()
     await screen.findByText('alice@example.com')
@@ -230,8 +233,8 @@ describe('RosterPage', () => {
   it('shows a translated message and refreshes when removal returns 404', async () => {
     let list = [...emails]
     server.use(
-      http.get('/api/students', () => HttpResponse.json(rows(list))),
-      http.delete('/api/roster/:email', () => {
+      http.get(students(ROOM_A), () => HttpResponse.json(rows(list))),
+      http.delete(`/api/classrooms/${ROOM_A}/roster/:email`, () => {
         list = list.filter((e) => e !== 'bob@example.com')
         return apiError(404, 'not_found')
       }),
@@ -248,7 +251,7 @@ describe('RosterPage', () => {
   it('shows the temporary passwords of newly created accounts once', async () => {
     mockRoster([])
     server.use(
-      http.post('/api/roster/import', () =>
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () =>
         HttpResponse.json({
           added: 1,
           existing: 0,
@@ -272,6 +275,7 @@ describe('RosterPage', () => {
   })
 
   it('lets an admin reset a student password', async () => {
+    mockClassrooms()
     mockRoster(['alice@example.com'])
     server.use(
       http.post('/api/admin/users/reset-password', () =>
@@ -283,5 +287,91 @@ describe('RosterPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: '重設 alice@example.com 的密碼' }))
     await userEvent.click(screen.getByRole('button', { name: '重設密碼' }))
     expect(await screen.findByLabelText('臨時密碼')).toHaveValue('ABCD2345WXYZ')
+  })
+
+  it('loads the roster of the first classroom and names it', async () => {
+    mockRoster()
+    setup()
+    expect(await screen.findByRole('combobox', { name: '教室' })).toHaveValue(ROOM_A)
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '2026 春季班 的學生名單' })).toBeInTheDocument()
+  })
+
+  it("switching classrooms loads that classroom's roster and import targets it", async () => {
+    mockRoster()
+    let target = ''
+    server.use(
+      http.get(students(ROOM_B), () => HttpResponse.json(rows(['zoe@example.com']))),
+      http.post('/api/classrooms/:id/roster/import', ({ params }) => {
+        target = String(params.id)
+        return HttpResponse.json({ added: 1, existing: 0, invalid: [] })
+      }),
+    )
+    setup()
+    await screen.findByText('alice@example.com')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '教室' }), ROOM_B)
+    expect(await screen.findByText('zoe@example.com')).toBeInTheDocument()
+    expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '2026 秋季班 的學生名單' })).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('電子郵件（每行一個）'), 'new@example.com')
+    await userEvent.click(screen.getByRole('button', { name: '匯入' }))
+    await screen.findByRole('region', { name: '匯入結果' })
+    expect(target).toBe(ROOM_B)
+  })
+
+  it('does not carry an import result over to another classroom', async () => {
+    mockRoster()
+    server.use(
+      http.get(students(ROOM_B), () => HttpResponse.json(rows([]))),
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
+    )
+    setup()
+    await screen.findByText('alice@example.com')
+    await userEvent.type(screen.getByLabelText('電子郵件（每行一個）'), 'x@example.com')
+    await userEvent.click(screen.getByRole('button', { name: '匯入' }))
+    await screen.findByRole('region', { name: '匯入結果' })
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '教室' }), ROOM_B)
+    await screen.findByText('名單是空的，請從下方匯入學生電子郵件。')
+    expect(screen.queryByRole('region', { name: '匯入結果' })).not.toBeInTheDocument()
+  })
+
+  it('shows an empty state with a link when the teacher has no classroom yet', async () => {
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderTeacherPage(<RosterPage />)
+    expect(await screen.findByText('你還沒有教室，請先建立教室再匯入修課名單。')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '前往教室管理' })).toHaveAttribute('href', '/teacher/classrooms')
+    expect(screen.queryByLabelText('電子郵件（每行一個）')).not.toBeInTheDocument()
+  })
+
+  it('tells an admin there is no classroom to manage', async () => {
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderTeacherPage(<RosterPage />, undefined, { admin: true })
+    expect(await screen.findByText('目前沒有任何教室。')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '前往教室管理' })).not.toBeInTheDocument()
+  })
+
+  it('shows an error with retry when the classroom list fails', async () => {
+    let calls = 0
+    mockRoster()
+    server.use(
+      http.get('/api/classrooms', () => {
+        calls += 1
+        return calls === 1 ? apiError(500, 'internal') : HttpResponse.json([classroom(ROOM_A, '2026 春季班')])
+      }),
+    )
+    renderTeacherPage(<RosterPage />)
+    expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重試' }))
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument()
+  })
+
+  it('says which classroom the student is removed from', async () => {
+    mockRoster()
+    setup()
+    await screen.findByText('alice@example.com')
+    await userEvent.click(screen.getByRole('button', { name: '移除 alice@example.com' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/2026 春季班/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/其他教室/)).toBeInTheDocument()
   })
 })

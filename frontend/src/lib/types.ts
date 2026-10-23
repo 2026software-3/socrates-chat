@@ -92,7 +92,7 @@ export type TeacherSummary = {
   claim?: string | null
 }
 
-/** 修課名單上的學生與帳號狀態（GET /api/students）。 */
+/** 教室修課名單上的學生與帳號狀態（GET /api/classrooms/{id}/students）。 */
 export type StudentRow = {
   id: string | null
   email: string
