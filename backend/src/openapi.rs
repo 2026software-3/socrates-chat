@@ -8,8 +8,7 @@ use utoipa::{
 
 use crate::{
     accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard,
-    error::{CommonErrors, ErrorBody},
-    reply, roster, summary, voice,
+    error::ErrorBody, reply, roster, summary, voice,
 };
 
 struct SessionCookie;

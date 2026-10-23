@@ -72,6 +72,7 @@ function ClassroomForm({
         <Input
           id={`${idPrefix}-name`}
           required
+          maxLength={255}
           autoComplete="off"
           value={values.name}
           aria-invalid={error ? true : undefined}
@@ -82,6 +83,7 @@ function ClassroomForm({
         <Label htmlFor={`${idPrefix}-year`}>{t('classrooms.year')}</Label>
         <Input
           id={`${idPrefix}-year`}
+          maxLength={100}
           value={values.year_label}
           onChange={(event) => setValues({ ...values, year_label: event.target.value })}
         />
@@ -91,6 +93,7 @@ function ClassroomForm({
         <Textarea
           id={`${idPrefix}-description`}
           rows={3}
+          maxLength={2000}
           value={values.description}
           onChange={(event) => setValues({ ...values, description: event.target.value })}
         />
@@ -121,13 +124,17 @@ export function ClassroomsPage() {
   const { data, error, loading, reload } = useFetch<Classroom[]>('/api/classrooms')
   const [editing, setEditing] = useState<Classroom>()
   const [notice, setNotice] = useState('')
+  const [createFormVersion, setCreateFormVersion] = useState(0)
 
   async function create(values: ClassroomValues) {
+    setNotice('')
     await api.post<Classroom>('/api/classrooms', {
       name: values.name,
       year_label: values.year_label || null,
       description: values.description || null,
     })
+    setNotice(t('classrooms.created'))
+    setCreateFormVersion((version) => version + 1)
     reload()
   }
 
@@ -153,7 +160,7 @@ export function ClassroomsPage() {
         <section aria-label={t('classrooms.create')} className="rounded-md border p-4">
           <ClassroomForm
             idPrefix="create-classroom"
-            key="create-classroom"
+            key={createFormVersion}
             initial={classroomValues()}
             submitLabel={t('classrooms.create')}
             pendingLabel={t('classrooms.creating')}
@@ -164,7 +171,9 @@ export function ClassroomsPage() {
 
       {loading && !data ? <LoadingBlock /> : null}
       {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
-      {data && data.length === 0 ? <EmptyBlock>{t('classrooms.empty')}</EmptyBlock> : null}
+      {data && data.length === 0 ? (
+        <EmptyBlock>{canCreate ? t('classrooms.empty') : t('classrooms.empty.admin')}</EmptyBlock>
+      ) : null}
       {data && data.length > 0 ? (
         <ul aria-label={title} className="divide-y rounded-md border">
           {data.map((classroom) => (

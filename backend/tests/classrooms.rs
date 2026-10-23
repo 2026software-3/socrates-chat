@@ -195,6 +195,106 @@ async fn classroom_name_is_globally_unique_after_trim_and_case_folding(pool: PgP
 }
 
 #[sqlx::test]
+async fn classroom_fields_with_invalid_or_excessive_lengths_are_rejected(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    for (body, expected_code) in [
+        (json!({"name": "x".repeat(256)}), "invalid_classroom_name"),
+        (
+            json!({"name": "Room", "year_label": "y".repeat(101)}),
+            "invalid_classroom_year_label",
+        ),
+        (
+            json!({"name": "Room", "description": "d".repeat(2001)}),
+            "invalid_classroom_description",
+        ),
+    ] {
+        let response = send(
+            &app,
+            json_req("POST", "/api/classrooms", Some(&teacher), Some(body)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(response).await["error"]["code"], expected_code);
+    }
+}
+
+#[sqlx::test]
+async fn excessively_long_renamed_classroom_is_rejected(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+    let classroom = create_classroom(&app, &teacher, "Room").await;
+    let response = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{}", classroom["id"].as_str().unwrap()),
+            Some(&teacher),
+            Some(json!({"name": "x".repeat(256)})),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "invalid_classroom_name"
+    );
+}
+
+#[sqlx::test]
+async fn optional_classroom_fields_trim_blank_values_and_empty_patch_is_a_noop(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+    let created = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/classrooms",
+            Some(&teacher),
+            Some(json!({"name": "Room", "year_label": "  ", "description": "  "})),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let classroom: Value = json_body(created).await;
+    assert!(classroom["year_label"].is_null());
+    assert!(classroom["description"].is_null());
+
+    let id = classroom["id"].as_str().unwrap();
+    let unchanged = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{id}"),
+            Some(&teacher),
+            Some(json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(unchanged.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(unchanged).await["updated_at"],
+        classroom["updated_at"]
+    );
+
+    let cleared = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{id}"),
+            Some(&teacher),
+            Some(json!({"year_label": "  ", "description": ""})),
+        ),
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let cleared: Value = json_body(cleared).await;
+    assert!(cleared["year_label"].is_null());
+    assert!(cleared["description"].is_null());
+}
+
+#[sqlx::test]
 async fn other_teachers_cannot_view_or_edit_a_classroom_but_admin_can(pool: PgPool) {
     let app = test_app(pool);
     let (owner, admin) = teacher_and_admin(&app).await;
@@ -270,26 +370,38 @@ async fn only_teachers_and_admins_can_access_classroom_management(pool: PgPool) 
     let outsider = login_as(&app, "classroom-outsider", "outsider@example.com").await;
     create_classroom(&app, &teacher, "Teacher room").await;
 
-    let anonymous = send(
-        &app,
-        json_req("POST", "/api/classrooms", None, Some(json!({"name": "X"}))),
-    )
-    .await;
-    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let classroom_id = json_body(send(&app, get("/api/classrooms", Some(&teacher))).await).await[0]
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
-    for cookie in [&student, &outsider] {
-        let denied = send(
-            &app,
-            json_req(
-                "POST",
-                "/api/classrooms",
-                Some(cookie),
-                Some(json!({"name": "Forbidden room"})),
-            ),
-        )
-        .await;
-        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-        assert_eq!(json_body(denied).await["error"]["code"], "forbidden");
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/classrooms".to_owned(),
+            Some(json!({"name": "Forbidden room"})),
+        ),
+        ("GET", "/api/classrooms".to_owned(), None),
+        ("GET", format!("/api/classrooms/{classroom_id}"), None),
+        (
+            "PATCH",
+            format!("/api/classrooms/{classroom_id}"),
+            Some(json!({"name": "Forbidden room"})),
+        ),
+    ] {
+        let anonymous = send(&app, json_req(method, &path, None, body.clone())).await;
+        assert_eq!(
+            anonymous.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}"
+        );
+
+        for cookie in [&student, &outsider] {
+            let denied = send(&app, json_req(method, &path, Some(cookie), body.clone())).await;
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{method} {path}");
+            assert_eq!(json_body(denied).await["error"]["code"], "forbidden");
+        }
     }
 }
 

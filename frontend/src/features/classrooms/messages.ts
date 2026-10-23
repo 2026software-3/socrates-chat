@@ -7,6 +7,7 @@ export const classroomsMessages = defineMessages({
     'classrooms.title.admin': '教室管理',
     'classrooms.intro': '建立教室以區分不同年度或不同群組的學生。',
     'classrooms.empty': '你還沒有教室，先建立一間吧。',
+    'classrooms.empty.admin': '目前沒有任何教室。',
     'classrooms.name': '教室名稱',
     'classrooms.year': '年度標籤',
     'classrooms.description': '說明',
@@ -17,6 +18,7 @@ export const classroomsMessages = defineMessages({
     'classrooms.save': '儲存變更',
     'classrooms.saving': '儲存中…',
     'classrooms.saved': '教室資料已更新。',
+    'classrooms.created': '教室已建立。',
     'classrooms.required': '請輸入教室名稱。',
   },
   en: {
@@ -25,6 +27,7 @@ export const classroomsMessages = defineMessages({
     'classrooms.title.admin': 'Manage classrooms',
     'classrooms.intro': 'Create classrooms to separate students by year or group.',
     'classrooms.empty': 'You do not have any classrooms yet. Create one to get started.',
+    'classrooms.empty.admin': 'There are no classrooms yet.',
     'classrooms.name': 'Classroom name',
     'classrooms.year': 'Year label',
     'classrooms.description': 'Description',
@@ -35,6 +38,7 @@ export const classroomsMessages = defineMessages({
     'classrooms.save': 'Save changes',
     'classrooms.saving': 'Saving…',
     'classrooms.saved': 'Classroom updated.',
+    'classrooms.created': 'Classroom created.',
     'classrooms.required': 'Enter a classroom name.',
   },
   es: {
@@ -43,6 +47,7 @@ export const classroomsMessages = defineMessages({
     'classrooms.title.admin': 'Gestionar aulas',
     'classrooms.intro': 'Crea aulas para separar a los estudiantes por año o grupo.',
     'classrooms.empty': 'Todavía no tienes aulas. Crea una para empezar.',
+    'classrooms.empty.admin': 'Todavía no hay aulas.',
     'classrooms.name': 'Nombre del aula',
     'classrooms.year': 'Etiqueta del año',
     'classrooms.description': 'Descripción',
@@ -53,6 +58,7 @@ export const classroomsMessages = defineMessages({
     'classrooms.save': 'Guardar cambios',
     'classrooms.saving': 'Guardando…',
     'classrooms.saved': 'Aula actualizada.',
+    'classrooms.created': 'Aula creada.',
     'classrooms.required': 'Escribe el nombre del aula.',
   },
 })

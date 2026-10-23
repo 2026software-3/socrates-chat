@@ -31,4 +31,15 @@ fn classrooms_endpoints_are_in_openapi() {
     let response_schema: &Value =
         &create["responses"]["201"]["content"]["application/json"]["schema"];
     assert_eq!(response_schema["$ref"], "#/components/schemas/Classroom");
+
+    let request_schema = &document["components"]["schemas"]["NewClassroom"]["properties"];
+    assert_eq!(request_schema["name"]["maxLength"], 255);
+    assert_eq!(request_schema["year_label"]["maxLength"], 100);
+    assert_eq!(request_schema["description"]["maxLength"], 2000);
+    assert!(
+        create["responses"]["400"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_classroom_description")
+    );
 }

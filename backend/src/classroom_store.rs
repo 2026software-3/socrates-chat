@@ -1,6 +1,7 @@
 //! F-28.1 教室資料存取；每位教師只看得到自己建立的教室，管理者可看全部。
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
@@ -13,8 +14,6 @@ pub struct Classroom {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
-
-use serde::Serialize;
 
 #[derive(Debug)]
 pub enum ClassroomStoreError {
@@ -109,6 +108,12 @@ pub async fn update_visible(
     is_admin: bool,
     changes: ClassroomChanges,
 ) -> Result<Option<Classroom>, ClassroomStoreError> {
+    if changes.name.is_none() && changes.year_label.is_none() && changes.description.is_none() {
+        return get_visible(pool, id, actor_id, is_admin)
+            .await
+            .map_err(Into::into);
+    }
+
     sqlx::query_as(
         "UPDATE classrooms
          SET name = COALESCE($4, name),

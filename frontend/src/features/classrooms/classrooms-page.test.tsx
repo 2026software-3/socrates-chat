@@ -50,6 +50,8 @@ describe('classroom management', () => {
     expect(await screen.findByText('2026 秋季班')).toBeInTheDocument()
     expect(createdBodies).toEqual([{ name: '2026 秋季班', year_label: '2026', description: '秋季討論課' }])
     expect(screen.getByText('2026 春季班')).toBeInTheDocument()
+    expect(screen.getByLabelText('教室名稱')).toHaveValue('')
+    expect(screen.getByRole('status')).toHaveTextContent('教室已建立。')
   })
 
   it('shows a loading state followed by the empty state', async () => {
@@ -117,5 +119,13 @@ describe('classroom management', () => {
     renderApp(null, { route: '/admin/classrooms' })
     expect(await screen.findByText('2026 春季班')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '建立教室' })).not.toBeInTheDocument()
+  })
+
+  it('shows a neutral empty state to an admin who cannot create classrooms', async () => {
+    mockMe(makeMe({ admin: true }))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderApp(null, { route: '/admin/classrooms' })
+    expect(await screen.findByText('目前沒有任何教室。')).toBeInTheDocument()
+    expect(screen.queryByText('你還沒有教室，先建立一間吧。')).not.toBeInTheDocument()
   })
 })

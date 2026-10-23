@@ -16,6 +16,10 @@ use crate::{
     error::ApiError,
 };
 
+const MAX_CLASSROOM_NAME_CHARS: usize = 255;
+const MAX_CLASSROOM_YEAR_LABEL_CHARS: usize = 100;
+const MAX_CLASSROOM_DESCRIPTION_CHARS: usize = 2_000;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -30,10 +34,13 @@ pub fn routes() -> Router<AppState> {
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct NewClassroom {
+    #[schema(max_length = 255)]
     name: Option<String>,
     #[serde(default)]
+    #[schema(max_length = 100)]
     year_label: Option<String>,
     #[serde(default)]
+    #[schema(max_length = 2000)]
     description: Option<String>,
 }
 
@@ -41,10 +48,13 @@ pub(crate) struct NewClassroom {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct ClassroomPatch {
     #[serde(default, deserialize_with = "nullable")]
+    #[schema(max_length = 255)]
     name: Option<Option<String>>,
     #[serde(default, deserialize_with = "nullable")]
+    #[schema(max_length = 100)]
     year_label: Option<Option<String>>,
     #[serde(default, deserialize_with = "nullable")]
+    #[schema(max_length = 2000)]
     description: Option<Option<String>>,
 }
 
@@ -59,10 +69,29 @@ where
 fn normalized_name(name: Option<String>) -> Result<String, ApiError> {
     name.map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+        .filter(|value| value.chars().count() <= MAX_CLASSROOM_NAME_CHARS)
         .ok_or(ApiError::bad_request(
             "invalid_classroom_name",
-            "教室名稱不可為空",
+            "教室名稱不可為空或超過 255 個字元",
         ))
+}
+
+fn normalized_optional_field(
+    value: Option<String>,
+    max_chars: usize,
+    code: &'static str,
+    message: &'static str,
+) -> Result<Option<String>, ApiError> {
+    let value = value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if value
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > max_chars)
+    {
+        return Err(ApiError::bad_request(code, message));
+    }
+    Ok(value)
 }
 
 fn map_store_error(error: ClassroomStoreError) -> ApiError {
@@ -102,7 +131,7 @@ pub(crate) async fn list_classrooms(
     tag = "classrooms",
     summary = "建立教室",
     request_body = NewClassroom,
-    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_classroom(
     RequireTeacher(cu): RequireTeacher,
@@ -113,12 +142,24 @@ pub(crate) async fn create_classroom(
         return Err(ApiError::forbidden("forbidden", "只有教師可建立教室"));
     }
     let name = normalized_name(body.name)?;
+    let year_label = normalized_optional_field(
+        body.year_label,
+        MAX_CLASSROOM_YEAR_LABEL_CHARS,
+        "invalid_classroom_year_label",
+        "年度標籤不可超過 100 個字元",
+    )?;
+    let description = normalized_optional_field(
+        body.description,
+        MAX_CLASSROOM_DESCRIPTION_CHARS,
+        "invalid_classroom_description",
+        "說明不可超過 2,000 個字元",
+    )?;
     let classroom = classroom_store::create(
         &state.pool,
         cu.user.id,
         &name,
-        body.year_label.as_deref(),
-        body.description.as_deref(),
+        year_label.as_deref(),
+        description.as_deref(),
     )
     .await
     .map_err(map_store_error)?;
@@ -154,7 +195,7 @@ pub(crate) async fn get_classroom(
     summary = "編輯教室",
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ClassroomPatch,
-    responses((status = 200, description = "已更新", body = Classroom), (status = 400, description = "invalid_classroom_name", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "已更新", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_classroom(
     RequireTeacher(cu): RequireTeacher,
@@ -164,10 +205,32 @@ pub(crate) async fn update_classroom(
 ) -> Result<Json<Classroom>, ApiError> {
     let id = parse_id(&raw_id)?;
     let name = body.name.map(normalized_name).transpose()?;
+    let year_label = body
+        .year_label
+        .map(|value| {
+            normalized_optional_field(
+                value,
+                MAX_CLASSROOM_YEAR_LABEL_CHARS,
+                "invalid_classroom_year_label",
+                "年度標籤不可超過 100 個字元",
+            )
+        })
+        .transpose()?;
+    let description = body
+        .description
+        .map(|value| {
+            normalized_optional_field(
+                value,
+                MAX_CLASSROOM_DESCRIPTION_CHARS,
+                "invalid_classroom_description",
+                "說明不可超過 2,000 個字元",
+            )
+        })
+        .transpose()?;
     let changes = ClassroomChanges {
         name,
-        year_label: body.year_label,
-        description: body.description,
+        year_label,
+        description,
     };
     classroom_store::update_visible(&state.pool, id, cu.user.id, cu.roles.admin, changes)
         .await
