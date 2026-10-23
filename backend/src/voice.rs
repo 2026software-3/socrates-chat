@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{DefaultBodyLimit, FromRequest, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -183,6 +183,7 @@ fn iso_language(lang: &str) -> Option<&'static str> {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct TranscribeQuery {
     language: String,
 }
@@ -198,6 +199,31 @@ pub(crate) struct Transcript {
 #[schema(value_type = String, format = Binary)]
 struct AudioUpload(Vec<u8>);
 
+/// Translate Axum's body-size rejection into the API's standard JSON error format.
+pub(crate) struct AudioBody(Bytes);
+
+impl FromRequest<AppState> for AudioBody {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        Bytes::from_request(req, state)
+            .await
+            .map(Self)
+            .map_err(|rejection| {
+                let status = rejection.into_response().status();
+                if status == StatusCode::PAYLOAD_TOO_LARGE {
+                    ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "payload_too_large",
+                        "音訊大小不可超過 10 MB",
+                    )
+                } else {
+                    ApiError::bad_request("invalid_audio", "無法讀取音訊內容")
+                }
+            })
+    }
+}
+
 /// 辨識上傳的音訊（請求本文就是音訊位元組）；回傳文字，音訊不保存。
 #[utoipa::path(
     post,
@@ -210,14 +236,21 @@ struct AudioUpload(Vec<u8>);
         description = "原始音訊位元組；辨識完成或失敗後立即丟棄，不會保存",
         content_type = "audio/*"
     ),
-    responses((status = 200, description = "辨識文字", body = Transcript), (status = 400, description = "invalid_language 或 invalid_audio", body = crate::error::ErrorBody), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses(
+        (status = 200, description = "辨識文字", body = Transcript),
+        (status = 400, description = "invalid_language：不支援的語言；invalid_audio：Content-Type 不是 audio/* 或音訊本文為空", body = crate::error::ErrorBody),
+        (status = 413, description = "payload_too_large：音訊本文超過 10 MB", body = crate::error::ErrorBody),
+        (status = 502, description = "voice_failed", body = crate::error::ErrorBody),
+        (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody),
+        crate::error::CommonErrors
+    )
 )]
 pub(crate) async fn transcribe(
     _: RequireStudent,
     State(state): State<AppState>,
     Query(q): Query<TranscribeQuery>,
     headers: HeaderMap,
-    body: Bytes,
+    body: AudioBody,
 ) -> Result<Json<Transcript>, ApiError> {
     let language = iso_language(&q.language)
         .ok_or(ApiError::bad_request("invalid_language", "不支援的語言"))?;
@@ -226,12 +259,12 @@ pub(crate) async fn transcribe(
         .and_then(|v| v.to_str().ok())
         .filter(|m| m.starts_with("audio/"))
         .ok_or(ApiError::bad_request("invalid_audio", "需要音訊內容"))?;
-    if body.is_empty() {
+    if body.0.is_empty() {
         return Err(ApiError::bad_request("invalid_audio", "需要音訊內容"));
     }
     let text = state
         .voice
-        .transcribe(body.to_vec(), mime, language)
+        .transcribe(body.0.to_vec(), mime, language)
         .await
         .map_err(voice_error)?;
     Ok(Json(Transcript { text }))
