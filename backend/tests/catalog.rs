@@ -154,7 +154,7 @@ async fn activity_visibility_follows_publish_and_close(pool: PgPool) {
             "/api/activities",
             Some(&a.teacher),
             Some(
-                json!({"title": "第一週討論", "description": "請討論電車難題", "topic_id": topic}),
+                json!({"title": "第一週討論", "description": "請討論電車難題", "topic_id": topic, "classroom_id": a.classroom}),
             ),
         ),
     )
@@ -216,10 +216,10 @@ async fn activity_visibility_follows_publish_and_close(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn any_teacher_can_edit_any_activity(pool: PgPool) {
+async fn a_second_teacher_cannot_edit_the_activity_but_an_admin_can(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    // 第二位教師（助教，權限相同）
+    // 第二位教師（助教，權限相同）只能管理自己的教室（S-14）：改不了別人教室的活動
     send(
         &app,
         json_req(
@@ -234,25 +234,39 @@ async fn any_teacher_can_edit_any_activity(pool: PgPool) {
     let topic = create_topic(&app, &a, "T").await;
     let id = create_activity(&app, &a, "A", &topic).await;
 
-    let res = send(
-        &app,
-        json_req(
-            "PATCH",
-            &format!("/api/activities/{id}"),
-            Some(&ta),
-            Some(json!({"title": "A2", "description": "新說明"})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK);
-    let got = json_body(
-        send(
-            &app,
-            get(&format!("/api/activities/{id}"), Some(&a.teacher)),
+    let edit = |cookie: String| {
+        let app = app.clone();
+        let path = format!("/api/activities/{id}");
+        async move {
+            send(
+                &app,
+                json_req(
+                    "PATCH",
+                    &path,
+                    Some(&cookie),
+                    Some(json!({"title": "A2", "description": "新說明"})),
+                ),
+            )
+            .await
+            .status()
+        }
+    };
+    assert_eq!(edit(ta).await, StatusCode::NOT_FOUND);
+    let read = || async {
+        json_body(
+            send(
+                &app,
+                get(&format!("/api/activities/{id}"), Some(&a.teacher)),
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
+        .await
+    };
+    assert_eq!(read().await["title"], "A");
+
+    // 管理者可管理所有教室
+    assert_eq!(edit(a.admin.clone()).await, StatusCode::OK);
+    let got = read().await;
     assert_eq!(got["title"], "A2");
     assert_eq!(got["description"], "新說明");
 }
@@ -278,7 +292,9 @@ async fn activity_validation_and_topic_link(pool: PgPool) {
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(json!({"title": "X", "topic_id": uuid::Uuid::new_v4()})),
+            Some(
+                json!({"title": "X", "topic_id": uuid::Uuid::new_v4(), "classroom_id": a.classroom}),
+            ),
         ),
     )
     .await;
@@ -317,7 +333,7 @@ async fn activity_validation_and_topic_link(pool: PgPool) {
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(json!({"title": "X", "topic_id": topic["id"]})),
+            Some(json!({"title": "X", "topic_id": topic["id"], "classroom_id": a.classroom})),
         ),
     )
     .await;

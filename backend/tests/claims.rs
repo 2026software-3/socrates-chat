@@ -176,13 +176,13 @@ async fn regroup_is_for_teachers_and_keeps_old_groups_when_the_ai_fails(pool: Pg
         "拉桿"
     );
 
-    // 沒有主張的活動（含不存在的活動）：回 409
+    // 自己教室內沒有主張的活動：回 409；不存在的活動與他人的活動一樣回 404（S-14）
     let other = published_activity_with_topic(&app, &a, "說謊可以嗎").await;
-    for id in [other, uuid::Uuid::new_v4().to_string()] {
-        let (status, body) = regroup(&app, Some(&a.teacher), &id).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["error"]["code"], "no_claims");
-    }
+    let (status, body) = regroup(&app, Some(&a.teacher), &other).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "no_claims");
+    let (status, _) = regroup(&app, Some(&a.teacher), &uuid::Uuid::new_v4().to_string()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test]
@@ -205,8 +205,9 @@ async fn the_smallest_groups_are_merged_into_other_and_admins_see_no_claims(pool
         for i in 0..n {
             sqlx::query(
                 "WITH u AS (INSERT INTO users (email) VALUES ($5) RETURNING id),
-                      c AS (INSERT INTO conversations (user_id, activity_id, title, status, ended_at)
-                            SELECT id, $1, '電車難題', 'ended', now() FROM u RETURNING id)
+                      c AS (INSERT INTO conversations (user_id, activity_id, classroom_id, title, status, ended_at)
+                            SELECT id, $1, (SELECT classroom_id FROM activities WHERE id = $1),
+                                   '電車難題', 'ended', now() FROM u RETURNING id)
                  INSERT INTO summaries (conversation_id, status, stance, reasons, claim,
                                         claim_group_id, completed_at)
                  SELECT id, 'ready', 's', $3, $4, $2, now() FROM c",

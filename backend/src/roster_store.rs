@@ -15,7 +15,7 @@ pub struct StudentRow {
     /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
     pub has_account: bool,
     pub disabled: bool,
-    /// 已完成（總結已產生）的對話數；教師只看得到數量，看不到內容
+    /// 這間教室內已完成（總結已產生）的活動對話數，不含個人練習；教師只看得到數量，看不到內容
     pub completed_conversations: i64,
 }
 
@@ -96,7 +96,8 @@ pub async fn list_students(
                 COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
                 COALESCE((SELECT count(*) FROM summaries s
                           JOIN conversations c ON c.id = s.conversation_id
-                          WHERE c.user_id = u.id AND s.status = 'ready'), 0)
+                          WHERE c.user_id = u.id AND c.classroom_id = e.classroom_id
+                            AND s.status = 'ready'), 0)
                     AS completed_conversations
          FROM enrollments e LEFT JOIN users u ON u.email = e.email
          WHERE e.classroom_id = $1
@@ -123,4 +124,30 @@ pub async fn count_students(
     .bind(actor_id)
     .fetch_one(pool)
     .await
+}
+
+/// 這位學生在這間教室內已完成（總結已產生）的活動對話數；個人練習與其他教室不計入。
+pub async fn count_completed(
+    pool: &PgPool,
+    classroom_id: Uuid,
+    email: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM summaries s
+         JOIN conversations c ON c.id = s.conversation_id
+         JOIN users u ON u.id = c.user_id
+         WHERE c.classroom_id = $1 AND u.email = lower($2) AND s.status = 'ready'",
+    )
+    .bind(classroom_id)
+    .bind(email)
+    .fetch_one(pool)
+    .await
+}
+
+/// 單一教室名單上的學生人數。
+pub async fn count_in_classroom(pool: &PgPool, classroom_id: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM enrollments WHERE classroom_id = $1")
+        .bind(classroom_id)
+        .fetch_one(pool)
+        .await
 }

@@ -6,7 +6,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -23,6 +23,7 @@ use crate::{
     },
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
+    classrooms::{ClassroomFilter, filtered_classroom},
     error::{ApiError, db_error_class},
 };
 
@@ -300,6 +301,8 @@ pub(crate) async fn retry(
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub(crate) struct TeacherRow {
     conversation_id: Uuid,
+    /// 對話所屬的教室
+    classroom_id: Uuid,
     title: String,
     ended_at: Option<DateTime<Utc>>,
     student_id: Uuid,
@@ -310,28 +313,37 @@ pub(crate) struct TeacherRow {
     claim: Option<String>,
 }
 
-/// 所有修課學生已完成對話的總結，每筆連到學生與該場對話；不含對話原文。
+/// 自己管理的教室內，學生已完成活動對話的總結（管理者為全部教室），每筆連到學生與該場對話；不含對話原文。
+/// 個人練習（不屬於任何教室）一律不在其中（S-02.1、S-14）。
 #[utoipa::path(
     get,
     path = "/api/teacher/summaries",
     tag = "summaries",
-    summary = "所有學生已完成對話的總結（不含原文）",
-    responses((status = 200, description = "總結", body = Vec<TeacherRow>))
+    summary = "教室內學生已完成對話的總結（不含原文；不含個人練習）",
+    params(("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404")),
+    responses((status = 200, description = "總結", body = Vec<TeacherRow>), crate::error::CommonErrors)
 )]
 pub(crate) async fn teacher_list(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
+    Query(filter): Query<ClassroomFilter>,
 ) -> Result<Json<Vec<TeacherRow>>, ApiError> {
+    let classroom = filtered_classroom(&state, &cu, &filter).await?;
+    // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<TeacherRow> = sqlx::query_as(
-        "SELECT s.conversation_id, c.title, c.ended_at,
+        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
                 s.stance, s.reasons, s.claim
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
+         JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN users u ON u.id = c.user_id
-         WHERE s.status = 'ready'
+         WHERE s.status = 'ready' AND ($3::uuid IS NULL OR c.classroom_id = $3)
          ORDER BY c.ended_at DESC, s.conversation_id",
     )
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .bind(classroom)
     .fetch_all(&state.pool)
     .await?;
     // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），

@@ -9,7 +9,7 @@ use socrates_chat_backend::chat::MAX_MESSAGE_CHARS;
 use sqlx::PgPool;
 
 /// 教師建立題目，再以它建立並發布一個活動，回傳 id。
-pub async fn published_activity(app: &Router, teacher: &str) -> String {
+pub async fn published_activity(app: &Router, teacher: &str, classroom: &str) -> String {
     let topic = json_body(
         send(
             app,
@@ -34,6 +34,7 @@ pub async fn published_activity(app: &Router, teacher: &str) -> String {
                 "title": "電車難題",
                 "description": "如果你是駕駛，你會怎麼做？",
                 "topic_id": topic,
+                "classroom_id": classroom,
             })),
         ),
     )
@@ -88,7 +89,7 @@ async fn say(app: &Router, cookie: &str, conv: &str, text: &str) -> StatusCode {
 async fn student_starts_conversation_from_published_activity(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let res = send(
         &app,
         json_req(
@@ -195,7 +196,7 @@ async fn unavailable_sources_are_rejected(pool: PgPool) {
 async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
 
     assert_eq!(
@@ -233,7 +234,7 @@ async fn messages_are_saved_in_order_and_count_turns(pool: PgPool) {
 async fn message_validation(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
 
     assert_eq!(
@@ -280,7 +281,7 @@ async fn message_validation(pool: PgPool) {
 async fn ended_conversation_rejects_new_messages(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
     sqlx::query("UPDATE conversations SET status = 'ended'")
         .execute(&pool)
@@ -308,7 +309,7 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
     )
     .await;
     let other = login_as(&app, "sub-other", "other@example.com").await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
     say(&app, &a.student, &conv, "這是我的私人想法").await;
 
@@ -406,7 +407,7 @@ async fn conversation_content_is_owner_only(pool: PgPool) {
 async fn owner_deletes_conversation_with_messages(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
     say(&app, &a.student, &conv, "hello").await;
 
@@ -438,7 +439,7 @@ async fn owner_deletes_conversation_with_messages(pool: PgPool) {
 async fn conversation_keeps_snapshot_when_activity_changes(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
     send(
         &app,
@@ -483,7 +484,7 @@ async fn assert_already_started(app: &Router, cookie: &str, activity_id: &str) {
 async fn one_conversation_per_activity_until_it_is_deleted(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let conv = start(&app, &a.student, &act).await;
 
     // 進行中的對話佔著這個活動
@@ -541,7 +542,7 @@ async fn practice_from_the_topic_bank_is_not_limited(pool: PgPool) {
 async fn concurrent_starts_for_the_same_activity_create_one_conversation(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let act = published_activity(&app, &a.teacher).await;
+    let act = published_activity(&app, &a.teacher, &a.classroom).await;
     let post = || {
         send(
             &app,
