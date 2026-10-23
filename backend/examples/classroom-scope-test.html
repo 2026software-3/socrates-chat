@@ -85,7 +85,8 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const NEW_PW = 'Manual-Test-Pass-2026!';
-const state = { run: Math.floor(Math.random() * 1e6).toString(36), pw: {}, ids: {} };
+const runId = Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('');
+const state = { run: runId, pw: {}, ids: {} };
 
 async function api(method, path, body) {
   const res = await fetch(path, {
