@@ -36,6 +36,7 @@ pub mod identity;
 pub mod openapi;
 pub mod pagination;
 pub mod password;
+pub mod points;
 pub mod reply;
 pub mod roster;
 pub mod summary;
@@ -95,6 +96,7 @@ pub fn app(state: AppState) -> Router {
         .merge(reply::routes())
         .merge(summary::routes())
         .merge(voice::routes())
+        .merge(points::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
