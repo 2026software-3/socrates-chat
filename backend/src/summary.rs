@@ -250,8 +250,11 @@ pub(crate) async fn end(
         }
         return Ok((StatusCode::OK, Json(view(&state, id).await?)));
     }
+    // Capture the accepted response before the background task can finish; a fast AI provider
+    // must not turn the initial 202 body into `ready` nondeterministically.
+    let pending = view(&state, id).await?;
     spawn_generation(state.clone(), id, 1);
-    Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
+    Ok((StatusCode::ACCEPTED, Json(pending)))
 }
 
 #[utoipa::path(
