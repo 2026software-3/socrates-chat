@@ -11,63 +11,43 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, put},
 };
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     auth::{RequireAdmin, RequireTeacher},
+    classrooms::visible_classroom,
     error::ApiError,
     roster::normalize_email,
+    roster_store::{self, StudentRow},
 };
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/students", get(list_students))
+        .route("/api/classrooms/{id}/students", get(list_students))
         .route("/api/students/{email}", delete(delete_student))
         .route("/api/admin/users/{id}/status", put(set_status))
 }
 
-#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
-pub(crate) struct StudentRow {
-    /// 使用者 UUID；尚未建立帳號時為 null。
-    id: Option<Uuid>,
-    email: String,
-    display_name: Option<String>,
-    /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
-    has_account: bool,
-    disabled: bool,
-    /// 已完成（總結已產生）的對話數；教師只看得到數量，看不到內容
-    completed_conversations: i64,
-}
-
-/// 修課名單上的學生與帳號狀態。
+/// 教室修課名單上的學生與帳號狀態。
 #[utoipa::path(
     get,
-    path = "/api/students",
+    path = "/api/classrooms/{id}/students",
     tag = "roster",
-    summary = "名單上的學生與帳號狀態",
-    responses((status = 200, description = "學生列表", body = Vec<StudentRow>))
+    summary = "教室名單上的學生與帳號狀態",
+    params(("id" = Uuid, Path, description = "教室 ID")),
+    responses((status = 200, description = "學生列表", body = Vec<StudentRow>), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_students(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
+    Path(raw_id): Path<String>,
 ) -> Result<Json<Vec<StudentRow>>, ApiError> {
-    let rows = sqlx::query_as(
-        "SELECT u.id, e.email, u.display_name,
-                (u.id IS NOT NULL) AS has_account,
-                COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
-                COALESCE((SELECT count(*) FROM summaries s
-                          JOIN conversations c ON c.id = s.conversation_id
-                          WHERE c.user_id = u.id AND s.status = 'ready'), 0)
-                    AS completed_conversations
-         FROM enrollments e LEFT JOIN users u ON u.email = e.email
-         ORDER BY e.email",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(rows))
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    Ok(Json(
+        roster_store::list_students(&state.pool, classroom.id).await?,
+    ))
 }
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
@@ -223,6 +203,7 @@ pub(crate) async fn delete_student(
     if staff || state.config.admin_emails.contains(&email) {
         return Err(ApiError::conflict("not_a_student", "只能刪除學生帳號"));
     }
+    // 所有教室的名單項目一併移除（學生可屬於多個教室）
     let on_roster = sqlx::query("DELETE FROM enrollments WHERE email = $1")
         .bind(&email)
         .execute(&mut *tx)

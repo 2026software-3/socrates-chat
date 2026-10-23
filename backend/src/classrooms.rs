@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    auth::RequireTeacher,
+    auth::{CurrentUser, RequireTeacher},
     classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
     error::ApiError,
 };
@@ -105,6 +105,18 @@ fn map_store_error(error: ClassroomStoreError) -> ApiError {
 
 fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::not_found())
+}
+
+/// 路徑上的教室，必須是操作者可管理的（建立者或管理者）；
+/// 格式不正確、不存在與他人的教室都回相同的 404，不外露教室是否存在。
+pub(crate) async fn visible_classroom(
+    state: &AppState,
+    cu: &CurrentUser,
+    raw_id: &str,
+) -> Result<Classroom, ApiError> {
+    classroom_store::get_visible(&state.pool, parse_id(raw_id)?, cu.user.id, cu.roles.admin)
+        .await?
+        .ok_or_else(ApiError::not_found)
 }
 
 /// 列出可管理的教室：教師只看自己建立的，管理者看全部。

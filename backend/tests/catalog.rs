@@ -400,7 +400,7 @@ async fn available_list_requires_enrollment(pool: PgPool) {
         &app,
         json_req(
             "DELETE",
-            "/api/roster/student@example.com",
+            &format!("/api/classrooms/{}/roster/student@example.com", a.classroom),
             Some(&a.admin),
             None,
         ),

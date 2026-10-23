@@ -13,8 +13,9 @@ async fn post(app: &Router, path: &str, cookie: Option<&str>, body: Option<Value
         .status()
 }
 
-async fn students(app: &Router, cookie: &str) -> Value {
-    json_body(send(app, get("/api/students", Some(cookie))).await).await
+async fn students(app: &Router, cookie: &str, classroom: &str) -> Value {
+    let path = format!("/api/classrooms/{classroom}/students");
+    json_body(send(app, get(&path, Some(cookie))).await).await
 }
 
 async fn audit_actions(pool: &PgPool) -> Vec<(String, String, Option<String>)> {
@@ -32,14 +33,14 @@ async fn student_list_shows_account_state_to_teachers_and_admins_only(pool: PgPo
     // 另一位還沒登入過的名單學生
     post(
         &app,
-        "/api/roster/import",
+        &format!("/api/classrooms/{}/roster/import", a.classroom),
         Some(&a.teacher),
         Some(json!({"text": "later@example.com"})),
     )
     .await;
 
     for cookie in [&a.teacher, &a.admin] {
-        let list = students(&app, cookie).await;
+        let list = students(&app, cookie, &a.classroom).await;
         let rows = list.as_array().unwrap();
         let by = |e: &str| rows.iter().find(|r| r["email"] == e).unwrap().clone();
         assert_eq!(by("student@example.com")["has_account"], true);
@@ -52,7 +53,11 @@ async fn student_list_shows_account_state_to_teachers_and_admins_only(pool: PgPo
         (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
         (None, StatusCode::UNAUTHORIZED),
     ] {
-        let res = send(&app, get("/api/students", cookie)).await;
+        let res = send(
+            &app,
+            get(&format!("/api/classrooms/{}/students", a.classroom), cookie),
+        )
+        .await;
         assert_eq!(res.status(), status);
     }
 }
@@ -115,7 +120,10 @@ async fn status_put_is_idempotent_revokes_sessions_and_audits(pool: PgPool) {
         .status(),
         StatusCode::OK
     );
-    assert_eq!(students(&app, &a.admin).await[0]["id"], id.to_string());
+    assert_eq!(
+        students(&app, &a.admin, &a.classroom).await[0]["id"],
+        id.to_string()
+    );
     for suffix in ["disable", "enable"] {
         assert_eq!(
             post(
@@ -395,7 +403,11 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
         "confirmation_mismatch"
     );
     assert_eq!(
-        students(&app, &a.teacher).await.as_array().unwrap().len(),
+        students(&app, &a.teacher, &a.classroom)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
 
@@ -412,7 +424,7 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
     assert!(
-        students(&app, &a.teacher)
+        students(&app, &a.teacher, &a.classroom)
             .await
             .as_array()
             .unwrap()
@@ -516,7 +528,11 @@ async fn legacy_student_delete_route_is_removed(pool: PgPool) {
         StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
     ));
     assert_eq!(
-        students(&app, &a.teacher).await.as_array().unwrap().len(),
+        students(&app, &a.teacher, &a.classroom)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
     assert!(audit_actions(&pool).await.is_empty());

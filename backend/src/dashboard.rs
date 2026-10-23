@@ -20,6 +20,7 @@ use crate::{
     AppState,
     auth::{RequireStudent, RequireTeacher},
     error::ApiError,
+    roster_store,
 };
 
 pub fn routes() -> Router<AppState> {
@@ -151,9 +152,8 @@ pub(crate) async fn class(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
 ) -> Result<Json<Class>, ApiError> {
-    let (students_total,): (i64,) = sqlx::query_as("SELECT count(*) FROM enrollments")
-        .fetch_one(&state.pool)
-        .await?;
+    let students_total =
+        roster_store::count_students(&state.pool, cu.user.id, cu.roles.admin).await?;
     if cu.roles.admin {
         return Ok(Json(Class {
             masked: true,

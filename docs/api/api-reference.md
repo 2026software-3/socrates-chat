@@ -36,8 +36,16 @@
 - 活動必須選題庫題目（S-04.7）：建立時 `topic_id` 必填，沒帶、為 `null` 或題目不存在都回 `400 invalid_topic`，`PATCH` 也不能清除。活動已有學生開始的對話後，換成不同題目回 `409 activity_topic_locked`（同一個題目、只改標題或說明不受限；對話被刪除後又可更換）。
 - `GET /api/catalog` 回傳 `{ activities, topics }`，只含已發布的活動與已啟用的題目；舊的 `/api/available` 已移除。
 
-## 修課名單與學生
+## 修課名單與學生（F-28.2）
 
+修課名單屬於教室（S-14、S-01.4）；名單端點的路徑都帶教室 ID，由教室的建立者或管理者操作。其他教師存取他人的教室，與教室不存在、ID 格式不正確一律回相同的 `404 not_found`；學生、名單外帳號回 `403`，未登入回 `401`。
+
+- `GET /api/classrooms/{id}/roster`：該教室名單的電子郵件 `{ emails }`。
+- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, invalid, credentials }`。名單只屬於該教室，不影響其他教室；`added`／`existing` 都是相對這間教室。同一電子郵件可同時在多個教室的名單，帳號仍只有一個。
+- `DELETE /api/classrooms/{id}/roster/{email}`：只移出這間教室；原本就不在這間教室名單內回 `404`。學生仍在其他教室的名單時保有學生權限；不在任何教室名單內時，登入後看到 `403 not_enrolled`（尚未開通）。
+- `GET /api/classrooms/{id}/students`：該教室名單上的學生與帳號狀態。`completed_conversations` 目前是該帳號的全部已完成對話數，對話尚未歸屬教室（F-28.3）。
+- `GET /api/dashboard/class` 的 `students_total`：教師為自己建立的所有教室內不重複的學生數，管理者為全部教室。
+- 舊的 `/api/roster*` 與 `/api/students`（列表）已移除；`DELETE /api/students/{email}` 仍是全域的帳號刪除，會一併移除該帳號在所有教室的名單項目。**教師可刪除的範圍待需求方確認**（S-02.5，學生可屬於多個教室，見 `decisions.md`「尚未決定」）。
 - 匯入只新增、不移除；每行一個電子郵件，可有 `email` 標題列。
 - 匯入結果的 `credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次）。**只有管理者匯入才會建立帳號**，教師匯入時為空陣列；已有帳號與教師／管理者的信箱不在其中。
 - 移出名單不刪資料（重新加回後照舊）。
@@ -50,7 +58,7 @@
 - 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，最多 255 字元，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空白或超長名稱回 `400 invalid_classroom_name`。年度標籤最多 100 字元、說明最多 2,000 字元，超限分別回 `invalid_classroom_year_label`、`invalid_classroom_description`。選填欄位前後空白會去除，空字串會保存為 `null`。
 - `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。
 - 管理者可管理所有教室。依 Issue「教室由教師建立」，目前只有教師可建立教室（管理者建立權限**待需求方確認**，尚未定案）；建立者欄位固定為建立請求的教師。教室名稱唯一性由資料庫約束保證，併發建立相同名稱時僅一個成功。沒有提供任何欄位的空 PATCH 不會更新 `updated_at`。
-- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。封存、名單與活動歸屬尚未包含在此切片。
+- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。封存與活動歸屬尚未包含在此切片；名單見上一節。
 
 ## 對話（只有修課名單內的學生）
 
@@ -122,7 +130,7 @@
 
 ### 沒有分頁／上限【高】（#284 對話、#285 總結、#286 學生、#287 名單、#288 活動）
 
-`GET /api/conversations`、`/api/teacher/summaries`、`/api/students`、`/api/roster`、`/api/activities` 除 #284 對話已完成 keyset 分頁外，其餘仍一次 `fetch_all`。`teacher/summaries` 還 JOIN 三表且隨全班歷史成長，會是第一個變慢的端點。
+`GET /api/conversations`、`/api/teacher/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 除 #284 對話已完成 keyset 分頁外，其餘仍一次 `fetch_all`。`teacher/summaries` 還 JOIN 三表且隨全班歷史成長，會是第一個變慢的端點。
 **建議**：統一 `?limit=&cursor=`（keyset，依 `ended_at, id`），回 `{ items, next_cursor }`。教師端再加 `?student=`、`?topic=` 篩選。因為還沒上線，現在改成本最低。
 
 ### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）
@@ -137,7 +145,7 @@
 
 ### 角色與資源的混合命名【中】（#285 `/api/summaries`）
 
-`/api/teacher/summaries`、`/api/dashboard/class`、`/api/roster`（教師用）、`/api/students`（教師用）混用「以角色命名」與「以資源命名」。學生的 summary 是 `/conversations/{id}/summary`，教師的是 `/teacher/summaries`。
+`/api/teacher/summaries`、`/api/dashboard/class`、`/api/classrooms/{id}/roster`、`/api/classrooms/{id}/students` 混用「以角色命名」與「以資源命名」。學生的 summary 是 `/conversations/{id}/summary`，教師的是 `/teacher/summaries`。
 **建議**：以資源命名，權限由後端判斷，例如 `GET /api/summaries`（教師全部／學生自己的）；或維持角色前綴但全面一致（`/api/teacher/*`、`/api/admin/*`、`/api/student/*`）。目前兩者混用，前端與文件都要記例外。
 
 ### `must_change_password` 白名單的回歸測試【中】
@@ -148,7 +156,7 @@
 
 - `POST /api/conversations/{id}/end` 回 202（首次）與 200（已結束）：狀態碼雙義，對前端是額外分支。建議一律 202 或一律 200 + body `{ status }`。
 - `POST /api/conversations` 的來源錯誤回 `invalid_conversation_source`；`POST …/messages` 的非法 `source` 仍回 `invalid_source`。
-- `POST /api/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅管理者，OK；但回應建議加 `Cache-Control: no-store`。
+- `POST /api/classrooms/{id}/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅管理者，OK；但回應建議加 `Cache-Control: no-store`。
 - 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
 - 沒看到全域 request body 大小限制與請求逾時（`tower_http` 只用在靜態檔）。語音有 10 MB 上限，其餘靠 axum 預設 2 MB；建議明確設定並加 `TimeoutLayer`（SSE 路由除外）。
 - `/health` 之外沒有 `/ready`（見「規劃中的端點」）。

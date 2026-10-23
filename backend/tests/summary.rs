@@ -320,7 +320,7 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
         &app,
         json_req(
             "DELETE",
-            "/api/roster/student@example.com",
+            &format!("/api/classrooms/{}/roster/student@example.com", a.classroom),
             Some(&a.admin),
             None,
         ),

@@ -146,6 +146,7 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
             auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
                 .await?
                 .ok_or_else(ApiError::unauthorized)?;
+        // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
         let (teacher, student, disabled): (bool, bool, bool) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1),
                     EXISTS (SELECT 1 FROM enrollments WHERE email = $1),

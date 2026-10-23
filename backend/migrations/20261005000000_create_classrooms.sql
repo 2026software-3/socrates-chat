@@ -16,3 +16,17 @@ CREATE UNIQUE INDEX classrooms_normalized_name_unique
     ON classrooms (lower(regexp_replace(name, '^[[:space:]]+|[[:space:]]+$', '', 'g')));
 
 CREATE INDEX classrooms_created_by_idx ON classrooms (created_by);
+
+-- F-28.2：修課名單以教室為單位（S-14、S-01.4）。
+-- 同一電子郵件可同時在多個教室的名單，帳號仍只有一個（users.email 唯一）；
+-- 以電子郵件為鍵（一律小寫），對方尚未登入過也能先加入。學生角色每次請求由
+-- users.email 對照任一教室的名單決定，移出所有名單後立即失效。
+CREATE TABLE enrollments (
+    classroom_id uuid NOT NULL REFERENCES classrooms (id),
+    email        text NOT NULL CHECK (email = lower(email) AND email <> ''),
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (classroom_id, email)
+);
+
+-- 「這個帳號是否在任一教室的名單內」每次請求都會查
+CREATE INDEX enrollments_email_idx ON enrollments (email);
