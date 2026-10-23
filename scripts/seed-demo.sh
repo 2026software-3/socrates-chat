@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 匯入示範資料（只給本機開發與試用，全部是合成資料）：
 #   - 1 位教師 teacher@example.com、3 位學生 student1～3@example.com（固定的示範密碼）
-#   - 內建題目「電車難題」下 6 場已完成的對話：含 AI 總結、最終主張、主張分組與 6 維分數
-#     （直接寫入資料庫，不呼叫 AI），讓班上論點分布與個人儀表板有東西可看
-# 可重複執行：帳號會重設成示範密碼，示範對話會先刪除再重建。
+#   - 以內建題目「電車難題」開成兩個活動，每位學生在每個活動各完成 1 場對話（共 6 場）：
+#     含 AI 總結、最終主張與主張分組（直接寫入資料庫，不呼叫 AI），讓班上論點分布與個人儀表板有東西可看
+# 可重複執行：帳號會重設成示範密碼，示範活動與對話會先刪除再重建。
 #
 # 前置：服務已啟動（後端啟動時會補上內建題目），且管理者已登入過一次並更改了初始密碼。
 # 用法：
@@ -66,14 +66,16 @@ api "$ADMIN_JAR" POST /api/roster/import "{\"text\":\"$(printf '%s\\n' "${STUDEN
 for s in "${STUDENTS[@]}"; do set_password "$s" "$STUDENT_PASSWORD"; done
 rm -f "$ADMIN_JAR"
 
-echo "→ 匯入示範對話與總結"
+echo "→ 匯入示範活動、對話與總結"
 $DEMO_PSQL -v ON_ERROR_STOP=1 -q <<'SQL'
 BEGIN;
--- 重跑時先清掉上次的示範對話（description 為 [demo]；總結隨之刪除）
+-- 重跑時先清掉上次的示範資料（description 為 [demo]；總結隨對話刪除、主張分組隨活動刪除）
 DELETE FROM conversations WHERE description = '[demo]';
-INSERT INTO claim_groups (topic_title, name)
-VALUES ('電車難題', '拉桿'), ('電車難題', '不拉桿'), ('電車難題', '視情況而定')
-ON CONFLICT DO NOTHING;
+DELETE FROM activities WHERE description = '[demo]';
+-- 每位學生在每個活動至多一場對話（S-04.7），所以示範資料開成兩個活動
+INSERT INTO activities (title, description, topic_id, status) VALUES
+  ('電車難題：第一週', '[demo]', '00000000-0000-4000-8000-000000000001', 'published'),
+  ('電車難題：第二週', '[demo]', '00000000-0000-4000-8000-000000000001', 'published');
 
 DO $$
 DECLARE
@@ -83,31 +85,28 @@ DECLARE
 BEGIN
   FOR r IN
     SELECT * FROM (VALUES
-      -- 學生, 最終主張, 主張群組, 核心理由, 效益主義, 義務論, 德行倫理, 契約論, 存在主義（關懷倫理示範都給 0）
-      ('student1@example.com', '該拉桿，救五人優先', '拉桿', '結果上救五個人比救一個人重要', 5, 1, 1, 0, 0),
-      ('student1@example.com', '應該拉桿', '拉桿', '造成的傷害越少越好', 4, 2, 0, 1, 0),
-      ('student2@example.com', '不拉桿，不能主動殺人', '不拉桿', '不能把人當成達成目的的工具', 1, 5, 2, 0, 0),
-      ('student2@example.com', '視情況而定', '視情況而定', '要看被犧牲的人是誰、與我有什麼關係', 1, 1, 2, 4, 1),
-      ('student3@example.com', '拉桿，但要有人負責', '拉桿', '救人是對的，但要為行動承擔責任', 3, 2, 3, 1, 3),
-      ('student3@example.com', '不拉桿，這不該由我決定', '不拉桿', '個人沒有資格決定誰該活下來', 0, 4, 1, 3, 4)
-    ) AS t(email, claim, grp, reasons, u, d, v, c, e)
+      -- 學生, 活動, 最終主張, 主張群組, 核心理由
+      ('student1@example.com', '電車難題：第一週', '該拉桿，救五人優先', '拉桿', '結果上救五個人比救一個人重要'),
+      ('student1@example.com', '電車難題：第二週', '應該拉桿', '拉桿', '造成的傷害越少越好'),
+      ('student2@example.com', '電車難題：第一週', '不拉桿，不能主動殺人', '不拉桿', '不能把人當成達成目的的工具'),
+      ('student2@example.com', '電車難題：第二週', '視情況而定', '視情況而定', '要看被犧牲的人是誰、與我有什麼關係'),
+      ('student3@example.com', '電車難題：第一週', '拉桿，但要有人負責', '拉桿', '救人是對的，但要為行動承擔責任'),
+      ('student3@example.com', '電車難題：第二週', '不拉桿，這不該由我決定', '不拉桿', '個人沒有資格決定誰該活下來')
+    ) AS t(email, act, claim, grp, reasons)
   LOOP
     n := n + 1;
-    INSERT INTO conversations (user_id, topic_id, title, description, status, stage, turn_count, ended_at)
-    SELECT id, '00000000-0000-4000-8000-000000000001', '電車難題', '[demo]', 'ended', 3, 8,
-           now() - n * interval '1 hour'
-    FROM users WHERE email = r.email
+    INSERT INTO claim_groups (activity_id, name)
+    SELECT id, r.grp FROM activities WHERE title = r.act AND description = '[demo]'
+    ON CONFLICT DO NOTHING;
+    INSERT INTO conversations (user_id, activity_id, topic_id, title, description, status, stage, turn_count, ended_at)
+    SELECT u.id, a.id, a.topic_id, a.title, a.description, 'ended', 3, 8, now() - n * interval '1 hour'
+    FROM users u, activities a
+    WHERE u.email = r.email AND a.title = r.act AND a.description = '[demo]'
     RETURNING id INTO cid;
-    INSERT INTO summaries (conversation_id, status, stance, reasons, claim, claim_group_id, framework,
-                           framework_scores, rules_version, completed_at)
-    SELECT cid, 'ready', '傾向：' || r.claim, r.reasons, r.claim, g.id,
-           CASE GREATEST(r.u, r.d, r.v, r.c, r.e)
-             WHEN r.u THEN 'utilitarianism' WHEN r.d THEN 'deontology' WHEN r.v THEN 'virtue'
-             WHEN r.c THEN 'contractarianism' ELSE 'existentialism' END,
-           jsonb_build_object('utilitarianism', r.u, 'deontology', r.d, 'virtue', r.v,
-                              'contractarianism', r.c, 'care', 0, 'existentialism', r.e),
-           'demo', now()
-    FROM claim_groups g WHERE g.topic_title = '電車難題' AND g.name = r.grp;
+    INSERT INTO summaries (conversation_id, status, stance, reasons, claim, claim_group_id, rules_version, completed_at)
+    SELECT cid, 'ready', '傾向：' || r.claim, r.reasons, r.claim, g.id, 'demo', now()
+    FROM claim_groups g JOIN activities a ON a.id = g.activity_id
+    WHERE a.title = r.act AND a.description = '[demo]' AND g.name = r.grp;
   END LOOP;
 END $$;
 COMMIT;
@@ -118,5 +117,5 @@ cat <<DONE
 完成。示範帳號（只給本機使用）：
   教師  teacher@example.com        密碼 $TEACHER_PASSWORD
   學生  student1~3@example.com     密碼 $STUDENT_PASSWORD
-用教師登入看「班上分布」，用學生登入看「我的儀表板」。
+用教師登入看「班上分布」（每個活動一張主張分布），用學生登入看「我的儀表板」。
 DONE

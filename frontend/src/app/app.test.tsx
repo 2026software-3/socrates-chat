@@ -50,9 +50,7 @@ describe('app shell', () => {
     students_total: 0,
     students_participating: 0,
     completed: 0,
-    positions: {},
-    frameworks: {},
-    topics: [],
+    activities: [],
   }
 
   it('takes teachers to the class dashboard — they do not take part in discussions', async () => {

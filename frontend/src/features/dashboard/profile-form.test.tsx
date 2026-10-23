@@ -10,7 +10,7 @@ function mockProfileApi(initial: string | null) {
   let name = initial
   const patches: unknown[] = []
   server.use(
-    http.get('/api/dashboard/me', () => HttpResponse.json({ total_conversations: 0, completed: 0, total_turns: 0, radar: [], recent: [] })),
+    http.get('/api/dashboard/me', () => HttpResponse.json({ total_conversations: 0, completed: 0, total_turns: 0, recent: [] })),
     http.get('/api/me', () => HttpResponse.json(makeMe({ student: true }, { display_name: name }))),
     http.patch('/api/me', async ({ request }) => {
       const body = (await request.json()) as { display_name: string | null }

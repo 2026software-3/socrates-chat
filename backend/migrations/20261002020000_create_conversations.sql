@@ -28,6 +28,11 @@ CREATE TABLE conversations (
 
 CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);
 
+-- 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）；刪除該場對話後可重新開始。
+-- 從題目庫直接開始的個人練習沒有活動，不受限制。
+CREATE UNIQUE INDEX conversations_user_activity_uniq
+    ON conversations (user_id, activity_id) WHERE activity_id IS NOT NULL;
+
 CREATE TABLE messages (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id uuid NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,

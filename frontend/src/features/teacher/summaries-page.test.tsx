@@ -51,21 +51,26 @@ function setup(data: TeacherSummary[] = rows) {
 }
 
 describe('SummariesPage classification', () => {
-  it('shows the claim and main school, and the masked text for admins as-is', async () => {
+  it('shows the claim, and the masked claim for admins as-is', async () => {
     server.use(
       http.get('/api/teacher/summaries', () =>
         HttpResponse.json([
-          row({ claim: '該拉桿', framework: 'deontology' }),
-          row({ conversation_id: 'c9', title: '管理者視角', claim: 'message', framework: 'message' }),
+          row({ claim: '該拉桿' }),
+          row({ conversation_id: 'c9', title: '管理者視角', claim: 'message' }),
         ]),
       ),
     )
     renderTeacherPage(<SummariesPage />)
     const card = (await screen.findByText('電車難題')).closest('li') as HTMLElement
     expect(within(card).getByText('該拉桿')).toBeInTheDocument()
-    expect(within(card).getByText('義務論')).toBeInTheDocument()
     const masked = screen.getByText('管理者視角').closest('li') as HTMLElement
-    expect(within(masked).getAllByText('message')).toHaveLength(2)
+    expect(within(masked).getByText('message')).toBeInTheDocument()
+  })
+
+  it('does not show a school or framework label on summaries', async () => {
+    setup([row({ claim: '該拉桿' })])
+    const card = cardOf(await screen.findByText('該拉桿'))
+    expect(within(card).queryByText(/倫理|學派|義務論|效益主義/)).not.toBeInTheDocument()
   })
 })
 

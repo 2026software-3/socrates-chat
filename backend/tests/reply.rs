@@ -21,38 +21,7 @@ async fn setup(pool: PgPool, scripts: Vec<Script>) -> Setup {
     let ai = FakeAi::with(scripts);
     let app = test_app_with_ai(pool, ai.clone());
     let a = seed_actors(&app).await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "電車難題", "description": "你會拉桿嗎？"})),
-        ),
-    )
-    .await;
-    let act = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/activities/{act}/publish"),
-            Some(&a.teacher),
-            None,
-        ),
-    )
-    .await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/conversations",
-            Some(&a.student),
-            Some(json!({"activity_id": act})),
-        ),
-    )
-    .await;
-    let conv = json_body(res).await["id"].as_str().unwrap().to_string();
+    let conv = start_conversation(&app, &a).await;
     Setup { app, a, ai, conv }
 }
 

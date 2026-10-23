@@ -3,15 +3,14 @@ import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { RadarPanel, Stat } from '@/features/dashboard/distribution'
+import { Stat } from '@/features/dashboard/distribution'
 import { ProfileForm } from '@/features/dashboard/profile-form'
-import { FrameworkBadge } from '@/features/dashboard/framework-badge'
 import { formatDate } from '@/features/teacher/format'
 import { useI18n, useT } from '@/i18n'
 import type { PersonalDashboard } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
-/** 個人儀表板：自己的對話數量、立場與論證傾向分布、最近完成的討論。只算自己的資料。 */
+/** 個人儀表板：自己的對話數量、最近完成的討論（主張、立場、回合數）。只算自己的資料。 */
 export function PersonalDashboardPage() {
   const t = useT()
   const { data, error, loading, reload } = useFetch<PersonalDashboard>('/api/dashboard/me')
@@ -46,41 +45,32 @@ function Body({ d }: { d: PersonalDashboard }) {
           </div>
         </div>
       ) : (
-        <>
-          <Card>
-            <CardContent className="space-y-4">
-              <h2 className="text-lg font-medium">{t('dashboard.me.distribution')}</h2>
-              <RadarPanel radar={d.radar} />
-            </CardContent>
-          </Card>
-          <section className="space-y-3" aria-labelledby="me-recent">
-            <h2 id="me-recent" className="text-lg font-medium">
-              {t('dashboard.me.recent')}
-            </h2>
-            <ul className="space-y-3">
-              {d.recent.map((r) => (
-                <li key={r.conversation_id}>
-                  <Card>
-                    <CardContent className="space-y-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <Link to={`/conversations/${r.conversation_id}`} className="font-medium break-words underline-offset-4 hover:underline">
-                          {r.title}
-                        </Link>
-                        <span className="text-muted-foreground text-xs">{formatDate(r.ended_at, lang)}</span>
-                      </div>
-                      {r.claim ? <p className="font-medium break-words">{r.claim}</p> : null}
-                      {r.stance ? <p className="text-muted-foreground text-sm break-words">{r.stance}</p> : null}
-                      <div className="flex flex-wrap gap-2">
-                        <FrameworkBadge framework={r.framework} />
-                        <Badge variant="outline">{t('dashboard.me.turnsOf', { count: r.turn_count })}</Badge>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </>
+        <section className="space-y-3" aria-labelledby="me-recent">
+          <h2 id="me-recent" className="text-lg font-medium">
+            {t('dashboard.me.recent')}
+          </h2>
+          <ul className="space-y-3">
+            {d.recent.map((r) => (
+              <li key={r.conversation_id}>
+                <Card>
+                  <CardContent className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Link to={`/conversations/${r.conversation_id}`} className="font-medium break-words underline-offset-4 hover:underline">
+                        {r.title}
+                      </Link>
+                      <span className="text-muted-foreground text-xs">{formatDate(r.ended_at, lang)}</span>
+                    </div>
+                    {r.claim ? <p className="font-medium break-words">{r.claim}</p> : null}
+                    {r.stance ? <p className="text-muted-foreground text-sm break-words">{r.stance}</p> : null}
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="outline">{t('dashboard.me.turnsOf', { count: r.turn_count })}</Badge>
+                    </div>
+                  </CardContent>
+                </Card>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   )

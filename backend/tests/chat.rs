@@ -8,15 +8,33 @@ use serde_json::{Value, json};
 use socrates_chat_backend::chat::MAX_MESSAGE_CHARS;
 use sqlx::PgPool;
 
-/// 教師建立並發布一個活動，回傳 id。
+/// 教師建立題目，再以它建立並發布一個活動，回傳 id。
 pub async fn published_activity(app: &Router, teacher: &str) -> String {
+    let topic = json_body(
+        send(
+            app,
+            json_req(
+                "POST",
+                "/api/topics",
+                Some(teacher),
+                Some(json!({"title": "電車難題"})),
+            ),
+        )
+        .await,
+    )
+    .await["id"]
+        .clone();
     let res = send(
         app,
         json_req(
             "POST",
             "/api/activities",
             Some(teacher),
-            Some(json!({"title": "電車難題", "description": "如果你是駕駛，你會怎麼做？"})),
+            Some(json!({
+                "title": "電車難題",
+                "description": "如果你是駕駛，你會怎麼做？",
+                "topic_id": topic,
+            })),
         ),
     )
     .await;
@@ -153,17 +171,8 @@ async fn unavailable_sources_are_rejected(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     // 草稿活動
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "草稿"})),
-        ),
-    )
-    .await;
-    let draft = json_body(res).await["id"].clone();
+    let topic = create_topic(&app, &a, "草稿題目").await;
+    let draft = create_activity(&app, &a, "草稿", &topic).await;
     for body in [
         json!({"activity_id": draft}),
         json!({}),
@@ -450,4 +459,107 @@ async fn conversation_keeps_snapshot_when_activity_changes(pool: PgPool) {
     )
     .await;
     assert_eq!(d["title"], "電車難題");
+}
+
+async fn assert_already_started(app: &Router, cookie: &str, activity_id: &str) {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/conversations",
+            Some(cookie),
+            Some(json!({"activity_id": activity_id})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(res).await["error"]["code"],
+        "activity_already_started"
+    );
+}
+
+#[sqlx::test]
+async fn one_conversation_per_activity_until_it_is_deleted(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let act = published_activity(&app, &a.teacher).await;
+    let conv = start(&app, &a.student, &act).await;
+
+    // 進行中的對話佔著這個活動
+    assert_already_started(&app, &a.student, &act).await;
+
+    // 已結束的對話也算
+    sqlx::query("UPDATE conversations SET status = 'ended', ended_at = now() WHERE id = $1")
+        .bind(conv.parse::<uuid::Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_already_started(&app, &a.student, &act).await;
+
+    // 限制是每位學生各一場：其他學生不受影響
+    let other = add_student(&app, &a, "sub-student2", "student2@example.com").await;
+    start(&app, &other, &act).await;
+
+    // 刪除該場對話後可以重新開始
+    let res = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/conversations/{conv}"),
+            Some(&a.student),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    let again = start(&app, &a.student, &act).await;
+    assert_ne!(again, conv);
+}
+
+#[sqlx::test]
+async fn practice_from_the_topic_bank_is_not_limited(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let topic = create_topic(&app, &a, "自由意志").await;
+    for _ in 0..2 {
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/conversations",
+                Some(&a.student),
+                Some(json!({"topic_id": topic})),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
+}
+
+#[sqlx::test]
+async fn concurrent_starts_for_the_same_activity_create_one_conversation(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let act = published_activity(&app, &a.teacher).await;
+    let post = || {
+        send(
+            &app,
+            json_req(
+                "POST",
+                "/api/conversations",
+                Some(&a.student),
+                Some(json!({"activity_id": act})),
+            ),
+        )
+    };
+    let (r1, r2) = tokio::join!(post(), post());
+    let mut statuses = [r1.status(), r2.status()];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::CREATED, StatusCode::CONFLICT]);
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM conversations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
 }

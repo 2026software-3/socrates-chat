@@ -209,7 +209,8 @@ pub struct Activity {
     pub id: Uuid,
     pub title: String,
     pub description: String,
-    pub topic_id: Option<Uuid>,
+    /// 活動必須選題庫題目（S-04.7）
+    pub topic_id: Uuid,
     pub status: String,
     pub created_at: DateTime<Utc>,
 }
@@ -228,6 +229,7 @@ pub(crate) struct NewActivity {
     title: String,
     #[serde(default)]
     description: String,
+    /// 必填；沒帶或為 `null` 回 `invalid_topic`，讓錯誤格式與其他題目錯誤一致
     topic_id: Option<Uuid>,
 }
 
@@ -291,7 +293,7 @@ pub(crate) async fn get_activity(
     tag = "activities",
     summary = "建立活動（草稿）",
     request_body = NewActivity,
-    responses((status = 201, description = "已建立", body = Activity))
+    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_title / invalid_topic", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -301,9 +303,10 @@ pub(crate) async fn create_activity(
     if !valid_text(&b.title) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    if let Some(t) = b.topic_id
-        && !topic_exists(&state.pool, t).await?
-    {
+    let Some(topic_id) = b.topic_id else {
+        return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+    };
+    if !topic_exists(&state.pool, topic_id).await? {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
     }
     let a = sqlx::query_as(
@@ -312,7 +315,7 @@ pub(crate) async fn create_activity(
     )
     .bind(b.title.trim())
     .bind(b.description)
-    .bind(b.topic_id)
+    .bind(topic_id)
     .bind(cu.user.id)
     .fetch_one(&state.pool)
     .await?;
@@ -326,7 +329,7 @@ pub(crate) async fn create_activity(
     summary = "修改活動（merge-patch）",
     params(("id" = Uuid, Path, description = "活動 ID")),
     request_body = ActivityPatch,
-    responses((status = 200, description = "更新後的活動", body = Activity))
+    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn update_activity(
     _: RequireTeacher,
@@ -337,26 +340,57 @@ pub(crate) async fn update_activity(
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    if let Some(Some(t)) = p.topic_id
-        && !topic_exists(&state.pool, t).await?
+    // 活動必須有題目：不能清除，只能換成另一個存在的題目
+    let new_topic = match p.topic_id {
+        Some(None) => return Err(ApiError::bad_request("invalid_topic", "請選擇題目")),
+        Some(Some(t)) => {
+            if !topic_exists(&state.pool, t).await? {
+                return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+            }
+            Some(t)
+        }
+        None => None,
+    };
+    // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
+    // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
+    let mut tx = state.pool.begin().await?;
+    let current: Option<(Uuid,)> =
+        sqlx::query_as("SELECT topic_id FROM activities WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((current_topic,)) = current else {
+        return Err(ApiError::not_found());
+    };
+    if let Some(t) = new_topic
+        && t != current_topic
     {
-        return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+        let (started,): (bool,) =
+            sqlx::query_as("SELECT EXISTS (SELECT 1 FROM conversations WHERE activity_id = $1)")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if started {
+            return Err(ApiError::conflict(
+                "activity_topic_locked",
+                "已有學生開始對話，不能更換題目",
+            ));
+        }
     }
-    sqlx::query_as(
+    let activity = sqlx::query_as(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
-                topic_id = CASE WHEN $4 THEN $5::uuid ELSE topic_id END, updated_at = now()
+                topic_id = COALESCE($4, topic_id), updated_at = now()
          WHERE id = $1
          RETURNING id, title, description, topic_id, status, created_at",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
-    .bind(p.topic_id.is_some())
-    .bind(p.topic_id.flatten())
-    .fetch_optional(&state.pool)
-    .await?
-    .map(Json)
-    .ok_or_else(ApiError::not_found)
+    .bind(new_topic)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(activity))
 }
 
 async fn set_status(
