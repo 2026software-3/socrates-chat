@@ -190,15 +190,25 @@ S-06.4 已決定來源呈現與失敗行為，這裡只決定「用哪些來源�
   - 「連續三天」的日界線為 Asia/Taipei 00:00；漏掉一天即歸零，歸零後重新累計。
   - 「初試問答」「累積對話」同樣是個人練習對話與活動對話都計入。
 
-仍待確認的細節：
+- **不做隱藏成就**：圖鑑（F-18.2）顯示所有成就的名稱、條件與進度。
+- **其他成就維持單一解鎖**，只有「累積對話」分銅銀金三級。
+- **首批 6 個成就的名稱與說明由開發端擬定**（需求方授權），三語版本隨 seed 資料提供。正式上線前，三種語言的文案需由熟悉該語言者校閱。累積對話的說明以參數 `{n}` 帶入各級場數。
 
-1. 6 個成就的正式名稱與說明（上表為暫名）。
-2. 其他成就是否也要有等級。
+| 成就 | `zh-TW` | `en` | `es` |
+| --- | --- | --- | --- |
+| 初試問答 | 初試問答：完成你的第一場對話 | First Dialogue: complete your first dialogue | Primer diálogo: completa tu primer diálogo |
+| 累積對話 | 思辨之路：累積完成 {n} 場對話 | Path of Inquiry: complete {n} dialogues in total | Camino de la indagación: completa {n} diálogos en total |
+| 高分思辨 | 思辨高手：在任一場對話中，任一維度拿到 5 分 | Sharp Reasoner: score 5 on any dimension in any dialogue | Razonamiento brillante: obtén 5 puntos en cualquier dimensión de un diálogo |
+| 連續三天 | 連續三天：連續 3 天，每天至少完成 1 場對話 | Three-Day Streak: complete at least one dialogue a day for 3 days in a row | Racha de tres días: completa al menos un diálogo al día durante 3 días seguidos |
+| 第一桶金 | 第一桶金：第一次領取任務獎勵 | First Reward: claim a task reward for the first time | Primera recompensa: reclama por primera vez la recompensa de una tarea |
+| 時尚入門 | 時尚入門：第一次用點數解鎖角色部件 | First Outfit: unlock a character part with points for the first time | Primer atuendo: desbloquea por primera vez una pieza del personaje con puntos |
+
+- 等級名稱：銅／銀／金，`en` 為 Bronze／Silver／Gold，`es` 為 Bronce／Plata／Oro。
+- 名稱中的「點數」需與點數正式名稱的翻譯一致，該翻譯隨 S-12 處理（S-07.2／S-07.4 待確認項目）。
 
 要決定：
 
-1. 是否有隱藏成就。
-2. 成就是否可分享（與 S-07.6 連動）。
+1. 成就是否可分享（與 S-07.6 連動）。
 
 ### S-07.6 成果分享格式與欄位（#135）
 
