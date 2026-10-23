@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { formatDate } from '@/features/teacher/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
-import type { Activity, ActivityStatus, Available, Topic } from '@/lib/types'
+import type { Activity, ActivityStatus, Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
@@ -217,9 +217,9 @@ function ActivityRow({
 export function ActivitiesPage() {
   const t = useT()
   const list = useFetch<Activity[]>('/api/activities')
-  // 教師不能呼叫 /api/admin/topics，題目清單來自 /api/catalog
-  const available = useFetch<Available>('/api/catalog')
-  const topics = available.data?.topics ?? []
+  // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
+  const available = useFetch<Topic[]>('/api/topics')
+  const topics = (available.data ?? []).filter((tp) => tp.is_active)
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const busyRef = useRef(new Set<string>())

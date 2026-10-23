@@ -46,7 +46,7 @@ afterEach(() => {
 function mockList(list: Activity[]) {
   server.use(
     http.get('/api/activities', () => HttpResponse.json(list)),
-    http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+    http.get('/api/topics', () => HttpResponse.json(topics)),
   )
 }
 
@@ -75,7 +75,7 @@ describe('ActivitiesPage', () => {
   it('shows a translated error and retries', async () => {
     let calls = 0
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => {
         calls += 1
         return calls === 1 ? apiError(500, 'internal') : HttpResponse.json([act()])
@@ -126,7 +126,7 @@ describe('ActivitiesPage', () => {
     let list: Activity[] = []
     let body: unknown
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json(list)),
       http.post('/api/activities', async ({ request }) => {
         body = await request.json()
@@ -181,7 +181,7 @@ describe('ActivitiesPage', () => {
     let list = [act()]
     let body: unknown
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json(list)),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
@@ -212,7 +212,7 @@ describe('ActivitiesPage', () => {
   it('omits topic_id when the topic is unchanged', async () => {
     let body: unknown
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json([act()])),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
@@ -230,7 +230,7 @@ describe('ActivitiesPage', () => {
 
   it('offers no empty topic choice while editing', async () => {
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json([act()])),
     )
     setup()
@@ -244,7 +244,7 @@ describe('ActivitiesPage', () => {
 
   it('shows the locked-topic message when the topic of an started activity is changed', async () => {
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json([act()])),
       http.patch('/api/activities/a1', () => apiError(409, 'activity_topic_locked')),
     )
@@ -268,9 +268,23 @@ describe('ActivitiesPage', () => {
     expect(within(dialog).getByLabelText('題目')).toHaveValue('gone')
   })
 
+  it('only offers active topics even though /api/topics lists every topic', async () => {
+    server.use(
+      http.get('/api/activities', () => HttpResponse.json([act({ topic_id: 't3' })])),
+      http.get('/api/topics', () =>
+        HttpResponse.json([...topics, { id: 't3', title: '已停用題目', description: '', category: null, is_active: false }]),
+      ),
+    )
+    setup()
+    const select = await screen.findByLabelText('題目')
+    await waitFor(() => expect(within(select).getByRole('option', { name: '電車難題' })).toBeInTheDocument())
+    expect(within(select).queryByRole('option', { name: '已停用題目' })).not.toBeInTheDocument()
+    expect(await screen.findByText('題目：（已停用或無法載入的題目）')).toBeInTheDocument()
+  })
+
   it('keeps the dialog open and shows the error when saving fails', async () => {
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json([act()])),
       http.patch('/api/activities/a1', () => apiError(400, 'invalid_topic')),
     )
@@ -286,7 +300,7 @@ describe('ActivitiesPage', () => {
   it('shows an error with retry when a reload fails while old data is on screen', async () => {
     let calls = 0
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => {
         calls += 1
         return calls === 2 ? apiError(500, 'internal') : HttpResponse.json([act()])
@@ -317,7 +331,7 @@ describe('ActivitiesPage', () => {
     let status: Activity['status'] = 'draft'
     const calls: string[] = []
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json([act({ status })])),
       http.post('/api/activities/a1/publish', () => {
         calls.push('publish')
@@ -344,7 +358,7 @@ describe('ActivitiesPage', () => {
   it('disables the row button while a status change is pending and shows errors', async () => {
     let count = 0
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => HttpResponse.json([act()])),
       http.post('/api/activities/a1/publish', async () => {
         count += 1
@@ -367,7 +381,7 @@ describe('ActivitiesPage', () => {
     let posted = false
     server.use(
       http.get('/api/activities', () => HttpResponse.json([])),
-      http.get('/api/catalog', () => apiError(500, 'internal')),
+      http.get('/api/topics', () => apiError(500, 'internal')),
       http.post('/api/activities', () => {
         posted = true
         return HttpResponse.json(act(), { status: 201 })
