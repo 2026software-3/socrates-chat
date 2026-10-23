@@ -47,16 +47,14 @@ pub mod voice;
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 不套用一般請求逾時、改用 `Config::long_request_timeout` 的路由（#325）。
-/// 逾時只計到送出回應標頭為止，所以 SSE 串流本身不會被截斷（串流由 AI 逾時限制，S-03.5）；
-/// 這裡的較長逾時只限制讀取 body 與開始串流前的處理。
-const LONG_RUNNING_ROUTES: [&str; 6] = [
-    // SSE：送出訊息並串流回覆、重試串流
-    "/api/conversations/{id}/messages",
-    "/api/conversations/{id}/stream",
+/// 逾時只計到送出回應標頭為止。SSE 路由（送出訊息、重試串流）不在此列：AI 回覆在背景工作產生，
+/// 標頭送出後串流本身不受逾時影響（長度由 AI 逾時限制，S-03.5），標頭之前只有讀取 JSON body 與資料庫查詢。
+const LONG_RUNNING_ROUTES: [&str; 4] = [
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
     // 上傳最多 10 MB 音訊，並同步等語音服務
     "/api/voice/transcribe",
+    // 同步等語音服務合成語音
     "/api/voice/speech",
     // 管理者匯入時逐一雜湊新帳號的臨時密碼（Argon2），名單大時會超過一般逾時
     "/api/roster/import",
