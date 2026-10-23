@@ -199,12 +199,6 @@ pub(crate) struct Transcript {
     text: String,
 }
 
-/// OpenAPI schema for the raw binary request body; the handler extracts the same bytes as `Bytes`.
-#[derive(utoipa::ToSchema)]
-#[allow(dead_code)]
-#[schema(value_type = String, format = Binary)]
-struct AudioUpload(Vec<u8>);
-
 /// Translate Axum's body-size rejection into the API's standard JSON error format.
 pub(crate) struct AudioBody(Bytes);
 

@@ -21,6 +21,8 @@ use socrates_chat_backend::{AppState, app, voice::OpenAiVoice};
 use sqlx::PgPool;
 use tracing_subscriber::fmt::MakeWriter;
 
+const AUDIO_SENTINEL: &[u8] = b"RAW_AUDIO_SECRET_SENTINEL_7f19";
+
 #[derive(Clone, Default)]
 struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
 
@@ -90,6 +92,37 @@ fn audio_request(cookie: &str, audio: &[u8]) -> Request<Body> {
         .unwrap()
 }
 
+/// 掃描 public schema 的每個資料表（整列轉成文字），確認原始音訊沒有出現在任何地方。
+async fn assert_audio_absent_from_every_table(pool: &PgPool) {
+    let hex_sentinel: String = AUDIO_SENTINEL.iter().map(|b| format!("{b:02x}")).collect();
+    let plain_sentinel = String::from_utf8_lossy(AUDIO_SENTINEL);
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(!tables.is_empty(), "expected tables to scan");
+    let mut scanned_rows = 0_usize;
+    for table in tables {
+        let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT t::text FROM \"{table}\" t"
+        )))
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        scanned_rows += rows.len();
+        for row in rows {
+            assert!(
+                !row.contains(plain_sentinel.as_ref()) && !row.contains(&hex_sentinel),
+                "raw audio found in table {table}"
+            );
+        }
+    }
+    assert!(scanned_rows > 0, "expected seeded rows to scan");
+}
+
 #[sqlx::test]
 async fn audio_is_not_persisted_or_logged_after_success_or_failure(pool: PgPool) {
     let logs = CapturedLogs::default();
@@ -99,12 +132,6 @@ async fn audio_is_not_persisted_or_logged_after_success_or_failure(pool: PgPool)
         .with_max_level(tracing::Level::TRACE)
         .init();
 
-    const AUDIO_SENTINEL: &[u8] = b"RAW_AUDIO_SECRET_SENTINEL_7f19";
-    let transcript_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
     let (success_base, success_requests) = spawn_fake_openai(StatusCode::OK).await;
     let success_app = app_with_openai_voice(pool.clone(), &success_base);
     let actors = seed_actors(&success_app).await;
@@ -113,7 +140,7 @@ async fn audio_is_not_persisted_or_logged_after_success_or_failure(pool: PgPool)
     assert_eq!(json_body(success).await, json!({"text": "合成逐字稿"}));
     assert!(
         String::from_utf8_lossy(&success_requests.lock().unwrap()[0])
-            .contains("RAW_AUDIO_SECRET_SENTINEL_7f19")
+            .contains(&*String::from_utf8_lossy(AUDIO_SENTINEL))
     );
 
     let (failure_base, failure_requests) =
@@ -124,19 +151,15 @@ async fn audio_is_not_persisted_or_logged_after_success_or_failure(pool: PgPool)
     assert_eq!(json_body(failure).await["error"]["code"], "voice_failed");
     assert!(
         String::from_utf8_lossy(&failure_requests.lock().unwrap()[0])
-            .contains("RAW_AUDIO_SECRET_SENTINEL_7f19")
+            .contains(&*String::from_utf8_lossy(AUDIO_SENTINEL))
     );
 
-    let transcript_count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(transcript_count_after, transcript_count_before);
+    assert_audio_absent_from_every_table(&pool).await;
 
     let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(
         output.contains("speech-to-text returned an error status"),
         "expected to capture OpenAiVoice's failure log; got: {output}"
     );
-    assert!(!output.contains("RAW_AUDIO_SECRET_SENTINEL_7f19"));
+    assert!(!output.contains(&*String::from_utf8_lossy(AUDIO_SENTINEL)));
 }
