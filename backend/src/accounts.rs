@@ -48,7 +48,7 @@ pub(crate) struct StudentRow {
     path = "/api/students",
     tag = "roster",
     summary = "名單上的學生與帳號狀態",
-    responses((status = 200, description = "學生列表", body = Vec<StudentRow>), crate::error::CommonErrors)
+    responses((status = 200, description = "學生列表", body = Vec<StudentRow>))
 )]
 pub(crate) async fn list_students(
     _: RequireTeacher,
@@ -113,7 +113,7 @@ pub(crate) struct StatusBody {
     summary = "設定帳號停用狀態（冪等）",
     params(("id" = Uuid, Path, description = "使用者 ID")),
     request_body = StatusBody,
-    responses((status = 204, description = "狀態已設定；相同狀態不重複稽核"), (status = 409, description = "cannot_disable_self / last_admin", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "狀態已設定；相同狀態不重複稽核"), (status = 409, description = "cannot_disable_self / last_admin", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn set_status(
     RequireAdmin(cu): RequireAdmin,
@@ -197,7 +197,7 @@ pub(crate) struct DeleteBody {
     summary = "刪除學生帳號與其資料",
     params(("email" = String, Path, description = "電子郵件")),
     request_body = DeleteBody,
-    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn delete_student(
     RequireTeacher(cu): RequireTeacher,

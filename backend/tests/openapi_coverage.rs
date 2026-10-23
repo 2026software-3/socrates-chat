@@ -8,8 +8,12 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use socrates_chat_backend::openapi;
 
-/// 文件之外的路由：健康檢查與文件本身。
-const UNDOCUMENTED: [&str; 2] = ["/health", "/api/openapi.json"];
+/// 文件之外的路由：健康檢查與文件本身（含 API reference 頁面用的 Redoc 腳本）。
+const UNDOCUMENTED: [&str; 3] = [
+    "/health",
+    "/api/openapi.json",
+    "/api/docs/redoc.standalone.js",
+];
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
 /// 取出 `open` 位置（`(`）對應的右括號之前的內容。

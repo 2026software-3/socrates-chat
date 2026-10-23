@@ -19,6 +19,7 @@ use crate::{
     accounts::audit,
     auth_store,
     auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
+    catalog::nullable,
     error::ApiError,
     password,
 };
@@ -46,7 +47,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/auth/change-password", post(change_password))
         .route("/api/admin/users/reset-password", post(reset_password))
         .route("/api/auth/logout", post(logout))
-        .route("/api/me", get(me))
+        .route("/api/me", get(me).patch(update_me))
 }
 
 /// 256 位元隨機 token（base64url）。
@@ -236,7 +237,7 @@ impl FromRequestParts<AppState> for RequireStudent {
     tag = "auth",
     summary = "導向 Google 授權頁",
     security(()),
-    responses((status = 303, description = "重新導向到 Google"), crate::error::CommonErrors)
+    responses((status = 303, description = "重新導向到 Google"))
 )]
 pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, ApiError> {
     let req = state.identity.start();
@@ -245,6 +246,7 @@ pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, Api
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
@@ -262,7 +264,7 @@ fn login_error(state: &AppState, code: &str) -> Response {
     summary = "Google 回呼（成功設定 sid cookie 並導回；失敗導回 /login?error=code）",
     params(CallbackParams),
     security(()),
-    responses((status = 303, description = "重新導向"), crate::error::CommonErrors)
+    responses((status = 303, description = "重新導向"))
 )]
 pub(crate) async fn callback(
     State(state): State<AppState>,
@@ -344,7 +346,7 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     tag = "auth",
     summary = "登出",
     security(()),
-    responses((status = 204, description = "已登出"), crate::error::CommonErrors)
+    responses((status = 204, description = "已登出"))
 )]
 pub(crate) async fn logout(
     State(state): State<AppState>,
@@ -375,7 +377,7 @@ pub(crate) struct MeResponse {
     path = "/api/me",
     tag = "auth",
     summary = "目前登入者與角色",
-    responses((status = 200, description = "目前使用者", body = MeResponse), crate::error::CommonErrors)
+    responses((status = 200, description = "目前使用者", body = MeResponse))
 )]
 pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
     let u = cu.user;
@@ -387,6 +389,68 @@ pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
         must_change_password: cu.must_change_password,
         roles: cu.roles,
     })
+}
+
+/// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
+const DISPLAY_NAME_MAX_CHARS: usize = 20;
+
+/// 去頭尾空白後的名稱是否可用：不超過上限，且不含控制字元（換行、tab、NUL 等）。
+/// U+2028／U+2029（行／段落分隔，類別 Zl／Zp）不屬於 `is_control`，但同樣會破壞清單排版，一併拒絕。
+fn valid_display_name(name: &str) -> bool {
+    let breaks_layout = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    name.chars().count() <= DISPLAY_NAME_MAX_CHARS && !name.chars().any(breaks_layout)
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct MePatch {
+    /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，不可含控制字元，其他字元不限制。
+    #[serde(default, deserialize_with = "nullable")]
+    display_name: Option<Option<String>>,
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/me",
+    tag = "auth",
+    summary = "修改自己的顯示名稱（學生）",
+    request_body = MePatch,
+    responses(
+        (status = 200, description = "更新後的使用者", body = MeResponse),
+        (status = 400, description = "名稱超過 20 個字元或含控制字元（invalid_display_name）"),
+        (status = 403, description = "不是修課名單內的學生"),
+    )
+)]
+pub(crate) async fn update_me(
+    RequireStudent(cu): RequireStudent,
+    State(state): State<AppState>,
+    Json(p): Json<MePatch>,
+) -> Result<Json<MeResponse>, ApiError> {
+    let mut u = cu.user;
+    if let Some(name) = p.display_name {
+        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        if name.as_deref().is_some_and(|n| !valid_display_name(n)) {
+            return Err(ApiError::bad_request(
+                "invalid_display_name",
+                "顯示名稱最多 20 個字元，且不可包含控制字元",
+            ));
+        }
+        u.display_name = sqlx::query_scalar(
+            "UPDATE users SET display_name = $2, updated_at = now()
+             WHERE id = $1 RETURNING display_name",
+        )
+        .bind(u.id)
+        .bind(name)
+        .fetch_one(&state.pool)
+        .await?;
+    }
+    Ok(Json(MeResponse {
+        id: u.id,
+        email: u.email,
+        display_name: u.display_name,
+        is_admin: u.is_admin,
+        must_change_password: cu.must_change_password,
+        roles: cu.roles,
+    }))
 }
 
 // ---- 內建帳號密碼登入（S-08.2 第 1 節）----
@@ -435,7 +499,7 @@ pub(crate) struct LoginResponse {
     summary = "內建帳號登入",
     request_body = LoginBody,
     security(()),
-    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn password_login(
     State(state): State<AppState>,
@@ -493,7 +557,7 @@ pub(crate) struct ChangePasswordBody {
     tag = "auth",
     summary = "更改自己的密碼",
     request_body = ChangePasswordBody,
-    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn change_password(
     AnyCurrentUser(cu): AnyCurrentUser,
@@ -548,7 +612,7 @@ pub(crate) struct ResetResponse {
     tag = "admin",
     summary = "重設密碼（僅管理者；沒有帳號就建立）",
     request_body = ResetBody,
-    responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse), crate::error::CommonErrors)
+    responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse))
 )]
 pub(crate) async fn reset_password(
     RequireAdmin(cu): RequireAdmin,

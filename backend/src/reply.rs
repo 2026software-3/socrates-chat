@@ -77,7 +77,7 @@ pub type EventStream = Sse<KeepAliveStream<BoxStream<'static, Result<Event, Infa
     tag = "conversations",
     summary = "重試：重新串流尚未回覆的 AI 回覆（SSE）",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "conversation_ended / reply_in_progress / nothing_to_reply", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "conversation_ended / reply_in_progress / nothing_to_reply", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn stream(
     RequireStudent(cu): RequireStudent,

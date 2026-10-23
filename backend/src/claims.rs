@@ -104,7 +104,7 @@ pub(crate) struct RegroupBody {
     tag = "dashboard",
     summary = "請 AI 重新分組某題目的主張",
     request_body = RegroupBody,
-    responses((status = 204, description = "已重新分組"), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已重新分組"), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn regroup(
     RequireTeacher(cu): RequireTeacher,

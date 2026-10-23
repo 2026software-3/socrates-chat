@@ -7,12 +7,90 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, auth, catalog, chat, claims, dashboard,
-    error::{CommonErrors, ErrorBody},
-    reply, roster, summary, voice,
+    accounts, auth, catalog, chat, claims, dashboard, error::ErrorBody, reply, roster, summary,
+    voice,
 };
 
 struct SessionCookie;
+
+/// 幾乎所有端點共有的錯誤回應，統一補上並以 `$ref` 指向 `ErrorBody`，避免每個端點重複展開：
+/// 401／403 只加在需要登入或會改變狀態的端點；404 只加在有路徑參數的端點；500 一律加。
+/// 端點自己宣告的同狀態碼（例如登入的 401 `invalid_credentials`）不會被覆蓋。
+struct CommonErrorResponses;
+
+impl Modify for CommonErrorResponses {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{
+            PathItem, Ref, RefOr, content::ContentBuilder, path::HttpMethod,
+            response::ResponseBuilder,
+        };
+        let response = |description: &str| {
+            RefOr::T(
+                ResponseBuilder::new()
+                    .description(description)
+                    .content(
+                        "application/json",
+                        ContentBuilder::new()
+                            .schema(Some(Ref::from_schema_name("ErrorBody")))
+                            .build(),
+                    )
+                    .build(),
+            )
+        };
+        for item in openapi.paths.paths.values_mut() {
+            let has_path_params = |op: &utoipa::openapi::path::Operation| {
+                op.parameters.iter().flatten().any(|p| {
+                    matches!(
+                        p,
+                        RefOr::T(p) if matches!(p.parameter_in, utoipa::openapi::path::ParameterIn::Path)
+                    )
+                })
+            };
+            let PathItem {
+                get,
+                put,
+                post,
+                delete,
+                patch,
+                ..
+            } = item;
+            for (method, op) in [
+                (HttpMethod::Get, get),
+                (HttpMethod::Put, put),
+                (HttpMethod::Post, post),
+                (HttpMethod::Delete, delete),
+                (HttpMethod::Patch, patch),
+            ] {
+                let Some(op) = op else { continue };
+                // `security(())` 代表公開端點
+                let public = op.security.as_ref().is_some_and(|s| {
+                    s.iter()
+                        .any(|r| r == &utoipa::openapi::security::SecurityRequirement::default())
+                });
+                let path_param = has_path_params(op);
+                let mut add = |code: &str, description: &str| {
+                    op.responses
+                        .responses
+                        .entry(code.to_string())
+                        .or_insert_with(|| response(description));
+                };
+                if !public {
+                    add("401", "未登入（`unauthorized`）");
+                }
+                if !public || method != HttpMethod::Get {
+                    add(
+                        "403",
+                        "角色不符、名單外、帳號停用、須先改密碼或 CSRF（`forbidden`／`not_enrolled`／`account_disabled`／`password_change_required`／`csrf`）",
+                    );
+                }
+                if path_param {
+                    add("404", "資源不存在或不屬於你（`not_found`）");
+                }
+                add("500", "系統錯誤（`internal`）");
+            }
+        }
+    }
+}
 
 impl Modify for SessionCookie {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
@@ -34,7 +112,7 @@ impl Modify for SessionCookie {
     ),
     paths(
         auth::login, auth::callback, auth::password_login, auth::change_password, auth::logout,
-        auth::me, auth::reset_password,
+        auth::me, auth::update_me, auth::reset_password,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
@@ -51,7 +129,7 @@ impl Modify for SessionCookie {
         voice::transcribe, voice::speech,
     ),
     components(schemas(ErrorBody)),
-    modifiers(&SessionCookie),
+    modifiers(&SessionCookie, &CommonErrorResponses),
     security(("session" = []))
 )]
 pub struct ApiDoc;
@@ -60,6 +138,3 @@ pub struct ApiDoc;
 pub fn document() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
-
-#[allow(unused)]
-fn _common_errors_are_referenced(_: CommonErrors) {}

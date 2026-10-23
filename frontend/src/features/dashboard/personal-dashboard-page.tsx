@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { RadarPanel, Stat } from '@/features/dashboard/distribution'
+import { ProfileForm } from '@/features/dashboard/profile-form'
 import { FrameworkBadge } from '@/features/dashboard/framework-badge'
 import { formatDate } from '@/features/teacher/format'
 import { useI18n, useT } from '@/i18n'
@@ -17,6 +18,7 @@ export function PersonalDashboardPage() {
 
   return (
     <Page title={t('dashboard.me.title')}>
+      <ProfileForm />
       {loading && !data ? <LoadingBlock /> : null}
       {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
       {data ? <Body d={data} /> : null}

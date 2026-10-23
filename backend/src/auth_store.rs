@@ -56,7 +56,8 @@ pub struct LoginState {
 
 /// 依 Google 帳號建立、更新或綁定使用者。
 ///
-/// 1. 已有相同 `sub` 的使用者：更新電子郵件（轉小寫）與顯示名稱。
+/// 1. 已有相同 `sub` 的使用者：更新電子郵件（轉小寫）；顯示名稱只在尚未設定時才取自 Google，
+///    不覆寫使用者自訂的名稱。
 /// 2. 否則，電子郵件已有尚未綁定 Google 的內建帳號：綁定 `sub`（呼叫端須確認 `email_verified`）。
 ///    信箱的擁有者本人登入了，所以：仍是臨時密碼（從未更改）的帳號會清掉密碼，建立者知道的臨時密碼
 ///    不能繼續用；`admin_on_create`（信箱在 ADMIN_EMAILS）時授予管理者。使用者自己改過的密碼不受影響。
@@ -72,7 +73,8 @@ pub async fn upsert_user(
 ) -> Result<User, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let existing: Option<User> = sqlx::query_as(
-        "UPDATE users SET email = lower($2), display_name = $3, updated_at = now()
+        "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, $3),
+                updated_at = now()
          WHERE google_sub = $1
          RETURNING id, google_sub, email, display_name, is_admin, must_change_password, created_at",
     )

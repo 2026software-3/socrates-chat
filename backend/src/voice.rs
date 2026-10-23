@@ -188,16 +188,16 @@ pub(crate) struct TranscribeQuery {
     language: String,
 }
 
+/// 只給 OpenAPI 描述二進位本文用。
+#[derive(utoipa::ToSchema)]
+#[schema(value_type = String, format = Binary)]
+#[allow(dead_code)]
+pub(crate) struct AudioBytes(Vec<u8>);
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Transcript {
     text: String,
 }
-
-/// OpenAPI schema for the raw binary request body; the handler extracts the same bytes as `Bytes`.
-#[derive(utoipa::ToSchema)]
-#[allow(dead_code)]
-#[schema(value_type = String, format = Binary)]
-struct AudioUpload(Vec<u8>);
 
 /// Translate Axum's body-size rejection into the API's standard JSON error format.
 pub(crate) struct AudioBody(Bytes);
@@ -231,11 +231,7 @@ impl FromRequest<AppState> for AudioBody {
     tag = "voice",
     summary = "語音轉文字（請求本文是音訊，上限 10 MB）",
     params(TranscribeQuery),
-    request_body(
-        content = inline(AudioUpload),
-        description = "原始音訊位元組；辨識完成或失敗後立即丟棄，不會保存",
-        content_type = "audio/*"
-    ),
+    request_body(content = AudioBytes, content_type = "audio/*", description = "原始音訊位元組；Content-Type 須為 audio/*；辨識完成或失敗後立即丟棄，不會保存"),
     responses(
         (status = 200, description = "辨識文字", body = Transcript),
         (status = 400, description = "invalid_language：不支援的語言；invalid_audio：Content-Type 不是 audio/* 或音訊本文為空", body = crate::error::ErrorBody),
@@ -283,7 +279,7 @@ pub(crate) struct SpeechBody {
     tag = "voice",
     summary = "文字轉語音",
     request_body = SpeechBody,
-    responses((status = 200, description = "audio/mpeg", content_type = "audio/mpeg", body = Vec<u8>), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "audio/mpeg", content_type = "audio/mpeg", body = AudioBytes), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn speech(
     _: RequireStudent,

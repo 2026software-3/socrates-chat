@@ -10,8 +10,15 @@ fn transcription_documents_request_response_and_error_contracts() {
     let request = &operation["requestBody"];
     assert_eq!(request["required"], true);
     assert!(request["content"]["audio/*"].is_object());
-    assert_eq!(request["content"]["audio/*"]["schema"]["type"], "string");
-    assert_eq!(request["content"]["audio/*"]["schema"]["format"], "binary");
+    let audio_schema = &request["content"]["audio/*"]["schema"];
+    let audio_schema = audio_schema["$ref"]
+        .as_str()
+        .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+        .map_or(audio_schema, |name| {
+            &document["components"]["schemas"][name]
+        });
+    assert_eq!(audio_schema["type"], "string");
+    assert_eq!(audio_schema["format"], "binary");
 
     let language = operation["parameters"]
         .as_array()
