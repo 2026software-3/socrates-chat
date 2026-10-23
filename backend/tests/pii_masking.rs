@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use common::Script::*;
@@ -22,6 +22,15 @@ const REPLY: [&str; 2] = [
     "{\"question_type\":\"reason\",\"advance\":false,\"reason\":\"尚未說明理由\"}",
 ];
 
+/// 含電子郵件的總結，讓後續的主張分組請求也帶個資。
+const SUMMARY: &str = r#"{
+    "stance": "會拉桿", "reasons": "五個人比一個人多",
+    "claim": "s@example.com 認為該拉桿",
+    "framework": "utilitarianism",
+    "scores": {"utilitarianism": 4, "deontology": 1, "virtue": 2,
+               "contractarianism": 1, "care": 2, "existentialism": 0}
+}"#;
+
 fn sent_text(req: &AiRequest) -> String {
     let mut text = req.system.clone();
     for turn in &req.messages {
@@ -40,16 +49,21 @@ fn assert_no_originals(reqs: &[AiRequest]) {
     }
 }
 
-async fn wait_for_requests(ai: &Arc<FakeAi>, n: usize) {
-    for _ in 0..200 {
-        if ai.request_count() >= n {
-            // 再給背景任務一點時間把結果寫進資料庫
-            tokio::time::sleep(Duration::from_millis(100)).await;
+/// 總結與主張分組都在背景任務完成；等分組結果寫進資料庫才算完成。
+async fn wait_for_claim_group(pool: &PgPool) {
+    for _ in 0..400 {
+        let grouped: bool = sqlx::query_scalar(
+            "SELECT COALESCE(bool_and(claim_group_id IS NOT NULL), false) FROM summaries",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if grouped {
             return;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("AI was not called {n} times");
+    panic!("claim grouping did not finish");
 }
 
 #[sqlx::test]
@@ -109,16 +123,8 @@ async fn typed_and_spoken_messages_are_masked_only_on_the_way_out(pool: PgPool) 
 
 #[sqlx::test]
 async fn summary_and_claim_grouping_requests_are_masked(pool: PgPool) {
-    let summary = json!({
-        "stance": "會拉桿", "reasons": "五個人比一個人多",
-        "claim": "s@example.com 認為該拉桿",
-        "framework": "utilitarianism",
-        "scores": {"utilitarianism": 4, "deontology": 1, "virtue": 2,
-                   "contractarianism": 1, "care": 2, "existentialism": 0},
-    })
-    .to_string();
     let ai = FakeAi::with(vec![
-        Reply(vec![Box::leak(summary.into_boxed_str())]),
+        Reply(vec![SUMMARY]),
         Reply(vec!["{\"group\":\"拉桿\"}"]),
         Reply(vec!["{\"groups\":[{\"name\":\"拉桿\",\"members\":[1]}]}"]),
     ]);
@@ -139,7 +145,7 @@ async fn summary_and_claim_grouping_requests_are_masked(pool: PgPool) {
     .await;
     assert_eq!(res.status(), StatusCode::ACCEPTED);
     // 總結，再接著主張分組
-    wait_for_requests(&ai, 2).await;
+    wait_for_claim_group(&pool).await;
 
     let res = send(
         &app,

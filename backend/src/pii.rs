@@ -4,7 +4,10 @@
 //! 以 `MaskingAi` 包住 `AiProvider`，所有 AI 呼叫（對話追問、總結、主張分組）都經過同一個遮蔽點。
 //! 規則有變動時遞增 `ai::RULES_VERSION`。
 
-use std::sync::{Arc, LazyLock};
+use std::{
+    borrow::Cow,
+    sync::{Arc, LazyLock},
+};
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -17,17 +20,18 @@ const AREA: &str = "(?:826|836|37|49|82|89|[2-8])";
 /// 市話號碼 6–8 碼，中間可有一個空白或 `-`（例如 `2345-6789`）。
 const LOCAL: &str = "(?:[0-9]{2,4}[ -][0-9]{4}|[0-9]{6,8})";
 
-/// 依比對順序排列的規則：身分證字號、學號、電子郵件、電話（S-02.6）。
+/// 依比對順序排列的規則：電子郵件、身分證字號、學號、電話（S-02.6）。
+/// 電子郵件最先，帳號常是學號、手機號碼或身分證字號，先遮蔽其他規則會讓信箱只被遮掉一部分。
 fn rules() -> [(String, &'static str); 4] {
     let mobile = "(?:\\+?886[ -]?|0)9(?:[ -]?[0-9]){8}";
     let landline = format!("(?:\\+?886[ -]?\\(?{AREA}\\)?|\\(?0{AREA}\\)?)[ -]?{LOCAL}");
     [
-        ("[A-Za-z][12][0-9]{8}".to_string(), "[NATIONAL_ID]"),
-        ("[0-9]{8}[A-Za-z]".to_string(), "[STUDENT_ID]"),
         (
             "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+".to_string(),
             "[EMAIL]",
         ),
+        ("[A-Za-z][12][0-9]{8}".to_string(), "[NATIONAL_ID]"),
+        ("[0-9]{8}[A-Za-z]".to_string(), "[STUDENT_ID]"),
         (format!("{mobile}|{landline}"), "[PHONE]"),
     ]
 }
@@ -47,19 +51,23 @@ impl Masker {
     }
 
     /// 依序套用每條規則；佔位詞本身不符合任何規則，已遮蔽的片段不會被重複處理。
-    pub fn mask(&self, text: &str) -> String {
-        self.rules
-            .iter()
-            .fold(text.to_string(), |text, (re, placeholder)| {
-                replace_isolated(&text, re, placeholder)
-            })
+    /// 沒有任何比對時回傳原字串的借用，不複製。
+    fn mask<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.rules.iter().fold(
+            Cow::Borrowed(text),
+            |text, (re, placeholder)| match replace_isolated(&text, re, placeholder) {
+                Some(masked) => Cow::Owned(masked),
+                None => text,
+            },
+        )
     }
 }
 
 /// 只取代前後都沒有緊鄰英數字的比對結果，避免把較長的數字串或英數混合字串切一段遮掉。
-fn replace_isolated(text: &str, re: &Regex, placeholder: &str) -> String {
+/// 沒有任何取代時回傳 `None`。
+fn replace_isolated(text: &str, re: &Regex, placeholder: &str) -> Option<String> {
     let isolated = |c: Option<char>| !c.is_some_and(|c| c.is_ascii_alphanumeric());
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::new();
     let (mut copied, mut from) = (0, 0);
     while let Some(m) = re.find_at(text, from) {
         if isolated(text[..m.start()].chars().next_back())
@@ -73,50 +81,41 @@ fn replace_isolated(text: &str, re: &Regex, placeholder: &str) -> String {
             from = m.start() + text[m.start()..].chars().next().map_or(1, char::len_utf8);
         }
     }
+    if copied == 0 {
+        return None;
+    }
     out.push_str(&text[copied..]);
-    out
+    Some(out)
 }
 
-/// 規則只編譯一次；編譯失敗時為 `None`，之後的 AI 呼叫一律失敗而不送原文。
-static MASKER: LazyLock<Option<Masker>> = LazyLock::new(|| {
-    Masker::new()
-        .inspect_err(|_| tracing::error!("pii masking rules failed to compile"))
-        .ok()
-});
-
-/// 把文字中的個資換成佔位詞。
-pub fn mask(text: &str) -> Option<String> {
-    MASKER.as_ref().map(|m| m.mask(text))
-}
+/// 規則是常數，編譯失敗代表程式有 bug；`MaskingAi::new` 會在 `AppState::new`（啟動時）
+/// 就觸發編譯，讓問題在啟動時浮現，而不是等到第一次 AI 呼叫。
+static MASKER: LazyLock<Masker> =
+    LazyLock::new(|| Masker::new().expect("pii masking rules must compile"));
 
 /// 在送出前遮蔽請求中所有文字（系統提示與每則訊息）的 `AiProvider`。
 pub struct MaskingAi {
     inner: Arc<dyn AiProvider>,
-    masker: Option<&'static Masker>,
 }
 
 impl MaskingAi {
     pub fn new(inner: Arc<dyn AiProvider>) -> Self {
-        Self {
-            inner,
-            masker: MASKER.as_ref(),
-        }
+        LazyLock::force(&MASKER);
+        Self { inner }
     }
 }
 
 #[async_trait]
 impl AiProvider for MaskingAi {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        // 遮蔽不可用時請求失敗，依 S-03.5 的外部服務失敗處理；不得改送原文
-        let masker = self.masker.ok_or(AiError)?;
         let req = AiRequest {
-            system: masker.mask(&req.system),
+            system: MASKER.mask(&req.system).into_owned(),
             messages: req
                 .messages
                 .into_iter()
                 .map(|t| ChatTurn {
                     role: t.role,
-                    content: masker.mask(&t.content),
+                    content: MASKER.mask(&t.content).into_owned(),
                 })
                 .collect(),
         };
@@ -132,7 +131,7 @@ mod tests {
     use crate::ai::{ChatRole, ChatTurn};
 
     fn masked(text: &str) -> String {
-        mask(text).expect("rules compile")
+        MASKER.mask(text).into_owned()
     }
 
     #[test]
@@ -147,6 +146,27 @@ mod tests {
                 "我的信箱是 [EMAIL]。"
             );
         }
+    }
+
+    #[test]
+    fn masks_the_whole_email_when_the_account_looks_like_another_kind_of_id() {
+        for email in [
+            "wang.41347064s@school.edu.tw",
+            "41347064S@school.edu.tw",
+            "0912345678@example.com",
+            "A123456789@gmail.com",
+        ] {
+            assert_eq!(masked(&format!("寄到 {email} 就好")), "寄到 [EMAIL] 就好");
+        }
+    }
+
+    #[test]
+    fn text_without_personal_data_is_not_copied() {
+        assert!(matches!(
+            MASKER.mask("為什麼你認為拉桿是對的？"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(MASKER.mask("信箱 a@b.com"), Cow::Owned(_)));
     }
 
     #[test]
@@ -316,16 +336,5 @@ mod tests {
         assert_eq!(sent[0].system, "題目說明：聯絡 [EMAIL]");
         assert_eq!(sent[0].messages[0].content, "我的手機是 [PHONE]");
         assert_eq!(sent[0].messages[1].content, "為什麼？");
-    }
-
-    #[tokio::test]
-    async fn without_usable_rules_nothing_is_sent() {
-        let inner = Arc::new(Recorder::default());
-        let ai = MaskingAi {
-            inner: inner.clone(),
-            masker: None,
-        };
-        assert!(ai.stream_chat(request()).await.is_err());
-        assert!(inner.0.lock().unwrap().is_empty(), "原文不得送出");
     }
 }
