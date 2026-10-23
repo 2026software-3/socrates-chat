@@ -66,6 +66,25 @@ pub async fn is_enrolled_anywhere(pool: &PgPool, email: &str) -> Result<bool, sq
         .await
 }
 
+/// 這個帳號是否至少在 `owner_id` 建立的一間教室內，且所有教室都是 `owner_id` 建立的。
+/// 刪除帳號會連同所有教室的資料一併刪除，所以教師只能刪除完全屬於自己教室的學生。
+pub async fn belongs_only_to_owner(
+    conn: &mut PgConnection,
+    email: &str,
+    owner_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT bool_or(c.created_by = $2) AND bool_and(c.created_by = $2)
+         FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id
+         WHERE e.email = lower($1)",
+    )
+    .bind(email)
+    .bind(owner_id)
+    .fetch_one(conn)
+    .await
+    .map(|owned: Option<bool>| owned.unwrap_or(false))
+}
+
 /// 教室名單上的學生與帳號狀態。
 pub async fn list_students(
     pool: &PgPool,

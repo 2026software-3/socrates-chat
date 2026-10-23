@@ -13,6 +13,18 @@ async fn post(app: &Router, path: &str, cookie: Option<&str>, body: Option<Value
         .status()
 }
 
+async fn add_teacher(app: &Router, admin: &str, sub: &str, email: &str) -> String {
+    let res = post(
+        app,
+        "/api/admin/teachers",
+        Some(admin),
+        Some(json!({"email": email})),
+    )
+    .await;
+    assert_eq!(res, StatusCode::NO_CONTENT);
+    login_as(app, sub, email).await
+}
+
 async fn students(app: &Router, cookie: &str, classroom: &str) -> Value {
     let path = format!("/api/classrooms/{classroom}/students");
     json_body(send(app, get(&path, Some(cookie))).await).await
@@ -536,4 +548,67 @@ async fn legacy_student_delete_route_is_removed(pool: PgPool) {
         1
     );
     assert!(audit_actions(&pool).await.is_empty());
+}
+
+/// 學生可以屬於多個教室：教師只能刪除「所有教室都是自己建立」的學生帳號，
+/// 其餘回與不存在相同的 404，管理者不受限。
+#[sqlx::test]
+async fn teachers_cannot_delete_students_outside_their_own_classrooms(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let second = add_teacher(&app, &a.admin, "sub-t2", "teacher2@example.com").await;
+    let other_room = create_classroom(&app, &second, "別人的教室").await;
+    import_roster(
+        &app,
+        &second,
+        &other_room,
+        "theirs@example.com\nstudent@example.com",
+    )
+    .await;
+
+    let delete = |cookie: &str, email: &str| {
+        send(
+            &app,
+            json_req(
+                "DELETE",
+                &format!("/api/students/{email}"),
+                Some(cookie),
+                Some(json!({"confirm_email": email})),
+            ),
+        )
+    };
+    let count = |email: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM enrollments WHERE email = $1")
+                .bind(email)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // 只在別的教師教室內的學生
+    let res = delete(&a.teacher, "theirs@example.com").await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert_eq!(count("theirs@example.com").await, 1);
+    // 同時在兩位教師教室內的學生：只有管理者能刪
+    let res = delete(&a.teacher, "student@example.com").await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert_eq!(count("student@example.com").await, 2);
+    // 不存在的帳號回應一致
+    let res = delete(&a.teacher, "nobody@example.com").await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(audit_actions(&pool).await.is_empty());
+
+    // 自己教室內的學生可以刪；管理者可以刪任何人
+    assert_eq!(
+        delete(&second, "theirs@example.com").await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        delete(&a.admin, "student@example.com").await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(count("student@example.com").await, 0);
 }
