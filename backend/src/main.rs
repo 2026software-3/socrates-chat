@@ -55,7 +55,7 @@ async fn main() {
     let addr = config.listen_addr.clone();
     let ai = OpenAiProvider::new(
         &config.openai_base_url,
-        &config.openai_api_key,
+        config.openai_keys.clone(),
         &config.openai_model,
     );
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
@@ -64,7 +64,11 @@ async fn main() {
         .expect("failed to bind listener");
     tracing::info!("listening on {addr}");
 
-    axum::serve(listener, app(state))
-        .await
-        .expect("server error");
+    // ConnectInfo 提供 TCP 對端位址，登入的 IP 限流要用（S-08.2）
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

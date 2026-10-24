@@ -1,0 +1,317 @@
+<!doctype html>
+<!--
+  Manual check page for the classroom-scoped roster, activities and conversations
+  (F-28.2 / F-28.3). Throwaway dev tool: synthetic data only, not part of the product frontend.
+
+  It must be served by the backend itself (same origin; mutating requests are checked
+  against APP_BASE_URL), so it can run before the real frontend exists:
+
+    1. Start a throwaway PostgreSQL, e.g.
+         docker run -d --name classroom-test-db -e POSTGRES_USER=manual \
+           -e POSTGRES_PASSWORD=manual -e POSTGRES_DB=manual -p 127.0.0.1:5433:5432 postgres:16
+    2. mkdir /tmp/classroom-test && cp backend/examples/classroom-scope-test.html /tmp/classroom-test/index.html
+    3. From backend/, run the backend with a free port (here 3100):
+         DATABASE_URL=postgres://manual:manual@127.0.0.1:5433/manual \
+         APP_BASE_URL=http://127.0.0.1:3100 LISTEN_ADDR=127.0.0.1:3100 COOKIE_SECURE=false \
+         RUN_MIGRATIONS=true FRONTEND_DIR=/tmp/classroom-test \
+         ADMIN_EMAILS=admin@test.local ADMIN_INITIAL_PASSWORD=<any-strong-password> \
+         GOOGLE_CLIENT_ID=dummy GOOGLE_CLIENT_SECRET=dummy OPENAI_API_KEYS=dummy OPENAI_MODEL=dummy \
+         cargo run
+    4. Open http://127.0.0.1:3100/, type the admin email and ADMIN_INITIAL_PASSWORD, press button 1.
+    5. Button 2 needs finished conversations with summaries; the AI is not called here, so seed
+       them by hand: set conversations.status = 'ended', ended_at = now() and insert
+       summaries (status 'ready', stance, reasons, claim) with these claims:
+         主張A  student1's conversation on classroom A's activity    (state.ids.cA)
+         主張B  student1's conversation on classroom B's activity    (state.ids.cB)
+         主張P  student1's personal practice, must be excluded       (state.ids.practice)
+         主張C  a classroom C student's conversation on C's activity (log in as student3 and
+                POST /api/conversations with activity_id = state.ids.aC, then seed it)
+       `state` is logged to the browser console after button 1; see part2() for the checks.
+
+  Remove the container afterwards (docker rm -f classroom-test-db).
+-->
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F-28.2 / F-28.3 測試頁</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 16px; max-width: 980px; margin-inline: auto; color: #1a1a1a; background: #fafafa; }
+  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 20px 0 6px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  button { padding: 6px 12px; border: 1px solid #888; background: #fff; border-radius: 6px; cursor: pointer; }
+  button.primary { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+  button:disabled { opacity: .5; cursor: wait; }
+  input, select, textarea { padding: 5px 8px; border: 1px solid #aaa; border-radius: 6px; font: inherit; }
+  textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  td, th { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+  .ok { color: #15803d; font-weight: 600; } .bad { color: #b91c1c; font-weight: 600; }
+  .sec td { background: #eef2ff; font-weight: 600; }
+  pre { background: #111; color: #ddd; padding: 8px; border-radius: 6px; overflow: auto; max-height: 260px; margin: 6px 0; }
+  .muted { color: #666; }
+</style>
+</head>
+<body>
+<h1>F-28.2 / F-28.3 功能測試頁</h1>
+<div class="muted">測試「修課名單屬於教室」與「活動／對話歸屬教室」。全部使用合成資料；每次執行會用新的隨機後綴建立資料。</div>
+
+<h2>自動情境</h2>
+<div class="bar">
+  <label>管理者信箱 <input id="adminEmail" value="admin@test.local"></label>
+  <label>初始密碼 <input id="adminPw" type="password" placeholder="ADMIN_INITIAL_PASSWORD"></label>
+</div>
+<div class="bar">
+  <button class="primary" id="run1">① 建立資料並測試名單／活動／對話</button>
+  <button class="primary" id="run2">② 測試教師端總結／儀表板（需先植入總結）</button>
+  <span id="status" class="muted"></span>
+</div>
+<table id="results"><thead><tr><th style="width:60%">檢查項目</th><th>結果</th><th>細節</th></tr></thead><tbody></tbody></table>
+
+<h2>手動請求（沿用目前登入身分）</h2>
+<div class="bar">
+  <span>目前身分：<b id="who">未登入</b></span>
+  <input id="mEmail" placeholder="email"> <input id="mPw" placeholder="password" type="password">
+  <button id="mLogin">登入</button>
+</div>
+<div class="bar">
+  <select id="mMethod"><option>GET</option><option>POST</option><option>PATCH</option><option>DELETE</option></select>
+  <input id="mPath" value="/api/classrooms" style="flex:1; min-width:260px">
+  <button id="mSend">送出</button>
+</div>
+<textarea id="mBody" rows="3" placeholder='JSON body（可留空）'></textarea>
+<pre id="mOut">（回應會顯示在這裡）</pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NEW_PW = 'Manual-Test-Pass-2026!';
+const runId = Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('');
+const state = { run: runId, pw: {}, ids: {} };
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method, credentials: 'same-origin',
+    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let json = null;
+  const text = await res.text();
+  try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+  return { status: res.status, json };
+}
+
+async function loginAs(email, pw) {
+  await api('POST', '/api/auth/logout');
+  let r = await api('POST', '/api/auth/login', { email, password: state.pw[email] || pw });
+  if (r.status === 401 && pw !== NEW_PW) r = await api('POST', '/api/auth/login', { email, password: NEW_PW });
+  if (r.status !== 200 && r.status !== 204) throw new Error(`login ${email}: ${r.status} ${JSON.stringify(r.json)}`);
+  const me = await api('GET', '/api/me');
+  if (me.json?.must_change_password) {
+    const c = await api('POST', '/api/auth/change-password', { current_password: pw, new_password: NEW_PW });
+    if (c.status !== 204 && c.status !== 200) throw new Error(`change-password ${email}: ${c.status} ${JSON.stringify(c.json)}`);
+    state.pw[email] = NEW_PW;
+  } else { state.pw[email] = pw; }
+  $('who').textContent = email;
+  return (await api('GET', '/api/me')).json;
+}
+const relogin = (email) => loginAs(email, state.pw[email]);
+
+let rows = $('results').querySelector('tbody');
+function section(title) { rows.insertAdjacentHTML('beforeend', `<tr class="sec"><td colspan="3">${title}</td></tr>`); }
+function check(name, cond, detail = '') {
+  const cls = cond ? 'ok' : 'bad';
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td></td><td class="${cls}">${cond ? '✔ 通過' : '✘ 失敗'}</td><td class="muted"></td>`;
+  tr.children[0].textContent = name;
+  tr.children[2].textContent = typeof detail === 'string' ? detail : JSON.stringify(detail);
+  rows.appendChild(tr);
+  return cond;
+}
+const sorted = (a) => [...a].sort();
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+async function part1() {
+  const k = state.run;
+  const adminEmail = $('adminEmail').value.trim();
+  const E = (n) => `${n}-${k}@test.local`;
+  const t1 = E('teacher1'), t2 = E('teacher2'), s1 = E('student1'), s2 = E('student2'), s3 = E('student3'), out = E('outsider');
+  Object.assign(state, { t1, t2, s1, s2, s3, out });
+
+  section('0. 準備：管理者建立教師與學生帳號');
+  await loginAs(adminEmail, $('adminPw').value);
+  for (const t of [t1, t2]) await api('POST', '/api/admin/teachers', { email: t });
+  for (const e of [t1, t2, out]) {
+    const r = await api('POST', '/api/admin/users/reset-password', { email: e });
+    state.pw[e] = r.json?.temporary_password;
+  }
+  check('管理者重設密碼取得教師／名單外帳號的臨時密碼', [t1, t2, out].every((e) => state.pw[e]));
+
+  await loginAs(t1, state.pw[t1]);
+  const mk = async (name) => (await api('POST', '/api/classrooms', { name: `${name}-${k}` })).json;
+  const A = await mk('教室A'), B = await mk('教室B');
+  state.ids.A = A.id; state.ids.B = B.id;
+  await loginAs(t2, state.pw[t2]);
+  const C = await mk('教室C(教師2)'); state.ids.C = C.id;
+  check('教師 1 建立教室 A、B；教師 2 建立教室 C', !!(A.id && B.id && C.id));
+
+  section('1. F-28.2 名單歸屬教室');
+  await loginAs(adminEmail, $('adminPw').value);
+  const imp = (room, text) => api('POST', `/api/classrooms/${room}/roster/import`, { text });
+  const rA = await imp(A.id, `${s1}\n${s2}\nnot-an-email`);
+  check('管理者匯入教室 A：新增 2、格式錯誤 1', rA.json.added === 2 && rA.json.invalid.length === 1, rA.json);
+  for (const c of rA.json.credentials) state.pw[c.email] = c.temporary_password;
+  const rA2 = await imp(A.id, s1);
+  check('重複匯入同一人：已存在 1、新增 0（只新增、不移除）', rA2.json.existing === 1 && rA2.json.added === 0, rA2.json);
+  const rB = await imp(B.id, s1);
+  check('同一信箱匯入教室 B：對 B 是新增，且不建立第二個帳號', rB.json.added === 1 && rB.json.credentials.length === 0, rB.json);
+  const rC = await imp(C.id, s3);
+  for (const c of rC.json.credentials) state.pw[c.email] = c.temporary_password;
+
+  await loginAs(t1, state.pw[t1]);
+  const listA = (await api('GET', `/api/classrooms/${A.id}/roster`)).json.emails;
+  const listB = (await api('GET', `/api/classrooms/${B.id}/roster`)).json.emails;
+  check('教室 A 名單 = student1、student2；教室 B 名單 = student1（互不影響）', eq(sorted(listA), sorted([s1, s2])) && eq(listB, [s1]), { listA, listB });
+  const stu = (await api('GET', `/api/classrooms/${A.id}/students`)).json;
+  check('教室 A 學生列表有帳號狀態', stu.length === 2 && stu.every((x) => x.has_account), stu.map((x) => x.email));
+  const tImp = await api('POST', `/api/classrooms/${A.id}/roster/import`, { text: E('late') });
+  check('教師匯入自己的教室成功，且不產生臨時密碼', tImp.status === 200 && tImp.json.credentials.length === 0);
+
+  await loginAs(t2, state.pw[t2]);
+  for (const [label, r] of [
+    ['讀取他人教室名單', await api('GET', `/api/classrooms/${A.id}/roster`)],
+    ['匯入他人教室名單', await api('POST', `/api/classrooms/${A.id}/roster/import`, { text: 'x@test.local' })],
+    ['移除他人教室成員', await api('DELETE', `/api/classrooms/${A.id}/roster/${s1}`)],
+    ['不存在的教室', await api('GET', `/api/classrooms/00000000-0000-4000-8000-000000000000/roster`)],
+  ]) check(`教師 2 ${label} → 404（與不存在相同）`, r.status === 404, r.status);
+
+  await loginAs(s1, state.pw[s1]);
+  check('student1 在 A、B 兩個名單內 → 具學生身分', (await api('GET', '/api/me')).json.roles.student === true);
+  const forbidden = await api('GET', `/api/classrooms/${A.id}/roster`);
+  check('學生存取名單 API → 403', forbidden.status === 403, forbidden.status);
+  await loginAs(out, state.pw[out]);
+  const o = await api('GET', '/api/conversations');
+  check('名單外帳號 → 403 not_enrolled（尚未開通）', o.status === 403 && o.json.error.code === 'not_enrolled', o.json);
+
+  section('2. F-28.3 活動歸屬教室');
+  await loginAs(t1, state.pw[t1]);
+  const topic = (await api('POST', '/api/topics', { title: `題目-${k}`, description: '你會拉桿嗎？' })).json;
+  const act = async (room, title) => {
+    const r = await api('POST', '/api/activities', { title, topic_id: topic.id, classroom_id: room });
+    if (r.status === 201) await api('POST', `/api/activities/${r.json.id}/publish`);
+    return r;
+  };
+  const aA = await act(A.id, `活動A-${k}`), aB = await act(B.id, `活動B-${k}`);
+  check('教師在自己的教室 A、B 建立活動，回應帶 classroom_id', aA.status === 201 && aA.json.classroom_id === A.id && aB.json.classroom_id === B.id);
+  const noRoom = await api('POST', '/api/activities', { title: 'x', topic_id: topic.id });
+  check('沒帶 classroom_id → 400 invalid_classroom', noRoom.status === 400 && noRoom.json.error.code === 'invalid_classroom', noRoom.json);
+  const foreign = await api('POST', '/api/activities', { title: 'x', topic_id: topic.id, classroom_id: C.id });
+  check('在他人教室建立活動 → 404', foreign.status === 404, foreign.status);
+  await loginAs(t2, state.pw[t2]);
+  const aC = await act(C.id, `活動C-${k}`);
+  check('教師 2 在教室 C 建立活動；兩個教室引用同一份題目', aC.status === 201 && aC.json.topic_id === topic.id);
+  const peek = await api('GET', `/api/activities/${aA.json.id}`);
+  const patchOther = await api('PATCH', `/api/activities/${aA.json.id}`, { title: '偷改' });
+  check('教師 2 讀取／修改教師 1 的活動 → 404', peek.status === 404 && patchOther.status === 404, [peek.status, patchOther.status]);
+  const mine2 = (await api('GET', '/api/activities')).json;
+  check('教師 2 的活動列表只有自己教室的活動', mine2.length === 1 && mine2[0].id === aC.json.id);
+  const filtered = await api('GET', `/api/activities?classroom_id=${A.id}`);
+  check('用 ?classroom_id= 篩選他人教室 → 404', filtered.status === 404, filtered.status);
+  Object.assign(state.ids, { aA: aA.json.id, aB: aB.json.id, aC: aC.json.id, topic: topic.id });
+
+  section('3. F-28.3 對話歸屬教室');
+  await loginAs(s1, state.pw[s1]);
+  const cat1 = (await api('GET', '/api/catalog')).json.activities.map((a) => a.id);
+  check('student1（A、B）的可選活動 = A、B 的活動，看不到 C', eq(sorted(cat1), sorted([aA.json.id, aB.json.id])), cat1.length);
+  const cA = await api('POST', '/api/conversations', { activity_id: aA.json.id });
+  const cB = await api('POST', '/api/conversations', { activity_id: aB.json.id });
+  check('從教室 A／B 的活動開始對話：classroom_id 取自活動', cA.json.classroom_id === A.id && cB.json.classroom_id === B.id, [cA.json.classroom_id, cB.json.classroom_id]);
+  const cC = await api('POST', '/api/conversations', { activity_id: aC.json.id });
+  const cX = await api('POST', '/api/conversations', { activity_id: '00000000-0000-4000-8000-000000000000' });
+  check('教室 C 的活動（不在名單）→ 400，與不存在的活動回應相同', cC.status === 400 && cX.status === 400 && cC.json.error.code === cX.json.error.code, [cC.json.error, cX.json.error]);
+  const dup = await api('POST', '/api/conversations', { activity_id: aA.json.id });
+  check('同一活動不能重複開始 → 409', dup.status === 409, dup.status);
+  const pr = await api('POST', '/api/conversations', { topic_id: topic.id });
+  check('從題目庫開始（個人練習）→ classroom_id 為 null', pr.status === 201 && pr.json.classroom_id === null, pr.json.classroom_id);
+  const mineConv = (await api('GET', '/api/conversations')).json.items;
+  check('學生看得到自己的活動對話與個人練習（共 3 場）', mineConv.length === 3, mineConv.map((c) => c.classroom_id));
+  Object.assign(state.ids, { cA: cA.json.id, cB: cB.json.id, practice: pr.json.id });
+
+  await loginAs(s2, state.pw[s2]);
+  const cat2 = (await api('GET', '/api/catalog')).json.activities.map((a) => a.id);
+  const sB = await api('POST', '/api/conversations', { activity_id: aB.json.id });
+  check('student2 只在 A：只看得到 A 的活動，且不能從 B 的活動開始對話', eq(cat2, [aA.json.id]) && sB.status === 400, [cat2.length, sB.status]);
+
+  section('4. 移出名單');
+  await loginAs(t1, state.pw[t1]);
+  const rm = await api('DELETE', `/api/classrooms/${A.id}/roster/${s1}`);
+  await loginAs(s1, state.pw[s1]);
+  check('student1 移出 A 後仍在 B → 仍具學生身分', rm.status === 204 && (await api('GET', '/api/me')).json.roles.student === true);
+  await loginAs(t1, state.pw[t1]);
+  await api('DELETE', `/api/classrooms/${B.id}/roster/${s1}`);
+  await loginAs(s1, state.pw[s1]);
+  const gone = await api('GET', '/api/conversations');
+  check('A、B 都移出後 → 403 not_enrolled（尚未開通）', gone.status === 403 && gone.json.error.code === 'not_enrolled', gone.json);
+  await loginAs(t1, state.pw[t1]);
+  await api('POST', `/api/classrooms/${A.id}/roster/import`, { text: s1 });
+  await loginAs(s1, state.pw[s1]);
+  const back = await api('GET', '/api/conversations');
+  check('重新加回 A → 恢復存取，先前的對話仍在（3 場）', back.status === 200 && back.json.items.length === 3, back.json.items?.length);
+
+  $('status').textContent = '① 完成。要測 ②，請先植入總結（見下方指令）。';
+  console.log('state', state);
+}
+
+async function part2() {
+  const { t1, t2, s1, s2, s3 } = state; const I = state.ids;
+  if (!I.A) throw new Error('請先執行 ①');
+  const adminEmail = $('adminEmail').value.trim();
+  section('5. 教師端總結／儀表板（只含自己教室的活動對話，不含個人練習）');
+  await loginAs(t1, state.pw[t1]);
+  const sum = (await api('GET', '/api/teacher/summaries')).json;
+  const claims = sorted(sum.map((r) => r.claim));
+  check('教師 1 的總結：只有 教室 A、B 的活動對話（不含個人練習、不含教師 2 的教室）', eq(claims, sorted(['主張A', '主張B'])), claims);
+  check('每筆總結帶 classroom_id', sum.every((r) => r.classroom_id === I.A || r.classroom_id === I.B));
+  const onlyB = (await api('GET', `/api/teacher/summaries?classroom_id=${I.B}`)).json;
+  check('?classroom_id= 篩選教室 B → 只有 B 的總結', onlyB.length === 1 && onlyB[0].claim === '主張B', onlyB.map((r) => r.claim));
+  const dash = (await api('GET', '/api/dashboard/class')).json;
+  check('儀表板 completed = 2（不計個人練習）', dash.completed === 2, dash);
+  const dashA = (await api('GET', `/api/dashboard/class?classroom_id=${I.A}`)).json;
+  check('儀表板限教室 A：completed = 1、students_total = 該教室名單人數', dashA.completed === 1 && dashA.students_total >= 2, dashA);
+  const stuA = (await api('GET', `/api/classrooms/${I.A}/students`)).json.find((x) => x.email === s1);
+  check('教室 A 學生列表：student1 已完成對話 = 1（個人練習與 B 不計入）', stuA?.completed_conversations === 1, stuA);
+  const dashC = await api('GET', `/api/dashboard/class?classroom_id=${I.C}`);
+  check('查詢他人教室的儀表板 → 404', dashC.status === 404, dashC.status);
+
+  await loginAs(t2, state.pw[t2]);
+  const sum2 = (await api('GET', '/api/teacher/summaries')).json;
+  check('教師 2 的總結：只有教室 C', sum2.length === 1 && sum2[0].claim === '主張C', sum2.map((r) => r.claim));
+  const rg = await api('POST', '/api/dashboard/class/regroup', { activity_id: I.aA });
+  check('教師 2 對教師 1 的活動重新分組 → 404', rg.status === 404, rg.status);
+
+  await loginAs(adminEmail, $('adminPw').value);
+  const sumAdmin = (await api('GET', '/api/teacher/summaries')).json;
+  check('管理者看得到三場活動對話但內容遮蔽為 message；沒有個人練習', sumAdmin.length === 3 && sumAdmin.every((r) => r.claim === 'message'), sumAdmin.length);
+  $('status').textContent = '② 完成。';
+}
+
+for (const [id, fn] of [['run1', part1], ['run2', part2]]) {
+  $(id).onclick = async () => {
+    $(id).disabled = true; $('status').textContent = '執行中…';
+    try { await fn(); }
+    catch (e) { check('執行過程發生例外', false, String(e.message || e)); $('status').textContent = '中斷'; }
+    finally { $(id).disabled = false; }
+  };
+}
+$('mLogin').onclick = async () => {
+  try { const me = await loginAs($('mEmail').value, $('mPw').value); $('mOut').textContent = JSON.stringify(me, null, 2); }
+  catch (e) { $('mOut').textContent = String(e.message); }
+};
+$('mSend').onclick = async () => {
+  const raw = $('mBody').value.trim();
+  const r = await api($('mMethod').value, $('mPath').value, raw ? JSON.parse(raw) : undefined);
+  $('mOut').textContent = `HTTP ${r.status}\n` + JSON.stringify(r.json, null, 2);
+};
+api('GET', '/api/me').then((r) => { if (r.json?.email) $('who').textContent = r.json.email; });
+</script>
+</body>
+</html>

@@ -14,7 +14,7 @@ const AVAILABLE: Available = {
       id: 'act-1',
       title: 'Activity One',
       description: 'Activity desc',
-      topic_id: null,
+      topic_id: 'top-1',
       status: 'published',
       created_at: '2026-01-01T00:00:00Z',
     },
@@ -135,6 +135,18 @@ describe('student available page', () => {
     mockAvailable()
     renderPage()
     expect(await screen.findByRole('button', { name: '開始討論：Topic One' })).toBeInTheDocument()
+  })
+
+  it('shows activity_already_started in words, not as a code', async () => {
+    mockAvailable()
+    server.use(http.post('/api/conversations', () => apiError(409, 'activity_already_started')))
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '你已經開始過這個活動，請從你的對話紀錄繼續，或刪除該場對話後重新開始。',
+    )
+    expect(screen.queryByText('activity_already_started')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Activity One/ })).toBeEnabled()
   })
 
   it('shows the fetch error when the reload after a failed start also fails', async () => {

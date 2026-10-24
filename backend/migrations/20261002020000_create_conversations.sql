@@ -7,6 +7,10 @@ CREATE TABLE conversations (
     -- 來源：教師活動或題目庫題目；來源之後被刪除或停用不影響既有對話
     activity_id  uuid REFERENCES activities (id) ON DELETE SET NULL,
     topic_id     uuid REFERENCES topics (id) ON DELETE SET NULL,
+    -- 教室歸屬（S-14）：活動對話在開始時取自活動所在的教室，建立後不再更改，
+    -- 活動之後被刪除或停用也不影響；從題目庫直接開始的個人練習為空，教師看不到、不納入任何教室的統計。
+    -- 教室不能刪除，RESTRICT 讓資料庫也擋下。
+    classroom_id uuid REFERENCES classrooms (id) ON DELETE RESTRICT,
     -- 開始時複製的題目內容，之後來源異動不會改變這場對話
     title        text NOT NULL,
     description  text NOT NULL DEFAULT '',
@@ -27,6 +31,14 @@ CREATE TABLE conversations (
 );
 
 CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);
+-- 總結列表（GET /api/summaries）依 ended_at DESC, id 做 keyset 分頁，只列已結束的對話。
+CREATE INDEX conversations_ended_idx ON conversations (ended_at DESC, id) WHERE ended_at IS NOT NULL;
+CREATE INDEX conversations_classroom_idx ON conversations (classroom_id) WHERE classroom_id IS NOT NULL;
+
+-- 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）；刪除該場對話後可重新開始。
+-- 從題目庫直接開始的個人練習沒有活動，不受限制。
+CREATE UNIQUE INDEX conversations_user_activity_uniq
+    ON conversations (user_id, activity_id) WHERE activity_id IS NOT NULL;
 
 CREATE TABLE messages (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

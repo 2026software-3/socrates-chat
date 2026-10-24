@@ -23,21 +23,28 @@ use crate::{
 };
 
 pub mod accounts;
+pub mod activity_store;
 pub mod ai;
 pub mod auth;
 pub mod auth_store;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_store;
+pub mod classrooms;
+pub mod client_ip;
 pub mod config;
 pub mod dashboard;
 pub mod error;
 pub mod identity;
+pub mod key_pool;
+pub mod login_rate_limit;
 pub mod openapi;
 pub mod pagination;
 pub mod password;
 pub mod reply;
 pub mod roster;
+pub mod roster_store;
 pub mod summary;
 pub mod voice;
 
@@ -49,7 +56,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 /// 不套用一般請求逾時、改用 `Config::long_request_timeout` 的路由（#325）。
 /// 逾時只計到送出回應標頭為止。SSE 路由（送出訊息、重試串流）不在此列：AI 回覆在背景工作產生，
 /// 標頭送出後串流本身不受逾時影響（長度由 AI 逾時限制，S-03.5），標頭之前只有讀取 JSON body 與資料庫查詢。
-const LONG_RUNNING_ROUTES: [&str; 4] = [
+pub const LONG_RUNNING_ROUTES: [&str; 4] = [
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
     // 上傳最多 10 MB 音訊，並同步等語音服務
@@ -57,7 +64,7 @@ const LONG_RUNNING_ROUTES: [&str; 4] = [
     // 同步等語音服務合成語音
     "/api/voice/speech",
     // 管理者匯入時逐一雜湊新帳號的臨時密碼（Argon2），名單大時會超過一般逾時
-    "/api/roster/import",
+    "/api/classrooms/{id}/roster/import",
 ];
 
 /// 所有 handler 共用的狀態。
@@ -104,8 +111,9 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/openapi.json", get(openapi_json))
-        .merge(auth::routes())
+        .merge(auth::routes(state.config.trusted_proxies.clone()))
         .merge(roster::routes())
+        .merge(classrooms::routes())
         .merge(accounts::routes())
         .merge(dashboard::routes())
         .merge(claims::routes())

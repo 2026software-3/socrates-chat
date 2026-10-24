@@ -26,7 +26,8 @@ export type Activity = {
   id: string
   title: string
   description: string
-  topic_id: string | null
+  /** 活動必須選題庫題目（建立與編輯都必填）。 */
+  topic_id: string
   status: ActivityStatus
   created_at: string
 }
@@ -70,58 +71,29 @@ export type SentMessage = Message & { auto_ended: boolean }
 
 export type SummaryStatus = 'pending' | 'ready' | 'failed'
 
-/** 論證主要依循的倫理學派（S-04.2 的 6 個維度，加上 other）。 */
-export type Framework =
-  | 'utilitarianism'
-  | 'deontology'
-  | 'virtue'
-  | 'contractarianism'
-  | 'care'
-  | 'existentialism'
-  | 'other'
-/** 雷達圖的 6 個維度（順序即軸的順序，從正上方順時針）。 */
-export const SCHOOLS = ['utilitarianism', 'deontology', 'virtue', 'contractarianism', 'care', 'existentialism'] as const
-
-/** 各學派的分數（0 到滿分）；單場是整數，平均值有小數。 */
-export type SchoolScores = Record<string, number>
-
-export const FRAMEWORKS: readonly Framework[] = [
-  'utilitarianism',
-  'deontology',
-  'virtue',
-  'contractarianism',
-  'care',
-  'existentialism',
-  'other',
-]
-
 export type SummaryView = {
   status: SummaryStatus
   stance: string | null
   reasons: string | null
-  /** 沒有分類（舊資料或模型沒給）時為 null；管理者看到的是固定字串 `message` */
-  /** 學生最終主張的一句短句（AI 寫的）；管理者看到的是固定字串 `message` */
+  /** 學生最終主張的一句短句（AI 寫的）；沒有時為 null；管理者看到的是固定字串 `message` */
   claim?: string | null
-  framework?: string | null
-  /** 6 個學派維度的分數（各 0–5）；沒有分數時為 null */
-  framework_scores?: SchoolScores | null
   completed_at: string | null
 }
 
+/** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
 export type TeacherSummary = {
   conversation_id: string
   title: string
-  ended_at: string | null
+  ended_at: string
   student_id: string
   student_name: string | null
   student_email: string
   stance: string | null
   reasons: string | null
   claim?: string | null
-  framework?: string | null
 }
 
-/** 修課名單上的學生與帳號狀態（GET /api/students）。 */
+/** 教室修課名單上的學生與帳號狀態（GET /api/classrooms/{id}/students）。 */
 export type StudentRow = {
   id: string | null
   email: string
@@ -132,23 +104,7 @@ export type StudentRow = {
   completed_conversations: number
 }
 
-/** 分類 → 人數；`unclassified` 是沒有分類的總結。 */
-export type Counts = Record<string, number>
-
-/** 6 維雷達圖的平均分數（只平均有分數的總結）。 */
-export type Radar = {
-  scored: number
-  average: SchoolScores
-  max: number
-}
-
-export type Distribution = {
-  completed: number
-  frameworks: Counts
-  radar: Radar
-}
-
-/** 一個主張群組：AI 把同題目下意思相近的主張歸成一群並命名（暫定）。 */
+/** 一個主張群組：AI 把同活動下意思相近的主張歸成一群並命名（暫定）。 */
 export type ClaimGroup = {
   /** 群組名稱（AI 命名）；`other` 為 true 時沒有名稱，顯示「其他」 */
   name: string | null
@@ -156,20 +112,22 @@ export type ClaimGroup = {
   count: number
   /** 這群人的核心理由（AI 總結的文字，沒有姓名與對話原文） */
   reasons: string[]
-  /** 這群人在 6 個學派上的平均分數 */
-  radar: Radar
 }
 
-export type TopicDistribution = Distribution & {
+/** 教師班級儀表板中的一個活動（以 `activity_id` 識別）。 */
+export type ActivityDistribution = {
+  activity_id: string
   title: string
+  completed: number
   claims: ClaimGroup[]
   /** 有主張但還沒歸群的場數 */
   ungrouped: number
 }
 
-export type PersonalDashboard = Distribution & {
+export type PersonalDashboard = {
   total_conversations: number
   total_turns: number
+  completed: number
   recent: {
     conversation_id: string
     title: string
@@ -178,20 +136,29 @@ export type PersonalDashboard = Distribution & {
     turn_count: number
     stance: string | null
     claim: string | null
-    framework: string | null
-    framework_scores: SchoolScores | null
   }[]
 }
 
-export type ClassDashboard = Distribution & {
+export type ClassDashboard = {
   /** 管理者身分看不到分析結果（S-02.2），只有人數 */
   masked: boolean
   students_total: number
   students_participating: number
-  topics: TopicDistribution[]
+  /** 全部已完成場數 */
+  completed: number
+  activities: ActivityDistribution[]
 }
 
 export type EmailList = { emails: string[] }
+
+export type Classroom = {
+  id: string
+  name: string
+  year_label: string | null
+  description: string | null
+  created_at: string
+  updated_at: string
+}
 
 export type RosterImportResult = {
   added: number
@@ -211,3 +178,6 @@ export type StreamDone = {
 
 /** Keyset 分頁列表。 */
 export type Page<T> = { items: T[]; next_cursor: string | null }
+
+/** 學生列表的一頁；`total` 是符合搜尋條件的學生總數，每一頁都帶。 */
+export type StudentPage = Page<StudentRow> & { total: number }

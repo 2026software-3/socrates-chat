@@ -7,67 +7,95 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, put},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     auth::{RequireAdmin, RequireTeacher},
+    classrooms::visible_classroom,
     error::ApiError,
+    pagination::{self, Page, Pagination},
     roster::normalize_email,
+    roster_store::{self, StudentRow},
 };
+
+/// 學生分頁；`total` 是符合條件（同一個 `q`）的學生總數，每一頁都帶，不受游標影響。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct StudentPage {
+    items: Vec<StudentRow>,
+    next_cursor: Option<String>,
+    total: i64,
+}
+
+/// 分頁參數加上搜尋。
+#[derive(Deserialize)]
+pub(crate) struct StudentQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    /// 搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元）
+    q: Option<String>,
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/students", get(list_students))
+        .route("/api/classrooms/{id}/students", get(list_students))
         .route("/api/students/{email}", delete(delete_student))
         .route("/api/admin/users/{id}/status", put(set_status))
 }
 
-#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
-pub(crate) struct StudentRow {
-    /// 使用者 UUID；尚未建立帳號時為 null。
-    id: Option<Uuid>,
-    email: String,
-    display_name: Option<String>,
-    /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
-    has_account: bool,
-    disabled: bool,
-    /// 已完成（總結已產生）的對話數；教師只看得到數量，看不到內容
-    completed_conversations: i64,
-}
-
-/// 修課名單上的學生與帳號狀態。
+/// 教室修課名單上的學生與帳號狀態。
 #[utoipa::path(
     get,
-    path = "/api/students",
+    path = "/api/classrooms/{id}/students",
     tag = "roster",
-    summary = "名單上的學生與帳號狀態",
-    responses((status = 200, description = "學生列表", body = Vec<StudentRow>))
+    summary = "教室名單上的學生與帳號狀態",
+    params(
+        ("id" = Uuid, Path, description = "教室 ID"),
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 q 有效，換搜尋條件要從第一頁開始"),
+        ("q" = Option<String>, Query, description = "搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+    ),
+    responses((status = 200, description = "學生分頁，依 email 排序，帶符合條件的 total", body = StudentPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_students(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<Vec<StudentRow>>, ApiError> {
-    let rows = sqlx::query_as(
-        "SELECT u.id, e.email, u.display_name,
-                (u.id IS NOT NULL) AS has_account,
-                COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
-                COALESCE((SELECT count(*) FROM summaries s
-                          JOIN conversations c ON c.id = s.conversation_id
-                          WHERE c.user_id = u.id AND s.status = 'ready'), 0)
-                    AS completed_conversations
-         FROM enrollments e LEFT JOIN users u ON u.email = e.email
-         ORDER BY e.email",
+    Path(raw_id): Path<String>,
+    Query(query): Query<StudentQuery>,
+) -> Result<Json<StudentPage>, ApiError> {
+    let limit = query.page.limit()?;
+    let q = pagination::search_term(query.q.as_deref())?;
+    let fingerprint = pagination::fingerprint(&q.map(str::to_lowercase));
+    let cursor: Option<(String, String)> = query.page.cursor("students")?;
+    // 游標只對產生它時的搜尋條件有效；換條件要從第一頁開始
+    if cursor.as_ref().is_some_and(|c| c.1 != fingerprint) {
+        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+    }
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    let search = q.map(pagination::like_pattern);
+    let rows = roster_store::list_students(
+        &state.pool,
+        classroom.id,
+        cursor.as_ref().map(|c| c.0.as_str()),
+        (limit + 1) as i64,
+        search.as_deref(),
     )
-    .fetch_all(&state.pool)
     .await?;
-    Ok(Json(rows))
+    let total =
+        roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()).await?;
+    let Page { items, next_cursor } = pagination::page(rows, limit, "students", |row| {
+        (row.email.clone(), fingerprint.clone())
+    })?;
+    Ok(Json(StudentPage {
+        items,
+        next_cursor,
+        total,
+    }))
 }
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
@@ -189,7 +217,8 @@ pub(crate) struct DeleteBody {
     confirm_email: String,
 }
 
-/// 刪除學生帳號：一併刪除對話、總結與修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除。
+/// 刪除學生帳號：一併刪除對話、總結與所有教室的修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除；
+/// 教師只能刪除完全屬於自己教室的學生，管理者不受限。
 #[utoipa::path(
     delete,
     path = "/api/students/{email}",
@@ -197,7 +226,7 @@ pub(crate) struct DeleteBody {
     summary = "刪除學生帳號與其資料",
     params(("email" = String, Path, description = "電子郵件")),
     request_body = DeleteBody,
-    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody))
+    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 404, description = "not_found：帳號不存在，或教師要刪除的學生不完全屬於自己建立的教室", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn delete_student(
     RequireTeacher(cu): RequireTeacher,
@@ -223,6 +252,12 @@ pub(crate) async fn delete_student(
     if staff || state.config.admin_emails.contains(&email) {
         return Err(ApiError::conflict("not_a_student", "只能刪除學生帳號"));
     }
+    // 刪除會連同所有教室的資料一併刪除：教師只能刪除完全屬於自己教室的學生（範圍待確認，S-02.5）；
+    // 其他情況與不存在的帳號同樣回 404，不外露資源是否存在。
+    if !cu.roles.admin && !roster_store::belongs_only_to_owner(&mut tx, &email, cu.user.id).await? {
+        return Err(ApiError::not_found());
+    }
+    // 所有教室的名單項目一併移除（學生可屬於多個教室）
     let on_roster = sqlx::query("DELETE FROM enrollments WHERE email = $1")
         .bind(&email)
         .execute(&mut *tx)

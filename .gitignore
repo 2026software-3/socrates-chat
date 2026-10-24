@@ -9,6 +9,8 @@ dist/
 .env
 .env.*
 !.env.example
+# AI API key 清單（一行一把，見 .apikeylist.example）
+.apikeylist
 
 # Editors / OS
 .idea/

@@ -13,7 +13,7 @@ use common::Script::*;
 use common::*;
 use futures_util::{StreamExt, stream};
 use serde_json::json;
-use socrates_chat_backend::{MAX_BODY_BYTES, config::Config};
+use socrates_chat_backend::{LONG_RUNNING_ROUTES, MAX_BODY_BYTES, config::Config};
 use sqlx::PgPool;
 
 /// 介於全域上限與 axum 預設 2 MB 之間的大小：證明上限是明確設定的，不是沿用預設。
@@ -155,4 +155,17 @@ async fn retry_stream_is_not_cut_off_by_the_general_timeout(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::OK);
     let events = parse_sse(&text_body(res).await);
     assert_eq!(events.last().unwrap().0, "done");
+}
+
+#[sqlx::test]
+async fn long_timeout_routes_exist(pool: PgPool) {
+    // 路由改名時，清單裡的舊路徑會默默退回一般逾時；用 OpenAPI 的路徑確認每一條都還在
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    for route in LONG_RUNNING_ROUTES {
+        assert!(
+            doc["paths"].get(route).is_some(),
+            "{route} is not a route anymore"
+        );
+    }
 }
