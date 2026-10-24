@@ -118,6 +118,17 @@ pub fn load_openai_keys() -> Result<Vec<String>, ConfigError> {
     )
 }
 
+/// 沒有任何 key 時的啟動錯誤；舊的 `OPENAI_API_KEY` 還設著就明講它已改名，免得部署時摸不著頭緒。
+fn no_key_error(legacy_variable_set: bool) -> ConfigError {
+    ConfigError(if legacy_variable_set {
+        "OPENAI_API_KEY is no longer used: put the key in the .apikeylist file (one per line) \
+         or in OPENAI_API_KEYS"
+            .into()
+    } else {
+        "no AI API key: set OPENAI_API_KEYS or fill the .apikeylist file".into()
+    })
+}
+
 fn gather_keys(
     env_list: &str,
     candidates: &[PathBuf],
@@ -137,10 +148,14 @@ fn read_first_key_file(candidates: &[PathBuf], required: bool) -> Result<Vec<Str
         match fs::read_to_string(path) {
             Ok(raw) => return Ok(parse_key_lines(&raw)),
             Err(e) if e.kind() == io::ErrorKind::NotFound && !required => {}
-            Err(_) => {
+            Err(e) => {
+                // Docker secret 是 bind mount，沿用主機檔案的權限；容器內是非 root 使用者，
+                // 檔案是 0600 就讀不到，所以把可能的原因講明
                 return Err(ConfigError(format!(
-                    "cannot read the API key file {}",
-                    Path::new(path).display()
+                    "cannot read the API key file {} ({}); inside Docker the file must be \
+                     readable by the container user, e.g. chmod 644",
+                    Path::new(path).display(),
+                    e.kind()
                 )));
             }
         }
@@ -182,9 +197,7 @@ impl Config {
                 .filter(|v| !v.is_empty())
                 .map(Into::into),
             openai_keys: Arc::new(KeyPool::new(load_openai_keys()?).ok_or_else(|| {
-                ConfigError(
-                    "no AI API key: set OPENAI_API_KEYS or fill the .apikeylist file".into(),
-                )
+                no_key_error(env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty()))
             })?),
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")
@@ -247,6 +260,22 @@ mod tests {
     fn unreadable_key_file_error_does_not_leak_contents() {
         let err = gather_keys("", &[env::temp_dir()], true).unwrap_err();
         assert!(err.to_string().contains("cannot read"));
+    }
+
+    #[test]
+    fn missing_key_error_points_to_the_renamed_variable() {
+        let legacy = no_key_error(true).to_string();
+        assert!(legacy.contains("OPENAI_API_KEY"), "{legacy}");
+        assert!(legacy.contains(".apikeylist"), "{legacy}");
+        assert!(!no_key_error(false).to_string().contains("OPENAI_API_KEY "));
+    }
+
+    #[test]
+    fn unreadable_key_file_error_explains_permissions() {
+        let err = gather_keys("", &[env::temp_dir()], true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("chmod 644"), "{err}");
     }
 
     #[test]

@@ -251,7 +251,7 @@ async fn retries_at_most_three_times() {
 async fn fails_when_every_key_is_unavailable() {
     let (base, seen) = spawn_keyed_server(vec![("a", StatusCode::OK, None)]).await;
     let pool = pool_of(&["a"]);
-    pool.mark_invalid(0);
+    pool.mark_rejected(0);
     let p = OpenAiProvider::new(&base, pool, "m");
     assert!(text_of(&p).await.is_err());
     assert!(
@@ -285,4 +285,52 @@ async fn failure_after_streaming_started_is_not_retried() {
     let p = OpenAiProvider::new(&base, pool_of(&["a", "b"]), "m");
     assert!(text_of(&p).await.is_err());
     assert_eq!(captured.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn waits_for_the_soonest_key_when_all_are_cooling() {
+    let (base, seen) = spawn_keyed_server(vec![("a", StatusCode::OK, None)]).await;
+    let pool = pool_of(&["a"]);
+    pool.mark_rate_limited(0, Some(std::time::Duration::from_millis(250)));
+    let p = OpenAiProvider::new(&base, pool, "m");
+    let start = std::time::Instant::now();
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(200),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(*seen.lock().unwrap(), ["a"]);
+}
+
+#[tokio::test]
+async fn does_not_wait_when_recovery_is_too_far_away() {
+    let (base, seen) = spawn_keyed_server(vec![("a", StatusCode::OK, None)]).await;
+    let pool = pool_of(&["a"]);
+    pool.mark_rate_limited(0, Some(std::time::Duration::from_secs(3600)));
+    let p = OpenAiProvider::new(&base, pool, "m");
+    let start = std::time::Instant::now();
+    assert!(text_of(&p).await.is_err());
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn server_error_with_one_key_is_not_hammered() {
+    let (base, seen) = spawn_keyed_server(vec![("a", StatusCode::SERVICE_UNAVAILABLE, None)]).await;
+    let p = OpenAiProvider::new(&base, pool_of(&["a"]), "m");
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn server_error_tries_each_key_at_most_once() {
+    let (base, seen) = spawn_keyed_server(vec![
+        ("a", StatusCode::BAD_GATEWAY, None),
+        ("b", StatusCode::BAD_GATEWAY, None),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, pool_of(&["a", "b"]), "m");
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(*seen.lock().unwrap(), ["a", "b"]);
 }

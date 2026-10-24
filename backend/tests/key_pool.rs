@@ -55,31 +55,100 @@ fn default_cooldown_is_sixty_seconds() {
 }
 
 #[test]
-fn invalid_key_is_disabled_for_good() {
-    let p = pool(2);
+fn rejected_key_cools_down_then_recovers() {
+    let p = pool(2).with_auth_cooldown(Duration::from_millis(80));
     let first = p.acquire().unwrap();
-    p.mark_invalid(first.index);
-    for _ in 0..5 {
+    p.mark_rejected(first.index);
+    for _ in 0..4 {
         assert_eq!(p.acquire().unwrap().key, "k2");
     }
     assert_eq!(p.usable_count(), 1);
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(p.usable_count(), 2);
+    let keys: Vec<String> = (0..2).map(|_| p.acquire().unwrap().key).collect();
+    assert!(keys.contains(&"k1".to_string()), "{keys:?}");
+}
+
+#[test]
+fn default_auth_cooldown_is_ten_minutes() {
+    assert_eq!(pool(1).auth_cooldown(), Duration::from_secs(600));
+}
+
+#[test]
+fn single_rejected_key_recovers_instead_of_staying_dead() {
+    let p = KeyPool::new(vec!["only".into()])
+        .unwrap()
+        .with_auth_cooldown(Duration::from_millis(60));
+    p.mark_rejected(0);
+    assert!(p.acquire().is_none());
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(p.acquire().unwrap().key, "only");
 }
 
 #[test]
 fn acquire_returns_none_when_every_key_is_unavailable() {
     let p = pool(2);
-    p.mark_invalid(0);
+    p.mark_rejected(0);
     p.mark_rate_limited(1, Some(Duration::from_secs(30)));
     assert!(p.acquire().is_none());
 }
 
 #[test]
-fn rate_limit_does_not_resurrect_a_disabled_key() {
+fn rate_limit_never_shortens_a_longer_cooldown() {
     let p = pool(1);
-    p.mark_invalid(0);
+    p.mark_rejected(0);
     p.mark_rate_limited(0, Some(Duration::from_millis(1)));
     std::thread::sleep(Duration::from_millis(10));
     assert!(p.acquire().is_none());
+}
+
+#[test]
+fn zero_retry_after_still_cools_the_key_for_a_moment() {
+    let p = pool(1);
+    p.mark_rate_limited(0, Some(Duration::ZERO));
+    assert!(p.acquire().is_none());
+    let wait = p.next_available_in().unwrap();
+    assert!(
+        wait > Duration::from_millis(500) && wait <= Duration::from_secs(1),
+        "{wait:?}"
+    );
+}
+
+#[test]
+fn next_available_in_reports_the_soonest_recovery() {
+    let p = pool(3);
+    assert_eq!(p.next_available_in(), Some(Duration::ZERO));
+    p.mark_rate_limited(0, Some(Duration::from_secs(30)));
+    p.mark_rate_limited(1, Some(Duration::from_secs(5)));
+    assert_eq!(p.next_available_in(), Some(Duration::ZERO), "k3 is ready");
+    p.mark_rate_limited(2, Some(Duration::from_secs(20)));
+    let wait = p.next_available_in().unwrap();
+    assert!(
+        wait > Duration::from_secs(4) && wait <= Duration::from_secs(5),
+        "{wait:?}"
+    );
+}
+
+#[test]
+fn concurrent_acquires_are_spread_evenly() {
+    let p = std::sync::Arc::new(pool(3));
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                (0..50)
+                    .map(|_| p.acquire().unwrap().index)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut counts = [0usize; 3];
+    for h in handles {
+        for i in h.join().unwrap() {
+            counts[i] += 1;
+        }
+    }
+    assert_eq!(counts, [100, 100, 100]);
 }
 
 #[test]
