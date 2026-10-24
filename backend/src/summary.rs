@@ -127,7 +127,13 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     }
     match summary {
         Some(s) => {
-            sqlx::query(
+            let mut tx = state.pool.begin().await?;
+            let user_id: Uuid =
+                sqlx::query_scalar("SELECT user_id FROM conversations WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            let saved = sqlx::query(
                 "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
                         rules_version = $4, completed_at = now(), claim = $6
                  WHERE conversation_id = $1 AND attempt = $5 AND status = 'pending'",
@@ -138,8 +144,18 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(RULES_VERSION)
             .bind(attempt)
             .bind(s.claim.as_deref())
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
+            if saved.rows_affected() > 0 {
+                crate::achievements::record_completed_conversation_in_tx(
+                    &mut tx,
+                    user_id,
+                    id,
+                    Utc::now(),
+                )
+                .await?;
+            }
+            tx.commit().await?;
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
                 crate::claims::assign_group(state, id, activity, &title, claim).await;
