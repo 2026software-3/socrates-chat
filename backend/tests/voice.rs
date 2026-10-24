@@ -168,6 +168,9 @@ async fn transcribe_validates_input(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = json_body(res).await;
+    assert_eq!(body["error"]["code"], "payload_too_large");
+    assert!(body["error"]["request_id"].is_string());
 }
 
 #[sqlx::test]
@@ -346,4 +349,30 @@ async fn openai_voice_reports_failure_when_the_service_is_unreachable() {
         Err(VoiceError::Failed)
     );
     assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+}
+
+#[tokio::test]
+async fn openai_voice_failures_never_change_the_shared_key_state() {
+    use axum::http::StatusCode;
+    for status in [StatusCode::FORBIDDEN, StatusCode::TOO_MANY_REQUESTS] {
+        let app = Router::new()
+            .route("/audio/transcriptions", post(move || async move { status }))
+            .route("/audio/speech", post(move || async move { status }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = test_config();
+        c.openai_base_url = base;
+        c.openai_stt_model = Some("stt-test".into());
+        c.openai_tts_model = Some("tts-test".into());
+        let v = OpenAiVoice::from_config(&c);
+        assert_eq!(
+            v.transcribe(vec![1], "audio/webm", "en").await,
+            Err(VoiceError::Failed)
+        );
+        assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+        // 語音端點的錯誤（例如模型沒開放）不能讓對話用的 key 被冷卻或停用
+        assert_eq!(c.openai_keys.usable_count(), 1, "{status}");
+        assert!(c.openai_keys.acquire().is_some(), "{status}");
+    }
 }

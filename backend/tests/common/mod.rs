@@ -22,6 +22,7 @@ use socrates_chat_backend::{
     app,
     config::Config,
     identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
+    key_pool::KeyPool,
 };
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -76,8 +77,9 @@ pub fn test_config() -> Config {
         admin_initial_password: None,
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
+        trusted_proxies: vec![],
         frontend_dir: None,
-        openai_api_key: "test-key".to_string(),
+        openai_keys: Arc::new(KeyPool::new(vec!["test-key".to_string()]).unwrap()),
         openai_model: "test-model".to_string(),
         openai_base_url: "http://127.0.0.1:1".to_string(),
         openai_stt_model: None,
@@ -245,22 +247,86 @@ pub struct Actors {
     pub student: String,
     /// 名單外、非教師、非管理者
     pub outsider: String,
+    /// 教師建立的教室 id；`student` 在這間教室的名單內
+    pub classroom: String,
 }
 
-/// 教師建立並發布一個活動，學生從中開始一場對話，回傳對話 id。
-pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+/// 教師建立教室，回傳教室 id。
+pub async fn create_classroom(app: &Router, cookie: &str, name: &str) -> String {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/classrooms",
+            Some(cookie),
+            Some(serde_json::json!({"name": name})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 把文字名單匯入指定教室（`cookie` 為該教室的教師或管理者），回傳回應。
+pub async fn import_roster(
+    app: &Router,
+    cookie: &str,
+    classroom: &str,
+    text: &str,
+) -> Response<Body> {
+    send(
+        app,
+        json_req(
+            "POST",
+            &format!("/api/classrooms/{classroom}/roster/import"),
+            Some(cookie),
+            Some(serde_json::json!({"text": text})),
+        ),
+    )
+    .await
+}
+
+/// 教師建立一個題目，回傳 id。
+pub async fn create_topic(app: &Router, a: &Actors, title: &str) -> String {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/topics",
+            Some(&a.teacher),
+            Some(serde_json::json!({"title": title, "description": "你會拉桿嗎？"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 教師以指定題目建立活動（草稿），回傳 id。
+pub async fn create_activity(app: &Router, a: &Actors, title: &str, topic_id: &str) -> String {
     let res = send(
         app,
         json_req(
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(serde_json::json!({"title": "電車難題", "description": "你會拉桿嗎？"})),
+            Some(serde_json::json!({
+                "title": title,
+                "description": "你會拉桿嗎？",
+                "topic_id": topic_id,
+                "classroom_id": a.classroom,
+            })),
         ),
     )
     .await;
-    let act = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 教師以指定題目建立並發布一個活動，回傳 id。
+pub async fn publish_activity(app: &Router, a: &Actors, title: &str, topic_id: &str) -> String {
+    let act = create_activity(app, a, title, topic_id).await;
+    let res = send(
         app,
         json_req(
             "POST",
@@ -270,17 +336,43 @@ pub async fn start_conversation(app: &Router, a: &Actors) -> String {
         ),
     )
     .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    act
+}
+
+/// 教師建立題目與活動並發布，回傳活動 id（題目標題與活動標題相同）。
+pub async fn published_activity_with_topic(app: &Router, a: &Actors, title: &str) -> String {
+    let topic = create_topic(app, a, title).await;
+    publish_activity(app, a, title, &topic).await
+}
+
+/// 學生從活動開始一場對話，回傳對話 id。
+pub async fn start_from_activity(app: &Router, cookie: &str, activity_id: &str) -> String {
     let res = send(
         app,
         json_req(
             "POST",
             "/api/conversations",
-            Some(&a.student),
-            Some(serde_json::json!({"activity_id": act})),
+            Some(cookie),
+            Some(serde_json::json!({"activity_id": activity_id})),
         ),
     )
     .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
     json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// 管理者把另一位學生加進修課名單並讓他登入，回傳 session cookie。
+pub async fn add_student(app: &Router, a: &Actors, sub: &str, email: &str) -> String {
+    let res = import_roster(app, &a.admin, &a.classroom, email).await;
+    assert!(res.status().is_success());
+    login_as(app, sub, email).await
+}
+
+/// 教師建立並發布一個活動，學生從中開始一場對話，回傳對話 id。
+pub async fn start_conversation(app: &Router, a: &Actors) -> String {
+    let act = published_activity_with_topic(app, a, "電車難題").await;
+    start_from_activity(app, &a.student, &act).await
 }
 
 /// 學生在對話中送出一則訊息。成功時回應是 SSE：讀完整條串流（等 AI 回覆結束），
@@ -342,27 +434,36 @@ pub async fn seed_student_message(pool: &PgPool, conv: &str, text: &str) {
         .unwrap();
 }
 
-/// 建立管理者、教師、名單內學生與名單外帳號並登入。
+/// 管理者新增教師 `teacher@example.com`，教師登入並建立一間教室；回傳教師 cookie 與教室 id。
+pub async fn seed_classroom(app: &Router, admin: &str) -> (String, String) {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            "/api/admin/teachers",
+            Some(admin),
+            Some(serde_json::json!({"email": "teacher@example.com"})),
+        ),
+    )
+    .await;
+    assert!(res.status().is_success());
+    let teacher = login_as(app, "sub-teacher", "teacher@example.com").await;
+    let classroom = create_classroom(app, &teacher, "測試教室").await;
+    (teacher, classroom)
+}
+
+/// 建立管理者、教師（含一間教室）、教室名單內學生與名單外帳號並登入。
 pub async fn seed_actors(app: &Router) -> Actors {
     let admin = login_as(app, "sub-admin", "admin@example.com").await;
-    for (path, body) in [
-        (
-            "/api/admin/teachers",
-            serde_json::json!({"email": "teacher@example.com"}),
-        ),
-        (
-            "/api/roster/import",
-            serde_json::json!({"text": "student@example.com"}),
-        ),
-    ] {
-        let res = send(app, json_req("POST", path, Some(&admin), Some(body))).await;
-        assert!(res.status().is_success());
-    }
+    let (teacher, classroom) = seed_classroom(app, &admin).await;
+    let res = import_roster(app, &admin, &classroom, "student@example.com").await;
+    assert!(res.status().is_success());
     Actors {
-        teacher: login_as(app, "sub-teacher", "teacher@example.com").await,
         student: login_as(app, "sub-student", "student@example.com").await,
         outsider: login_as(app, "sub-outsider", "outsider@example.com").await,
+        teacher,
         admin,
+        classroom,
     }
 }
 

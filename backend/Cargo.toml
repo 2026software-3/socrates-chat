@@ -28,6 +28,7 @@ argon2 = "0.6.0"
 utoipa = { version = "6.0.0", features = ["uuid", "chrono"] }
 utoipa-redoc = { version = "7.0.0", features = ["axum"] }
 regex = "1.13.1"
+tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
 
 [dev-dependencies]
 dotenvy = "0.15.7"

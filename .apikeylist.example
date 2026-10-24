@@ -1,0 +1,8 @@
+# AI API key 清單：一行一把，空行與 # 開頭的行會被忽略。
+# 複製成 .apikeylist（已被 .gitignore 排除）並填入真實的 key，不要提交真實 key。
+# 請求會輪流使用這些 key；某把被限流（429）或被拒絕（401/402/403）會先冷卻一段時間再試（429 依 Retry-After，
+# 否則 60 秒；被拒絕 10 分鐘），不會永久停用。全部冷卻時，會等最快恢復的那把（最多 30 秒）。
+# 用 docker compose --profile app 時，這個檔案會以 secret 掛進容器，容器內是非 root 使用者，
+# 所以檔案必須讀得到：chmod 644 .apikeylist（0600 會讀不到，後端啟動失敗）。
+# sk-or-v1-xxxxxxxxxxxxxxxx
+# sk-or-v1-yyyyyyyyyyyyyyyy

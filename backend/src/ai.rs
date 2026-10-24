@@ -2,12 +2,16 @@
 //!
 //! 本檔另含蘇格拉底式追問的提示（S-03.2）與每回合結構化結果的解析。
 
+use std::{sync::Arc, time::Duration};
+
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream::BoxStream};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+
+use crate::key_pool::{KeyPool, parse_retry_after};
 
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
 /// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
@@ -275,18 +279,80 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
+    keys: Arc<KeyPool>,
     model: String,
 }
 
+/// 開始串流前遇到限流或伺服器錯誤時，最多換幾把 key 重試。
+const MAX_KEY_RETRIES: usize = 3;
+/// 所有 key 都在冷卻時，最多願意等多久讓最快恢復的那把回來；更久就直接失敗，
+/// 不要讓學生的請求卡在一個遠遠等不到的冷卻上（呼叫端另有首 token 逾時）。
+const MAX_KEY_WAIT: Duration = Duration::from_secs(30);
+
 impl OpenAiProvider {
-    pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
+    pub fn new(base_url: &str, keys: Arc<KeyPool>, model: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
+            keys,
             model: model.to_string(),
         }
+    }
+
+    /// 取一把可用的 key；全部冷卻時等最快恢復的那把（不超過 `MAX_KEY_WAIT`）。
+    async fn acquire_key(&self) -> Result<crate::key_pool::Lease, AiError> {
+        for _ in 0..=MAX_KEY_RETRIES {
+            if let Some(lease) = self.keys.acquire() {
+                return Ok(lease);
+            }
+            match self.keys.next_available_in() {
+                Some(wait) if wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
+                _ => break,
+            }
+        }
+        tracing::error!("no usable AI key");
+        Err(AiError)
+    }
+
+    /// 送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
+    /// （但每把 key 在一次請求中最多試一次，避免對故障的供應商連續猛打）。
+    /// 只在尚未開始串流時重試，串流開始後的失敗不會重送（已有部分文字給了學生）。
+    async fn send_with_failover(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, AiError> {
+        let mut server_errored: Vec<usize> = Vec::new();
+        for _ in 0..=MAX_KEY_RETRIES {
+            let lease = self.acquire_key().await?;
+            if server_errored.contains(&lease.index) {
+                return Err(AiError);
+            }
+            tracing::debug!(key = lease.index + 1, "sending AI request");
+            let res = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&lease.key)
+                .json(body)
+                .send()
+                .await
+                .map_err(|_| AiError)?;
+            let status = res.status();
+            if status.is_success() {
+                return Ok(res);
+            }
+            tracing::warn!(status = %status, key = lease.index + 1, "AI provider returned an error status");
+            if status.is_server_error() {
+                server_errored.push(lease.index);
+            }
+            if !self.keys.report_failure(
+                lease.index,
+                status.as_u16(),
+                parse_retry_after(res.headers()),
+            ) {
+                return Err(AiError);
+            }
+        }
+        Err(AiError)
     }
 }
 
@@ -348,17 +414,8 @@ impl AiProvider for OpenAiProvider {
             })
         }));
         let res = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&json!({"model": self.model, "stream": true, "messages": messages}))
-            .send()
-            .await
-            .map_err(|_| AiError)?;
-        if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "AI provider returned an error status");
-            return Err(AiError);
-        }
+            .send_with_failover(&json!({"model": self.model, "stream": true, "messages": messages}))
+            .await?;
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
             let mut bytes = res.bytes_stream();
@@ -437,48 +494,9 @@ const MAX_GROUP_NAME_CHARS: usize = 24;
 pub struct Summary {
     pub stance: String,
     pub reasons: String,
-    /// 論點分布用的分類（暫定）：模型沒給或給了不認得的值時為 `None`，不影響總結本身。
-    /// 學生最終主張的一句短句（分組用）；沒給時為 `None`。
+    /// 學生最終主張的一句短句（分組用）；沒給時為 `None`，不影響總結本身。
     pub claim: Option<String>,
-    pub framework: Option<String>,
-    /// 6 個學派維度的分數（順序同 `SCHOOLS`，各 0–5）；沒給完整分數時為 `None`。
-    pub scores: Option<[u8; 6]>,
 }
-
-/// 雷達圖的 6 個維度（S-04.2 暫定）：效益主義、義務論、德行倫理、契約論、關懷倫理、存在主義。
-pub const SCHOOLS: [&str; 6] = [
-    "utilitarianism",
-    "deontology",
-    "virtue",
-    "contractarianism",
-    "care",
-    "existentialism",
-];
-
-/// 每個維度分數的上限。
-pub const MAX_SCORE: u8 = 5;
-
-/// 解析 6 維分數：必須是含 6 個學派的物件、值都是數字；超出範圍的值夾到 0–5。任何一項缺漏就整組不用。
-fn parse_scores(v: &serde_json::Value) -> Option<[u8; 6]> {
-    let obj = v.as_object()?;
-    let mut out = [0u8; 6];
-    for (slot, key) in out.iter_mut().zip(SCHOOLS) {
-        let n = obj.get(key)?.as_f64()?;
-        *slot = n.round().clamp(0.0, f64::from(MAX_SCORE)) as u8;
-    }
-    Some(out)
-}
-
-/// 論證主要依循的倫理學派（S-04.2 的 6 個維度），其他或無法歸類為 `other`。
-pub const FRAMEWORKS: [&str; 7] = [
-    "utilitarianism",
-    "deontology",
-    "virtue",
-    "contractarianism",
-    "care",
-    "existentialism",
-    "other",
-];
 
 pub fn build_summary_prompt(title: &str, description: &str) -> String {
     format!(
@@ -486,14 +504,8 @@ pub fn build_summary_prompt(title: &str, description: &str) -> String {
          的完整對話。請只依對話內容整理學生的論點，不加入你自己的看法，也不評論論點的對錯。\n\
          輸出一個 JSON 物件，stance、reasons 為不可為空的字串：\n\
          {{\"stance\":\"學生的主要立場\",\"reasons\":\"學生提出的核心理由\",\
-         \"claim\":\"學生最終主張的一句短句\",\
-         \"framework\":\"utilitarianism|deontology|virtue|contractarianism|care|existentialism|other\",\
-         \"scores\":{{\"utilitarianism\":0,\"deontology\":0,\"virtue\":0,\"contractarianism\":0,\"care\":0,\"existentialism\":0}}}}\n\
+         \"claim\":\"學生最終主張的一句短句\"}}\n\
          claim：學生最終主張的一句短句（30 字內，不含理由，例如「該拉桿」「不拉桿」「視情況而定」）。\n\
-         framework：學生論證主要依循的倫理學派——效益主義 utilitarianism、義務論 deontology、德行倫理 virtue、\
-         契約論 contractarianism、關懷倫理 care、存在主義 existentialism；無法歸類時用 other。\n\
-         scores：替你整理出的這份論點總結（stance 與 reasons）在 6 個學派上各打 0 到 5 的整數分——0 表示論點完全沒用到該學派的思路，5 表示是論點的核心；\
-         依學生「實際提出」的立場與理由評分，不是你認為正確的答案；6 個學派都要給分。\n\
          只輸出 JSON。"
     )
 }
@@ -521,8 +533,6 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
         stance: String,
         reasons: String,
         claim: Option<String>,
-        framework: Option<String>,
-        scores: Option<serde_json::Value>,
     }
     let (start, end) = (raw.find('{')?, raw.rfind('}')?);
     if end < start {
@@ -540,8 +550,6 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
             .claim
             .map(|c| c.trim().chars().take(MAX_CLAIM_CHARS).collect::<String>())
             .filter(|c| !c.is_empty()),
-        framework: r.framework.filter(|f| FRAMEWORKS.contains(&f.as_str())),
-        scores: r.scores.as_ref().and_then(parse_scores),
     })
 }
 
@@ -660,37 +668,13 @@ mod tests {
         let ok = parse_summary("```json\n{\"stance\":\"拉桿\",\"reasons\":\"功利\"}\n```").unwrap();
         assert_eq!(ok.stance, "拉桿");
         assert_eq!(ok.reasons, "功利");
-        // 沒給分類不算結果不完整
-        assert_eq!((ok.claim, ok.framework), (None, None));
-        let classified =
-            parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"framework\":\"deontology\"}")
-                .unwrap();
-        assert_eq!(classified.framework.as_deref(), Some("deontology"));
-        assert_eq!(classified.framework.as_deref(), Some("deontology"));
-        // 6 維分數：四捨五入並夾在 0–5；缺一個學派就整組不用
-        let scored = parse_summary(
-            "{\"stance\":\"a\",\"reasons\":\"b\",\"scores\":{\"utilitarianism\":5,\"deontology\":2.6,\"virtue\":-3,\"contractarianism\":9,\"care\":0,\"existentialism\":1}}",
+        // 沒給主張不算結果不完整；舊格式多給的欄位（學派、分數）直接忽略
+        assert_eq!(ok.claim, None);
+        let extra = parse_summary(
+            "{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"該拉桿\",\"framework\":\"deontology\",\"scores\":{\"care\":1}}",
         )
         .unwrap();
-        assert_eq!(scored.scores, Some([5, 3, 0, 5, 0, 1]));
-        let partial =
-            parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"scores\":{\"utilitarianism\":5}}")
-                .unwrap();
-        assert_eq!(partial.scores, None, "分數不完整不影響總結本身");
-        let text = parse_summary(
-            "{\"stance\":\"a\",\"reasons\":\"b\",\"scores\":{\"utilitarianism\":\"high\",\"deontology\":1,\"virtue\":1,\"contractarianism\":1,\"care\":1,\"existentialism\":1}}",
-        )
-        .unwrap();
-        assert_eq!(text.scores, None);
-        // 不認得的分類值直接丟棄
-        let odd = parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"framework\":7}");
-        assert!(
-            odd.is_none(),
-            "wrong-typed framework makes the JSON invalid"
-        );
-        let odd =
-            parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"framework\":\"zen\"}").unwrap();
-        assert_eq!((odd.claim, odd.framework), (None, None));
+        assert_eq!(extra.claim.as_deref(), Some("該拉桿"));
         for bad in [
             "",
             "no json",

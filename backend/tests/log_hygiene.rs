@@ -13,7 +13,7 @@ use std::{
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
 use common::*;
 use serde_json::json;
-use socrates_chat_backend::{AppState, ai::OpenAiProvider, app};
+use socrates_chat_backend::{AppState, ai::OpenAiProvider, app, key_pool::KeyPool};
 use sqlx::PgPool;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -71,7 +71,11 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         .with_max_level(tracing::Level::TRACE)
         .init();
 
-    let provider = OpenAiProvider::new(&failing_ai_base_url().await, "SECRETAPIKEY", "some-model");
+    let provider = OpenAiProvider::new(
+        &failing_ai_base_url().await,
+        Arc::new(KeyPool::new(vec!["SECRETAPIKEY".into()]).unwrap()),
+        "some-model",
+    );
     let app = app(AppState::new(
         pool,
         test_config(),

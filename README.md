@@ -52,7 +52,8 @@ flowchart LR
 ```bash
 git clone https://github.com/2026software-3/socrates-chat.git
 cd socrates-chat
-cp .env.example .env    # 填入 GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET、ADMIN_EMAILS、OPENAI_API_KEY、OPENAI_MODEL
+cp .env.example .env    # 填入 GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET、ADMIN_EMAILS、OPENAI_MODEL
+cp .apikeylist.example .apikeylist    # 一行一把 AI API key，會輪流使用（可只放一把）
 ```
 
 ### 本地執行（需要 Rust、Node.js、Docker）
@@ -87,7 +88,7 @@ docker compose --profile app up --build    # http://localhost:3000
 ADMIN_PASSWORD='<管理者目前的密碼>' ./scripts/seed-demo.sh
 ```
 
-會建立教師 `teacher@example.com`（密碼 `Teacher-Demo-2026`）、學生 `student1`～`student3@example.com`（密碼 `Student-Demo-2026`），以及「電車難題」下 6 場已完成的對話（含 AI 總結、主張分組與 6 維分數），用教師登入就能看到班上論點分布。可重複執行。內建題目「電車難題」在服務啟動時自動建立。
+會建立教師 `teacher@example.com`（密碼 `Teacher-Demo-2026`）、學生 `student1`～`student8@example.com`（密碼 `Student-Demo-2026`），以及：2 間教室加 1 間已封存的舊教室（student3、student4 同時在兩個班）、4 個題目、7 個活動（草稿、已發布、已停止開放都有）、24 場對話（已完成的含逐則訊息、AI 總結與主張分組；另有進行中、總結產生中與總結失敗的）。用教師登入可看各教室的論點分布，用學生登入可看個人儀表板。可重複執行，會先清掉上次的示範資料。內建題目「電車難題」在服務啟動時自動建立。
 
 ### 錄製操作演示（選用）
 
