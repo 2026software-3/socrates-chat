@@ -2,8 +2,6 @@
 //! Input: backend/eval/f07_1_cases_reviewed.json (synthetic scenarios only).
 //! Offline scorer tests: cargo test --example try_f07
 //! Requires OPENAI_MODEL and OPENAI_JUDGE_MODEL; each valid response triggers a judge call.
-//! Optional OPENAI_SUBJECT_BASE_URL / OPENAI_SUBJECT_API_KEY point only the model under test
-//! at another endpoint; the judge keeps using OPENAI_BASE_URL / the API key pool.
 //! Output: backend/eval/results/<unique-run-id>/
 
 use std::{
@@ -51,12 +49,6 @@ struct InputTurn {
 fn main() -> Result<(), Box<dyn Error>> {
     // Load .env before Tokio starts its worker threads.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    // Pool logs (key index and HTTP status only, never the key); raise with RUST_LOG=socrates_chat_backend=debug.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
     dotenvy::from_path(root.join("../.env"))?;
     run()
 }
@@ -81,7 +73,7 @@ fn save_json(path: &Path, value: &Value) -> Result<(), Box<dyn Error>> {
 
 // Format validation is deterministic. Semantic consistency and suitability require review.
 // Dataset label matches are descriptive references only, never a pass/fail decision.
-const EVALUATOR_VERSION: &str = "f07-eval-v5";
+const EVALUATOR_VERSION: &str = "f07-eval-v4";
 const QUESTION_TYPES: [&str; 6] = [
     "clarify",
     "reason",
@@ -305,31 +297,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
     );
     let model = required_env("OPENAI_MODEL")?;
     let judge_model = required_env("OPENAI_JUDGE_MODEL")?;
-    // 推理型模型要先思考才有第一個 content token；EVAL_FIRST_TOKEN_SECS／EVAL_TOTAL_SECS 可放寬逾時，預設 15／60 秒
-    let timeout_secs = |name: &str, default: u64| {
-        env::var(name)
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(default)
-    };
-    let timeouts = (
-        Duration::from_secs(timeout_secs("EVAL_FIRST_TOKEN_SECS", 15)),
-        Duration::from_secs(timeout_secs("EVAL_TOTAL_SECS", 60)),
-    );
     let base_url = env::var("OPENAI_BASE_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
-    // Optional override so the model under test can be served elsewhere (e.g. a local
-    // llama-server) while the judge keeps using the shared endpoint and key.
-    let optional_env = |name: &str| env::var(name).ok().filter(|s| !s.trim().is_empty());
-    let subject_base_url =
-        optional_env("OPENAI_SUBJECT_BASE_URL").unwrap_or_else(|| base_url.clone());
-    let subject_keys = match optional_env("OPENAI_SUBJECT_API_KEY") {
-        Some(k) => Arc::new(KeyPool::new(vec![k]).expect("one key")),
-        None => keys.clone(),
-    };
-    let ai = OpenAiProvider::new(&subject_base_url, subject_keys, &model);
+    let ai = OpenAiProvider::new(&base_url, keys.clone(), &model);
     let judge_ai = OpenAiProvider::new(&base_url, keys, &judge_model);
 
     // A new directory for every execution; old runs stay intact.
@@ -362,12 +334,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mut consistency_passes = 0;
     let mut suitability_passes = 0;
 
-    // 免費供應商的限流很嚴：EVAL_DELAY_SECS 讓題與題之間停一下，預設 0（不等待）
-    let delay = Duration::from_secs(timeout_secs("EVAL_DELAY_SECS", 0));
     for (index, case) in cases.iter().enumerate() {
-        if index > 0 && !delay.is_zero() {
-            tokio::time::sleep(delay).await;
-        }
         let started_at = chrono::Utc::now().to_rfc3339();
         let system = build_system_prompt(&PromptContext {
             title: &case.title,
@@ -406,7 +373,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
         println!("[{}/{}] 正在測試 {}……", index + 1, cases.len(), case.id);
         let timer = Instant::now();
-        let result = collect(&ai, request, timeouts.0, timeouts.1).await;
+        let result = collect(
+            &ai,
+            request,
+            Duration::from_secs(15),
+            Duration::from_secs(60),
+        )
+        .await;
         let elapsed_ms = timer.elapsed().as_millis();
 
         let (mut status, raw_output, mut parsed) = match result {
@@ -446,8 +419,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         content: input.to_string(),
                     }],
                 },
-                timeouts.0,
-                timeouts.1,
+                Duration::from_secs(15),
+                Duration::from_secs(60),
             )
             .await;
             let judge_elapsed_ms = judge_started.elapsed().as_millis();
@@ -494,7 +467,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "stage": case.stage,
             "title": case.title,
             "description": case.description,
-            "timeouts_seconds": {"first_token": timeouts.0.as_secs(), "total": timeouts.1.as_secs()},
+            "timeouts_seconds": {"first_token": 15, "total": 60},
             "wrap_up_turn": 15,
             "elapsed_ms": elapsed_ms,
             "expected_type": case.expected_type,

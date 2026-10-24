@@ -23,12 +23,11 @@
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
 | 提示詞版本 | `RULES_VERSION`：`v1.10/zh-TW` |
 | 評估 runner | `backend/examples/try_f07.rs` |
-| 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v5` |
+| 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v4` |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT` |
 | 評審準則版本 | `JUDGE_VERSION`：`f07-rubric-v1/zh-TW` |
 | 結果格式版本 | `schema_version: 4` |
 | 固定情境 | `backend/eval/f07_1_cases_reviewed.json` |
-| 輸出語法（實驗，選用） | `backend/eval/followup.gbnf`，見「本機模型加語法約束實驗」 |
 
 修改受測提示詞時更新 `RULES_VERSION`；修改評審準則時更新 `JUDGE_VERSION`；修改評估邏輯時更新 `EVALUATOR_VERSION`。結果欄位有不相容變更時更新 `schema_version`。
 
@@ -36,7 +35,7 @@
 
 ### 1. 設定環境
 
-在專案根目錄建立 `.env`（runner 讀取 `backend/../.env`）。以下為已使用的測試設定，金鑰不寫在 `.env`，改放專案根目錄的 `.apikeylist`（一行一把，格式見 `.apikeylist.example`）：
+在專案根目錄建立 `.env`（runner 讀取 `backend/../.env`）。以下為已使用的測試設定。金鑰不寫在 `.env`，改放專案根目錄的 `.apikeylist`（一行一把，格式見 `.apikeylist.example`；請求會輪流使用多把 key）：
 
 ```dotenv
 OPENAI_MODEL=gpt-4.1-mini
@@ -45,31 +44,7 @@ OPENAI_JUDGE_MODEL=gpt-4.1-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-預設情況下，受測與評審使用同一個 API key、base URL；模型名稱可分別設定。`.env` 不加入版本控制。目前即使已設定 shell 環境變數，runner 仍要求根目錄 `.env` 可讀取；既有環境變數不會被 dotenvy 覆寫。
-
-#### 受測模型改走其他端點（選填）
-
-想讓受測模型走不同於評審的服務（例如本機的 llama.cpp `llama-server`），可額外設定下列變數；只影響受測模型，評審仍使用 `OPENAI_BASE_URL` 與 API key 池（`.apikeylist`／`OPENAI_API_KEYS`，與後端相同；請求輪流使用多把 key，429 時自動換 key）。
-
-| 變數 | 說明 |
-| --- | --- |
-| `OPENAI_SUBJECT_BASE_URL` | 受測模型的 base URL；未設定或為空白時沿用 `OPENAI_BASE_URL` |
-| `OPENAI_SUBJECT_API_KEY` | 受測模型的 API key；未設定或為空白時沿用 API key 池。本機服務通常不驗證，填任意值即可，避免把評審的金鑰送到本機服務 |
-
-這些變數可直接放在指令前，不必寫進 `.env`。例如受測用本機模型、評審用 `.env` 裡的 OpenRouter：
-
-```bash
-OPENAI_MODEL=qwen3.5-4b-ft2 \
-OPENAI_SUBJECT_BASE_URL=http://127.0.0.1:8081/v1 \
-OPENAI_SUBJECT_API_KEY=local \
-OPENAI_JUDGE_MODEL=<評審模型> \
-cargo run --example try_f07
-```
-
-注意事項：
-
-- `summary.json` 只記錄 `model_requested` 與 `judge_model` 的名稱，**不記錄受測端點**；比較不同輪次時，請自行註明受測模型是怎麼提供的。
-- Qwen3.5 等推理模型預設會先輸出 `reasoning_content`，`content` 在思考期間是空的，而 runner 只等 `content` 的第一個 token（15 秒逾時），會把整輪判成 `API_ERROR`。請在伺服器端關閉思考，例如 `llama-server --chat-template-kwargs '{"enable_thinking":false}'`。
+受測與評審使用同一個 API key、base URL；模型名稱可分別設定。`.env` 不加入版本控制。目前即使已設定 shell 環境變數，runner 仍要求根目錄 `.env` 可讀取；既有環境變數不會被 dotenvy 覆寫。
 
 ### 2. 跑離線測試
 
@@ -218,69 +193,6 @@ v1.10 將只含 JSON 的格式範例改成「追問＋META＋JSON」完整範例
 ### 人工抽查觀察：第一輪 R02
 
 追問「你認為在上課時完全禁止使用手機的標準是什麼？」被模型與評審共同分類為 `clarify`。此句亦可能被理解為索取支持禁令的依據，因此存在 `clarify`／`reason` 的語意歧義；評審標為 CLEAR 不表示歧義已被排除。這是抽查觀察，不覆寫原始自動評分，也不當作已完成教師審查。
-
-## 本機模型加語法約束實驗（2026-10-20）
-
-這是實驗紀錄，不是規格；S-03.1 已決定對話用 OpenAI，本機模型是否負責追問需另行規格討論。
-
-### 為什麼需要語法
-
-受測模型是本機 Qwen3.5-4B 微調 v2（Q4_K_M，來自 `chore/local-decision-model-eval` 分支的 `experiments/decision-models/`）。它只針對決策任務（T1–T3）微調，沒有學過「追問＋`<<<META>>>`＋JSON」這個輸出格式。不加語法時，一輪 15 題中有 5 題 `FORMAT_ERROR`（缺 META、缺正文、`advance` 寫成字串等）。
-
-### 用法
-
-`backend/eval/followup.gbnf` 是 llama.cpp 的 GBNF 語法，限制輸出為「單一問句（200 字內）＋`<<<META>>>`＋含 `question_type`、`advance`、`reason` 的 JSON」。正文不能含 `<`、`>`、`{`、`[`、`]` 與換行，只能以 `？` 或 `?` 結尾。
-
-```bash
-# 1. 啟動本機模型，語法在伺服器端套用（會套用到該伺服器的所有請求）。
-#    Qwen3.5 必須關閉思考，否則 content 長時間為空，會整輪 API_ERROR。
-llama-server -m <模型.gguf> --port 8081 -ngl 99 -c 8192 -np 1 --alias qwen3.5-4b-ft2 \
-  --chat-template-kwargs '{"enable_thinking":false}' \
-  --grammar-file backend/eval/followup.gbnf
-
-# 2. 受測走本機、評審走 .env 的 OpenRouter（變數說明見上方「受測模型改走其他端點」）
-cd backend
-OPENAI_MODEL=qwen3.5-4b-ft2 \
-OPENAI_SUBJECT_BASE_URL=http://127.0.0.1:8081/v1 \
-OPENAI_SUBJECT_API_KEY=local \
-OPENAI_JUDGE_MODEL=<評審模型> \
-cargo run --example try_f07
-```
-
-評審模型不要用同一個本機伺服器，語法會把評審的輸出也限制成追問格式。
-
-### 各輪結果
-
-全部使用提示詞 `v1.10/zh-TW`、評估程式 `f07-eval-v5`、準則 `f07-rubric-v1/zh-TW`，評審 `minimax/minimax-m3.1-flash:free`，受測為本機 4B v2。「格式合格」與「JUDGE_PASS」分母皆為 15。
-
-| 語法版本 | Run ID | 格式合格 | API 錯誤 | JUDGE_PASS／FAIL／ERROR |
-| --- | --- | --- | --- | --- |
-| 無語法 | `1792431349638111123` | 10 | 0 | 9／1／0 |
-| 有語法，正文不限長度 | `1792431773608694918` | 13 | 2（逾時） | 12／1／0 |
-| 正文 200 字內 | `1792432121970591123` | 15 | 0 | 10／5／0 |
-| 禁 `{`、以問號結尾（同語法 3 輪） | `1792432458635425734` | 15 | 0 | 14／1／0 |
-| | `1792432777711492011` | 15 | 0 | 9／4／2 |
-| | `1792432901458375811` | 15 | 0 | 12／3／0 |
-| 目前版本（再禁 `[`、`]`、`>`，單一問句） | `1792433668122945612` | 15 | 0 | 11／2／2 |
-
-使用同一份語法的 4 輪（後四列）JUDGE_PASS 落在 **9～14／15**，同題在不同輪次會在 PASS 與 FAIL 之間變動，單輪結果不能當成穩定成績。結果目錄在 `backend/eval/results/`，目前未納入版本控制。
-
-演進過程中觀察到的事：
-
-- 不限長度時，A02、X03 兩題一路寫到 60 秒逾時（`API_ERROR`）。
-- 只限制長度時，X02、X03 的正文變成重複的 META JSON，因為語法只保證結構；格式檢查判為合格，評審卻拿前一輪 AI 的問題來評分並給 PASS，所以這些 PASS 不可信。
-- 禁 `{` 後，模型改用 `[`，第 2、3 輪各有 1 題正文夾了 `>>>META>>> ["question_type"…`（R03、A03）。目前版本的最後一輪，15 題正文都沒有 META／JSON 殘留。
-
-### 限制
-
-- **語法只保證結構，不保證內容。** 它不檢查是否承接學生內容、是否重複問題，也不檢查標籤是否貼切。
-- **語法會改變輸出，不只是擋掉壞輸出。** 正文限單一問句與 200 字內，「問題加例子」的兩句式追問做不到；測到的是「語法約束下的 4B v2」，不是模型原本的能力。
-- **R03 仍是弱點。** 學生說「還沒想清楚為什麼」時，模型反覆再問一次理由；前三輪適切性都 FAIL，最後一輪被評審判 PASS，但追問同樣是重複問理由，不代表已解決。
-- **標籤一致性每輪都在變。** A01、A02、A03、C03、V02 都曾在不同輪次出現「模型標籤與評審分類不同」，其中 A01、A02 經人工檢視是模型標籤錯。
-- **未檢查繁體用字。** X03 在兩輪的正文出現簡體字（如「吗、坚、这」「会、况、没、种」），評審沒有扣分；我用自己列的字表掃描，可能漏掉少見字。
-- **評審端不穩。** 免費的評審模型在上表 7 輪中有 2 輪各出現 2 筆 `JUDGE_ERROR`（評審逾時或失敗），與受測模型無關。
-- **`summary.json` 不記錄語法與受測端點**，比較輪次時需自行註明。
-- 每輪只有 15 題，且這 15 題是開發評估集，結論不能推及真實學生對話。
 
 ## 人工複核與限制
 
