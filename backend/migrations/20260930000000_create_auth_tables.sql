@@ -48,3 +48,13 @@ CREATE TABLE login_failures (
     locked_until   timestamptz,
     last_failed_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- 內建登入依來源 IP 的失敗限流（#295）：不論信箱，同一個來源累計失敗達上限就鎖定。
+-- ip 是 client_ip::rate_limit_key 的結果（IPv6 為 /64 前綴）。IP 屬個資，保存期限待 S-02.5 對齊；
+-- 目前每次記錄失敗時順便清掉一天前的舊資料。
+CREATE TABLE login_ip_failures (
+    ip             text PRIMARY KEY,
+    failures       integer NOT NULL DEFAULT 0,
+    locked_until   timestamptz,
+    last_failed_at timestamptz NOT NULL DEFAULT now()
+);

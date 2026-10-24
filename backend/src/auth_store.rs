@@ -14,6 +14,8 @@ pub const SESSION_ABSOLUTE_TTL: Duration = Duration::days(30);
 pub const LOGIN_STATE_TTL: Duration = Duration::minutes(10);
 /// 內建登入連續失敗幾次後鎖定。
 pub const MAX_LOGIN_FAILURES: i32 = 5;
+/// 同一來源 IP（不論信箱）累計失敗幾次後鎖定。預設值待需求方確認（S-08.2、#295）。
+pub const MAX_IP_LOGIN_FAILURES: i32 = 20;
 /// 鎖定時間。
 pub const LOGIN_LOCK_DURATION: Duration = Duration::minutes(15);
 
@@ -295,6 +297,57 @@ pub async fn record_login_failure(
     .bind(email)
     .bind(now)
     .bind(MAX_LOGIN_FAILURES)
+    .bind(now + LOGIN_LOCK_DURATION)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 這個來源 IP（`client_ip::rate_limit_key`）目前是否被鎖定。
+pub async fn is_ip_locked(
+    pool: &PgPool,
+    ip_key: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let (locked,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM login_ip_failures
+                        WHERE ip = $1 AND locked_until > $2)",
+    )
+    .bind(ip_key)
+    .bind(now)
+    .fetch_one(pool)
+    .await?;
+    Ok(locked)
+}
+
+/// 記錄這個來源 IP 的一次登入失敗；累計達 `MAX_IP_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`。
+/// 鎖定已過期的紀錄會從 0 重新計。成功登入不會清除（避免用一個合法帳號重置自己的額度）。
+pub async fn record_ip_login_failure(
+    pool: &PgPool,
+    ip_key: &str,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM login_ip_failures WHERE last_failed_at < $1")
+        .bind(now - Duration::days(1))
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO login_ip_failures (ip, failures, locked_until, last_failed_at)
+         VALUES ($1, 1, NULL, $2)
+         ON CONFLICT (ip) DO UPDATE SET
+            failures = CASE WHEN login_ip_failures.locked_until IS NOT NULL
+                                 AND login_ip_failures.locked_until <= $2
+                            THEN 1 ELSE login_ip_failures.failures + 1 END,
+            locked_until = CASE
+                WHEN login_ip_failures.locked_until IS NOT NULL
+                     AND login_ip_failures.locked_until <= $2 THEN NULL
+                WHEN login_ip_failures.failures + 1 >= $3 THEN $4
+                ELSE login_ip_failures.locked_until END,
+            last_failed_at = $2",
+    )
+    .bind(ip_key)
+    .bind(now)
+    .bind(MAX_IP_LOGIN_FAILURES)
     .bind(now + LOGIN_LOCK_DURATION)
     .execute(pool)
     .await?;

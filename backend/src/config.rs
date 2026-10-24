@@ -18,6 +18,9 @@ pub struct Config {
     /// session cookie 是否加 `Secure`；本機 http 開發可設為 `false`。
     pub cookie_secure: bool,
     pub listen_addr: String,
+    /// 受信任的反向代理網段（`TRUSTED_PROXIES`，逗號分隔的 CIDR）。只有 TCP 對端落在這些網段時，
+    /// 才採用 `X-Forwarded-For` 作為來源 IP；預設為空，一律用 TCP 對端（S-08.2 登入限流）。
+    pub trusted_proxies: Vec<crate::client_ip::Cidr>,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
     pub openai_api_key: String,
@@ -111,6 +114,10 @@ impl Config {
                 .map(|v| v != "false")
                 .unwrap_or(true),
             listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
+            trusted_proxies: crate::client_ip::parse_cidrs(
+                &env::var("TRUSTED_PROXIES").unwrap_or_default(),
+            )
+            .map_err(|e| ConfigError(format!("invalid TRUSTED_PROXIES: {e}")))?,
             frontend_dir: env::var("FRONTEND_DIR")
                 .ok()
                 .filter(|v| !v.is_empty())

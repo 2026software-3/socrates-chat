@@ -1,8 +1,10 @@
 //! 登入、登出與 session 驗證（F-01.1，規格見 S-08.2）。
 
+use std::net::SocketAddr;
+
 use axum::{
-    Json, Router,
-    extract::{FromRequestParts, Query, State},
+    Extension, Json, Router,
+    extract::{ConnectInfo, FromRequestParts, Query, State},
     http::{HeaderMap, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -20,6 +22,7 @@ use crate::{
     auth_store,
     auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
     catalog::nullable,
+    client_ip,
     error::ApiError,
     password,
 };
@@ -504,11 +507,24 @@ pub(crate) struct LoginResponse {
 )]
 pub(crate) async fn password_login(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result<Response, ApiError> {
     let email = body.email.trim().to_lowercase();
     let now = Utc::now();
-    if auth_store::is_locked(&state.pool, &email, now).await? {
+    // 沒有連線資訊（例如測試）時不做 IP 限流，只剩信箱鎖定
+    let ip_key = client_ip::resolve(
+        connect_info.map(|Extension(ConnectInfo(addr))| addr.ip()),
+        headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
+        &state.config.trusted_proxies,
+    )
+    .map(client_ip::rate_limit_key);
+    let ip_locked = match &ip_key {
+        Some(key) => auth_store::is_ip_locked(&state.pool, key, now).await?,
+        None => false,
+    };
+    if ip_locked || auth_store::is_locked(&state.pool, &email, now).await? {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "too_many_attempts",
@@ -522,6 +538,9 @@ pub(crate) async fn password_login(
     let ok = verify_blocking(body.password, hash).await && has_password;
     let (Some(account), true) = (account, ok) else {
         auth_store::record_login_failure(&state.pool, &email, now).await?;
+        if let Some(key) = &ip_key {
+            auth_store::record_ip_login_failure(&state.pool, key, now).await?;
+        }
         return Err(INVALID_CREDENTIALS);
     };
     auth_store::clear_login_failures(&state.pool, &email).await?;

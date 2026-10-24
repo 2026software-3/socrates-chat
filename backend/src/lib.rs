@@ -32,6 +32,7 @@ pub mod chat;
 pub mod claims;
 pub mod classroom_store;
 pub mod classrooms;
+pub mod client_ip;
 pub mod config;
 pub mod dashboard;
 pub mod error;
