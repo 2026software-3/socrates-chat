@@ -1,8 +1,10 @@
 //! 登入、登出與 session 驗證（F-01.1，規格見 S-08.2）。
 
+use std::net::SocketAddr;
+
 use axum::{
-    Json, Router,
-    extract::{FromRequestParts, Query, State},
+    Extension, Json, Router,
+    extract::{ConnectInfo, FromRequestParts, Query, State},
     http::{HeaderMap, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -20,8 +22,9 @@ use crate::{
     auth_store,
     auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
     catalog::nullable,
+    client_ip,
     error::ApiError,
-    password,
+    login_rate_limit, password,
 };
 
 const COOKIE_NAME: &str = "sid";
@@ -39,11 +42,14 @@ async fn is_disabled(state: &AppState, user_id: Uuid) -> Result<bool, sqlx::Erro
     Ok(disabled)
 }
 
-pub fn routes() -> Router<AppState> {
+pub fn routes(trusted_proxies: Vec<client_ip::Cidr>) -> Router<AppState> {
     Router::new()
         .route("/api/auth/google/login", get(login))
         .route("/api/auth/google/callback", get(callback))
-        .route("/api/auth/login", post(password_login))
+        .route(
+            "/api/auth/login",
+            login_rate_limit::apply(post(password_login), trusted_proxies),
+        )
         .route("/api/auth/change-password", post(change_password))
         .route("/api/admin/users/reset-password", post(reset_password))
         .route("/api/auth/logout", post(logout))
@@ -504,11 +510,21 @@ pub(crate) struct LoginResponse {
 )]
 pub(crate) async fn password_login(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result<Response, ApiError> {
     let email = body.email.trim().to_lowercase();
     let now = Utc::now();
-    if auth_store::is_locked(&state.pool, &email, now).await? {
+    // 沒有連線資訊（例如測試）時 ip_key 為空字串：退回只以信箱計
+    let ip_key = client_ip::resolve(
+        connect_info.map(|Extension(ConnectInfo(addr))| addr.ip()),
+        headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
+        &state.config.trusted_proxies,
+    )
+    .map(client_ip::rate_limit_key)
+    .unwrap_or_default();
+    if auth_store::is_locked(&state.pool, &email, &ip_key, now).await? {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "too_many_attempts",
@@ -521,10 +537,10 @@ pub(crate) async fn password_login(
     let hash = real_hash.unwrap_or_else(|| dummy_hash().to_string());
     let ok = verify_blocking(body.password, hash).await && has_password;
     let (Some(account), true) = (account, ok) else {
-        auth_store::record_login_failure(&state.pool, &email, now).await?;
+        auth_store::record_login_failure(&state.pool, &email, &ip_key, now).await?;
         return Err(INVALID_CREDENTIALS);
     };
-    auth_store::clear_login_failures(&state.pool, &email).await?;
+    auth_store::clear_login_failures_for(&state.pool, &email, &ip_key).await?;
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if is_disabled(&state, account.id).await? {
         return Err(ACCOUNT_DISABLED);

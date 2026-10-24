@@ -76,6 +76,7 @@ pub fn test_config() -> Config {
         admin_initial_password: None,
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
+        trusted_proxies: vec![],
         frontend_dir: None,
         openai_api_key: "test-key".to_string(),
         openai_model: "test-model".to_string(),

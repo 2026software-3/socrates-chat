@@ -461,7 +461,7 @@ async fn password_reset_audit_failure_preserves_password_sessions_and_lock(pool:
         .unwrap();
     let now = chrono::Utc::now();
     for _ in 0..auth_store::MAX_LOGIN_FAILURES {
-        auth_store::record_login_failure(&pool, "student@example.com", now)
+        auth_store::record_login_failure(&pool, "student@example.com", "", now)
             .await
             .unwrap();
     }
@@ -486,7 +486,7 @@ async fn password_reset_audit_failure_preserves_password_sessions_and_lock(pool:
     assert!(hash == old_hash, "失敗的重設必須保留原密碼");
     assert!(!must_change);
     assert!(
-        auth_store::is_locked(&pool, "student@example.com", now)
+        auth_store::is_locked(&pool, "student@example.com", "", now)
             .await
             .unwrap()
     );
