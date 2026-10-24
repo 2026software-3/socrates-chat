@@ -168,6 +168,9 @@ async fn transcribe_validates_input(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = json_body(res).await;
+    assert_eq!(body["error"]["code"], "payload_too_large");
+    assert!(body["error"]["request_id"].is_string());
 }
 
 #[sqlx::test]

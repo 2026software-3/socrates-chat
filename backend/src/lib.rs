@@ -23,21 +23,27 @@ use crate::{
 };
 
 pub mod accounts;
+pub mod activity_store;
 pub mod ai;
 pub mod auth;
 pub mod auth_store;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_store;
+pub mod classrooms;
+pub mod client_ip;
 pub mod config;
 pub mod dashboard;
 pub mod error;
 pub mod identity;
+pub mod login_rate_limit;
 pub mod openapi;
 pub mod pagination;
 pub mod password;
 pub mod reply;
 pub mod roster;
+pub mod roster_store;
 pub mod summary;
 pub mod voice;
 
@@ -85,8 +91,9 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/openapi.json", get(openapi_json))
-        .merge(auth::routes())
+        .merge(auth::routes(state.config.trusted_proxies.clone()))
         .merge(roster::routes())
+        .merge(classrooms::routes())
         .merge(accounts::routes())
         .merge(dashboard::routes())
         .merge(claims::routes())

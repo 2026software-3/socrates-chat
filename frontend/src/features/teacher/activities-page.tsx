@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { formatDate } from '@/features/teacher/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
-import type { Activity, ActivityStatus, Available, Topic } from '@/lib/types'
+import type { Activity, ActivityStatus, Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
@@ -50,6 +50,7 @@ function ActivityForm({
   const [values, setValues] = useState<Values>(initial)
   const [pending, setPending] = useState(false)
   const [titleError, setTitleError] = useState(false)
+  const [topicError, setTopicError] = useState(false)
   const [serverError, setServerError] = useState<string>()
   const busy = useRef(false)
   const hasInitialTopic = initial.topicId !== ''
@@ -57,11 +58,12 @@ function ActivityForm({
   async function submit(e: FormEvent) {
     e.preventDefault()
     if (busy.current) return
-    if (!values.title.trim()) {
-      setTitleError(true)
-      return
-    }
-    setTitleError(false)
+    // 活動必須選題庫題目（S-04.7）；標題與題目都缺時一起提示
+    const titleMissing = !values.title.trim()
+    const topicMissing = !values.topicId
+    setTitleError(titleMissing)
+    setTopicError(topicMissing)
+    if (titleMissing || topicMissing) return
     setServerError(undefined)
     busy.current = true
     setPending(true)
@@ -107,9 +109,13 @@ function ActivityForm({
           id={`${idPrefix}-topic`}
           className={selectClass}
           value={values.topicId}
+          aria-invalid={topicError}
+          aria-describedby={topicError ? `${idPrefix}-topic-error` : undefined}
           onChange={(e) => setValues({ ...values, topicId: e.target.value })}
         >
-          <option value="">{t('teacher.activities.topicNone')}</option>
+          <option value="" disabled>
+            {t('teacher.activities.topicPlaceholder')}
+          </option>
           {hasInitialTopic && !topics.some((tp) => tp.id === initial.topicId) ? (
             <option value={initial.topicId}>{t('teacher.activities.topicUnavailable')}</option>
           ) : null}
@@ -119,6 +125,11 @@ function ActivityForm({
             </option>
           ))}
         </select>
+        {topicError ? (
+          <p id={`${idPrefix}-topic-error`} role="alert" className="text-destructive text-sm">
+            {t('teacher.activities.topicRequired')}
+          </p>
+        ) : null}
         {topicsFailed ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicsFailed')}</p> : null}
       </div>
       {serverError ? (
@@ -206,9 +217,9 @@ function ActivityRow({
 export function ActivitiesPage() {
   const t = useT()
   const list = useFetch<Activity[]>('/api/activities')
-  // 教師不能呼叫 /api/admin/topics，題目清單來自 /api/catalog
-  const available = useFetch<Available>('/api/catalog')
-  const topics = available.data?.topics ?? []
+  // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
+  const available = useFetch<Topic[]>('/api/topics')
+  const topics = (available.data ?? []).filter((tp) => tp.is_active)
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const busyRef = useRef(new Set<string>())
@@ -219,7 +230,7 @@ export function ActivitiesPage() {
     await api.post<Activity>('/api/activities', {
       title: v.title,
       ...(v.description.trim() ? { description: v.description.trim() } : {}),
-      ...(v.topicId ? { topic_id: v.topicId } : {}),
+      topic_id: v.topicId,
     })
     toast.success(t('teacher.activities.created'))
     setRowError(undefined)
@@ -227,12 +238,12 @@ export function ActivitiesPage() {
   }
 
   async function update(a: Activity, v: Values) {
-    // 只在題目有變動時才送 topic_id；選「不指定題目」送 null 以清除
-    const topicChanged = v.topicId !== (a.topic_id ?? '')
+    // 只在題目有變動時才送 topic_id：已有學生開始的活動不能換題目（409 activity_topic_locked），沒換就不該碰到它
+    const topicChanged = v.topicId !== a.topic_id
     await api.patch<Activity>(`/api/activities/${a.id}`, {
       title: v.title,
       description: v.description.trim(),
-      ...(topicChanged ? { topic_id: v.topicId === '' ? null : v.topicId } : {}),
+      ...(topicChanged ? { topic_id: v.topicId } : {}),
     })
     toast.success(t('teacher.activities.updated'))
     setEditing(null)
@@ -307,7 +318,7 @@ export function ActivitiesPage() {
               initial={{
                 title: editing.title,
                 description: editing.description,
-                topicId: editing.topic_id ?? '',
+                topicId: editing.topic_id,
               }}
               topics={topics}
               topicsFailed={!!available.error}

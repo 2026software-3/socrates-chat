@@ -1,15 +1,20 @@
-//! 儀表板（F-15、F-24；規格見 S-02.2、S-02.4、S-04）。
+//! 儀表板（F-15、F-24；規格見 S-02.2、S-02.4、S-04.6、S-04.7）。
 //!
 //! - 個人儀表板：只算自己的對話與總結。
-//! - 班上論點分布：只給教師看；依 S-02.4 不設最小群體門檻。管理者身分一律拿不到分析結果
-//!   （S-02.2：分析結果屬敏感欄位），只看得到固定的 `masked: true`。
+//! - 教師儀表板：只給教師看；依 S-02.4 不設最小群體門檻。以「活動」為彙整單位（S-04.7）：
+//!   每位學生在一個活動至多一場對話，從題目庫開始的個人練習不屬於任何活動，不列入。
+//!   管理者身分一律拿不到分析結果（S-02.2：分析結果屬敏感欄位），只看得到固定的 `masked: true`。
 //!
-//! 主要學派（framework）與 6 維分數、主張（claim）是 AI 在產生總結時給的，
-//! 分類方式仍屬暫定（S-04 尚未決定），沒有分類的總結歸入 `unclassified`。
+//! 主張（claim）是 AI 在產生總結時給的，分組方式仍屬暫定。固定學派的 6 維雷達圖已取消（S-04.6），
+//! 新的題目綁定維度由後續功能實作。
 
 use std::collections::BTreeMap;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    routing::get,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::FromRow;
@@ -17,123 +22,16 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    ai::{FRAMEWORKS, MAX_SCORE, SCHOOLS},
     auth::{RequireStudent, RequireTeacher},
+    classrooms::{ClassroomFilter, filtered_classroom},
     error::ApiError,
+    roster_store,
 };
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/dashboard/me", get(personal))
         .route("/api/dashboard/class", get(class))
-}
-
-const UNCLASSIFIED: &str = "unclassified";
-
-/// 每個分類一個計數，沒有人選的分類也列出（值為 0），前端不需要自己補。
-type Counts = BTreeMap<&'static str, i64>;
-
-fn empty_counts(keys: &[&'static str]) -> Counts {
-    keys.iter()
-        .copied()
-        .chain([UNCLASSIFIED])
-        .map(|k| (k, 0))
-        .collect()
-}
-
-fn bump(counts: &mut Counts, keys: &[&'static str], value: Option<&str>) {
-    let key = value
-        .and_then(|v| keys.iter().copied().find(|k| *k == v))
-        .unwrap_or(UNCLASSIFIED);
-    *counts.entry(key).or_insert(0) += 1;
-}
-
-/// 6 維雷達圖的平均分數（S-04.2，暫定）：只平均有分數的總結；沒有任何分數時各維度為 0、`scored` 為 0。
-#[derive(Serialize, Clone, utoipa::ToSchema)]
-pub(crate) struct RadarScores {
-    /// 有 6 維分數的總結數
-    scored: i64,
-    /// 各學派的平均分數（0–5，取到小數第 2 位）
-    average: BTreeMap<&'static str, f64>,
-    /// 單場分數滿分，前端畫圖用
-    max: u8,
-    #[serde(skip)]
-    sums: [i64; 6],
-}
-
-impl RadarScores {
-    fn new() -> Self {
-        let mut r = Self {
-            scored: 0,
-            average: BTreeMap::new(),
-            max: MAX_SCORE,
-            sums: [0; 6],
-        };
-        r.refresh();
-        r
-    }
-
-    fn add(&mut self, scores: Option<&serde_json::Value>) {
-        let Some(obj) = scores.and_then(|v| v.as_object()) else {
-            return;
-        };
-        let mut vals = [0i64; 6];
-        for (slot, key) in vals.iter_mut().zip(SCHOOLS) {
-            match obj.get(key).and_then(|v| v.as_i64()) {
-                Some(n) => *slot = n.clamp(0, i64::from(MAX_SCORE)),
-                None => return, // 不完整的分數整組不用
-            }
-        }
-        self.scored += 1;
-        for (sum, v) in self.sums.iter_mut().zip(vals) {
-            *sum += v;
-        }
-        self.refresh();
-    }
-
-    /// 把另一組分數併進來（把最小的幾個主張群併成「其他」時用）。
-    fn merge(&mut self, other: &RadarScores) {
-        self.scored += other.scored;
-        for (a, b) in self.sums.iter_mut().zip(other.sums) {
-            *a += b;
-        }
-        self.refresh();
-    }
-
-    fn refresh(&mut self) {
-        for (key, sum) in SCHOOLS.iter().zip(self.sums) {
-            let avg = if self.scored > 0 {
-                (sum as f64 / self.scored as f64 * 100.0).round() / 100.0
-            } else {
-                0.0
-            };
-            self.average.insert(key, avg);
-        }
-    }
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct Distribution {
-    completed: i64,
-    #[schema(inline)]
-    frameworks: Counts,
-    radar: RadarScores,
-}
-
-impl Distribution {
-    fn new() -> Self {
-        Self {
-            completed: 0,
-            frameworks: empty_counts(&FRAMEWORKS),
-            radar: RadarScores::new(),
-        }
-    }
-
-    fn add(&mut self, framework: Option<&str>, scores: Option<&serde_json::Value>) {
-        self.completed += 1;
-        bump(&mut self.frameworks, &FRAMEWORKS, framework);
-        self.radar.add(scores);
-    }
 }
 
 // ---- 個人 ----
@@ -148,17 +46,14 @@ pub(crate) struct RecentRow {
     stance: Option<String>,
     /// 學生最終主張的一句短句（AI 寫的，暫定）
     claim: Option<String>,
-    framework: Option<String>,
-    #[schema(value_type = Option<std::collections::BTreeMap<String, u8>>)]
-    framework_scores: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Personal {
     total_conversations: i64,
     total_turns: i64,
-    #[serde(flatten)]
-    distribution: Distribution,
+    /// 已產生總結的對話數
+    completed: i64,
     /// 最近完成的 10 場，新的在前
     recent: Vec<RecentRow>,
 }
@@ -182,7 +77,7 @@ pub(crate) async fn personal(
     .await?;
     let ready: Vec<RecentRow> = sqlx::query_as(
         "SELECT c.id AS conversation_id, c.title, c.ended_at, c.stage, c.turn_count,
-                s.stance, s.claim, s.framework, s.framework_scores
+                s.stance, s.claim
          FROM summaries s JOIN conversations c ON c.id = s.conversation_id
          WHERE c.user_id = $1 AND s.status = 'ready'
          ORDER BY c.ended_at DESC NULLS LAST, c.id",
@@ -190,14 +85,10 @@ pub(crate) async fn personal(
     .bind(cu.user.id)
     .fetch_all(&state.pool)
     .await?;
-    let mut distribution = Distribution::new();
-    for r in &ready {
-        distribution.add(r.framework.as_deref(), r.framework_scores.as_ref());
-    }
     Ok(Json(Personal {
         total_conversations,
         total_turns,
-        distribution,
+        completed: ready.len() as i64,
         recent: ready.into_iter().take(10).collect(),
     }))
 }
@@ -213,15 +104,14 @@ pub(crate) struct ClaimGroupView {
     count: i64,
     /// 這群人的核心理由（AI 總結的文字，不含姓名與對話原文），最多 5 則、去重
     reasons: Vec<String>,
-    /// 這群人在 6 個學派上的平均分數
-    radar: RadarScores,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct TopicDistribution {
+pub(crate) struct ActivityDistribution {
+    activity_id: Uuid,
     title: String,
-    #[serde(flatten)]
-    distribution: Distribution,
+    /// 這個活動已完成（有總結）的對話數；每位學生至多一場
+    completed: i64,
     /// 主張分布：依人數多到少；超過 6 群時，最小的幾群併成「其他」
     claims: Vec<ClaimGroupView>,
     /// 有主張但還沒歸群的場數（分組失敗或尚未分組），教師可按「重新分組」
@@ -238,144 +128,129 @@ pub(crate) struct Class {
     /// 管理者身分一律為 `true`：看不到分析結果（S-02.2）
     masked: bool,
     students_total: i64,
-    /// 至少完成一場對話的學生數
+    /// 至少完成一場活動對話的學生數
     students_participating: i64,
-    #[serde(flatten)]
-    overall: Distribution,
-    /// 依題目分組，完成場數多的在前
-    topics: Vec<TopicDistribution>,
+    /// 全部活動已完成的對話數
+    completed: i64,
+    /// 依活動分組，完成場數多的在前
+    activities: Vec<ActivityDistribution>,
 }
 
 #[derive(FromRow)]
 struct ClassRow {
     user_id: Uuid,
-    title: String,
+    activity_id: Uuid,
+    activity_title: String,
     claim: Option<String>,
     reasons: Option<String>,
     group_name: Option<String>,
-    framework: Option<String>,
-    framework_scores: Option<serde_json::Value>,
 }
 
 #[utoipa::path(
     get,
     path = "/api/dashboard/class",
     tag = "dashboard",
-    summary = "全班論點分布（只有教師）",
-    responses((status = 200, description = "班級統計", body = Class))
+    summary = "各活動的論點分布（只有教師）",
+    params(("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404。沒帶時涵蓋自己管理的所有教室")),
+    responses((status = 200, description = "班級統計", body = Class), crate::error::CommonErrors)
 )]
 pub(crate) async fn class(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
+    Query(filter): Query<ClassroomFilter>,
 ) -> Result<Json<Class>, ApiError> {
-    let (students_total,): (i64,) = sqlx::query_as("SELECT count(*) FROM enrollments")
-        .fetch_one(&state.pool)
-        .await?;
+    let classroom = filtered_classroom(&state, &cu, &filter).await?;
+    let students_total = match classroom {
+        Some(id) => roster_store::count_in_classroom(&state.pool, id).await?,
+        None => roster_store::count_students(&state.pool, cu.user.id, cu.roles.admin).await?,
+    };
     if cu.roles.admin {
         return Ok(Json(Class {
             masked: true,
             students_total,
             students_participating: 0,
-            overall: Distribution {
-                completed: 0,
-                frameworks: Counts::new(),
-                radar: RadarScores {
-                    scored: 0,
-                    average: BTreeMap::new(),
-                    max: MAX_SCORE,
-                    sums: [0; 6],
-                },
-            },
-            topics: vec![],
+            completed: 0,
+            activities: vec![],
         }));
     }
-    // 只有學生會有對話；事後被移出名單或改成教師也不影響已完成的對話（S-01.4）
+    // 只有學生會有對話；事後被移出名單或改成教師也不影響已完成的對話（S-01.4）。
+    // 內連接教室與活動：從題目庫開始的個人練習不屬於任何教室，教師看不到，也不納入統計（S-02.1、S-14）。
     let rows: Vec<ClassRow> = sqlx::query_as(
-        "SELECT c.user_id, c.title, s.claim, s.reasons, g.name AS group_name,
-                s.framework, s.framework_scores
-         FROM summaries s JOIN conversations c ON c.id = s.conversation_id
+        "SELECT c.user_id, c.activity_id, a.title AS activity_title,
+                s.claim, s.reasons, g.name AS group_name
+         FROM summaries s
+         JOIN conversations c ON c.id = s.conversation_id
+         JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
+         JOIN activities a ON a.id = c.activity_id
          LEFT JOIN claim_groups g ON g.id = s.claim_group_id
-         WHERE s.status = 'ready'
+         WHERE s.status = 'ready' AND ($3::uuid IS NULL OR c.classroom_id = $3)
          ORDER BY c.ended_at, s.conversation_id",
     )
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .bind(classroom)
     .fetch_all(&state.pool)
     .await?;
-    let mut overall = Distribution::new();
-    let mut by_topic: BTreeMap<String, TopicAcc> = BTreeMap::new();
+    let mut by_activity: BTreeMap<Uuid, ActivityAcc> = BTreeMap::new();
     let mut participants = std::collections::HashSet::new();
     for r in &rows {
-        let (f, sc) = (r.framework.as_deref(), r.framework_scores.as_ref());
-        overall.add(f, sc);
-        let topic = by_topic.entry(r.title.clone()).or_default();
-        topic.distribution.add(f, sc);
+        let activity = by_activity
+            .entry(r.activity_id)
+            .or_insert_with(|| ActivityAcc {
+                title: r.activity_title.clone(),
+                completed: 0,
+                groups: BTreeMap::new(),
+                ungrouped: 0,
+            });
+        activity.completed += 1;
         if r.claim.is_some() {
             match &r.group_name {
-                Some(name) => topic
+                Some(name) => activity
                     .groups
                     .entry(name.clone())
                     .or_default()
-                    .add(r.reasons.as_deref(), sc),
-                None => topic.ungrouped += 1,
+                    .add(r.reasons.as_deref()),
+                None => activity.ungrouped += 1,
             }
         }
         participants.insert(r.user_id);
     }
-    let mut topics: Vec<TopicDistribution> = by_topic
+    let mut activities: Vec<ActivityDistribution> = by_activity
         .into_iter()
-        .map(|(title, acc)| acc.finish(title))
+        .map(|(id, acc)| acc.finish(id))
         .collect();
-    topics.sort_by(|a, b| {
-        b.distribution
-            .completed
-            .cmp(&a.distribution.completed)
+    activities.sort_by(|a, b| {
+        b.completed
+            .cmp(&a.completed)
             .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.activity_id.cmp(&b.activity_id))
     });
     Ok(Json(Class {
         masked: false,
         students_total,
         students_participating: participants.len() as i64,
-        overall,
-        topics,
+        completed: rows.len() as i64,
+        activities,
     }))
 }
 
-/// 一個題目的累積結果。
-struct TopicAcc {
-    distribution: Distribution,
+/// 一個活動的累積結果。
+struct ActivityAcc {
+    title: String,
+    completed: i64,
     groups: BTreeMap<String, GroupAcc>,
     ungrouped: i64,
 }
 
-impl Default for TopicAcc {
-    fn default() -> Self {
-        Self {
-            distribution: Distribution::new(),
-            groups: BTreeMap::new(),
-            ungrouped: 0,
-        }
-    }
-}
-
+#[derive(Default)]
 struct GroupAcc {
     count: i64,
     reasons: Vec<String>,
-    radar: RadarScores,
-}
-
-impl Default for GroupAcc {
-    fn default() -> Self {
-        Self {
-            count: 0,
-            reasons: Vec::new(),
-            radar: RadarScores::new(),
-        }
-    }
 }
 
 impl GroupAcc {
-    fn add(&mut self, reasons: Option<&str>, scores: Option<&serde_json::Value>) {
+    fn add(&mut self, reasons: Option<&str>) {
         self.count += 1;
-        self.radar.add(scores);
         self.push_reason(reasons);
     }
 
@@ -389,8 +264,8 @@ impl GroupAcc {
     }
 }
 
-impl TopicAcc {
-    fn finish(self, title: String) -> TopicDistribution {
+impl ActivityAcc {
+    fn finish(self, activity_id: Uuid) -> ActivityDistribution {
         let mut groups: Vec<(String, GroupAcc)> = self.groups.into_iter().collect();
         groups.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(&b.0)));
         let mut claims: Vec<ClaimGroupView> = Vec::new();
@@ -402,11 +277,9 @@ impl TopicAcc {
                     other: false,
                     count: g.count,
                     reasons: g.reasons,
-                    radar: g.radar,
                 });
             } else {
                 rest.count += g.count;
-                rest.radar.merge(&g.radar);
                 for r in g.reasons {
                     rest.push_reason(Some(&r));
                 }
@@ -418,12 +291,12 @@ impl TopicAcc {
                 other: true,
                 count: rest.count,
                 reasons: rest.reasons,
-                radar: rest.radar,
             });
         }
-        TopicDistribution {
-            title,
-            distribution: self.distribution,
+        ActivityDistribution {
+            activity_id,
+            title: self.title,
+            completed: self.completed,
             claims,
             ungrouped: self.ungrouped,
         }

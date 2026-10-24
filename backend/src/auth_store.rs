@@ -14,6 +14,8 @@ pub const SESSION_ABSOLUTE_TTL: Duration = Duration::days(30);
 pub const LOGIN_STATE_TTL: Duration = Duration::minutes(10);
 /// 內建登入連續失敗幾次後鎖定。
 pub const MAX_LOGIN_FAILURES: i32 = 5;
+/// 同一信箱不論來源 IP，累計失敗幾次後在所有 IP 鎖定（分散式猜密碼的上限）。暫定值，待需求方確認（S-08.2、#295）。
+pub const MAX_EMAIL_LOGIN_FAILURES: i32 = 30;
 /// 鎖定時間。
 pub const LOGIN_LOCK_DURATION: Duration = Duration::minutes(15);
 
@@ -56,7 +58,8 @@ pub struct LoginState {
 
 /// 依 Google 帳號建立、更新或綁定使用者。
 ///
-/// 1. 已有相同 `sub` 的使用者：更新電子郵件（轉小寫）與顯示名稱。
+/// 1. 已有相同 `sub` 的使用者：更新電子郵件（轉小寫）；顯示名稱只在尚未設定時才取自 Google，
+///    不覆寫使用者自訂的名稱。
 /// 2. 否則，電子郵件已有尚未綁定 Google 的內建帳號：綁定 `sub`（呼叫端須確認 `email_verified`）。
 ///    信箱的擁有者本人登入了，所以：仍是臨時密碼（從未更改）的帳號會清掉密碼，建立者知道的臨時密碼
 ///    不能繼續用；`admin_on_create`（信箱在 ADMIN_EMAILS）時授予管理者。使用者自己改過的密碼不受影響。
@@ -72,7 +75,8 @@ pub async fn upsert_user(
 ) -> Result<User, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let existing: Option<User> = sqlx::query_as(
-        "UPDATE users SET email = lower($2), display_name = $3, updated_at = now()
+        "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, $3),
+                updated_at = now()
          WHERE google_sub = $1
          RETURNING id, google_sub, email, display_name, is_admin, must_change_password, created_at",
     )
@@ -247,28 +251,37 @@ pub async fn password_hash_of(pool: &PgPool, user_id: Uuid) -> Result<Option<Str
     Ok(row.and_then(|(h,)| h))
 }
 
-/// 這個電子郵件目前是否被鎖定。
+/// `login_failures` 裡代表「這個信箱在所有 IP 的累計」的列（不會是任何真實的 `rate_limit_key`）。
+const EMAIL_TOTAL_KEY: &str = "*";
+
+/// 這個（電子郵件, 來源 IP）或這個信箱的跨 IP 總量目前是否被鎖定。`ip_key` 是
+/// `client_ip::rate_limit_key` 的結果，沒有連線資訊時傳空字串。
 pub async fn is_locked(
     pool: &PgPool,
     email: &str,
+    ip_key: &str,
     now: DateTime<Utc>,
 ) -> Result<bool, sqlx::Error> {
     let (locked,): (bool,) = sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM login_failures
-                        WHERE email = lower($1) AND locked_until > $2)",
+                        WHERE email = lower($1) AND ip IN ($2, $3) AND locked_until > $4)",
     )
     .bind(email)
+    .bind(ip_key)
+    .bind(EMAIL_TOTAL_KEY)
     .bind(now)
     .fetch_one(pool)
     .await?;
     Ok(locked)
 }
 
-/// 記錄一次登入失敗；累計達 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`。
+/// 記錄一次登入失敗：（電子郵件, 來源 IP）累計達 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`；
+/// 同時累計這個信箱在所有 IP 的總數，達 `MAX_EMAIL_LOGIN_FAILURES` 次就在所有 IP 鎖定。
 /// 鎖定已過期的紀錄會從 0 重新計。
 pub async fn record_login_failure(
     pool: &PgPool,
     email: &str,
+    ip_key: &str,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     // 順便清掉很久以前的紀錄，避免用大量不存在的信箱讓資料表無限成長
@@ -276,29 +289,58 @@ pub async fn record_login_failure(
         .bind(now - Duration::days(1))
         .execute(pool)
         .await?;
+    bump_failures(pool, email, ip_key, MAX_LOGIN_FAILURES, now).await?;
+    bump_failures(pool, email, EMAIL_TOTAL_KEY, MAX_EMAIL_LOGIN_FAILURES, now).await
+}
+
+async fn bump_failures(
+    pool: &PgPool,
+    email: &str,
+    key: &str,
+    max_failures: i32,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO login_failures (email, failures, locked_until, last_failed_at)
-         VALUES (lower($1), 1, NULL, $2)
-         ON CONFLICT (email) DO UPDATE SET
+        "INSERT INTO login_failures (email, ip, failures, locked_until, last_failed_at)
+         VALUES (lower($1), $2, 1, NULL, $3)
+         ON CONFLICT (email, ip) DO UPDATE SET
             failures = CASE WHEN login_failures.locked_until IS NOT NULL
-                                 AND login_failures.locked_until <= $2
+                                 AND login_failures.locked_until <= $3
                             THEN 1 ELSE login_failures.failures + 1 END,
             locked_until = CASE
-                WHEN login_failures.locked_until IS NOT NULL AND login_failures.locked_until <= $2
+                WHEN login_failures.locked_until IS NOT NULL AND login_failures.locked_until <= $3
                     THEN NULL
-                WHEN login_failures.failures + 1 >= $3 THEN $4
+                WHEN login_failures.failures + 1 >= $4 THEN $5
                 ELSE login_failures.locked_until END,
-            last_failed_at = $2",
+            last_failed_at = $3",
     )
     .bind(email)
+    .bind(key)
     .bind(now)
-    .bind(MAX_LOGIN_FAILURES)
+    .bind(max_failures)
     .bind(now + LOGIN_LOCK_DURATION)
     .execute(pool)
     .await?;
     Ok(())
 }
 
+/// 成功登入：清掉這個（電子郵件, 來源 IP）的計數與這個信箱的跨 IP 總量；別的 IP
+/// （可能是攻擊者）各自的計數不動。
+pub async fn clear_login_failures_for(
+    conn: impl sqlx::PgExecutor<'_>,
+    email: &str,
+    ip_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM login_failures WHERE email = lower($1) AND ip IN ($2, $3)")
+        .bind(email)
+        .bind(ip_key)
+        .bind(EMAIL_TOTAL_KEY)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// 清掉這個電子郵件在所有來源 IP 的計數（管理者重設密碼、使用者改密碼時）。
 pub async fn clear_login_failures(
     conn: impl sqlx::PgExecutor<'_>,
     email: &str,

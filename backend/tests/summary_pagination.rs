@@ -15,21 +15,29 @@ async fn user_id(pool: &PgPool, email: &str) -> Uuid {
 }
 
 /// 直接寫入一場已結束、總結已完成的對話。
-async fn seed_ready(pool: &PgPool, id: Uuid, user: Uuid, title: &str, ended_at: &str) {
+async fn seed_ready(
+    pool: &PgPool,
+    classroom: Uuid,
+    id: Uuid,
+    user: Uuid,
+    title: &str,
+    ended_at: &str,
+) {
     sqlx::query(
-        "INSERT INTO conversations (id, user_id, title, status, ended_at)
-         VALUES ($1, $2, $3, 'ended', $4::timestamptz)",
+        "INSERT INTO conversations (id, user_id, classroom_id, title, status, ended_at)
+         VALUES ($1, $2, $3, $4, 'ended', $5::timestamptz)",
     )
     .bind(id)
     .bind(user)
+    .bind(classroom)
     .bind(title)
     .bind(ended_at)
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO summaries (conversation_id, status, stance, reasons, claim, framework)
-         VALUES ($1, 'ready', 'Synthetic stance', 'Synthetic reasons', 'Synthetic claim', 'care')",
+        "INSERT INTO summaries (conversation_id, status, stance, reasons, claim)
+         VALUES ($1, 'ready', 'Synthetic stance', 'Synthetic reasons', 'Synthetic claim')",
     )
     .bind(id)
     .execute(pool)
@@ -66,7 +74,10 @@ fn ids(pages: &[Value]) -> Vec<String> {
 }
 
 /// 兩位學生、兩個題目；ended_at 有相同的（測試 tie-breaker）。依 ended_at DESC, conversation_id ASC 排序。
-async fn seed_many(pool: &PgPool) -> (Uuid, Uuid, Vec<(Uuid, Uuid, &'static str)>) {
+async fn seed_many(
+    pool: &PgPool,
+    classroom: &str,
+) -> (Uuid, Uuid, Vec<(Uuid, Uuid, &'static str)>) {
     sqlx::query(
         "INSERT INTO users (email, display_name) VALUES ('student2@example.com', 'Synthetic two')",
     )
@@ -88,7 +99,7 @@ async fn seed_many(pool: &PgPool) -> (Uuid, Uuid, Vec<(Uuid, Uuid, &'static str)
     let mut expected = Vec::new();
     for (n, user, title, ended) in rows {
         let id = Uuid::from_u128(n);
-        seed_ready(pool, id, user, title, ended).await;
+        seed_ready(pool, classroom.parse().unwrap(), id, user, title, ended).await;
         expected.push((id, user, title));
     }
     (s1, s2, expected)
@@ -98,11 +109,11 @@ async fn seed_many(pool: &PgPool) -> (Uuid, Uuid, Vec<(Uuid, Uuid, &'static str)
 async fn paginates_in_stable_order_without_duplicates_or_gaps(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let (_, _, expected) = seed_many(&pool).await;
+    let (_, _, expected) = seed_many(&pool, &a.classroom).await;
     // 未完成的總結不出現
     let user = user_id(&pool, "student@example.com").await;
-    sqlx::query("INSERT INTO conversations (id, user_id, title, status, ended_at) VALUES ($1, $2, 'Pending', 'ended', now())")
-        .bind(Uuid::from_u128(99)).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO conversations (id, user_id, classroom_id, title, status, ended_at) VALUES ($1, $2, $3, 'Pending', 'ended', now())")
+        .bind(Uuid::from_u128(99)).bind(user).bind(a.classroom.parse::<Uuid>().unwrap()).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO summaries (conversation_id) VALUES ($1)")
         .bind(Uuid::from_u128(99))
         .execute(&pool)
@@ -126,16 +137,15 @@ async fn paginates_in_stable_order_without_duplicates_or_gaps(pool: PgPool) {
 async fn admin_sees_masked_fields_on_every_page(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    seed_many(&pool).await;
+    seed_many(&pool, &a.classroom).await;
     let pages = all_pages(&app, "/api/summaries?limit=3", &a.admin).await;
     assert_eq!(pages.len(), 3);
     assert_eq!(ids(&pages).len(), 7);
     for p in &pages {
         for row in p["items"].as_array().unwrap() {
-            for f in ["stance", "reasons", "claim", "framework"] {
+            for f in ["stance", "reasons", "claim"] {
                 assert_eq!(row[f], "message", "{f}");
             }
-            assert_eq!(row["framework_scores"], Value::Null);
         }
         assert!(!p.to_string().contains("Synthetic stance"));
         assert!(!p.to_string().contains("Synthetic claim"));
@@ -146,7 +156,7 @@ async fn admin_sees_masked_fields_on_every_page(pool: PgPool) {
 async fn filters_combine_with_pagination(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let (s1, s2, expected) = seed_many(&pool).await;
+    let (s1, s2, expected) = seed_many(&pool, &a.classroom).await;
     let pick = |f: &dyn Fn(&(Uuid, Uuid, &str)) -> bool| -> Vec<String> {
         expected
             .iter()
@@ -195,7 +205,7 @@ async fn filters_combine_with_pagination(pool: PgPool) {
 async fn q_searches_name_email_and_title_across_all_pages(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let (s1, s2, expected) = seed_many(&pool).await;
+    let (s1, s2, expected) = seed_many(&pool, &a.classroom).await;
     let pick = |f: &dyn Fn(&(Uuid, Uuid, &str)) -> bool| -> Vec<String> {
         expected
             .iter()
@@ -232,7 +242,7 @@ async fn q_searches_name_email_and_title_across_all_pages(pool: PgPool) {
 async fn cursor_only_works_with_the_filters_that_produced_it(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let (s1, _, _) = seed_many(&pool).await;
+    let (s1, _, _) = seed_many(&pool, &a.classroom).await;
     let next = |query: String| {
         let (app, cookie) = (app.clone(), a.teacher.clone());
         async move {
@@ -363,13 +373,14 @@ async fn default_and_maximum_page_sizes(pool: PgPool) {
     let user = user_id(&pool, "student@example.com").await;
     sqlx::query(
         "WITH c AS (
-             INSERT INTO conversations (user_id, title, status, ended_at)
-             SELECT $1, 'Synthetic', 'ended', now() - make_interval(secs => g)
+             INSERT INTO conversations (user_id, classroom_id, title, status, ended_at)
+             SELECT $1, $2, 'Synthetic', 'ended', now() - make_interval(secs => g)
              FROM generate_series(1, 201) g RETURNING id)
          INSERT INTO summaries (conversation_id, status, stance, reasons)
          SELECT id, 'ready', 's', 'r' FROM c",
     )
     .bind(user)
+    .bind(a.classroom.parse::<Uuid>().unwrap())
     .execute(&pool)
     .await
     .unwrap();
@@ -413,4 +424,50 @@ async fn old_teacher_path_is_gone(pool: PgPool) {
     let a = seed_actors(&app).await;
     let res = send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn classroom_filter_applies_and_binds_the_cursor(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    seed_many(&pool, &a.classroom).await;
+    let other = create_classroom(&app, &a.teacher, "另一間").await;
+    let user = user_id(&pool, "student@example.com").await;
+    seed_ready(
+        &pool,
+        other.parse().unwrap(),
+        Uuid::from_u128(50),
+        user,
+        "Topic C",
+        "2026-02-01T00:00:00Z",
+    )
+    .await;
+
+    let pages = all_pages(
+        &app,
+        &format!("/api/summaries?limit=2&classroom_id={other}"),
+        &a.teacher,
+    )
+    .await;
+    assert_eq!(ids(&pages), [Uuid::from_u128(50).to_string()]);
+    let pages = all_pages(
+        &app,
+        &format!("/api/summaries?limit=3&classroom_id={}", a.classroom),
+        &a.teacher,
+    )
+    .await;
+    assert_eq!(ids(&pages).len(), 7);
+    // 不分教室的游標不能套到某間教室
+    let first = json_body(send(&app, get("/api/summaries?limit=1", Some(&a.teacher))).await).await;
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let res = send(
+        &app,
+        get(
+            &format!("/api/summaries?limit=1&classroom_id={other}&cursor={cursor}"),
+            Some(&a.teacher),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_cursor");
 }

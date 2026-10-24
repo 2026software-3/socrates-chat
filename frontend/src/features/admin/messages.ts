@@ -21,7 +21,7 @@ export const adminMessages = defineMessages({
     'admin.teachers.title': '教師管理',
     'admin.topics.title': '題目庫',
     // 教師管理
-    'admin.teachers.intro': '被加入的帳號會在下次登入時成為教師；若已經登入，則立即生效。教師與管理者不需要列在修課名單中。',
+    'admin.teachers.intro': '新增教師身分後立即生效；教師與管理者不需要列在修課名單中。',
     'admin.teachers.emailLabel': '教師電子郵件',
     'admin.teachers.emailPlaceholder': 'teacher@example.com',
     'admin.teachers.add': '新增教師',
@@ -94,7 +94,7 @@ export const adminMessages = defineMessages({
     'admin.teachers.title': 'Manage teachers',
     'admin.topics.title': 'Topic bank',
     'admin.teachers.intro':
-      'An added account becomes a teacher on its next login, or immediately if it is already logged in. Teachers and the administrator do not need to be on the class roster.',
+      'Teacher access takes effect immediately after the account is added. Teachers and administrators do not need to be on the class roster.',
     'admin.teachers.emailLabel': 'Teacher email',
     'admin.teachers.emailPlaceholder': 'teacher@example.com',
     'admin.teachers.add': 'Add teacher',
@@ -166,7 +166,7 @@ export const adminMessages = defineMessages({
     'admin.teachers.title': 'Gestionar docentes',
     'admin.topics.title': 'Banco de temas',
     'admin.teachers.intro':
-      'La cuenta añadida pasa a ser docente en su próximo inicio de sesión, o de inmediato si ya tiene la sesión iniciada. Los docentes y el administrador no necesitan estar en la lista del curso.',
+      'El acceso de docente entra en vigor inmediatamente después de añadir la cuenta. Los docentes y administradores no necesitan estar en la lista del curso.',
     'admin.teachers.emailLabel': 'Correo del docente',
     'admin.teachers.emailPlaceholder': 'docente@example.com',
     'admin.teachers.add': 'Añadir docente',

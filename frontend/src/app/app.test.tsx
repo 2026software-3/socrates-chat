@@ -50,9 +50,7 @@ describe('app shell', () => {
     students_total: 0,
     students_participating: 0,
     completed: 0,
-    positions: {},
-    frameworks: {},
-    topics: [],
+    activities: [],
   }
 
   it('takes teachers to the class dashboard — they do not take part in discussions', async () => {
@@ -98,21 +96,17 @@ describe('app shell', () => {
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
 
+  it('lets a teacher open classroom management', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderApp(null, { route: '/teacher/classrooms' })
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
+  })
+
   function mockOpsData() {
     server.use(
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
-      http.get('/api/roster', () => HttpResponse.json({ emails: ['a@example.com', 'b@example.com'] })),
-      http.get('/api/students', () =>
-        HttpResponse.json(
-          ['a@example.com', 'b@example.com'].map((email) => ({
-            email,
-            display_name: null,
-            id: '11111111-1111-4111-8111-111111111111', has_account: true,
-            disabled: false,
-            completed_conversations: 0,
-          })),
-        ),
-      ),
+      http.get('/api/dashboard/class', () => HttpResponse.json({ ...emptyClass, masked: true, students_total: 2 })),
       http.get('/api/topics', () => HttpResponse.json([])),
     )
   }
@@ -123,7 +117,7 @@ describe('app shell', () => {
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '系統維運' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
-    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教師管理', '修課名單', '題目庫'])
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教室管理', '教師管理', '修課名單', '題目庫'])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })
 

@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { FrameworkBadge } from '@/features/dashboard/framework-badge'
 import { formatDate } from '@/features/teacher/format'
 import { useI18n, useT } from '@/i18n'
 import type { Page as PageResult, TeacherSummary } from '@/lib/types'
@@ -45,7 +44,6 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
             </div>
           </div>
           {row.claim ? <p className="text-sm font-medium break-words">{row.claim}</p> : null}
-          <FrameworkBadge framework={row.framework} />
           <dl className="space-y-2">
             <Field label={t('teacher.summaries.stance')} value={row.stance} />
             <Field label={t('teacher.summaries.reasons')} value={row.reasons} />
