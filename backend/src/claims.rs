@@ -16,7 +16,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, activity_store,
     ai::{
         AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt, collect,
         parse_group_name, parse_regroup,
@@ -113,7 +113,7 @@ pub(crate) struct RegroupBody {
     tag = "dashboard",
     summary = "請 AI 重新分組某活動的主張",
     request_body = RegroupBody,
-    responses((status = 204, description = "已重新分組"), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
+    responses((status = 204, description = "已重新分組"), (status = 404, description = "not_found：活動不存在或不在自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn regroup(
     RequireTeacher(cu): RequireTeacher,
@@ -122,6 +122,13 @@ pub(crate) async fn regroup(
 ) -> Result<StatusCode, ApiError> {
     if cu.roles.admin {
         return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    // 只能重新分組自己教室內的活動；他人的與不存在的活動回應相同
+    if activity_store::get_visible(&state.pool, body.activity_id, cu.user.id, false)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::not_found());
     }
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
         "SELECT s.conversation_id, s.claim, a.title

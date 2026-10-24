@@ -15,7 +15,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, activity_store,
     auth::RequireStudent,
     error::ApiError,
     pagination::{self, Page, Pagination},
@@ -38,6 +38,8 @@ pub struct Conversation {
     pub id: Uuid,
     pub activity_id: Option<Uuid>,
     pub topic_id: Option<Uuid>,
+    /// 活動對話所屬的教室（取自活動，建立後不變）；從題目庫開始的個人練習為 null
+    pub classroom_id: Option<Uuid>,
     pub title: String,
     pub description: String,
     pub language: String,
@@ -52,7 +54,7 @@ pub struct Conversation {
 macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
-            "SELECT id, activity_id, topic_id, title, description, language, status, stage,
+            "SELECT id, activity_id, topic_id, classroom_id, title, description, language, status, stage,
                     turn_count, converge_ready, created_at, ended_at FROM conversations ",
             $tail
         )
@@ -96,7 +98,7 @@ pub(crate) struct Detail {
     tag = "conversations",
     summary = "開始對話（活動或題目）",
     request_body = NewConversation,
-    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source", body = crate::error::ErrorBody), (status = 409, description = "activity_already_started", body = crate::error::ErrorBody))
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source：來源不可用，含活動不存在、未發布，或學生不在活動所屬教室的名單內（不區分原因）", body = crate::error::ErrorBody), (status = 409, description = "activity_already_started", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
@@ -107,25 +109,29 @@ pub(crate) async fn create(
     // 活動列以 FOR SHARE 鎖住到交易結束：教師更換活動題目時會鎖同一列再檢查有沒有對話，
     // 所以新對話與更換題目不會同時成立（S-04.7）。
     let mut tx = state.pool.begin().await?;
-    let source: Option<(Option<Uuid>, Option<Uuid>, String, String)> =
+    // 活動必須在學生所屬教室的名單內；不在名單內與不存在的活動回應相同（不外露資源是否存在，S-14）。
+    // 活動對話的教室取自活動；從題目庫開始的個人練習沒有教室。
+    type Source = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String, String);
+    let source: Option<Source> =
         match (b.activity_id, b.topic_id) {
-            (Some(a), _) => sqlx::query_as(
-                "SELECT id, topic_id, title, description FROM activities
-                 WHERE id = $1 AND status = 'published' FOR SHARE",
-            )
-            .bind(a)
-            .fetch_optional(&mut *tx)
-            .await?
-            .map(|(id, topic, title, desc): (Uuid, Uuid, String, String)| {
-                (Some(id), Some(topic), title, desc)
-            }),
+            (Some(a), _) => activity_store::find_startable(&mut tx, a, &cu.user.email)
+                .await?
+                .map(|s| {
+                    (
+                        Some(s.id),
+                        Some(s.topic_id),
+                        Some(s.classroom_id),
+                        s.title,
+                        s.description,
+                    )
+                }),
             (None, Some(t)) => sqlx::query_as(
                 "SELECT id, title, description FROM topics WHERE id = $1 AND is_active",
             )
             .bind(t)
             .fetch_optional(&mut *tx)
             .await?
-            .map(|(id, title, desc): (Uuid, String, String)| (None, Some(id), title, desc)),
+            .map(|(id, title, desc): (Uuid, String, String)| (None, Some(id), None, title, desc)),
             (None, None) => {
                 return Err(ApiError::bad_request(
                     "invalid_conversation_source",
@@ -133,7 +139,7 @@ pub(crate) async fn create(
                 ));
             }
         };
-    let Some((activity_id, topic_id, title, description)) = source else {
+    let Some((activity_id, topic_id, classroom_id, title, description)) = source else {
         return Err(ApiError::bad_request(
             "invalid_conversation_source",
             "活動或題目不可用",
@@ -141,14 +147,15 @@ pub(crate) async fn create(
     };
     // 每位學生在每個活動至多一場對話（S-04.7）：靠唯一索引，同時送出的兩個請求也只會成功一個
     let created = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, title, description)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, activity_id, topic_id, title, description, language, status, stage,
-                   turn_count, converge_ready, created_at, ended_at",
+        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, activity_id, topic_id, classroom_id, title, description, language, status,
+                   stage, turn_count, converge_ready, created_at, ended_at",
     )
     .bind(cu.user.id)
     .bind(activity_id)
     .bind(topic_id)
+    .bind(classroom_id)
     .bind(title)
     .bind(description)
     .fetch_one(&mut *tx)

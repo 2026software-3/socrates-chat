@@ -52,7 +52,7 @@ async fn activity_topic_cannot_be_cleared_and_absent_keeps_it(pool: PgPool) {
         &app,
         &a.teacher,
         "/api/activities",
-        json!({"title": "A", "topic_id": topic}),
+        json!({"title": "A", "topic_id": topic, "classroom_id": a.classroom}),
     )
     .await;
     let path = format!("/api/activities/{id}");

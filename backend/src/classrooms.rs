@@ -107,6 +107,24 @@ fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::not_found())
 }
 
+/// 教師端清單的 `?classroom_id=` 篩選；沒帶代表操作者可管理的所有教室。
+#[derive(Deserialize)]
+pub(crate) struct ClassroomFilter {
+    classroom_id: Option<String>,
+}
+
+/// 解析 `?classroom_id=`：有帶時必須是操作者可管理的教室（否則與不存在相同的 404）。
+pub(crate) async fn filtered_classroom(
+    state: &AppState,
+    cu: &CurrentUser,
+    filter: &ClassroomFilter,
+) -> Result<Option<Uuid>, ApiError> {
+    match &filter.classroom_id {
+        Some(raw) => Ok(Some(visible_classroom(state, cu, raw).await?.id)),
+        None => Ok(None),
+    }
+}
+
 /// 路徑上的教室，必須是操作者可管理的（建立者或管理者）；
 /// 格式不正確、不存在與他人的教室都回相同的 404，不外露教室是否存在。
 pub(crate) async fn visible_classroom(

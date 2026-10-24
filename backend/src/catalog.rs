@@ -5,20 +5,22 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, patch, post},
 };
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, activity_store,
     auth::{RequireStudent, RequireTeacher},
+    classrooms::{ClassroomFilter, filtered_classroom, visible_classroom},
     error::ApiError,
 };
+
+pub use crate::activity_store::Activity;
 
 /// PATCH 的三態欄位：沒帶＝`None`（保留）、`null`＝`Some(None)`（清除）、有值＝`Some(Some(v))`。
 pub(crate) fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
@@ -204,26 +206,6 @@ pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
 
 // ---- 活動 ----
 
-#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
-pub struct Activity {
-    pub id: Uuid,
-    pub title: String,
-    pub description: String,
-    /// 活動必須選題庫題目（S-04.7）
-    pub topic_id: Uuid,
-    pub status: String,
-    pub created_at: DateTime<Utc>,
-}
-
-macro_rules! activity_select {
-    ($tail:literal) => {
-        concat!(
-            "SELECT id, title, description, topic_id, status, created_at FROM activities ",
-            $tail
-        )
-    };
-}
-
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct NewActivity {
     title: String,
@@ -231,6 +213,9 @@ pub(crate) struct NewActivity {
     description: String,
     /// 必填；沒帶或為 `null` 回 `invalid_topic`，讓錯誤格式與其他題目錯誤一致
     topic_id: Option<Uuid>,
+    /// 活動所屬的教室（必填、建立後不可更改）；沒帶回 `invalid_classroom`，
+    /// 教室不存在或不是自己管理的教室一律回 `404 not_found`
+    classroom_id: Option<Uuid>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -253,17 +238,19 @@ async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
     get,
     path = "/api/activities",
     tag = "activities",
-    summary = "列出活動",
-    responses((status = 200, description = "活動", body = Vec<Activity>))
+    summary = "列出活動（自己管理的教室內的活動；管理者為全部）",
+    params(("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404")),
+    responses((status = 200, description = "活動", body = Vec<Activity>), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_activities(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
+    Query(filter): Query<ClassroomFilter>,
 ) -> Result<Json<Vec<Activity>>, ApiError> {
-    let rows = sqlx::query_as(activity_select!("ORDER BY created_at DESC, id"))
-        .fetch_all(&state.pool)
-        .await?;
-    Ok(Json(rows))
+    let classroom = filtered_classroom(&state, &cu, &filter).await?;
+    Ok(Json(
+        activity_store::list(&state.pool, cu.user.id, cu.roles.admin, classroom).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -272,16 +259,14 @@ pub(crate) async fn list_activities(
     tag = "activities",
     summary = "讀取活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity))
+    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
 )]
 pub(crate) async fn get_activity(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Activity>, ApiError> {
-    sqlx::query_as(activity_select!("WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(&state.pool)
+    activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
         .await?
         .map(Json)
         .ok_or_else(ApiError::not_found)
@@ -291,9 +276,9 @@ pub(crate) async fn get_activity(
     post,
     path = "/api/activities",
     tag = "activities",
-    summary = "建立活動（草稿）",
+    summary = "在教室內建立活動（草稿）",
     request_body = NewActivity,
-    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_title / invalid_topic", body = crate::error::ErrorBody))
+    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_title / invalid_topic / invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -306,18 +291,22 @@ pub(crate) async fn create_activity(
     let Some(topic_id) = b.topic_id else {
         return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
     };
+    let Some(classroom_id) = b.classroom_id else {
+        return Err(ApiError::bad_request("invalid_classroom", "請選擇教室"));
+    };
+    // 不是自己管理的教室與不存在的教室回應相同
+    let classroom = visible_classroom(&state, &cu, &classroom_id.to_string()).await?;
     if !topic_exists(&state.pool, topic_id).await? {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
     }
-    let a = sqlx::query_as(
-        "INSERT INTO activities (title, description, topic_id, created_by) VALUES ($1, $2, $3, $4)
-         RETURNING id, title, description, topic_id, status, created_at",
+    let a = activity_store::create(
+        &state.pool,
+        classroom.id,
+        cu.user.id,
+        b.title.trim(),
+        &b.description,
+        topic_id,
     )
-    .bind(b.title.trim())
-    .bind(b.description)
-    .bind(topic_id)
-    .bind(cu.user.id)
-    .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(a)))
 }
@@ -329,10 +318,10 @@ pub(crate) async fn create_activity(
     summary = "修改活動（merge-patch）",
     params(("id" = Uuid, Path, description = "活動 ID")),
     request_body = ActivityPatch,
-    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked", body = crate::error::ErrorBody))
+    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_activity(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(p): Json<ActivityPatch>,
@@ -354,11 +343,15 @@ pub(crate) async fn update_activity(
     // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
     // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
     let mut tx = state.pool.begin().await?;
-    let current: Option<(Uuid,)> =
-        sqlx::query_as("SELECT topic_id FROM activities WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let current: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT a.topic_id FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
+         WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
+    )
+    .bind(id)
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some((current_topic,)) = current else {
         return Err(ApiError::not_found());
     };
@@ -381,7 +374,7 @@ pub(crate) async fn update_activity(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
                 topic_id = COALESCE($4, topic_id), updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, topic_id, status, created_at",
+         RETURNING id, title, description, topic_id, classroom_id, status, created_at",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
@@ -395,19 +388,14 @@ pub(crate) async fn update_activity(
 
 async fn set_status(
     state: &AppState,
+    cu: &crate::auth::CurrentUser,
     id: Uuid,
     status: &'static str,
 ) -> Result<Json<Activity>, ApiError> {
-    sqlx::query_as(
-        "UPDATE activities SET status = $2, updated_at = now() WHERE id = $1
-         RETURNING id, title, description, topic_id, status, created_at",
-    )
-    .bind(id)
-    .bind(status)
-    .fetch_optional(&state.pool)
-    .await?
-    .map(Json)
-    .ok_or_else(ApiError::not_found)
+    activity_store::set_status_visible(&state.pool, id, cu.user.id, cu.roles.admin, status)
+        .await?
+        .map(Json)
+        .ok_or_else(ApiError::not_found)
 }
 
 #[utoipa::path(
@@ -416,14 +404,14 @@ async fn set_status(
     tag = "activities",
     summary = "發布（或重新開放）活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity))
+    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
 )]
 pub(crate) async fn publish_activity(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Activity>, ApiError> {
-    set_status(&state, id, "published").await
+    set_status(&state, &cu, id, "published").await
 }
 
 #[utoipa::path(
@@ -432,21 +420,21 @@ pub(crate) async fn publish_activity(
     tag = "activities",
     summary = "停止開放活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity))
+    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
 )]
 pub(crate) async fn close_activity(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Activity>, ApiError> {
-    set_status(&state, id, "closed").await
+    set_status(&state, &cu, id, "closed").await
 }
 
 // ---- 學生可選項目 ----
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Available {
-    /// 教師指定的活動（已發布）
+    /// 教師指定的活動：已發布，且在學生所屬教室的名單內
     activities: Vec<Activity>,
     /// 題目庫中已啟用的題目
     topics: Vec<Topic>,
@@ -460,14 +448,11 @@ pub(crate) struct Available {
     responses((status = 200, description = "可選項目", body = Available))
 )]
 pub(crate) async fn available(
-    _: RequireStudent,
+    RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {
-    let activities = sqlx::query_as(activity_select!(
-        "WHERE status = 'published' ORDER BY created_at DESC, id"
-    ))
-    .fetch_all(&state.pool)
-    .await?;
+    let activities =
+        activity_store::list_published_for_student(&state.pool, &cu.user.email).await?;
     let topics = sqlx::query_as(
         "SELECT id, title, description, category, is_active FROM topics
          WHERE is_active ORDER BY created_at, id",

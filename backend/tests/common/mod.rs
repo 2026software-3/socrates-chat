@@ -308,7 +308,12 @@ pub async fn create_activity(app: &Router, a: &Actors, title: &str, topic_id: &s
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(serde_json::json!({"title": title, "description": "你會拉桿嗎？", "topic_id": topic_id})),
+            Some(serde_json::json!({
+                "title": title,
+                "description": "你會拉桿嗎？",
+                "topic_id": topic_id,
+                "classroom_id": a.classroom,
+            })),
         ),
     )
     .await;

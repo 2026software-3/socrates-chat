@@ -34,7 +34,9 @@
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
 - 活動必須選題庫題目（S-04.7）：建立時 `topic_id` 必填，沒帶、為 `null` 或題目不存在都回 `400 invalid_topic`，`PATCH` 也不能清除。活動已有學生開始的對話後，換成不同題目回 `409 activity_topic_locked`（同一個題目、只改標題或說明不受限；對話被刪除後又可更換）。
-- `GET /api/catalog` 回傳 `{ activities, topics }`，只含已發布的活動與已啟用的題目；舊的 `/api/available` 已移除。
+- 活動屬於教室（F-28.3、S-14）：`POST /api/activities` 本文必須帶 `classroom_id`（沒帶回 `400 invalid_classroom`），建立後不可更改（`PATCH` 沒有這個欄位）。教室不存在與不是自己管理的教室一律回相同的 `404 not_found`；教師只能建立、讀取、修改、發布與停止自己建立的教室內的活動（其他教師的活動回 `404`），管理者可管理所有教室。題目是全域的：兩個教室可以引用同一題目，各教室的活動互不影響。
+- `GET /api/activities?classroom_id=` 列出自己管理的教室內的活動（管理者為全部），回應每筆都有 `classroom_id`；帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。
+- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生（F-28.2）
 
@@ -43,7 +45,7 @@
 - `GET /api/classrooms/{id}/roster`：該教室名單的電子郵件 `{ emails }`。
 - `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, invalid, credentials }`。名單只屬於該教室，不影響其他教室；`added`／`existing` 都是相對這間教室。同一電子郵件可同時在多個教室的名單，帳號仍只有一個。
 - `DELETE /api/classrooms/{id}/roster/{email}`：只移出這間教室；原本就不在這間教室名單內回 `404`。學生仍在其他教室的名單時保有學生權限；不在任何教室名單內時，登入後看到 `403 not_enrolled`（尚未開通）。
-- `GET /api/classrooms/{id}/students`：該教室名單上的學生與帳號狀態。`completed_conversations` 目前是該帳號的全部已完成對話數，對話尚未歸屬教室（F-28.3）。
+- `GET /api/classrooms/{id}/students`：該教室名單上的學生與帳號狀態。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
 - `GET /api/dashboard/class` 的 `students_total`：教師為自己建立的所有教室內不重複的學生數，管理者為全部教室。
 - 舊的 `/api/roster*` 與 `/api/students`（列表）已移除；`DELETE /api/students/{email}` 仍是全域的帳號刪除，會一併移除該帳號在所有教室的名單項目。教師只能刪除完全屬於自己建立的教室的學生，其餘（含他人教室的學生、同時在他人教室的學生）回與不存在相同的 `404`；管理者不受限。此範圍是暫定的保守做法，**待需求方確認**（S-02.5，見 `decisions.md`「尚未決定」）。
 - 匯入只新增、不移除；每行一個電子郵件，可有 `email` 標題列。
@@ -65,7 +67,8 @@
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
 - `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。
-- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。
+- 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。活動還必須在學生所屬教室的名單內：活動不存在、未發布與學生不在活動所屬教室名單內，回應完全相同，不外露活動是否存在。
+- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動之後被刪除或停用也不變；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。
 - 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）：已有時以該活動開始對話回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個。刪除該場對話後可重新開始；只帶 `topic_id` 的個人練習不受限。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
@@ -83,13 +86,13 @@
 
 ## 儀表板
 
-論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，同一個活動下再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。教師儀表板以活動為彙整單位（S-04.7）：每位學生在一個活動至多一場對話；從題目庫開始的個人練習不屬於任何活動，不列入。
+論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，同一個活動下再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。教師儀表板以活動為彙整單位（S-04.7）：每位學生在一個活動至多一場對話；從題目庫開始的個人練習不屬於任何教室，不列入。
 
 - `GET /api/dashboard/me`：`{ total_conversations, total_turns, completed, recent }`，只算自己的資料；`recent` 是最近完成的 10 場（含主張與立場）。固定學派的雷達圖與學派人數已取消（S-04.6）。
-- `GET /api/dashboard/class`：`{ masked, students_total, students_participating, completed, activities }`；`activities` 每項為 `{ activity_id, title, completed, claims, ungrouped }`，完成場數多的在前。
+- `GET /api/dashboard/class?classroom_id=`：`{ masked, students_total, students_participating, completed, activities }`；`activities` 每項為 `{ activity_id, title, completed, claims, ungrouped }`，完成場數多的在前。只計入自己管理的教室內的活動對話（管理者為全部），個人練習與他人教室一律不計入；帶 `classroom_id` 時只看那間教室（`students_total` 為該教室名單人數），不是自己管理的教室回 `404`。**沒帶 `classroom_id` 時涵蓋自己管理的所有教室，只是 F-28.4 加入教室切換前的暫時行為**；S-14 規定彙整範圍限單一教室，是否改為必填**待需求方確認**。
 - 班上儀表板只給教師（S-02.4 不設最小群體門檻），只有數量與分類，沒有學生身分或內容。管理者身分一律 `masked: true` 且沒有分布（S-02.2）。
 - 活動的 `claims`：人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組）。
-- 重新分組：`POST /api/dashboard/class/regroup`，本文 `{ activity_id }`，教師請 AI 把該活動下全部主張重新分組。沒有可分組的主張（含不存在的活動）回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
+- 重新分組：`POST /api/dashboard/class/regroup`，本文 `{ activity_id }`，教師請 AI 把該活動下全部主張重新分組。活動不存在或不在自己管理的教室回 `404`；自己教室的活動沒有可分組的主張回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
 
 ## 語音備援（只有修課名單內的學生）
 
@@ -97,7 +100,7 @@
 
 ## 教師檢視
 
-教師檢視學生的總結**不含對話原文**（S-02.1）。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
+教師檢視學生的總結**不含對話原文**（S-02.1）。`GET /api/teacher/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
 
 ## 規劃中的端點（尚未實作）
 

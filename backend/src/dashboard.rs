@@ -10,7 +10,11 @@
 
 use std::collections::BTreeMap;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    routing::get,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::FromRow;
@@ -19,6 +23,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     auth::{RequireStudent, RequireTeacher},
+    classrooms::{ClassroomFilter, filtered_classroom},
     error::ApiError,
     roster_store,
 };
@@ -146,14 +151,19 @@ struct ClassRow {
     path = "/api/dashboard/class",
     tag = "dashboard",
     summary = "各活動的論點分布（只有教師）",
-    responses((status = 200, description = "班級統計", body = Class))
+    params(("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404。沒帶時涵蓋自己管理的所有教室")),
+    responses((status = 200, description = "班級統計", body = Class), crate::error::CommonErrors)
 )]
 pub(crate) async fn class(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
+    Query(filter): Query<ClassroomFilter>,
 ) -> Result<Json<Class>, ApiError> {
-    let students_total =
-        roster_store::count_students(&state.pool, cu.user.id, cu.roles.admin).await?;
+    let classroom = filtered_classroom(&state, &cu, &filter).await?;
+    let students_total = match classroom {
+        Some(id) => roster_store::count_in_classroom(&state.pool, id).await?,
+        None => roster_store::count_students(&state.pool, cu.user.id, cu.roles.admin).await?,
+    };
     if cu.roles.admin {
         return Ok(Json(Class {
             masked: true,
@@ -164,17 +174,21 @@ pub(crate) async fn class(
         }));
     }
     // 只有學生會有對話；事後被移出名單或改成教師也不影響已完成的對話（S-01.4）。
-    // 內連接活動：從題目庫開始的個人練習沒有活動，教師看不到（S-02.1）。
+    // 內連接教室與活動：從題目庫開始的個人練習不屬於任何教室，教師看不到，也不納入統計（S-02.1、S-14）。
     let rows: Vec<ClassRow> = sqlx::query_as(
         "SELECT c.user_id, c.activity_id, a.title AS activity_title,
                 s.claim, s.reasons, g.name AS group_name
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
+         JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN activities a ON a.id = c.activity_id
          LEFT JOIN claim_groups g ON g.id = s.claim_group_id
-         WHERE s.status = 'ready'
+         WHERE s.status = 'ready' AND ($3::uuid IS NULL OR c.classroom_id = $3)
          ORDER BY c.ended_at, s.conversation_id",
     )
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .bind(classroom)
     .fetch_all(&state.pool)
     .await?;
     let mut by_activity: BTreeMap<Uuid, ActivityAcc> = BTreeMap::new();
