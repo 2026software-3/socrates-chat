@@ -243,6 +243,7 @@
 ### S-08.2 登入憑證驗證與身分映射（已決定）
 
 - 內建登入：電子郵件＋密碼，Argon2id 驗證，登入失敗有限流，錯誤訊息不區分「帳號不存在」與「密碼錯誤」。
+- 登入失敗鎖定以（電子郵件, 來源 IP）為單位（2026-10-25，#295）：別的 IP 亂試不會鎖住本人，校園 NAT 下同一 IP 的不同信箱互不影響；另以 `tower_governor` 對 `POST /api/auth/login` 做每 IP 的請求頻率限制（只擋洪水，不防猜密碼）。來源 IP 只在 TCP 對端屬於 `TRUSTED_PROXIES` 時才讀 `X-Forwarded-For`。頻率額度的數值、IP 保存期限（S-02.5）與正式代理架構（S-09.1）仍待確認，見 `S-08.2` 規格。
 - Google 登入：OIDC Authorization Code + PKCE（`openidconnect` crate），驗證 state、nonce、ID token 簽章與 `email_verified`。
 - 以電子郵件識別使用者，Google 登入另綁定 `sub`；角色每次請求從資料庫載入；教師與管理者不需在修課名單內。
 - Session：256 位元隨機 token，資料庫只存雜湊；cookie 為 HttpOnly、Secure、SameSite=Lax；閒置 7 天失效、絕對上限 30 天；CSRF 以 `Origin` 檢查。

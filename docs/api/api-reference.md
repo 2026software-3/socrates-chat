@@ -16,7 +16,7 @@
 ## 登入
 
 - 沒有註冊 API：內建帳號只由系統建立（管理者重設密碼、管理者匯入修課名單、部署時的 `ADMIN_INITIAL_PASSWORD`）。
-- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一信箱連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`。另外同一來源 IP（不論信箱）累計失敗 20 次（暫定值）也鎖定 15 分鐘，同樣回 `429 too_many_attempts`。
+- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一信箱從同一個 IP 連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`（別的 IP 的失敗不會鎖住本人）；另外每個來源 IP 有請求頻率限制（連續 60 個、之後平均每秒 2 個，暫定值），超過同樣回 `429 too_many_attempts`。
 - Google 回呼成功設定 `sid` cookie 並導回 `APP_BASE_URL`；失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`）。
 - 用臨時密碼登入時 `must_change_password` 為 `true`：前端導向改密碼頁，除了 `GET /api/me`、改密碼與登出，其他 API 都回 `password_change_required`。旗標在 session 上，不在使用者上。
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
