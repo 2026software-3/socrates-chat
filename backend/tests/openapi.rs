@@ -82,11 +82,27 @@ async fn student_deletion_documents_delete_with_confirmation_body(pool: PgPool) 
 async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
     let app = test_app(pool);
     let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
-    for (path, schema) in [
-        ("/api/conversations", "ConversationPage"),
-        ("/api/students", "StudentPage"),
-        ("/api/roster", "RosterPage"),
-        ("/api/activities", "ActivityPage"),
+    for (path, schema, expected) in [
+        (
+            "/api/conversations",
+            "ConversationPage",
+            vec!["limit", "cursor"],
+        ),
+        (
+            "/api/classrooms/{id}/students",
+            "StudentPage",
+            vec!["id", "limit", "cursor"],
+        ),
+        (
+            "/api/classrooms/{id}/roster",
+            "RosterPage",
+            vec!["id", "limit", "cursor"],
+        ),
+        (
+            "/api/activities",
+            "ActivityPage",
+            vec!["limit", "cursor", "classroom_id"],
+        ),
     ] {
         let op = &doc["paths"][path]["get"];
         let params: Vec<&str> = op["parameters"]
@@ -95,7 +111,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
             .iter()
             .map(|p| p["name"].as_str().unwrap())
             .collect();
-        assert_eq!(params, ["limit", "cursor"], "{path}");
+        assert_eq!(params, expected, "{path}");
         assert_eq!(
             op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
             format!("#/components/schemas/{schema}"),

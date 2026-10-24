@@ -202,6 +202,7 @@ async fn there_is_no_registration_endpoint(pool: PgPool) {
 async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     send(
         &app,
         json_req(
@@ -215,7 +216,11 @@ async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
     let temp = reset(&app, &admin, "teacher@example.com").await;
     let cookie = session_cookie(&login(&app, "teacher@example.com", &temp).await).unwrap();
 
-    let res = send(&app, get("/api/roster", Some(&cookie))).await;
+    let res = send(
+        &app,
+        get(&format!("/api/classrooms/{room}/roster"), Some(&cookie)),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
     assert_eq!(
         json_body(res).await["error"]["code"],
@@ -230,7 +235,11 @@ async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
         change(&app, &cookie, &temp, GOOD_PASSWORD).await,
         StatusCode::NO_CONTENT
     );
-    let res = send(&app, get("/api/roster", Some(&cookie))).await;
+    let res = send(
+        &app,
+        get(&format!("/api/classrooms/{room}/roster"), Some(&cookie)),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
     // 新密碼可登入，舊的臨時密碼不行
     assert_eq!(
@@ -372,11 +381,12 @@ async fn only_admins_can_reset_passwords(pool: PgPool) {
 async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     let res = send(
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
             Some(json!({"text": "email\nS1@example.com\ns2@example.com"})),
         ),
@@ -414,7 +424,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
             Some(json!({"text": "s1@example.com"})),
         ),
@@ -433,12 +443,13 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
 async fn roster_import_does_not_overwrite_an_existing_account(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
+    let (_teacher, room) = seed_classroom(&app, &admin).await;
     login_as(&app, "sub-s", "student@example.com").await; // 已用 Google 登入過、沒有密碼
     let res = send(
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
             Some(json!({"text": "student@example.com"})),
         ),
@@ -569,7 +580,7 @@ async fn teachers_importing_the_roster_do_not_get_student_credentials(pool: PgPo
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.teacher),
             Some(json!({"text": "newstudent@example.com"})),
         ),
@@ -603,7 +614,7 @@ async fn roster_import_never_creates_accounts_for_staff_emails(pool: PgPool) {
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.admin),
             Some(json!({"text": "other-teacher@example.com\nadmin2@example.com\nregular@example.com"})),
         ),
@@ -619,7 +630,7 @@ async fn roster_import_never_creates_accounts_for_staff_emails(pool: PgPool) {
         &app,
         json_req(
             "POST",
-            "/api/roster/import",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.admin),
             Some(json!({"text": "other-teacher@example.com\nteacher@example.com\nadmin@example.com"})),
         ),

@@ -1,119 +1,94 @@
-//! 學生、修課名單、活動列表的分頁（#286–#288），沿用對話列表的分頁慣例（合成資料）。
+//! 教室名單、學生與活動列表的 keyset 分頁（#286–#288）。資料皆為合成資料。
 mod common;
 use axum::{Router, http::StatusCode};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use common::*;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// 以 limit=2 一路跟著 next_cursor 取完，回傳每筆的 `field`。
-async fn collect(app: &Router, cookie: &str, base: &str, field: &str) -> Vec<String> {
-    let mut path = format!("{base}?limit=2");
-    let mut got = Vec::new();
+/// 依 next_cursor 走完所有頁，回傳每頁內容。
+async fn all_pages(app: &Router, base: &str, cookie: &str) -> Vec<Value> {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let mut path = base.to_string();
+    let mut pages = Vec::new();
     loop {
         let res = send(app, get(&path, Some(cookie))).await;
         assert_eq!(res.status(), StatusCode::OK, "{path}");
         let page = json_body(res).await;
-        let items = page["items"].as_array().expect("page items");
-        assert!(!items.is_empty() && items.len() <= 2);
-        for item in items {
-            got.push(item[field].as_str().unwrap().to_string());
-        }
-        match page["next_cursor"].as_str() {
-            Some(cursor) => path = format!("{base}?limit=2&cursor={cursor}"),
+        let next = page["next_cursor"].as_str().map(str::to_string);
+        pages.push(page);
+        assert!(pages.len() <= 30, "too many pages");
+        match next {
+            Some(cursor) => path = format!("{base}{sep}cursor={cursor}"),
             None => break,
         }
-        assert!(got.len() <= 20);
     }
-    got
+    pages
 }
 
-/// limit／cursor 不合法一律 400；另一種資源的游標也不能拿來用。
-async fn assert_rejects_bad_input(app: &Router, cookie: &str, base: &str) {
-    let foreign = {
-        // 對話列表的游標（resource 不同）
-        let bytes = serde_json::to_vec(&(1u8, "conversations", ("x", 1))).unwrap();
-        URL_SAFE_NO_PAD.encode(bytes)
-    };
-    for (query, code) in [
-        ("limit=0".to_string(), "invalid_limit"),
-        ("limit=201".to_string(), "invalid_limit"),
-        ("limit=-1".to_string(), "invalid_limit"),
-        ("limit=x".to_string(), "invalid_limit"),
-        ("limit=".to_string(), "invalid_limit"),
-        ("cursor=broken".to_string(), "invalid_cursor"),
-        ("cursor=".to_string(), "invalid_cursor"),
-        (format!("cursor={foreign}"), "invalid_cursor"),
-    ] {
-        let res = send(app, get(&format!("{base}?{query}"), Some(cookie))).await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{base}?{query}");
-        assert_eq!(
-            json_body(res).await["error"]["code"],
-            code,
-            "{base}?{query}"
-        );
-    }
+fn field(pages: &[Value], name: &str) -> Vec<String> {
+    pages
+        .iter()
+        .flat_map(|p| p["items"].as_array().unwrap().iter())
+        .map(|r| r[name].as_str().unwrap().to_string())
+        .collect()
 }
 
-async fn assert_page_sizes(app: &Router, cookie: &str, base: &str) {
-    for (query, count) in [("", 50), ("?limit=200", 200)] {
-        let page: Value =
-            json_body(send(app, get(&format!("{base}{query}"), Some(cookie))).await).await;
-        assert_eq!(
-            page["items"].as_array().unwrap().len(),
-            count,
-            "{base}{query}"
-        );
-        assert!(page["next_cursor"].is_string());
-    }
+/// 把 `n` 位合成學生加進教室名單（`s01@example.com` …），回傳他們的電子郵件（已排序）。
+async fn enroll(app: &Router, a: &Actors, n: usize) -> Vec<String> {
+    let emails: Vec<String> = (1..=n).map(|i| format!("s{i:02}@example.com")).collect();
+    let res = import_roster(app, &a.admin, &a.classroom, &emails.join("\n")).await;
+    assert!(res.status().is_success());
+    emails
 }
 
-const EMPTY: fn() -> Value = || json!({"items": [], "next_cursor": null});
+async fn error_code(app: &Router, path: &str, cookie: &str) -> (StatusCode, String) {
+    let res = send(app, get(path, Some(cookie))).await;
+    let status = res.status();
+    let code = json_body(res).await["error"]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    (status, code)
+}
+
+// ---- GET /api/classrooms/{id}/students ----
 
 #[sqlx::test]
-async fn students_and_roster_paginate_by_email(pool: PgPool) {
-    let app = test_app(pool.clone());
-    let admin = login_as(&app, "sub-admin", "admin@example.com").await;
-    // 名單為空
-    for base in ["/api/students", "/api/roster"] {
-        let page = json_body(send(&app, get(base, Some(&admin))).await).await;
-        assert_eq!(page, EMPTY(), "{base}");
-    }
+async fn students_paginate_by_email(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let mut want = enroll(&app, &a, 5).await;
+    want.push("student@example.com".into());
+    want.sort();
 
+    let base = format!("/api/classrooms/{}/students?limit=2", a.classroom);
+    let pages = all_pages(&app, &base, &a.teacher).await;
+    assert_eq!(pages.len(), 3);
+    assert_eq!(field(&pages, "email"), want);
+    assert_eq!(pages[2]["next_cursor"], Value::Null);
+}
+
+#[sqlx::test]
+async fn students_items_only_carry_allowed_fields(pool: PgPool) {
+    let app = test_app(pool);
     let a = seed_actors(&app).await;
     let res = send(
         &app,
-        json_req(
-            "POST",
-            "/api/roster/import",
+        get(
+            &format!("/api/classrooms/{}/students", a.classroom),
             Some(&a.teacher),
-            Some(json!({"text": "e@x.com\nb@x.com\nd@x.com\na@x.com\nc@x.com"})),
         ),
     )
     .await;
-    assert!(res.status().is_success());
-    let expected = [
-        "a@x.com",
-        "b@x.com",
-        "c@x.com",
-        "d@x.com",
-        "e@x.com",
-        "student@example.com",
-    ];
-    for cookie in [&a.teacher, &a.admin] {
-        for base in ["/api/students", "/api/roster"] {
-            assert_eq!(
-                collect(&app, cookie, base, "email").await,
-                expected,
-                "{base}"
-            );
-            assert_rejects_bad_input(&app, cookie, base).await;
-        }
-    }
-    // 學生列表只有帳號狀態與完成數量
-    let page = json_body(send(&app, get("/api/students?limit=1", Some(&a.teacher))).await).await;
-    let keys: Vec<&String> = page["items"][0].as_object().unwrap().keys().collect();
+    let page = json_body(res).await;
+    let mut keys: Vec<&str> = page["items"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
     assert_eq!(
         keys,
         [
@@ -125,45 +100,158 @@ async fn students_and_roster_paginate_by_email(pool: PgPool) {
             "id"
         ]
     );
+    assert_eq!(page.as_object().unwrap().len(), 2);
+}
 
-    // 名單學生的游標不能拿去用在修課名單（反之亦然）
-    let student_cursor = json_body(
-        send(&app, get("/api/students?limit=1", Some(&a.teacher))).await,
-    )
-    .await["next_cursor"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let res = send(
-        &app,
-        get(
-            &format!("/api/roster?cursor={student_cursor}"),
-            Some(&a.teacher),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+#[sqlx::test]
+async fn students_validate_input(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let base = format!("/api/classrooms/{}/students", a.classroom);
+    for (query, code) in [
+        ("limit=0", "invalid_limit"),
+        ("limit=201", "invalid_limit"),
+        ("limit=-1", "invalid_limit"),
+        ("limit=x", "invalid_limit"),
+        ("limit=", "invalid_limit"),
+        ("cursor=broken", "invalid_cursor"),
+        ("cursor=", "invalid_cursor"),
+        ("cursor=e30", "invalid_cursor"),
+    ] {
+        let (status, got) = error_code(&app, &format!("{base}?{query}"), &a.teacher).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(got, code, "{query}");
+    }
+    // 上限 200 的頁面大小可用
+    let res = send(&app, get(&format!("{base}?limit=200"), Some(&a.teacher))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
 
+#[sqlx::test]
+async fn students_authorization_is_preserved(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let other_teacher = {
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/admin/teachers",
+                Some(&a.admin),
+                Some(json!({"email": "teacher2@example.com"})),
+            ),
+        )
+        .await;
+        assert!(res.status().is_success());
+        login_as(&app, "sub-teacher2", "teacher2@example.com").await
+    };
+    let path = format!("/api/classrooms/{}/students?limit=2", a.classroom);
     for (cookie, status) in [
         (None, StatusCode::UNAUTHORIZED),
         (Some(a.student.as_str()), StatusCode::FORBIDDEN),
         (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
+        // 別人的教室與不存在的教室回應相同
+        (Some(other_teacher.as_str()), StatusCode::NOT_FOUND),
+        (Some(a.teacher.as_str()), StatusCode::OK),
+        (Some(a.admin.as_str()), StatusCode::OK),
     ] {
-        for base in ["/api/students?limit=2", "/api/roster?limit=2"] {
-            assert_eq!(
-                send(&app, get(base, cookie)).await.status(),
-                status,
-                "{base}"
-            );
-        }
+        assert_eq!(send(&app, get(&path, cookie)).await.status(), status);
     }
+}
 
-    sqlx::query("INSERT INTO enrollments (email) SELECT 'bulk' || n || '@x.com' FROM generate_series(1,201) n")
-        .execute(&pool)
+// ---- GET /api/classrooms/{id}/roster ----
+
+#[sqlx::test]
+async fn roster_paginates_by_email_as_objects(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let mut want = enroll(&app, &a, 4).await;
+    want.push("student@example.com".into());
+    want.sort();
+    let base = format!("/api/classrooms/{}/roster?limit=2", a.classroom);
+    let pages = all_pages(&app, &base, &a.teacher).await;
+    assert_eq!(pages.len(), 3);
+    assert_eq!(field(&pages, "email"), want);
+    assert_eq!(pages[0]["items"][0], json!({"email": "s01@example.com"}));
+    assert_eq!(pages[2]["next_cursor"], Value::Null);
+}
+
+#[sqlx::test]
+async fn roster_validates_input_and_rejects_foreign_cursors(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    enroll(&app, &a, 3).await;
+    let base = format!("/api/classrooms/{}", a.classroom);
+    for (query, code) in [
+        ("limit=0", "invalid_limit"),
+        ("limit=201", "invalid_limit"),
+        ("limit=x", "invalid_limit"),
+        ("cursor=broken", "invalid_cursor"),
+        ("cursor=", "invalid_cursor"),
+    ] {
+        let (status, got) = error_code(&app, &format!("{base}/roster?{query}"), &a.teacher).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(got, code, "{query}");
+    }
+    // 學生列表的游標不能用在名單
+    let students = json_body(
+        send(
+            &app,
+            get(&format!("{base}/students?limit=1"), Some(&a.teacher)),
+        )
+        .await,
+    )
+    .await;
+    let cursor = students["next_cursor"].as_str().unwrap();
+    let (status, code) =
+        error_code(&app, &format!("{base}/roster?cursor={cursor}"), &a.teacher).await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_cursor")
+    );
+}
+
+#[sqlx::test]
+async fn roster_empty_page_and_authorization(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let empty = create_classroom(&app, &a.teacher, "空教室").await;
+    let page = json_body(
+        send(
+            &app,
+            get(&format!("/api/classrooms/{empty}/roster"), Some(&a.teacher)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page, json!({"items": [], "next_cursor": null}));
+    let path = format!("/api/classrooms/{}/roster", a.classroom);
+    for (cookie, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(a.student.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.teacher.as_str()), StatusCode::OK),
+        (Some(a.admin.as_str()), StatusCode::OK),
+    ] {
+        assert_eq!(send(&app, get(&path, cookie)).await.status(), status);
+    }
+}
+
+// ---- GET /api/activities ----
+
+async fn seed_activities(pool: &PgPool, classroom: &str, topic: &str, specs: &[(u128, &str)]) {
+    for (n, created) in specs {
+        sqlx::query(
+            "INSERT INTO activities (id, title, topic_id, classroom_id, status, created_at)
+             VALUES ($1, 'Synthetic', $2::uuid, $3::uuid, 'draft', $4::timestamptz)",
+        )
+        .bind(Uuid::from_u128(*n))
+        .bind(topic)
+        .bind(classroom)
+        .bind(created)
+        .execute(pool)
         .await
         .unwrap();
-    for base in ["/api/students", "/api/roster"] {
-        assert_page_sizes(&app, &a.teacher, base).await;
     }
 }
 
@@ -171,43 +259,136 @@ async fn students_and_roster_paginate_by_email(pool: PgPool) {
 async fn activities_paginate_newest_first_with_stable_ties(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let page = json_body(send(&app, get("/api/activities", Some(&a.teacher))).await).await;
-    assert_eq!(page, EMPTY());
-
-    // 同一時間建立的活動依 id 排序；草稿、已發布、已停止開放都列出
-    let mut expected = Vec::new();
-    for (i, status) in ["draft", "published", "closed", "draft", "published"]
+    let topic = create_topic(&app, &a, "Synthetic topic").await;
+    seed_activities(
+        &pool,
+        &a.classroom,
+        &topic,
+        &[
+            (6, "2026-01-03T00:00:00Z"),
+            (1, "2026-01-02T00:00:00Z"),
+            (2, "2026-01-02T00:00:00Z"),
+            (3, "2026-01-02T00:00:00Z"),
+            (4, "2026-01-02T00:00:00Z"),
+            (5, "2026-01-01T00:00:00Z"),
+        ],
+    )
+    .await;
+    let pages = all_pages(&app, "/api/activities?limit=2", &a.teacher).await;
+    assert_eq!(pages.len(), 3);
+    let want: Vec<String> = [6u128, 1, 2, 3, 4, 5]
         .iter()
-        .enumerate()
-    {
-        let id = Uuid::from_u128(i as u128 + 1);
-        sqlx::query("INSERT INTO activities (id,title,status,created_at) VALUES ($1,'Synthetic',$2,'2026-01-01T00:00:00Z')")
-            .bind(id)
-            .bind(status)
-            .execute(&pool)
-            .await
-            .unwrap();
-        expected.push(id.to_string());
-    }
-    let newest = Uuid::from_u128(99);
-    sqlx::query("INSERT INTO activities (id,title,created_at) VALUES ($1,'Newer synthetic','2026-01-02T00:00:00Z')")
-        .bind(newest)
-        .execute(&pool)
-        .await
-        .unwrap();
-    expected.insert(0, newest.to_string());
+        .map(|n| Uuid::from_u128(*n).to_string())
+        .collect();
+    assert_eq!(field(&pages, "id"), want);
+    assert_eq!(pages[2]["next_cursor"], Value::Null);
+}
 
-    for cookie in [&a.teacher, &a.admin] {
-        assert_eq!(
-            collect(&app, cookie, "/api/activities", "id").await,
-            expected
-        );
-        assert_rejects_bad_input(&app, cookie, "/api/activities").await;
+#[sqlx::test]
+async fn activities_pagination_keeps_classroom_scope(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let topic = create_topic(&app, &a, "Synthetic topic").await;
+    let other = create_classroom(&app, &a.teacher, "另一間").await;
+    let (t2, room_other) = {
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/admin/teachers",
+                Some(&a.admin),
+                Some(json!({"email": "teacher2@example.com"})),
+            ),
+        )
+        .await;
+        assert!(res.status().is_success());
+        let cookie = login_as(&app, "sub-teacher2", "teacher2@example.com").await;
+        let room = create_classroom(&app, &cookie, "他班").await;
+        (cookie, room)
+    };
+    seed_activities(
+        &pool,
+        &a.classroom,
+        &topic,
+        &[(1, "2026-01-03T00:00:00Z"), (2, "2026-01-02T00:00:00Z")],
+    )
+    .await;
+    seed_activities(&pool, &other, &topic, &[(3, "2026-01-01T00:00:00Z")]).await;
+    seed_activities(&pool, &room_other, &topic, &[(4, "2026-01-04T00:00:00Z")]).await;
+
+    let ids =
+        |n: &[u128]| -> Vec<String> { n.iter().map(|n| Uuid::from_u128(*n).to_string()).collect() };
+    let mine = all_pages(&app, "/api/activities?limit=1", &a.teacher).await;
+    assert_eq!(field(&mine, "id"), ids(&[1, 2, 3]));
+    let one = all_pages(
+        &app,
+        &format!("/api/activities?limit=1&classroom_id={}", a.classroom),
+        &a.teacher,
+    )
+    .await;
+    assert_eq!(field(&one, "id"), ids(&[1, 2]));
+    let theirs = all_pages(&app, "/api/activities?limit=1", &t2).await;
+    assert_eq!(field(&theirs, "id"), ids(&[4]));
+    let admin = all_pages(&app, "/api/activities?limit=2", &a.admin).await;
+    assert_eq!(field(&admin, "id"), ids(&[4, 1, 2, 3]));
+    // 別人的教室：404
+    let res = send(
+        &app,
+        get(
+            &format!("/api/activities?classroom_id={room_other}"),
+            Some(&a.teacher),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn activities_validate_input_default_and_authorization(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let topic = create_topic(&app, &a, "Synthetic topic").await;
+    for (query, code) in [
+        ("limit=0", "invalid_limit"),
+        ("limit=201", "invalid_limit"),
+        ("limit=", "invalid_limit"),
+        ("cursor=broken", "invalid_cursor"),
+        ("cursor=", "invalid_cursor"),
+    ] {
+        let (status, got) = error_code(&app, &format!("/api/activities?{query}"), &a.teacher).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(got, code, "{query}");
+    }
+    let empty = json_body(send(&app, get("/api/activities", Some(&a.teacher))).await).await;
+    assert_eq!(empty, json!({"items": [], "next_cursor": null}));
+    sqlx::query(
+        "INSERT INTO activities (title, topic_id, classroom_id, created_at)
+         SELECT 'Synthetic', $1::uuid, $2::uuid, now() - make_interval(secs => g)
+         FROM generate_series(1, 201) g",
+    )
+    .bind(&topic)
+    .bind(&a.classroom)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (query, count) in [("", 50), ("?limit=200", 200)] {
+        let page = json_body(
+            send(
+                &app,
+                get(&format!("/api/activities{query}"), Some(&a.teacher)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(page["items"].as_array().unwrap().len(), count);
+        assert!(page["next_cursor"].is_string());
     }
     for (cookie, status) in [
         (None, StatusCode::UNAUTHORIZED),
         (Some(a.student.as_str()), StatusCode::FORBIDDEN),
         (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.teacher.as_str()), StatusCode::OK),
+        (Some(a.admin.as_str()), StatusCode::OK),
     ] {
         assert_eq!(
             send(&app, get("/api/activities?limit=2", cookie))
@@ -216,10 +397,4 @@ async fn activities_paginate_newest_first_with_stable_ties(pool: PgPool) {
             status
         );
     }
-
-    sqlx::query("INSERT INTO activities (title) SELECT 'Synthetic' FROM generate_series(1,201)")
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert_page_sizes(&app, &a.teacher, "/api/activities").await;
 }

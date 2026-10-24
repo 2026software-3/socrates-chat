@@ -23,7 +23,13 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
             {t('app.name')}
           </Link>
           <div className="ml-auto flex flex-wrap items-center gap-3">
-            <span className="text-sm">{me.display_name ?? me.email}</span>
+            {me.roles.student ? (
+              <Link to="/dashboard" className="text-sm underline-offset-4 hover:underline">
+                {me.display_name ?? me.email}
+              </Link>
+            ) : (
+              <span className="text-sm">{me.display_name ?? me.email}</span>
+            )}
             {roleBadges.map((r) => (
               <Badge key={r} variant="secondary">
                 {t(`role.${r}`)}

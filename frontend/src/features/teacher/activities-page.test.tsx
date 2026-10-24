@@ -46,7 +46,7 @@ afterEach(() => {
 function mockList(list: Activity[]) {
   server.use(
     http.get('/api/activities', () => pageOf(list)),
-    http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+    http.get('/api/topics', () => HttpResponse.json(topics)),
   )
 }
 
@@ -56,17 +56,18 @@ function setup() {
 
 describe('ActivitiesPage', () => {
   it('lists activities with status badge and topic title', async () => {
-    mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: null })])
+    mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2' })])
     setup()
     expect(await screen.findByText('第一週討論')).toBeInTheDocument()
     expect(screen.getByText('草稿')).toBeInTheDocument()
     expect(screen.getByText('已發布')).toBeInTheDocument()
     expect(screen.getByText('題目：電車難題')).toBeInTheDocument()
+    expect(screen.getByText('題目：自由意志')).toBeInTheDocument()
   })
 
   it('loads every page of activities by following next_cursor', async () => {
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', ({ request }) =>
         new URL(request.url).searchParams.get('cursor') === 'next'
           ? pageOf([act({ id: 'a2', title: '第二頁的活動' })])
@@ -88,7 +89,7 @@ describe('ActivitiesPage', () => {
   it('shows a translated error and retries', async () => {
     let calls = 0
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => {
         calls += 1
         return calls === 1 ? apiError(500, 'internal') : pageOf([act()])
@@ -98,6 +99,24 @@ describe('ActivitiesPage', () => {
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
     expect(await screen.findByText('第一週討論')).toBeInTheDocument()
+  })
+
+  it('does not send an activity without a topic and asks for one', async () => {
+    mockList([])
+    let posted = false
+    server.use(
+      http.post('/api/activities', () => {
+        posted = true
+        return HttpResponse.json(act(), { status: 201 })
+      }),
+    )
+    setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
+    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
+    expect(screen.getByLabelText('題目')).toHaveAttribute('aria-invalid', 'true')
+    expect(posted).toBe(false)
   })
 
   it('rejects an empty title on the client without calling the server', async () => {
@@ -121,7 +140,7 @@ describe('ActivitiesPage', () => {
     let list: Activity[] = []
     let body: unknown
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf(list)),
       http.post('/api/activities', async ({ request }) => {
         body = await request.json()
@@ -132,7 +151,7 @@ describe('ActivitiesPage', () => {
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
-    await userEvent.selectOptions(await screen.findByLabelText('題目（選填）'), 't2')
+    await userEvent.selectOptions(await screen.findByLabelText('題目'), 't2')
     await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
     expect(await screen.findByText('活動已建立（草稿）。')).toBeInTheDocument()
     expect(body).toEqual({ title: '新活動', topic_id: 't2' })
@@ -153,6 +172,7 @@ describe('ActivitiesPage', () => {
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
+    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
     const btn = screen.getByRole('button', { name: '建立活動' })
     await userEvent.dblClick(btn)
     await waitFor(() => expect(btn).toBeDisabled())
@@ -166,6 +186,7 @@ describe('ActivitiesPage', () => {
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
+    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
     await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
     expect(await screen.findByText('題目不存在。')).toBeInTheDocument()
   })
@@ -174,7 +195,7 @@ describe('ActivitiesPage', () => {
     let list = [act()]
     let body: unknown
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf(list)),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
@@ -190,7 +211,7 @@ describe('ActivitiesPage', () => {
     expect(title).toHaveValue('第一週討論')
     await userEvent.clear(title)
     await userEvent.type(title, '改名')
-    await userEvent.selectOptions(within(dialog).getByLabelText('題目（選填）'), 't2')
+    await userEvent.selectOptions(within(dialog).getByLabelText('題目'), 't2')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     expect(await screen.findByText('活動已更新。')).toBeInTheDocument()
     expect(body).toEqual({
@@ -205,7 +226,7 @@ describe('ActivitiesPage', () => {
   it('omits topic_id when the topic is unchanged', async () => {
     let body: unknown
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf([act()])),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
@@ -221,27 +242,35 @@ describe('ActivitiesPage', () => {
     expect(body).toEqual({ title: '第一週討論', description: '請討論公平' })
   })
 
-  it('sends topic_id null when "no topic" is chosen while editing', async () => {
-    let body: unknown
+  it('offers no empty topic choice while editing', async () => {
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf([act()])),
-      http.patch('/api/activities/a1', async ({ request }) => {
-        body = await request.json()
-        return HttpResponse.json(act({ topic_id: null }))
-      }),
     )
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
-    const select = within(dialog).getByLabelText('題目（選填）')
+    const select = within(dialog).getByLabelText('題目')
     await waitFor(() => expect(select).toHaveValue('t1'))
-    expect(within(dialog).getByRole('option', { name: '不指定題目' })).toBeEnabled()
-    await userEvent.selectOptions(select, '')
+    expect(within(dialog).getByRole('option', { name: '請選擇題目' })).toBeDisabled()
+  })
+
+  it('shows the locked-topic message when the topic of an started activity is changed', async () => {
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics)),
+      http.get('/api/activities', () => pageOf([act()])),
+      http.patch('/api/activities/a1', () => apiError(409, 'activity_topic_locked')),
+    )
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '編輯' }))
+    const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
+    await userEvent.selectOptions(within(dialog).getByLabelText('題目'), 't2')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    expect(await screen.findByText('活動已更新。')).toBeInTheDocument()
-    expect(body).toEqual({ title: '第一週討論', description: '請討論公平', topic_id: null })
+    expect(await within(dialog).findByText('此活動已有學生開始對話，不能更換題目。')).toBeInTheDocument()
+    expect(screen.queryByText('activity_topic_locked')).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('keeps an inactive topic selected and labelled instead of showing none', async () => {
@@ -250,12 +279,26 @@ describe('ActivitiesPage', () => {
     expect(await screen.findByText('題目：（已停用或無法載入的題目）')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
-    expect(within(dialog).getByLabelText('題目（選填）')).toHaveValue('gone')
+    expect(within(dialog).getByLabelText('題目')).toHaveValue('gone')
+  })
+
+  it('only offers active topics even though /api/topics lists every topic', async () => {
+    server.use(
+      http.get('/api/activities', () => pageOf([act({ topic_id: 't3' })])),
+      http.get('/api/topics', () =>
+        HttpResponse.json([...topics, { id: 't3', title: '已停用題目', description: '', category: null, is_active: false }]),
+      ),
+    )
+    setup()
+    const select = await screen.findByLabelText('題目')
+    await waitFor(() => expect(within(select).getByRole('option', { name: '電車難題' })).toBeInTheDocument())
+    expect(within(select).queryByRole('option', { name: '已停用題目' })).not.toBeInTheDocument()
+    expect(await screen.findByText('題目：（已停用或無法載入的題目）')).toBeInTheDocument()
   })
 
   it('keeps the dialog open and shows the error when saving fails', async () => {
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf([act()])),
       http.patch('/api/activities/a1', () => apiError(400, 'invalid_topic')),
     )
@@ -271,7 +314,7 @@ describe('ActivitiesPage', () => {
   it('shows an error with retry when a reload fails while old data is on screen', async () => {
     let calls = 0
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => {
         calls += 1
         return calls === 2 ? apiError(500, 'internal') : pageOf([act()])
@@ -302,7 +345,7 @@ describe('ActivitiesPage', () => {
     let status: Activity['status'] = 'draft'
     const calls: string[] = []
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf([act({ status })])),
       http.post('/api/activities/a1/publish', () => {
         calls.push('publish')
@@ -329,7 +372,7 @@ describe('ActivitiesPage', () => {
   it('disables the row button while a status change is pending and shows errors', async () => {
     let count = 0
     server.use(
-      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics })),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf([act()])),
       http.post('/api/activities/a1/publish', async () => {
         count += 1
@@ -348,13 +391,21 @@ describe('ActivitiesPage', () => {
     expect(count).toBe(1)
   })
 
-  it('still works when the topic list fails to load', async () => {
+  it('explains a failed topic list and still blocks creating without a topic', async () => {
+    let posted = false
     server.use(
       http.get('/api/activities', () => pageOf([])),
-      http.get('/api/catalog', () => apiError(500, 'internal')),
+      http.get('/api/topics', () => apiError(500, 'internal')),
+      http.post('/api/activities', () => {
+        posted = true
+        return HttpResponse.json(act(), { status: 201 })
+      }),
     )
     setup()
-    expect(await screen.findByText('無法載入題目清單，仍可建立不指定題目的活動。')).toBeInTheDocument()
-    expect(screen.getByLabelText('活動標題')).toBeEnabled()
+    expect(await screen.findByText('無法載入題目清單，請重新整理頁面後再試。')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('活動標題'), 'X')
+    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
+    expect(posted).toBe(false)
   })
 })

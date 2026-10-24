@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { adminMessages } from '@/features/admin/messages'
 import { authMessages } from '@/features/auth/messages'
 import { chatMessages } from '@/features/chat/messages'
+import { classroomsMessages } from '@/features/classrooms/messages'
 import { voiceMessages } from '@/features/chat/voice/messages'
 import { dashboardMessages } from '@/features/dashboard/messages'
 import { studentMessages } from '@/features/student/messages'
@@ -16,6 +17,7 @@ const bundles = [
   authMessages,
   studentMessages,
   chatMessages,
+  classroomsMessages,
   voiceMessages,
   dashboardMessages,
   teacherMessages,
