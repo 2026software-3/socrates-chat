@@ -48,6 +48,8 @@ pub struct Config {
     pub ai_first_token_timeout: Duration,
     /// AI 完整回覆上限（S-03.5）。
     pub ai_total_timeout: Duration,
+    /// 一般 API 請求的逾時（#325）：從收到請求到送出回應標頭為止，含讀取 request body。
+    pub request_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -169,11 +171,23 @@ impl Config {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
     }
 
+    /// 較長的請求逾時（#325），給同步等待 AI／語音服務或處理較久的端點：AI 完整回覆上限再加 60 秒，
+    /// 容納上傳 10 MB 音訊、語音服務本身的 30 秒上限與資料庫操作；不會比一般請求逾時短。
+    pub fn long_request_timeout(&self) -> Duration {
+        (self.ai_total_timeout + Duration::from_secs(60)).max(self.request_timeout)
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
         validate_turns(wrap_up_turn, max_turns)?;
+        let request_timeout_secs: u64 = parse_or("REQUEST_TIMEOUT_SECS", 10)?;
+        if request_timeout_secs == 0 {
+            return Err(ConfigError(
+                "REQUEST_TIMEOUT_SECS must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
@@ -215,6 +229,7 @@ impl Config {
                 15,
             )?),
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
+            request_timeout: Duration::from_secs(request_timeout_secs),
             app_base_url,
         })
     }

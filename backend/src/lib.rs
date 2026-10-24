@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Request, State},
-    http::{HeaderValue, Method, header},
+    extract::{DefaultBodyLimit, MatchedPath, Request, State},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
@@ -47,6 +47,25 @@ pub mod roster;
 pub mod roster_store;
 pub mod summary;
 pub mod voice;
+
+/// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
+/// 約 40 bytes／行；1 MiB 可容納超過兩萬筆）；訊息上限 4000 字元，UTF-8 加上 JSON 跳脫也不到 30 KB。
+/// 語音辨識上傳音訊，另有自己的上限（`voice::MAX_AUDIO_BYTES`）。
+pub const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// 不套用一般請求逾時、改用 `Config::long_request_timeout` 的路由（#325）。
+/// 逾時只計到送出回應標頭為止。SSE 路由（送出訊息、重試串流）不在此列：AI 回覆在背景工作產生，
+/// 標頭送出後串流本身不受逾時影響（長度由 AI 逾時限制，S-03.5），標頭之前只有讀取 JSON body 與資料庫查詢。
+pub const LONG_RUNNING_ROUTES: [&str; 4] = [
+    // 同步等 AI 重新分組
+    "/api/dashboard/class/regroup",
+    // 上傳最多 10 MB 音訊，並同步等語音服務
+    "/api/voice/transcribe",
+    // 同步等語音服務合成語音
+    "/api/voice/speech",
+    // 管理者匯入時逐一雜湊新帳號的臨時密碼（Argon2），名單大時會超過一般逾時
+    "/api/classrooms/{id}/roster/import",
+];
 
 /// 所有 handler 共用的狀態。
 #[derive(Clone)]
@@ -111,6 +130,13 @@ pub fn app(state: AppState) -> Router {
         )
         .fallback(fallback)
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
+        // 明確設定全域 body 上限；個別路由（語音辨識）可在自己的 router 內放寬
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn(payload_too_large))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_timeout,
+        ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn(request_id))
         .with_state(state)
@@ -159,6 +185,41 @@ async fn request_id(req: Request, next: Next) -> Response {
         res.headers_mut().insert("x-request-id", v);
     }
     res
+}
+
+/// body 超過上限時，axum 的 extractor 回 413 純文字；改成統一的 JSON 錯誤格式（S-08.1）。
+/// 不論有沒有 `Content-Length`（分段傳送讀到超過上限才發現），都是同一個 413。
+async fn payload_too_large(req: Request, next: Next) -> Response {
+    let res = next.run(req).await;
+    if res.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "請求內容過大",
+        )
+        .into_response();
+    }
+    res
+}
+
+/// 請求逾時（#325）：從收到請求到送出回應標頭為止（含讀取 body 與 handler 處理），
+/// 避免慢速送出 body 的連線（slow-loris）長時間占用。逾時時中止 handler（交易未提交即回滾），
+/// 回 `408 request_timeout`。
+async fn request_timeout(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let long = req
+        .extensions()
+        .get::<MatchedPath>()
+        .is_some_and(|p| LONG_RUNNING_ROUTES.contains(&p.as_str()));
+    let limit = if long {
+        state.config.long_request_timeout()
+    } else {
+        state.config.request_timeout
+    };
+    match tokio::time::timeout(limit, next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout", "請求逾時")
+            .into_response(),
+    }
 }
 
 /// CSRF 防護（S-08.2）：會改變狀態的請求，`Origin` 必須等於本站網域。
