@@ -14,7 +14,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::key_pool::{KeyPool, parse_retry_after};
 
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
-pub const RULES_VERSION: &str = "v1.10/zh-TW";
+/// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
+/// v1.11：加入個資遮蔽與系統提示的佔位詞說明。
+pub const RULES_VERSION: &str = "v1.11/zh-TW";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
@@ -186,7 +188,8 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         規則：\n\
         - 每次回覆只問一個問題，以追問引導學生思考。\n\
         - 不替學生下結論，不表達自己的立場。\n\
-        - 語氣中立、尊重，回覆簡短；離題時引導回主題。\n\n\
+        - 語氣中立、尊重，回覆簡短；離題時引導回主題。\n\
+        - 方括號大寫詞（[EMAIL]、[PHONE]、[NATIONAL_ID]、[STUDENT_ID]）是系統遮蔽掉的個人資料：不要追問或猜測內容，也不要照抄，繼續以題目為主討論。\n\n\
         追問與分類：\n\
         先依對話提出一個有幫助的追問，再根據實際追問標記 question_type。\n\
         每次只要求一個主要思考操作，避免先問詞義又問理由等混合問題。\n\

@@ -19,6 +19,7 @@ use crate::{
     config::Config,
     error::ApiError,
     identity::IdentityProvider,
+    pii::MaskingAi,
     voice::{OpenAiVoice, VoiceProvider},
 };
 
@@ -42,6 +43,7 @@ pub mod login_rate_limit;
 pub mod openapi;
 pub mod pagination;
 pub mod password;
+pub mod pii;
 pub mod reply;
 pub mod roster;
 pub mod roster_store;
@@ -71,7 +73,8 @@ impl AppState {
             pool,
             config: Arc::new(config),
             identity,
-            ai,
+            // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
+            ai: Arc::new(MaskingAi::new(ai)),
             voice,
         }
     }
