@@ -289,6 +289,19 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let api_key = required_env("OPENAI_API_KEY")?;
     let model = required_env("OPENAI_MODEL")?;
     let judge_model = required_env("OPENAI_JUDGE_MODEL")?;
+    // 推理型模型要先思考才有第一個 content token，免費供應商也常限流：
+    // EVAL_FIRST_TOKEN_SECS／EVAL_TOTAL_SECS 放寬逾時（預設 15／60 秒），EVAL_DELAY_SECS 讓題與題之間停一下（預設 0）
+    let timeout_secs = |name: &str, default: u64| {
+        env::var(name)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default)
+    };
+    let timeouts = (
+        Duration::from_secs(timeout_secs("EVAL_FIRST_TOKEN_SECS", 15)),
+        Duration::from_secs(timeout_secs("EVAL_TOTAL_SECS", 60)),
+    );
+    let delay = Duration::from_secs(timeout_secs("EVAL_DELAY_SECS", 0));
     let base_url = env::var("OPENAI_BASE_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -327,6 +340,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mut suitability_passes = 0;
 
     for (index, case) in cases.iter().enumerate() {
+        if index > 0 && !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         let started_at = chrono::Utc::now().to_rfc3339();
         let system = build_system_prompt(&PromptContext {
             title: &case.title,
@@ -365,13 +381,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
         println!("[{}/{}] 正在測試 {}……", index + 1, cases.len(), case.id);
         let timer = Instant::now();
-        let result = collect(
-            &ai,
-            request,
-            Duration::from_secs(15),
-            Duration::from_secs(60),
-        )
-        .await;
+        let result = collect(&ai, request, timeouts.0, timeouts.1).await;
         let elapsed_ms = timer.elapsed().as_millis();
 
         let (mut status, raw_output, mut parsed) = match result {
@@ -411,8 +421,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         content: input.to_string(),
                     }],
                 },
-                Duration::from_secs(15),
-                Duration::from_secs(60),
+                timeouts.0,
+                timeouts.1,
             )
             .await;
             let judge_elapsed_ms = judge_started.elapsed().as_millis();
@@ -459,7 +469,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "stage": case.stage,
             "title": case.title,
             "description": case.description,
-            "timeouts_seconds": {"first_token": 15, "total": 60},
+            "timeouts_seconds": {"first_token": timeouts.0.as_secs(), "total": timeouts.1.as_secs()},
             "wrap_up_turn": 15,
             "elapsed_ms": elapsed_ms,
             "expected_type": case.expected_type,
