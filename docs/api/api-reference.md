@@ -11,7 +11,7 @@
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
 - **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`account_disabled`（403，帳號已被管理者停用）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`internal`（500）。各端點特有的錯誤碼寫在 OpenAPI 的 responses 說明。
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
-- **列表分頁**：`GET /api/conversations`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
+- **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
 - **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
 
 ## 登入
@@ -102,7 +102,14 @@
 
 ## 教師檢視
 
-教師檢視學生的總結**不含對話原文**（S-02.1）。`GET /api/teacher/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
+教師檢視學生的總結**不含對話原文**（S-02.1）。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
+
+- `GET /api/summaries?limit=&cursor=&student=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
+- `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
+- `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
+- 兩個篩選可同時使用，也可與分頁一起用（換篩選時要從第一頁開始，舊游標會被拒絕）。格式錯誤（`student` 不是 UUID、`student` 或 `topic` 為空白）回 `400 invalid_filter`；格式正確但沒有符合的學生或題目，回空頁 `{ "items": [], "next_cursor": null }`，不洩漏學生或題目是否存在。
+- `q`：搜尋學生姓名、電子郵件或題目標題，不分大小寫的子字串；`%`、`_`、`\` 當一般字元處理。搜尋在後端對**所有頁**進行（不是只篩目前這一頁），可與 `student`、`topic` 並用。前後空白會被忽略，空白或超過 100 字元回 `400 invalid_filter`。查詢字串帶得到姓名與電子郵件，但應用程式的請求日誌只記路徑（不含查詢字串），反向代理等外部元件另行遵守 S-09.3 的日誌規則。
+- 前端總結頁依 `next_cursor` 前後翻頁；搜尋框送出時把關鍵字放進 `q`，並從第一頁開始。
 
 ## 規劃中的端點（尚未實作）
 
@@ -135,8 +142,7 @@
 
 ### 沒有分頁／上限【高】（#284 對話、#285 總結、#286 學生、#287 名單、#288 活動）
 
-`GET /api/conversations`（#284）、`/api/classrooms/{id}/students`（#286）、`/api/classrooms/{id}/roster`（#287）、`/api/activities`（#288）已完成 keyset 分頁；剩下 `/api/teacher/summaries`（#285）仍一次 `fetch_all`。`teacher/summaries` 還 JOIN 三表且隨全班歷史成長，會是第一個變慢的端點。
-**建議**：統一 `?limit=&cursor=`（keyset，依 `ended_at, id`），回 `{ items, next_cursor }`。教師端再加 `?student=`、`?topic=` 篩選。因為還沒上線，現在改成本最低。
+`GET /api/conversations`（#284）、`GET /api/summaries`（#285，依 `ended_at DESC, conversation_id ASC`，另有 `?student=`、`?topic=` 篩選與 `?q=` 搜尋，見「教師檢視」）、`/api/classrooms/{id}/students`（#286）、`/api/classrooms/{id}/roster`（#287）、`/api/activities`（#288）都已完成 keyset 分頁。
 
 ### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）
 
@@ -150,7 +156,8 @@
 
 ### 角色與資源的混合命名【中】（#285 `/api/summaries`）
 
-`/api/teacher/summaries`、`/api/dashboard/class`、`/api/classrooms/{id}/roster`、`/api/classrooms/{id}/students` 混用「以角色命名」與「以資源命名」。學生的 summary 是 `/conversations/{id}/summary`，教師的是 `/teacher/summaries`。
+#285 已完成：教師與管理者的總結列表改為 `GET /api/summaries`，權限由後端判斷（學生 403），舊的 `/api/teacher/summaries` 已移除。
+`/api/dashboard/class`、`/api/classrooms/{id}/roster`、`/api/classrooms/{id}/students`（教師用）仍混用「以角色命名」與「以資源命名」。
 **建議**：以資源命名，權限由後端判斷，例如 `GET /api/summaries`（教師全部／學生自己的）；或維持角色前綴但全面一致（`/api/teacher/*`、`/api/admin/*`、`/api/student/*`）。目前兩者混用，前端與文件都要記例外。
 
 ### `must_change_password` 白名單的回歸測試【中】

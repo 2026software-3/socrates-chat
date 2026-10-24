@@ -31,6 +31,8 @@ CREATE TABLE conversations (
 );
 
 CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);
+-- 總結列表（GET /api/summaries）依 ended_at DESC, id 做 keyset 分頁，只列已結束的對話。
+CREATE INDEX conversations_ended_idx ON conversations (ended_at DESC, id) WHERE ended_at IS NOT NULL;
 CREATE INDEX conversations_classroom_idx ON conversations (classroom_id) WHERE classroom_id IS NOT NULL;
 
 -- 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）；刪除該場對話後可重新開始。

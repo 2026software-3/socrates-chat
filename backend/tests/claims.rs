@@ -256,9 +256,11 @@ async fn students_and_teachers_see_the_claim_but_admins_get_the_masked_text(pool
     let act = published_activity_with_topic(&app, &a, "電車難題").await;
     finish(&app, &a.student, &act, &ai, &pool, 2).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert_eq!(list[0]["claim"], "該拉桿");
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     assert_eq!(list[0]["claim"], "message");
     let me = json_body(send(&app, get("/api/dashboard/me", Some(&a.student))).await).await;
     assert_eq!(me["recent"][0]["claim"], "該拉桿");
