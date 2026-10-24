@@ -80,10 +80,11 @@ export type SummaryView = {
   completed_at: string | null
 }
 
+/** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
 export type TeacherSummary = {
   conversation_id: string
   title: string
-  ended_at: string | null
+  ended_at: string
   student_id: string
   student_name: string | null
   student_email: string

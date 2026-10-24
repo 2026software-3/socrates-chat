@@ -66,7 +66,7 @@ fn teacher_side_lists_take_an_explicit_classroom() {
     let doc = document();
     for (path, method) in [
         ("/api/activities", "get"),
-        ("/api/teacher/summaries", "get"),
+        ("/api/summaries", "get"),
         ("/api/dashboard/class", "get"),
     ] {
         let operation = &doc["paths"][path][method];
@@ -79,6 +79,6 @@ fn teacher_side_lists_take_an_explicit_classroom() {
             "{method} {path} 404"
         );
     }
-    let row = &doc["components"]["schemas"]["TeacherRow"]["properties"];
-    assert!(row.get("classroom_id").is_some(), "TeacherRow.classroom_id");
+    let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
+    assert!(row.get("classroom_id").is_some(), "SummaryRow.classroom_id");
 }

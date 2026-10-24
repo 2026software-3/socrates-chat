@@ -10,8 +10,10 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
 
@@ -25,6 +27,7 @@ use crate::{
     chat::owned_conversation,
     classrooms::{ClassroomFilter, filtered_classroom},
     error::{ApiError, db_error_class},
+    pagination::{self, Page, Pagination},
 };
 
 /// 管理者介面看到的固定替代字串（S-02.2）。
@@ -35,7 +38,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/end", post(end))
         .route("/api/conversations/{id}/summary", get(get_summary))
         .route("/api/conversations/{id}/summary/retry", post(retry))
-        .route("/api/teacher/summaries", get(teacher_list))
+        .route("/api/summaries", get(list))
 }
 
 /// 結束對話並建立「產生中」的總結；回傳是否真的由這次呼叫結束。
@@ -296,15 +299,15 @@ pub(crate) async fn retry(
     Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
 }
 
-// ---- 教師檢視（F-26）----
+// ---- 教師與管理者檢視（F-26、#285）----
 
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
-pub(crate) struct TeacherRow {
+pub(crate) struct SummaryRow {
     conversation_id: Uuid,
     /// 對話所屬的教室
     classroom_id: Uuid,
     title: String,
-    ended_at: Option<DateTime<Utc>>,
+    ended_at: DateTime<Utc>,
     student_id: Uuid,
     student_name: Option<String>,
     student_email: String,
@@ -313,24 +316,137 @@ pub(crate) struct TeacherRow {
     claim: Option<String>,
 }
 
+/// 總結分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct SummaryPage {
+    items: Vec<SummaryRow>,
+    next_cursor: Option<String>,
+}
+
+/// 分頁參數加上選用篩選與搜尋。
+#[derive(Deserialize)]
+pub(crate) struct SummaryQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    #[serde(flatten)]
+    classroom: ClassroomFilter,
+    /// 學生的使用者 ID（即列表項目的 `student_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
+    student: Option<String>,
+    /// 對話複製來的題目標題，完全相符但不分大小寫（以標題分題目，與論點分布、主張分組一致）
+    topic: Option<String>,
+    /// 搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串），涵蓋所有頁
+    q: Option<String>,
+}
+
+/// 搜尋字串長度上限（字元數）。
+const MAX_SEARCH_CHARS: usize = 100;
+
+/// 把搜尋字串轉成 `ILIKE ... ESCAPE '\'` 的樣式：跳脫萬用字元，前後加 `%`。
+fn like_pattern(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() + 2);
+    out.push('%');
+    for c in q.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+struct Filters<'a> {
+    student: Option<Uuid>,
+    topic: Option<&'a str>,
+    search: Option<String>,
+    /// 篩選條件的指紋；放進游標，換條件後沿用舊游標會被拒絕。
+    fingerprint: String,
+}
+
+/// 篩選條件（正規化後，含教室）的雜湊，不可逆，所以游標裡不會帶出姓名或電子郵件。
+fn fingerprint(
+    classroom: Option<Uuid>,
+    student: Option<Uuid>,
+    topic: Option<&str>,
+    q: Option<&str>,
+) -> String {
+    let normalized = (
+        classroom,
+        student,
+        topic.map(str::to_lowercase),
+        q.map(str::to_lowercase),
+    );
+    let bytes = serde_json::to_vec(&normalized).unwrap_or_default();
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(bytes)[..8])
+}
+
+impl SummaryQuery {
+    fn filters(&self, classroom: Option<Uuid>) -> Result<Filters<'_>, ApiError> {
+        let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
+        let student = match self.student.as_deref() {
+            None => None,
+            Some(s) => Some(Uuid::parse_str(s).map_err(|_| invalid())?),
+        };
+        let topic = match self.topic.as_deref() {
+            None => None,
+            Some(t) if t.trim().is_empty() => return Err(invalid()),
+            Some(t) => Some(t),
+        };
+        let q = match self.q.as_deref().map(str::trim) {
+            None => None,
+            Some(q) if q.is_empty() || q.chars().count() > MAX_SEARCH_CHARS => {
+                return Err(invalid());
+            }
+            Some(q) => Some(q),
+        };
+        Ok(Filters {
+            student,
+            topic,
+            search: q.map(like_pattern),
+            fingerprint: fingerprint(classroom, student, topic, q),
+        })
+    }
+}
+
 /// 自己管理的教室內，學生已完成活動對話的總結（管理者為全部教室），每筆連到學生與該場對話；不含對話原文。
-/// 個人練習（不屬於任何教室）一律不在其中（S-02.1、S-14）。
+/// 個人練習（不屬於任何教室）一律不在其中（S-02.1、S-14）。管理者看到的敏感欄位一律是 `message`（S-02.2）。
 #[utoipa::path(
     get,
-    path = "/api/teacher/summaries",
+    path = "/api/summaries",
     tag = "summaries",
     summary = "教室內學生已完成對話的總結（不含原文；不含個人練習）",
-    params(("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404")),
-    responses((status = 200, description = "總結", body = Vec<TeacherRow>), crate::error::CommonErrors)
+    params(
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 classroom_id／student／topic／q 有效，換條件要從第一頁開始"),
+        ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
+        ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
+        ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
+        ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+    ),
+    responses((status = 200, description = "總結分頁，依 ended_at DESC, conversation_id ASC", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
-pub(crate) async fn teacher_list(
+pub(crate) async fn list(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-    Query(filter): Query<ClassroomFilter>,
-) -> Result<Json<Vec<TeacherRow>>, ApiError> {
-    let classroom = filtered_classroom(&state, &cu, &filter).await?;
+    Query(query): Query<SummaryQuery>,
+) -> Result<Json<Page<SummaryRow>>, ApiError> {
+    let limit = query.page.limit()?;
+    let classroom = filtered_classroom(&state, &cu, &query.classroom).await?;
+    let Filters {
+        student,
+        topic,
+        search,
+        fingerprint,
+    } = query.filters(classroom)?;
+    let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor("summaries")?;
+    // 游標只對產生它時的篩選條件有效；換條件要從第一頁開始
+    if cursor.as_ref().is_some_and(|c| c.2 != fingerprint) {
+        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+    }
+    let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
-    let mut rows: Vec<TeacherRow> = sqlx::query_as(
+    let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
                 s.stance, s.reasons, s.claim
@@ -338,16 +454,32 @@ pub(crate) async fn teacher_list(
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN users u ON u.id = c.user_id
-         WHERE s.status = 'ready' AND ($3::uuid IS NULL OR c.classroom_id = $3)
-         ORDER BY c.ended_at DESC, s.conversation_id",
+         WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
+           AND ($3::uuid IS NULL OR c.classroom_id = $3)
+           AND ($4::uuid IS NULL OR u.id = $4)
+           AND ($5::text IS NULL OR lower(c.title) = lower($5))
+           AND ($6::text IS NULL
+                OR u.display_name ILIKE $6 ESCAPE '\\'
+                OR u.email ILIKE $6 ESCAPE '\\'
+                OR c.title ILIKE $6 ESCAPE '\\')
+           AND ($7::timestamptz IS NULL
+                OR c.ended_at < $7 OR (c.ended_at = $7 AND s.conversation_id > $8))
+         ORDER BY c.ended_at DESC, s.conversation_id ASC
+         LIMIT $9",
     )
     .bind(cu.roles.admin)
     .bind(cu.user.id)
     .bind(classroom)
+    .bind(student)
+    .bind(topic)
+    .bind(search)
+    .bind(after_time)
+    .bind(after_id)
+    .bind((limit + 1) as i64)
     .fetch_all(&state.pool)
     .await?;
     // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），
-    // 即使同一帳號也是教師。
+    // 即使同一帳號也是教師。每一頁都在輸出前遮蔽。
     if cu.roles.admin {
         for r in &mut rows {
             r.stance = Some(MASKED.into());
@@ -355,5 +487,10 @@ pub(crate) async fn teacher_list(
             r.claim = Some(MASKED.into());
         }
     }
-    Ok(Json(rows))
+    Ok(Json(pagination::page(
+        rows,
+        limit,
+        "summaries",
+        |row: &SummaryRow| (row.ended_at, row.conversation_id, fingerprint),
+    )?))
 }

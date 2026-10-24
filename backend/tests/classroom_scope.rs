@@ -489,7 +489,7 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
     let app = test_app(pool.clone());
     let s = scene(&app, &pool).await;
 
-    let rows = list(&app, "/api/teacher/summaries", &s.a.teacher).await;
+    let rows = list(&app, "/api/summaries", &s.a.teacher).await["items"].clone();
     assert_eq!(claims(&rows), ["A 主張", "B 主張"]);
     assert!(!rows.to_string().contains("私下練習"));
     assert!(
@@ -499,22 +499,23 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
             .all(|r| r["classroom_id"].is_string())
     );
 
-    let rows = list(&app, "/api/teacher/summaries", &s.other_teacher).await;
+    let rows = list(&app, "/api/summaries", &s.other_teacher).await["items"].clone();
     assert_eq!(claims(&rows), ["他班主張"]);
 
     // 依教室篩選；他人的教室與不存在的教室回應相同
     let rows = list(
         &app,
-        &format!("/api/teacher/summaries?classroom_id={}", s.room_b),
+        &format!("/api/summaries?classroom_id={}", s.room_b),
         &s.a.teacher,
     )
-    .await;
+    .await["items"]
+        .clone();
     assert_eq!(claims(&rows), ["B 主張"]);
     for room in [s.room_other.as_str(), NOPE] {
         let res = send(
             &app,
             get(
-                &format!("/api/teacher/summaries?classroom_id={room}"),
+                &format!("/api/summaries?classroom_id={room}"),
                 Some(&s.a.teacher),
             ),
         )
@@ -523,7 +524,7 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
     }
 
     // 管理者看得到所有教室的活動對話（內容遮蔽），同樣看不到個人練習
-    let rows = list(&app, "/api/teacher/summaries", &s.a.admin).await;
+    let rows = list(&app, "/api/summaries", &s.a.admin).await["items"].clone();
     assert_eq!(rows.as_array().unwrap().len(), 3);
     assert!(!rows.to_string().contains("主張"));
 }
