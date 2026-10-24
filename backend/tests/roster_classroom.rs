@@ -90,18 +90,18 @@ async fn roster_import_belongs_to_one_classroom_and_never_removes(pool: PgPool) 
 
     // 另一個教室不受影響
     let (_, other) = roster(&app, Some(&a.teacher), &room_b).await;
-    assert_eq!(other["emails"], json!([]));
+    assert_eq!(other["items"], json!([]));
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
     assert_eq!(
-        mine["emails"],
-        json!(["new@example.com", "student@example.com"])
+        mine["items"],
+        json!([{"email": "new@example.com"}, {"email": "student@example.com"}])
     );
 
     // 只新增：再匯入一份不含舊人的名單，舊的仍在
     let (_, body) = import(&app, Some(&a.teacher), &a.classroom, "third@example.com").await;
     assert_eq!(body["added"], 1);
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
-    assert_eq!(mine["emails"].as_array().unwrap().len(), 3);
+    assert_eq!(mine["items"].as_array().unwrap().len(), 3);
 }
 
 #[sqlx::test]
@@ -134,7 +134,7 @@ async fn same_email_in_several_classrooms_is_one_account_with_student_access(poo
             )
             .await;
             assert_eq!(res.status(), StatusCode::OK);
-            json_body(res).await[0]["id"].clone()
+            json_body(res).await["items"][0]["id"].clone()
         }
     }))
     .await;
@@ -214,7 +214,7 @@ async fn other_teachers_cannot_touch_someone_elses_classroom_roster(pool: PgPool
 
     // 沒有任何副作用
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
-    assert_eq!(mine["emails"], json!(["student@example.com"]));
+    assert_eq!(mine["items"], json!([{"email": "student@example.com"}]));
 }
 
 #[sqlx::test]
@@ -245,7 +245,7 @@ async fn roster_endpoints_require_teacher_or_admin(pool: PgPool) {
         assert_eq!(res.status(), expected, "students as {name}");
     }
     let (_, mine) = roster(&app, Some(&a.teacher), room).await;
-    assert_eq!(mine["emails"], json!(["student@example.com"]));
+    assert_eq!(mine["items"], json!([{"email": "student@example.com"}]));
 }
 
 #[sqlx::test]
@@ -285,7 +285,7 @@ async fn students_list_shows_only_that_classrooms_roster(pool: PgPool) {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let rows = json_body(res).await;
-    let emails: Vec<_> = rows
+    let emails: Vec<_> = rows["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -301,7 +301,7 @@ async fn students_list_shows_only_that_classrooms_roster(pool: PgPool) {
         ),
     )
     .await;
-    let rows = json_body(res).await;
+    let rows = json_body(res).await["items"].clone();
     assert_eq!(rows[0]["email"], "b-only@example.com");
     assert_eq!(rows[0]["has_account"], false);
 }

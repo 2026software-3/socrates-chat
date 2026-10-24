@@ -27,7 +27,7 @@ async fn add_teacher(app: &Router, admin: &str, sub: &str, email: &str) -> Strin
 
 async fn students(app: &Router, cookie: &str, classroom: &str) -> Value {
     let path = format!("/api/classrooms/{classroom}/students");
-    json_body(send(app, get(&path, Some(cookie))).await).await
+    json_body(send(app, get(&path, Some(cookie))).await).await["items"].clone()
 }
 
 async fn audit_actions(pool: &PgPool) -> Vec<(String, String, Option<String>)> {

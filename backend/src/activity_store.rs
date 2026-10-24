@@ -31,21 +31,30 @@ macro_rules! activity_select {
     };
 }
 
-/// 操作者看得到的活動；`classroom` 有值時只看那間教室（呼叫端須先確認教室可見）。
+/// 操作者看得到的活動，依 `created_at DESC, id ASC`，從 `after`（不含）之後取 `limit` 筆；
+/// `classroom` 有值時只看那間教室（呼叫端須先確認教室可見）。
 pub async fn list(
     pool: &PgPool,
     actor_id: Uuid,
     is_admin: bool,
     classroom: Option<Uuid>,
+    after: Option<(DateTime<Utc>, Uuid)>,
+    limit: i64,
 ) -> Result<Vec<Activity>, sqlx::Error> {
+    let (after_time, after_id) = after.unzip();
     sqlx::query_as(activity_select!(
         "JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE ($1 OR cl.created_by = $2) AND ($3::uuid IS NULL OR a.classroom_id = $3)
-         ORDER BY a.created_at DESC, a.id"
+           AND ($4::timestamptz IS NULL
+                OR a.created_at < $4 OR (a.created_at = $4 AND a.id > $5))
+         ORDER BY a.created_at DESC, a.id ASC LIMIT $6"
     ))
     .bind(is_admin)
     .bind(actor_id)
     .bind(classroom)
+    .bind(after_time)
+    .bind(after_id)
+    .bind(limit)
     .fetch_all(pool)
     .await
 }

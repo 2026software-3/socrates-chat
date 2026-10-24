@@ -196,7 +196,10 @@ async fn roster_import_reports_added_existing_and_invalid(pool: PgPool) {
         .await,
     )
     .await;
-    assert_eq!(list["emails"], json!(["a@x.com", "b@x.com", "c@x.com"]));
+    assert_eq!(
+        list["items"],
+        json!([{"email": "a@x.com"}, {"email": "b@x.com"}, {"email": "c@x.com"}])
+    );
 }
 
 #[sqlx::test]

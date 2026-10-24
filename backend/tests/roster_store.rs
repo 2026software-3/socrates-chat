@@ -50,11 +50,15 @@ async fn roster_is_isolated_per_classroom_and_one_email_can_join_several(pool: P
     );
 
     assert_eq!(
-        roster_store::list_emails(&pool, a).await.unwrap(),
+        roster_store::list_emails(&pool, a, None, 200)
+            .await
+            .unwrap(),
         ["s@example.com"]
     );
     assert_eq!(
-        roster_store::list_emails(&pool, b).await.unwrap(),
+        roster_store::list_emails(&pool, b, None, 200)
+            .await
+            .unwrap(),
         ["only-b@example.com", "s@example.com"]
     );
 }
@@ -84,13 +88,15 @@ async fn removing_from_one_classroom_keeps_the_others(pool: PgPool) {
         "removing someone who is not on this roster reports nothing removed"
     );
     assert!(
-        roster_store::list_emails(&pool, a)
+        roster_store::list_emails(&pool, a, None, 200)
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        roster_store::list_emails(&pool, b).await.unwrap(),
+        roster_store::list_emails(&pool, b, None, 200)
+            .await
+            .unwrap(),
         ["s@example.com"]
     );
     assert!(
@@ -126,7 +132,9 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
         .await
         .unwrap();
 
-    let in_a = roster_store::list_students(&pool, a).await.unwrap();
+    let in_a = roster_store::list_students(&pool, a, None, 200, None)
+        .await
+        .unwrap();
     assert_eq!(
         in_a.iter().map(|s| s.email.as_str()).collect::<Vec<_>>(),
         ["pending@example.com", "s@example.com"]
@@ -136,7 +144,10 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
     assert_eq!(in_a[1].id, Some(student));
     assert!(in_a[1].has_account);
     assert_eq!(
-        roster_store::list_students(&pool, b).await.unwrap().len(),
+        roster_store::list_students(&pool, b, None, 200, None)
+            .await
+            .unwrap()
+            .len(),
         1
     );
 }

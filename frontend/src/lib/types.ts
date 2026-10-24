@@ -178,3 +178,6 @@ export type StreamDone = {
 
 /** Keyset 分頁列表。 */
 export type Page<T> = { items: T[]; next_cursor: string | null }
+
+/** 學生列表的一頁；`total` 是符合搜尋條件的學生總數，每一頁都帶。 */
+export type StudentPage = Page<StudentRow> & { total: number }

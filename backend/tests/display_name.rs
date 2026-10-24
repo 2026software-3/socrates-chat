@@ -54,7 +54,7 @@ async fn student_renames_self_and_it_shows_in_me_and_students(pool: PgPool) {
     )
     .await;
     let list = json_body(res).await;
-    let row = list
+    let row = list["items"]
         .as_array()
         .unwrap()
         .iter()

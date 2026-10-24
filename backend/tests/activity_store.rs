@@ -49,10 +49,12 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
         .unwrap();
     assert_eq!(topics, 1);
 
-    let mine = activity_store::list(&pool, t1, false, None).await.unwrap();
+    let mine = activity_store::list(&pool, t1, false, None, None, 200)
+        .await
+        .unwrap();
     assert_eq!(mine.iter().map(|x| x.id).collect::<Vec<_>>(), [in_a.id]);
     assert_eq!(
-        activity_store::list(&pool, t1, true, None)
+        activity_store::list(&pool, t1, true, None, None, 200)
             .await
             .unwrap()
             .len(),
@@ -71,7 +73,7 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
             .is_some()
     );
     assert!(
-        activity_store::list(&pool, t1, false, Some(b))
+        activity_store::list(&pool, t1, false, Some(b), None, 200)
             .await
             .unwrap()
             .is_empty()

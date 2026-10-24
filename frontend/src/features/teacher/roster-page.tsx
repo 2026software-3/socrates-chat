@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { toast } from 'sonner'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -23,11 +23,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
 import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { LoadMore } from '@/components/load-more'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { errorText, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
-import type { Classroom, RosterImportResult, StudentRow } from '@/lib/types'
-import { useFetch } from '@/lib/use-fetch'
+import type { Classroom, RosterImportResult, StudentPage, StudentRow } from '@/lib/types'
+import { useFetch, usePagedFetch } from '@/lib/use-fetch'
 
 /** 匯入表單：貼上文字或載入檔案內容到文字框（檔案本身不上傳）。 */
 function ImportPanel({ classroomId, onImported }: { classroomId: string; onImported: () => void }) {
@@ -245,8 +246,12 @@ export function RosterPage() {
 /** 單一教室的學生名單與操作。 */
 function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const t = useT()
-  const roster = useFetch<StudentRow[]>(`/api/classrooms/${classroom.id}/students`)
+  // 搜尋與人數都由後端計算：送出搜尋後從第一頁重新載入，其餘頁按「載入更多」才取
+  const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
+  const roster = usePagedFetch<StudentRow, StudentPage>(
+    `/api/classrooms/${classroom.id}/students${query ? `?q=${encodeURIComponent(query)}` : ''}`,
+  )
   const auth = useAuth()
   const isAdmin = auth.status === 'authed' && auth.me.roles.admin
   const [toReset, setToReset] = useState<string>()
@@ -259,11 +264,8 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   // 手機用卡片、桌面用表格：只渲染其中一種，避免同一份資料在畫面上出現兩次
   const wide = useMediaQuery('(min-width: 768px)')
 
-  const students = roster.data
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return (students ?? []).filter((s) => s.email.toLowerCase().includes(q) || (s.display_name ?? '').toLowerCase().includes(q))
-  }, [students, query])
+  const students = roster.items
+  const total = roster.page?.total ?? 0
 
   function open(a: AccountAction) {
     setReason('')
@@ -358,31 +360,43 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-medium">{t('teacher.roster.heading', { name: classroom.name })}</h2>
-      {roster.loading && !roster.data ? <LoadingBlock /> : null}
+      {roster.loading && !students ? <LoadingBlock /> : null}
       {roster.error ? <ErrorBlock error={roster.error} onRetry={roster.reload} /> : null}
       {actionError && action === null ? (
         <Alert variant="destructive" role="alert">
           <AlertDescription>{actionError}</AlertDescription>
         </Alert>
       ) : null}
-      {students && students.length === 0 ? <EmptyBlock>{t('teacher.roster.empty')}</EmptyBlock> : null}
-      {students && students.length > 0 ? (
+      {students && total === 0 && !query ? <EmptyBlock>{t('teacher.roster.empty')}</EmptyBlock> : null}
+      {students && (total > 0 || query) ? (
         <div className="space-y-3">
           <p className="text-sm font-medium" aria-live="polite">
-            {t('teacher.roster.count', { count: students.length })}
+            {t('teacher.roster.count', { count: total })}
           </p>
-          <div className="max-w-sm space-y-1.5">
-            <Label htmlFor="roster-search">{t('teacher.roster.searchLabel')}</Label>
-            <Input id="roster-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          {filtered.length === 0 ? (
+          <form
+            className="flex max-w-sm items-end gap-2"
+            role="search"
+            onSubmit={(e) => {
+              e.preventDefault()
+              setQuery(input.trim())
+            }}
+          >
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="roster-search">{t('teacher.roster.searchLabel')}</Label>
+              <Input id="roster-search" type="search" maxLength={100} value={input} onChange={(e) => setInput(e.target.value)} />
+            </div>
+            <Button type="submit" variant="outline">
+              {t('teacher.roster.searchButton')}
+            </Button>
+          </form>
+          {students.length === 0 ? (
             <EmptyBlock>{t('teacher.roster.noMatch')}</EmptyBlock>
           ) : (
             <>
               {!wide ? (
                 /* 手機：每位學生一張卡片，操作按鈕不會被擠到畫面外 */
                 <ul className="space-y-3" aria-label={t('teacher.roster.title')}>
-                  {filtered.map((s) => {
+                  {students.map((s) => {
                     const status = statusOf(s)
                     return (
                       <li key={s.email} className="space-y-3 rounded-lg border p-3">
@@ -413,7 +427,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filtered.map((s) => (
+                      {students.map((s) => (
                         <TableRow key={s.email}>
                           <TableCell className="break-all">
                             {s.email}
@@ -434,6 +448,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
               )}
             </>
           )}
+          <LoadMore hasMore={roster.hasMore} loading={roster.loadingMore} error={roster.moreError} onLoadMore={roster.loadMore} />
         </div>
       ) : null}
 

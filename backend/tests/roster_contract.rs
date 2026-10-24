@@ -65,11 +65,15 @@ fn roster_and_students_list_shapes() {
     let roster = &document["paths"]["/api/classrooms/{id}/roster"]["get"];
     assert_eq!(
         roster["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
-        "#/components/schemas/EmailList"
+        "#/components/schemas/RosterPage"
     );
     let students = &document["paths"]["/api/classrooms/{id}/students"]["get"];
     assert_eq!(
-        students["responses"]["200"]["content"]["application/json"]["schema"]["items"]["$ref"],
+        students["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/StudentPage"
+    );
+    assert_eq!(
+        document["components"]["schemas"]["StudentPage"]["properties"]["items"]["items"]["$ref"],
         "#/components/schemas/StudentRow"
     );
     let row = &document["components"]["schemas"]["StudentRow"]["properties"];

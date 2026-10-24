@@ -2,7 +2,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post},
 };
@@ -16,6 +16,7 @@ use crate::{
     auth_store,
     classrooms::visible_classroom,
     error::ApiError,
+    pagination::{self, Page, Pagination},
     password, roster_store,
 };
 
@@ -150,23 +151,55 @@ async fn delete_email(
 
 // ---- 教室的修課名單（教室的建立者或管理者操作；他人的教室與不存在的教室一律 404）----
 
+/// 名單上的一筆；以物件包裝，之後要加欄位不必再改契約。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct RosterEntry {
+    email: String,
+}
+
+/// 名單分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct RosterPage {
+    items: Vec<RosterEntry>,
+    next_cursor: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/classrooms/{id}/roster",
     tag = "roster",
     summary = "教室的修課名單",
-    params(("id" = Uuid, Path, description = "教室 ID")),
-    responses((status = 200, description = "名單信箱", body = EmailList), crate::error::CommonErrors)
+    params(
+        ("id" = Uuid, Path, description = "教室 ID"),
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
+    ),
+    responses((status = 200, description = "名單分頁，依 email 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_roster(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
-) -> Result<Json<EmailList>, ApiError> {
+    Query(query): Query<Pagination>,
+) -> Result<Json<Page<RosterEntry>>, ApiError> {
+    let limit = query.limit()?;
+    let after: Option<String> = query.cursor("roster")?;
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    Ok(Json(EmailList {
-        emails: roster_store::list_emails(&state.pool, classroom.id).await?,
-    }))
+    let rows = roster_store::list_emails(
+        &state.pool,
+        classroom.id,
+        after.as_deref(),
+        (limit + 1) as i64,
+    )
+    .await?;
+    let rows = rows
+        .into_iter()
+        .map(|email| RosterEntry { email })
+        .collect();
+    Ok(Json(pagination::page(rows, limit, "roster", |row| {
+        row.email.clone()
+    })?))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]

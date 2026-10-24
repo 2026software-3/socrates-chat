@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     routing::{get, patch, post},
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
@@ -18,6 +19,7 @@ use crate::{
     auth::{RequireStudent, RequireTeacher},
     classrooms::{ClassroomFilter, filtered_classroom, visible_classroom},
     error::ApiError,
+    pagination::{self, Page, Pagination},
 };
 
 pub use crate::activity_store::Activity;
@@ -234,23 +236,55 @@ async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
     Ok(n > 0)
 }
 
+/// 活動分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ActivityPage {
+    items: Vec<Activity>,
+    next_cursor: Option<String>,
+}
+
+/// 分頁參數加上教室篩選。
+#[derive(Deserialize)]
+pub(crate) struct ActivityQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    #[serde(flatten)]
+    classroom: ClassroomFilter,
+}
+
 #[utoipa::path(
     get,
     path = "/api/activities",
     tag = "activities",
-    summary = "列出活動（自己管理的教室內的活動；管理者為全部）",
-    params(("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404")),
-    responses((status = 200, description = "活動", body = Vec<Activity>), crate::error::CommonErrors)
+    summary = "列出活動（自己管理的教室內的活動；管理者為全部；草稿、已發布、已停止開放都列出）",
+    params(
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
+        ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
+    ),
+    responses((status = 200, description = "活動分頁，依 created_at DESC, id ASC", body = ActivityPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_activities(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-    Query(filter): Query<ClassroomFilter>,
-) -> Result<Json<Vec<Activity>>, ApiError> {
-    let classroom = filtered_classroom(&state, &cu, &filter).await?;
-    Ok(Json(
-        activity_store::list(&state.pool, cu.user.id, cu.roles.admin, classroom).await?,
-    ))
+    Query(query): Query<ActivityQuery>,
+) -> Result<Json<Page<Activity>>, ApiError> {
+    let limit = query.page.limit()?;
+    let after: Option<(DateTime<Utc>, Uuid)> = query.page.cursor("activities")?;
+    let classroom = filtered_classroom(&state, &cu, &query.classroom).await?;
+    let rows = activity_store::list(
+        &state.pool,
+        cu.user.id,
+        cu.roles.admin,
+        classroom,
+        after,
+        (limit + 1) as i64,
+    )
+    .await?;
+    Ok(Json(pagination::page(rows, limit, "activities", |row| {
+        (row.created_at, row.id)
+    })?))
 }
 
 #[utoipa::path(

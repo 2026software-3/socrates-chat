@@ -7,11 +7,11 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -19,9 +19,27 @@ use crate::{
     auth::{RequireAdmin, RequireTeacher},
     classrooms::visible_classroom,
     error::ApiError,
+    pagination::{self, Page, Pagination},
     roster::normalize_email,
     roster_store::{self, StudentRow},
 };
+
+/// 學生分頁；`total` 是符合條件（同一個 `q`）的學生總數，每一頁都帶，不受游標影響。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct StudentPage {
+    items: Vec<StudentRow>,
+    next_cursor: Option<String>,
+    total: i64,
+}
+
+/// 分頁參數加上搜尋。
+#[derive(Deserialize)]
+pub(crate) struct StudentQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    /// 搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元）
+    q: Option<String>,
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -36,18 +54,48 @@ pub fn routes() -> Router<AppState> {
     path = "/api/classrooms/{id}/students",
     tag = "roster",
     summary = "教室名單上的學生與帳號狀態",
-    params(("id" = Uuid, Path, description = "教室 ID")),
-    responses((status = 200, description = "學生列表", body = Vec<StudentRow>), crate::error::CommonErrors)
+    params(
+        ("id" = Uuid, Path, description = "教室 ID"),
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 q 有效，換搜尋條件要從第一頁開始"),
+        ("q" = Option<String>, Query, description = "搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+    ),
+    responses((status = 200, description = "學生分頁，依 email 排序，帶符合條件的 total", body = StudentPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_students(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
-) -> Result<Json<Vec<StudentRow>>, ApiError> {
+    Query(query): Query<StudentQuery>,
+) -> Result<Json<StudentPage>, ApiError> {
+    let limit = query.page.limit()?;
+    let q = pagination::search_term(query.q.as_deref())?;
+    let fingerprint = pagination::fingerprint(&q.map(str::to_lowercase));
+    let cursor: Option<(String, String)> = query.page.cursor("students")?;
+    // 游標只對產生它時的搜尋條件有效；換條件要從第一頁開始
+    if cursor.as_ref().is_some_and(|c| c.1 != fingerprint) {
+        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+    }
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    Ok(Json(
-        roster_store::list_students(&state.pool, classroom.id).await?,
-    ))
+    let search = q.map(pagination::like_pattern);
+    let rows = roster_store::list_students(
+        &state.pool,
+        classroom.id,
+        cursor.as_ref().map(|c| c.0.as_str()),
+        (limit + 1) as i64,
+        search.as_deref(),
+    )
+    .await?;
+    let total =
+        roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()).await?;
+    let Page { items, next_cursor } = pagination::page(rows, limit, "students", |row| {
+        (row.email.clone(), fingerprint.clone())
+    })?;
+    Ok(Json(StudentPage {
+        items,
+        next_cursor,
+        total,
+    }))
 }
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
