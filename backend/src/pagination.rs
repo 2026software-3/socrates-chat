@@ -1,6 +1,7 @@
 //! 共用的 keyset 分頁契約（#284）：limit 1–200，預設 50，cursor 為不透明字串。
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
 
@@ -68,4 +69,39 @@ pub fn page<T, K: Serialize>(
         items: rows,
         next_cursor,
     })
+}
+
+/// 搜尋字串長度上限（字元數）。
+pub const MAX_SEARCH_CHARS: usize = 100;
+
+/// 驗證並正規化 `?q=`：去前後空白；空白或超過上限回 `400 invalid_filter`。
+pub fn search_term(raw: Option<&str>) -> Result<Option<&str>, ApiError> {
+    match raw.map(str::trim) {
+        None => Ok(None),
+        Some(q) if q.is_empty() || q.chars().count() > MAX_SEARCH_CHARS => {
+            Err(ApiError::bad_request("invalid_filter", "篩選條件不正確"))
+        }
+        Some(q) => Ok(Some(q)),
+    }
+}
+
+/// 把搜尋字串轉成 `ILIKE ... ESCAPE '\'` 的樣式：跳脫萬用字元，前後加 `%`（不分大小寫的子字串）。
+pub fn like_pattern(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() + 2);
+    out.push('%');
+    for c in q.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+/// 篩選條件（正規化後）的雜湊，放進游標：換條件後沿用舊游標會被拒絕。
+/// 雜湊不可逆，所以游標不會帶出姓名或電子郵件。
+pub fn fingerprint(filters: &impl Serialize) -> String {
+    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(bytes)[..8])
 }

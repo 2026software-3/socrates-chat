@@ -30,3 +30,5 @@ CREATE TABLE activities (
 
 CREATE INDEX activities_status_idx ON activities (status);
 CREATE INDEX activities_classroom_idx ON activities (classroom_id);
+-- 活動列表（GET /api/activities）依 created_at DESC, id 做 keyset 分頁。
+CREATE INDEX activities_created_idx ON activities (created_at DESC, id);

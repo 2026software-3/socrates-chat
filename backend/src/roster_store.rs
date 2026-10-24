@@ -97,12 +97,14 @@ pub async fn belongs_only_to_owner(
     .map(|owned: Option<bool>| owned.unwrap_or(false))
 }
 
-/// 教室名單上的學生與帳號狀態，依 email 排序，從 `after`（不含）之後取 `limit` 筆。
+/// 教室名單上的學生與帳號狀態，依 email 排序，從 `after`（不含）之後取 `limit` 筆；
+/// `search` 為 `ILIKE` 樣式（見 `pagination::like_pattern`），只比對電子郵件與顯示名稱。
 pub async fn list_students(
     pool: &PgPool,
     classroom_id: Uuid,
     after: Option<&str>,
     limit: i64,
+    search: Option<&str>,
 ) -> Result<Vec<StudentRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT u.id, e.email, u.display_name,
@@ -115,11 +117,15 @@ pub async fn list_students(
                     AS completed_conversations
          FROM enrollments e LEFT JOIN users u ON u.email = e.email
          WHERE e.classroom_id = $1 AND ($2::text IS NULL OR e.email > $2)
+           AND ($4::text IS NULL
+                OR e.email ILIKE $4 ESCAPE '\\'
+                OR u.display_name ILIKE $4 ESCAPE '\\')
          ORDER BY e.email LIMIT $3",
     )
     .bind(classroom_id)
     .bind(after)
     .bind(limit)
+    .bind(search)
     .fetch_all(pool)
     .await
 }
@@ -156,6 +162,26 @@ pub async fn count_completed(
     )
     .bind(classroom_id)
     .bind(email)
+    .fetch_one(pool)
+    .await
+}
+
+/// 教室名單上符合搜尋條件的學生人數（條件同 `list_students`，不受游標影響）。
+pub async fn count_students_matching(
+    pool: &PgPool,
+    classroom_id: Uuid,
+    search: Option<&str>,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)
+         FROM enrollments e LEFT JOIN users u ON u.email = e.email
+         WHERE e.classroom_id = $1
+           AND ($2::text IS NULL
+                OR e.email ILIKE $2 ESCAPE '\\'
+                OR u.display_name ILIKE $2 ESCAPE '\\')",
+    )
+    .bind(classroom_id)
+    .bind(search)
     .fetch_one(pool)
     .await
 }

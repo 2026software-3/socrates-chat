@@ -91,7 +91,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
         (
             "/api/classrooms/{id}/students",
             "StudentPage",
-            vec!["id", "limit", "cursor"],
+            vec!["id", "limit", "cursor", "q"],
         ),
         (
             "/api/classrooms/{id}/roster",
@@ -123,4 +123,26 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
             "{path}"
         );
     }
+}
+
+/// 學生列表的每一頁都帶符合 `q` 的 `total`，且 `q` 有 `invalid_filter` 錯誤說明。
+#[sqlx::test]
+async fn student_page_documents_total_and_invalid_filter(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let page = &doc["components"]["schemas"]["StudentPage"];
+    assert!(page["properties"]["total"].is_object());
+    assert!(
+        page["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("total"))
+    );
+    let op = &doc["paths"]["/api/classrooms/{id}/students"]["get"];
+    assert!(
+        op["responses"]["400"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_filter")
+    );
 }

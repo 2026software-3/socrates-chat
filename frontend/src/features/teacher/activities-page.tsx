@@ -9,11 +9,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { LoadMore } from '@/components/load-more'
 import { formatDate } from '@/features/teacher/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Activity, ActivityStatus, Topic } from '@/lib/types'
-import { useFetch, useFetchAll } from '@/lib/use-fetch'
+import { useFetch, usePagedFetch } from '@/lib/use-fetch'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
   draft: 'secondary',
@@ -216,7 +217,7 @@ function ActivityRow({
 /** 教師／管理者：建立、編輯、發布、停止開放討論活動。 */
 export function ActivitiesPage() {
   const t = useT()
-  const list = useFetchAll<Activity>('/api/activities')
+  const list = usePagedFetch<Activity>('/api/activities')
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
   const topics = (available.data ?? []).filter((tp) => tp.is_active)
@@ -287,12 +288,12 @@ export function ActivitiesPage() {
       </Card>
 
       <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
-      {list.loading && !list.data ? <LoadingBlock /> : null}
+      {list.loading && !list.items ? <LoadingBlock /> : null}
       {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
-      {list.data && list.data.length === 0 ? <EmptyBlock>{t('teacher.activities.empty')}</EmptyBlock> : null}
-      {list.data && list.data.length > 0 ? (
+      {list.items && list.items.length === 0 ? <EmptyBlock>{t('teacher.activities.empty')}</EmptyBlock> : null}
+      {list.items && list.items.length > 0 ? (
         <ul className="space-y-3">
-          {list.data.map((a) => (
+          {list.items.map((a) => (
             <ActivityRow
               key={a.id}
               activity={a}
@@ -305,6 +306,7 @@ export function ActivitiesPage() {
           ))}
         </ul>
       ) : null}
+      <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
 
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
