@@ -11,14 +11,19 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::Path,
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use socrates_chat_backend::ai::{
-    AiRequest, ChatRole, ChatTurn, META_DELIM, OpenAiProvider, PromptContext, RULES_VERSION,
-    build_system_prompt, collect,
+use socrates_chat_backend::{
+    ai::{
+        AiRequest, ChatRole, ChatTurn, META_DELIM, OpenAiProvider, PromptContext, RULES_VERSION,
+        build_system_prompt, collect,
+    },
+    config::load_openai_keys,
+    key_pool::KeyPool,
 };
 
 // Deserialize lets serde_json turn JSON fields into these Rust structures.
@@ -286,7 +291,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let api_key = required_env("OPENAI_API_KEY")?;
+    let keys = Arc::new(
+        KeyPool::new(load_openai_keys()?)
+            .ok_or("no AI API key: set OPENAI_API_KEYS or fill the .apikeylist file")?,
+    );
     let model = required_env("OPENAI_MODEL")?;
     let judge_model = required_env("OPENAI_JUDGE_MODEL")?;
     // 推理型模型要先思考才有第一個 content token，免費供應商也常限流：
@@ -306,8 +314,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
-    let ai = OpenAiProvider::new(&base_url, &api_key, &model);
-    let judge_ai = OpenAiProvider::new(&base_url, &api_key, &judge_model);
+    let ai = OpenAiProvider::new(&base_url, keys.clone(), &model);
+    let judge_ai = OpenAiProvider::new(&base_url, keys, &judge_model);
 
     // A new directory for every execution; old runs stay intact.
     let run_id = SystemTime::now()

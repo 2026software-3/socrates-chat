@@ -22,6 +22,7 @@ use socrates_chat_backend::{
     app,
     config::Config,
     identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
+    key_pool::KeyPool,
 };
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -78,7 +79,7 @@ pub fn test_config() -> Config {
         listen_addr: "127.0.0.1:0".to_string(),
         trusted_proxies: vec![],
         frontend_dir: None,
-        openai_api_key: "test-key".to_string(),
+        openai_keys: Arc::new(KeyPool::new(vec!["test-key".to_string()]).unwrap()),
         openai_model: "test-model".to_string(),
         openai_base_url: "http://127.0.0.1:1".to_string(),
         openai_stt_model: None,

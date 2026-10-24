@@ -2,12 +2,16 @@
 //!
 //! 本檔另含蘇格拉底式追問的提示（S-03.2）與每回合結構化結果的解析。
 
+use std::{sync::Arc, time::Duration};
+
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream::BoxStream};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+
+use crate::key_pool::{KeyPool, parse_retry_after};
 
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
 pub const RULES_VERSION: &str = "v1.10/zh-TW";
@@ -272,18 +276,80 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
+    keys: Arc<KeyPool>,
     model: String,
 }
 
+/// 開始串流前遇到限流或伺服器錯誤時，最多換幾把 key 重試。
+const MAX_KEY_RETRIES: usize = 3;
+/// 所有 key 都在冷卻時，最多願意等多久讓最快恢復的那把回來；更久就直接失敗，
+/// 不要讓學生的請求卡在一個遠遠等不到的冷卻上（呼叫端另有首 token 逾時）。
+const MAX_KEY_WAIT: Duration = Duration::from_secs(30);
+
 impl OpenAiProvider {
-    pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
+    pub fn new(base_url: &str, keys: Arc<KeyPool>, model: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
+            keys,
             model: model.to_string(),
         }
+    }
+
+    /// 取一把可用的 key；全部冷卻時等最快恢復的那把（不超過 `MAX_KEY_WAIT`）。
+    async fn acquire_key(&self) -> Result<crate::key_pool::Lease, AiError> {
+        for _ in 0..=MAX_KEY_RETRIES {
+            if let Some(lease) = self.keys.acquire() {
+                return Ok(lease);
+            }
+            match self.keys.next_available_in() {
+                Some(wait) if wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
+                _ => break,
+            }
+        }
+        tracing::error!("no usable AI key");
+        Err(AiError)
+    }
+
+    /// 送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
+    /// （但每把 key 在一次請求中最多試一次，避免對故障的供應商連續猛打）。
+    /// 只在尚未開始串流時重試，串流開始後的失敗不會重送（已有部分文字給了學生）。
+    async fn send_with_failover(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, AiError> {
+        let mut server_errored: Vec<usize> = Vec::new();
+        for _ in 0..=MAX_KEY_RETRIES {
+            let lease = self.acquire_key().await?;
+            if server_errored.contains(&lease.index) {
+                return Err(AiError);
+            }
+            tracing::debug!(key = lease.index + 1, "sending AI request");
+            let res = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&lease.key)
+                .json(body)
+                .send()
+                .await
+                .map_err(|_| AiError)?;
+            let status = res.status();
+            if status.is_success() {
+                return Ok(res);
+            }
+            tracing::warn!(status = %status, key = lease.index + 1, "AI provider returned an error status");
+            if status.is_server_error() {
+                server_errored.push(lease.index);
+            }
+            if !self.keys.report_failure(
+                lease.index,
+                status.as_u16(),
+                parse_retry_after(res.headers()),
+            ) {
+                return Err(AiError);
+            }
+        }
+        Err(AiError)
     }
 }
 
@@ -345,17 +411,8 @@ impl AiProvider for OpenAiProvider {
             })
         }));
         let res = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&json!({"model": self.model, "stream": true, "messages": messages}))
-            .send()
-            .await
-            .map_err(|_| AiError)?;
-        if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "AI provider returned an error status");
-            return Err(AiError);
-        }
+            .send_with_failover(&json!({"model": self.model, "stream": true, "messages": messages}))
+            .await?;
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
             let mut bytes = res.bytes_stream();

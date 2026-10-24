@@ -35,10 +35,9 @@
 
 ### 1. 設定環境
 
-在專案根目錄建立 `.env`（runner 讀取 `backend/../.env`）。以下為已使用的測試設定，金鑰須自行填入：
+在專案根目錄建立 `.env`（runner 讀取 `backend/../.env`）。以下為已使用的測試設定。金鑰不寫在 `.env`，改放專案根目錄的 `.apikeylist`（一行一把，格式見 `.apikeylist.example`；請求會輪流使用多把 key）：
 
 ```dotenv
-OPENAI_API_KEY=填入自己的金鑰
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
 # 選填；未設定時使用 https://api.openai.com/v1
