@@ -65,18 +65,24 @@ describe('ActivitiesPage', () => {
     expect(screen.getByText('題目：自由意志')).toBeInTheDocument()
   })
 
-  it('loads every page of activities by following next_cursor', async () => {
+  it('loads the next page of activities on demand', async () => {
+    const cursors: (string | null)[] = []
     server.use(
       http.get('/api/topics', () => HttpResponse.json(topics)),
-      http.get('/api/activities', ({ request }) =>
-        new URL(request.url).searchParams.get('cursor') === 'next'
-          ? pageOf([act({ id: 'a2', title: '第二頁的活動' })])
-          : pageOf([act()], 'next'),
-      ),
+      http.get('/api/activities', ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        cursors.push(cursor)
+        return cursor === 'next' ? pageOf([act({ id: 'a2', title: '第二頁的活動' })]) : pageOf([act()], 'next')
+      }),
     )
     setup()
+    expect(await screen.findByText('第一週討論')).toBeInTheDocument()
+    expect(screen.queryByText('第二頁的活動')).not.toBeInTheDocument()
+    expect(cursors).toEqual([null])
+    await userEvent.click(screen.getByRole('button', { name: '載入更多' }))
     expect(await screen.findByText('第二頁的活動')).toBeInTheDocument()
     expect(screen.getByText('第一週討論')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '載入更多' })).not.toBeInTheDocument()
   })
 
   it('shows loading, then an empty state', async () => {

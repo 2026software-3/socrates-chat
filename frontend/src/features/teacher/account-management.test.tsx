@@ -26,7 +26,7 @@ const roster = [
 
 function mockStudents(rows: StudentRow[] = roster) {
   mockClassrooms()
-  server.use(http.get(`/api/classrooms/${ROOM_A}/students`, () => pageOf(rows)))
+  server.use(http.get(`/api/classrooms/${ROOM_A}/students`, () => pageOf(rows, null, { total: rows.length })))
 }
 
 describe('student account management', () => {

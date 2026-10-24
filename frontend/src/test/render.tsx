@@ -32,8 +32,8 @@ export function apiError(status: number, code: string, requestId = 'req-test-1')
 }
 
 /** 分頁列表的一頁（`{ items, next_cursor }`）；預設為最後一頁。 */
-export function pageOf<T>(items: T[], nextCursor: string | null = null) {
-  return HttpResponse.json({ items, next_cursor: nextCursor })
+export function pageOf<T>(items: T[], nextCursor: string | null = null, extra: object = {}) {
+  return HttpResponse.json({ items, next_cursor: nextCursor, ...extra })
 }
 
 /** `/api/me` 回傳指定使用者；傳 `null` 代表未登入（401）。 */
