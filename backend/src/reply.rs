@@ -29,7 +29,7 @@ use crate::{
     AppState,
     ai::{
         AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, RULES_VERSION, TurnMeta,
-        build_system_prompt, parse_meta,
+        build_system_prompt, parse_meta, student_turn_content,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, load_messages, owned_conversation},
@@ -176,7 +176,11 @@ async fn generate(state: &AppState, conv: &Conversation, messages: &[Message], t
                 } else {
                     ChatRole::Assistant
                 },
-                content: m.content.clone(),
+                content: if m.role == "student" {
+                    student_turn_content(&m.content, &m.source)
+                } else {
+                    m.content.clone()
+                },
             })
             .collect(),
     };
