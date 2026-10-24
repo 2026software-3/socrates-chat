@@ -43,7 +43,8 @@ CREATE TABLE oauth_login_states (
 
 -- 內建登入的失敗限流：以（電子郵件, 來源 IP）為單位計（#295）。電子郵件不論帳號是否存在都計，避免洩漏；
 -- 別的 IP 亂試不會鎖住本人，同一個 IP（例如校園 NAT）下不同信箱也互不影響。
--- ip 是 client_ip::rate_limit_key 的結果（IPv6 為 /64 前綴），沒有連線資訊時為空字串。
+-- ip 是 client_ip::rate_limit_key 的結果（IPv6 為 /64 前綴），沒有連線資訊時為空字串；
+-- ip = '*' 的列是這個信箱在所有 IP 的累計，用來限制分散式的猜密碼。
 -- IP 屬個資，保存期限待與 S-02.5 對齊；目前每次記錄失敗時順便清掉一天前的舊資料。
 CREATE TABLE login_failures (
     email          text NOT NULL CHECK (email = lower(email)),

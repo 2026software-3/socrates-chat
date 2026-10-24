@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 use axum::{body::Body, extract::ConnectInfo, http::StatusCode};
 use common::*;
 use serde_json::json;
-use socrates_chat_backend::{client_ip::parse_cidrs, login_rate_limit::BURST};
+use socrates_chat_backend::{
+    auth_store::MAX_EMAIL_LOGIN_FAILURES, client_ip::parse_cidrs, login_rate_limit::BURST,
+};
 use sqlx::PgPool;
 
 /// 從指定的 TCP 對端（以及可選的 `X-Forwarded-For`）送出登入請求；`peer` 為 `None` 表示沒有連線資訊。
@@ -402,4 +404,138 @@ async fn the_rate_limit_is_per_forwarded_client_behind_a_trusted_proxy(pool: PgP
         cheap_request(&app, "127.0.0.1", Some("203.0.113.10")).await,
         StatusCode::TOO_MANY_REQUESTS
     );
+}
+
+/// 同一信箱從 `n` 個不同的 IP 各失敗一次（密碼錯誤），每次都應回 401。
+async fn fail_from_many_ips(app: &axum::Router, email: &str, n: i32) {
+    for i in 0..n {
+        let peer = format!("198.51.{}.{}", 100 + i / 200, 1 + i % 200);
+        let res = login_from(app, Some(&peer), None, email, "nope-nope").await;
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "failure from ip #{i}"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn failures_spread_across_many_ips_eventually_lock_the_email_everywhere(pool: PgPool) {
+    // 分散式猜單一帳號：每個 IP 都沒到 5 次，但信箱累計達上限就在所有 IP 鎖定
+    let app = test_app(pool);
+    let temp = account(&app, "student@example.com").await;
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES).await;
+
+    // 一個從沒出現過的 IP，即使密碼正確也被拒（這是上限的代價：本人也暫時進不去）
+    let res = login_from(
+        &app,
+        Some("203.0.113.77"),
+        None,
+        "student@example.com",
+        &temp,
+    )
+    .await;
+    assert_eq!(status(&res), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json_body(res).await["error"]["code"], "too_many_attempts");
+}
+
+#[sqlx::test]
+async fn staying_below_the_email_cap_does_not_lock(pool: PgPool) {
+    let app = test_app(pool);
+    let temp = account(&app, "student@example.com").await;
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES - 1).await;
+
+    let ok = login_from(
+        &app,
+        Some("203.0.113.77"),
+        None,
+        "student@example.com",
+        &temp,
+    )
+    .await;
+    assert_eq!(status(&ok), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn a_successful_login_resets_the_email_total(pool: PgPool) {
+    let app = test_app(pool);
+    let temp = account(&app, "student@example.com").await;
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES - 1).await;
+    let ok = login_from(
+        &app,
+        Some("203.0.113.77"),
+        None,
+        "student@example.com",
+        &temp,
+    )
+    .await;
+    assert_eq!(status(&ok), StatusCode::OK);
+
+    // 歸零後再失敗接近上限的次數，仍不會鎖定
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES - 1).await;
+    let again = login_from(
+        &app,
+        Some("203.0.113.78"),
+        None,
+        "student@example.com",
+        &temp,
+    )
+    .await;
+    assert_eq!(status(&again), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn the_email_cap_only_affects_that_email(pool: PgPool) {
+    let app = test_app(pool);
+    let other = account(&app, "other@example.com").await;
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES).await;
+
+    let ok = login_from(
+        &app,
+        Some("203.0.113.77"),
+        None,
+        "other@example.com",
+        &other,
+    )
+    .await;
+    assert_eq!(status(&ok), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn admin_reset_lifts_the_email_cap_lock(pool: PgPool) {
+    let app = test_app(pool);
+    account(&app, "student@example.com").await;
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES).await;
+
+    let new_temp = account(&app, "student@example.com").await;
+    let ok = login_from(
+        &app,
+        Some("203.0.113.77"),
+        None,
+        "student@example.com",
+        &new_temp,
+    )
+    .await;
+    assert_eq!(status(&ok), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn the_email_cap_lock_expires(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let temp = account(&app, "student@example.com").await;
+    fail_from_many_ips(&app, "student@example.com", MAX_EMAIL_LOGIN_FAILURES).await;
+    sqlx::query("UPDATE login_failures SET locked_until = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let ok = login_from(
+        &app,
+        Some("203.0.113.77"),
+        None,
+        "student@example.com",
+        &temp,
+    )
+    .await;
+    assert_eq!(status(&ok), StatusCode::OK);
 }
