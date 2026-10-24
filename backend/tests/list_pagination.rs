@@ -1,4 +1,4 @@
-//! 教室名單、學生與活動列表的 keyset 分頁（#286–#288）。資料皆為合成資料。
+//! 教室名單、學生與活動列表的 keyset 分頁、`q` 搜尋與 `total`（#286–#288、#333）。資料皆為合成資料。
 mod common;
 use axum::{Router, http::StatusCode};
 use common::*;
@@ -55,7 +55,7 @@ async fn error_code(app: &Router, path: &str, cookie: &str) -> (StatusCode, Stri
 // ---- GET /api/classrooms/{id}/students ----
 
 #[sqlx::test]
-async fn students_paginate_by_email(pool: PgPool) {
+async fn students_paginate_by_email_with_total_on_every_page(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let mut want = enroll(&app, &a, 5).await;
@@ -66,6 +66,9 @@ async fn students_paginate_by_email(pool: PgPool) {
     let pages = all_pages(&app, &base, &a.teacher).await;
     assert_eq!(pages.len(), 3);
     assert_eq!(field(&pages, "email"), want);
+    for p in &pages {
+        assert_eq!(p["total"], 6);
+    }
     assert_eq!(pages[2]["next_cursor"], Value::Null);
 }
 
@@ -100,7 +103,163 @@ async fn students_items_only_carry_allowed_fields(pool: PgPool) {
             "id"
         ]
     );
-    assert_eq!(page.as_object().unwrap().len(), 2);
+    let mut top: Vec<&str> = page
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top.sort();
+    assert_eq!(top, ["items", "next_cursor", "total"]);
+}
+
+#[sqlx::test]
+async fn students_q_matches_email_or_display_name_across_all_pages(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    enroll(&app, &a, 12).await;
+    sqlx::query("UPDATE users SET display_name = 'Alice Synthetic' WHERE email IN ('s03@example.com', 's11@example.com')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let base = format!("/api/classrooms/{}/students", a.classroom);
+
+    for (q, want) in [
+        // 電子郵件的子字串，不分大小寫
+        (
+            "S1",
+            vec!["s10@example.com", "s11@example.com", "s12@example.com"],
+        ),
+        // 顯示名稱的子字串，不分大小寫
+        ("alice", vec!["s03@example.com", "s11@example.com"]),
+        ("%20SYNTH", vec!["s03@example.com", "s11@example.com"]),
+        // 兩者並用只算一次
+        ("11", vec!["s11@example.com"]),
+        ("no-such-text", vec![]),
+        // LIKE 萬用字元當一般字元
+        ("%25", vec![]),
+        ("_", vec![]),
+        ("s_1", vec![]),
+        // 前後空白不影響
+        ("%20alice%20", vec!["s03@example.com", "s11@example.com"]),
+    ] {
+        let pages = all_pages(&app, &format!("{base}?limit=1&q={q}"), &a.teacher).await;
+        assert_eq!(field(&pages, "email"), want, "{q}");
+        for p in &pages {
+            assert_eq!(p["total"], want.len(), "{q}");
+        }
+    }
+    // 沒有 q 時 total 是整個名單
+    let page = json_body(send(&app, get(&format!("{base}?limit=1"), Some(&a.teacher))).await).await;
+    assert_eq!(page["total"], 13);
+}
+
+#[sqlx::test]
+async fn students_q_never_matches_other_fields(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    // 對話內容、學生自己的反思等都不是 q 的搜尋範圍
+    let user: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO conversations (user_id, classroom_id, title) VALUES ($1, $2::uuid, 'Secret synthetic topic')")
+        .bind(user)
+        .bind(&a.classroom)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let page = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/classrooms/{}/students?q=secret", a.classroom),
+                Some(&a.teacher),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page["items"], json!([]));
+    assert_eq!(page["total"], 0);
+}
+
+#[sqlx::test]
+async fn students_q_is_scoped_to_the_classroom(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let other = create_classroom(&app, &a.teacher, "另一間").await;
+    import_roster(&app, &a.teacher, &other, "elsewhere@example.com").await;
+    let page = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/classrooms/{}/students?q=elsewhere", a.classroom),
+                Some(&a.teacher),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page["items"], json!([]));
+    assert_eq!(page["total"], 0);
+}
+
+#[sqlx::test]
+async fn students_cursor_is_bound_to_q(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    enroll(&app, &a, 6).await;
+    let base = format!("/api/classrooms/{}/students", a.classroom);
+    let first =
+        json_body(send(&app, get(&format!("{base}?limit=1&q=s0"), Some(&a.teacher))).await).await;
+    let cursor = first["next_cursor"].as_str().unwrap();
+    // 條件相同（大小寫、前後空白不影響）：照常使用
+    for q in ["s0", "S0", "%20s0%20"] {
+        let res = send(
+            &app,
+            get(
+                &format!("{base}?limit=1&q={q}&cursor={cursor}"),
+                Some(&a.teacher),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "{q}");
+    }
+    // 換了 q、拿掉 q：拒絕
+    for query in ["q=s1", "x=1"] {
+        let (status, code) = error_code(
+            &app,
+            &format!("{base}?limit=1&{query}&cursor={cursor}"),
+            &a.teacher,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(code, "invalid_cursor", "{query}");
+    }
+    // 沒有 q 的游標不能套到有 q 的請求
+    let plain =
+        json_body(send(&app, get(&format!("{base}?limit=1"), Some(&a.teacher))).await).await;
+    let plain_cursor = plain["next_cursor"].as_str().unwrap();
+    let (status, code) = error_code(
+        &app,
+        &format!("{base}?limit=1&q=s0&cursor={plain_cursor}"),
+        &a.teacher,
+    )
+    .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_cursor")
+    );
+    // 游標不帶出搜尋字串
+    let decoded = String::from_utf8(
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, cursor).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !decoded.contains("s0@") && !decoded.contains("\"s0\""),
+        "{decoded}"
+    );
 }
 
 #[sqlx::test]
@@ -108,6 +267,7 @@ async fn students_validate_input(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let base = format!("/api/classrooms/{}/students", a.classroom);
+    let too_long = "a".repeat(101);
     for (query, code) in [
         ("limit=0", "invalid_limit"),
         ("limit=201", "invalid_limit"),
@@ -117,6 +277,9 @@ async fn students_validate_input(pool: PgPool) {
         ("cursor=broken", "invalid_cursor"),
         ("cursor=", "invalid_cursor"),
         ("cursor=e30", "invalid_cursor"),
+        ("q=", "invalid_filter"),
+        ("q=%20%20", "invalid_filter"),
+        (&format!("q={too_long}"), "invalid_filter"),
     ] {
         let (status, got) = error_code(&app, &format!("{base}?{query}"), &a.teacher).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
@@ -145,7 +308,7 @@ async fn students_authorization_is_preserved(pool: PgPool) {
         assert!(res.status().is_success());
         login_as(&app, "sub-teacher2", "teacher2@example.com").await
     };
-    let path = format!("/api/classrooms/{}/students?limit=2", a.classroom);
+    let path = format!("/api/classrooms/{}/students?limit=2&q=student", a.classroom);
     for (cookie, status) in [
         (None, StatusCode::UNAUTHORIZED),
         (Some(a.student.as_str()), StatusCode::FORBIDDEN),

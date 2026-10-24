@@ -132,7 +132,7 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
         .await
         .unwrap();
 
-    let in_a = roster_store::list_students(&pool, a, None, 200)
+    let in_a = roster_store::list_students(&pool, a, None, 200, None)
         .await
         .unwrap();
     assert_eq!(
@@ -144,7 +144,7 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
     assert_eq!(in_a[1].id, Some(student));
     assert!(in_a[1].has_account);
     assert_eq!(
-        roster_store::list_students(&pool, b, None, 200)
+        roster_store::list_students(&pool, b, None, 200, None)
             .await
             .unwrap()
             .len(),
