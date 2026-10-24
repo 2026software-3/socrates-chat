@@ -130,7 +130,8 @@ async fn summary_and_claim_grouping_requests_are_masked(pool: PgPool) {
     ]);
     let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
-    let conv = start_conversation(&app, &a).await;
+    let act = published_activity_with_topic(&app, &a, "電車難題").await;
+    let conv = start_from_activity(&app, &a.student, &act).await;
     seed_student_message(&pool, &conv, RAW).await;
 
     let res = send(
@@ -153,7 +154,7 @@ async fn summary_and_claim_grouping_requests_are_masked(pool: PgPool) {
             "POST",
             "/api/dashboard/class/regroup",
             Some(&a.teacher),
-            Some(json!({"title": "電車難題"})),
+            Some(json!({"activity_id": act})),
         ),
     )
     .await;
