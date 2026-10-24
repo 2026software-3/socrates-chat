@@ -29,11 +29,18 @@ services:
     environment:
       DATABASE_URL: postgres://socrates:socrates@db:5432/socrates
       RUN_MIGRATIONS: "true"
+      OPENAI_API_KEYS_FILE: /run/secrets/apikeylist
+    secrets:
+      - apikeylist
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "127.0.0.1:3000:3000"
+
+secrets:
+  apikeylist:
+    file: ./.apikeylist
 
 volumes:
   pgdata:

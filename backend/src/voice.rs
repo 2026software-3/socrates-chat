@@ -7,6 +7,8 @@
 //! 具體的語音模型尚未決定（S-03.4 之後），所以沒有預設值：`OPENAI_STT_MODEL`、`OPENAI_TTS_MODEL`
 //! 沒設定時兩個端點都回 `503 voice_unavailable`，前端改提示用文字輸入。
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use axum::{
     Json, Router,
@@ -20,7 +22,13 @@ use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{AppState, auth::RequireStudent, config::Config, error::ApiError};
+use crate::{
+    AppState,
+    auth::RequireStudent,
+    config::Config,
+    error::ApiError,
+    key_pool::{KeyPool, parse_retry_after},
+};
 
 /// 一次辨識可上傳的音訊上限；單次發言上限 60 秒（S-05.2），這個大小綽綽有餘。
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
@@ -60,7 +68,7 @@ pub trait VoiceProvider: Send + Sync {
 pub struct OpenAiVoice {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
+    keys: Arc<KeyPool>,
     stt_model: Option<String>,
     tts_model: Option<String>,
     tts_voice: String,
@@ -74,7 +82,7 @@ impl OpenAiVoice {
                 .build()
                 .unwrap_or_default(),
             base_url: c.openai_base_url.trim_end_matches('/').to_string(),
-            api_key: c.openai_api_key.clone(),
+            keys: c.openai_keys.clone(),
             stt_model: c.openai_stt_model.clone(),
             tts_model: c.openai_tts_model.clone(),
             tts_voice: c.openai_tts_voice.clone(),
@@ -103,6 +111,7 @@ impl VoiceProvider for OpenAiVoice {
         language: &str,
     ) -> Result<String, VoiceError> {
         let model = self.stt_model.as_deref().ok_or(VoiceError::Unavailable)?;
+        let lease = self.keys.acquire().ok_or(VoiceError::Failed)?;
         let part = multipart::Part::bytes(audio)
             .file_name(format!("speech.{}", extension_for(mime)))
             .mime_str(mime.split(';').next().unwrap_or("audio/webm"))
@@ -114,13 +123,19 @@ impl VoiceProvider for OpenAiVoice {
         let res = self
             .http
             .post(format!("{}/audio/transcriptions", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&lease.key)
             .multipart(form)
             .send()
             .await
             .map_err(|_| VoiceError::Failed)?;
         if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "speech-to-text returned an error status");
+            tracing::warn!(status = %res.status(), key = lease.index + 1, "speech-to-text returned an error status");
+            // 音訊與表單已送出，無法原樣重送；只更新該 key 的狀態，讓下一次請求換一把
+            self.keys.report_failure(
+                lease.index,
+                res.status().as_u16(),
+                parse_retry_after(res.headers()),
+            );
             return Err(VoiceError::Failed);
         }
         let v: serde_json::Value = res.json().await.map_err(|_| VoiceError::Failed)?;
@@ -133,10 +148,11 @@ impl VoiceProvider for OpenAiVoice {
     async fn speak(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
         // 語言由輸入文字本身決定，OpenAI 的語音合成沒有語言參數
         let model = self.tts_model.as_deref().ok_or(VoiceError::Unavailable)?;
+        let lease = self.keys.acquire().ok_or(VoiceError::Failed)?;
         let res = self
             .http
             .post(format!("{}/audio/speech", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&lease.key)
             .json(&json!({
                 "model": model,
                 "voice": self.tts_voice,
@@ -147,7 +163,12 @@ impl VoiceProvider for OpenAiVoice {
             .await
             .map_err(|_| VoiceError::Failed)?;
         if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "text-to-speech returned an error status");
+            tracing::warn!(status = %res.status(), key = lease.index + 1, "text-to-speech returned an error status");
+            self.keys.report_failure(
+                lease.index,
+                res.status().as_u16(),
+                parse_retry_after(res.headers()),
+            );
             return Err(VoiceError::Failed);
         }
         res.bytes()

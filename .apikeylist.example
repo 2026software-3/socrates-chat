@@ -1,0 +1,5 @@
+# AI API key 清單：一行一把，空行與 # 開頭的行會被忽略。
+# 複製成 .apikeylist（已被 .gitignore 排除）並填入真實的 key，不要提交真實 key。
+# 請求會輪流使用這些 key；某把被限流（429）會暫時避開，被拒絕（401/402/403）會停用到重啟為止。
+# sk-or-v1-xxxxxxxxxxxxxxxx
+# sk-or-v1-yyyyyyyyyyyyyyyy

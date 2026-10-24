@@ -55,7 +55,7 @@ async fn main() {
     let addr = config.listen_addr.clone();
     let ai = OpenAiProvider::new(
         &config.openai_base_url,
-        &config.openai_api_key,
+        config.openai_keys.clone(),
         &config.openai_model,
     );
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));

@@ -1,6 +1,13 @@
 //! 設定一律來自環境變數（S-08.3）；秘密不進版控、不進前端。
 
-use std::{env, time::Duration};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+use crate::key_pool::{KeyPool, merge_keys, parse_key_lines};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -23,7 +30,8 @@ pub struct Config {
     pub trusted_proxies: Vec<crate::client_ip::Cidr>,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
-    pub openai_api_key: String,
+    /// AI 服務的 API key 池（`OPENAI_API_KEYS`、`.apikeylist`）；對話與語音共用，冷卻狀態也共用。
+    pub openai_keys: Arc<KeyPool>,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
     pub openai_base_url: String,
@@ -89,6 +97,57 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// 金鑰清單檔的預設位置：後端通常在 `backend/` 執行，所以也找上一層（專案根目錄）。
+const DEFAULT_KEY_FILES: [&str; 2] = [".apikeylist", "../.apikeylist"];
+
+/// 讀取所有 API key：`OPENAI_API_KEYS`（逗號分隔）加上金鑰清單檔（一行一把），合併去重。
+/// 清單檔由 `OPENAI_API_KEYS_FILE` 指定（指定了就必須讀得到），否則找預設位置，找不到也沒關係。
+pub fn load_openai_keys() -> Result<Vec<String>, ConfigError> {
+    let explicit = env::var("OPENAI_API_KEYS_FILE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let candidates: Vec<PathBuf> = match &explicit {
+        Some(p) => vec![p.clone()],
+        None => DEFAULT_KEY_FILES.iter().map(PathBuf::from).collect(),
+    };
+    gather_keys(
+        &env::var("OPENAI_API_KEYS").unwrap_or_default(),
+        &candidates,
+        explicit.is_some(),
+    )
+}
+
+fn gather_keys(
+    env_list: &str,
+    candidates: &[PathBuf],
+    file_required: bool,
+) -> Result<Vec<String>, ConfigError> {
+    let from_env: Vec<String> = env_list
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
+    let from_file = read_first_key_file(candidates, file_required)?;
+    Ok(merge_keys(vec![from_env, from_file]))
+}
+
+fn read_first_key_file(candidates: &[PathBuf], required: bool) -> Result<Vec<String>, ConfigError> {
+    for path in candidates {
+        match fs::read_to_string(path) {
+            Ok(raw) => return Ok(parse_key_lines(&raw)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && !required => {}
+            Err(_) => {
+                return Err(ConfigError(format!(
+                    "cannot read the API key file {}",
+                    Path::new(path).display()
+                )));
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
 impl Config {
     /// 回覆產生的 claim 超過多久視為殘留（秒）：兩次嘗試的上限再加一點餘裕。
     pub fn generation_stale_secs(&self) -> f64 {
@@ -122,7 +181,11 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .map(Into::into),
-            openai_api_key: required("OPENAI_API_KEY")?,
+            openai_keys: Arc::new(KeyPool::new(load_openai_keys()?).ok_or_else(|| {
+                ConfigError(
+                    "no AI API key: set OPENAI_API_KEYS or fill the .apikeylist file".into(),
+                )
+            })?),
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
@@ -147,6 +210,44 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_file(name: &str, content: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("socrates-keys-{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".apikeylist");
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn keys_merge_env_and_file_without_duplicates() {
+        let f = temp_file("merge", "# keys\nk2\nk3\n");
+        let keys = gather_keys("k1, k2 ,", &[f], false).unwrap();
+        assert_eq!(keys, ["k1", "k2", "k3"]);
+    }
+
+    #[test]
+    fn missing_default_file_is_fine_but_explicit_one_is_required() {
+        let missing = PathBuf::from("/nonexistent/.apikeylist");
+        assert_eq!(
+            gather_keys("k1", std::slice::from_ref(&missing), false).unwrap(),
+            ["k1"]
+        );
+        assert!(gather_keys("k1", &[missing], true).is_err());
+    }
+
+    #[test]
+    fn first_existing_candidate_wins() {
+        let f = temp_file("first", "from-file\n");
+        let keys = gather_keys("", &[PathBuf::from("/nonexistent/x"), f], false).unwrap();
+        assert_eq!(keys, ["from-file"]);
+    }
+
+    #[test]
+    fn unreadable_key_file_error_does_not_leak_contents() {
+        let err = gather_keys("", &[env::temp_dir()], true).unwrap_err();
+        assert!(err.to_string().contains("cannot read"));
+    }
 
     #[test]
     fn turn_settings_are_validated() {

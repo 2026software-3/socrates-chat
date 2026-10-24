@@ -37,6 +37,7 @@ pub mod config;
 pub mod dashboard;
 pub mod error;
 pub mod identity;
+pub mod key_pool;
 pub mod login_rate_limit;
 pub mod openapi;
 pub mod pagination;

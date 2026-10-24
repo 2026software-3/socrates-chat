@@ -175,7 +175,8 @@
 
 ```bash
 docker compose up -d db
-cp .env.example .env   # 專案根目錄，整個系統共用；填入 GOOGLE_CLIENT_ID／SECRET、OPENAI_API_KEY、OPENAI_MODEL、ADMIN_EMAILS
+cp .env.example .env   # 專案根目錄，整個系統共用；填入 GOOGLE_CLIENT_ID／SECRET、OPENAI_MODEL、ADMIN_EMAILS
+cp .apikeylist.example .apikeylist   # 一行一把 AI API key；後端從 ./.apikeylist 或 ../.apikeylist 讀取
 set -a && . ./.env && set +a   # 後端不會自行讀取 .env，需先載入環境變數
 cd backend
 cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration
