@@ -23,6 +23,7 @@ use crate::{
 };
 
 pub mod accounts;
+pub mod achievements;
 pub mod activity_store;
 pub mod ai;
 pub mod auth;
