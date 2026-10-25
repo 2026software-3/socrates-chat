@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     panic::AssertUnwindSafe,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use axum::{
@@ -53,8 +53,12 @@ type EventTx = mpsc::UnboundedSender<Event>;
 
 /// 這個服務程序內正在產生的回覆：已送出的文字與正在收看的連線。
 /// 學生離開對話頁再回來時，`GET /stream` 從這裡接上同一個回覆，而不是被擋下或重新產生。
+///
+/// 每次產生各有自己的紀錄（`LiveReply`），這裡只指向每場對話目前的那一個：舊回覆釋放 claim 後、
+/// 送出最後事件前，新回覆可能已經開始並取代它，舊回覆結束時不能動到新回覆的紀錄。
+/// 鎖的順序一律先這裡再 `Live`。
 #[derive(Default)]
-pub struct LiveReplies(Mutex<HashMap<Uuid, Live>>);
+pub struct LiveReplies(Mutex<HashMap<Uuid, Arc<Mutex<Live>>>>);
 
 struct Live {
     /// 已送出的回覆文字；新接上的連線先收到這一段
@@ -62,42 +66,56 @@ struct Live {
     watchers: Vec<EventTx>,
 }
 
+/// 一次回覆產生的紀錄，由產生回覆的工作持有。
+pub(crate) struct LiveReply {
+    id: Uuid,
+    live: Arc<Mutex<Live>>,
+}
+
+impl LiveReply {
+    /// 送出一段回覆給這次回覆的所有連線；已斷線的連線順便移除。
+    fn delta(&self, text: &str) {
+        let mut live = lock(&self.live);
+        live.text.push_str(text);
+        let ev = delta_event(text);
+        live.watchers.retain(|w| w.send(ev.clone()).is_ok());
+    }
+}
+
 impl LiveReplies {
     /// 這場對話的回覆是否正在產生（可以接上）。
     pub fn is_live(&self, id: Uuid) -> bool {
-        self.lock().contains_key(&id)
+        lock(&self.0).contains_key(&id)
     }
 
-    fn start(&self, id: Uuid, watcher: EventTx) {
-        let live = Live {
+    fn start(&self, id: Uuid, watcher: EventTx) -> LiveReply {
+        let live = Arc::new(Mutex::new(Live {
             text: String::new(),
             watchers: vec![watcher],
-        };
-        self.lock().insert(id, live);
+        }));
+        lock(&self.0).insert(id, live.clone());
+        LiveReply { id, live }
     }
 
-    /// 送出一段回覆給所有連線；已斷線的連線順便移除。
-    fn delta(&self, id: Uuid, text: &str) {
-        if let Some(live) = self.lock().get_mut(&id) {
-            live.text.push_str(text);
-            let ev = delta_event(text);
-            live.watchers.retain(|w| w.send(ev.clone()).is_ok());
+    /// 送出最後一個事件（done／error）並結束；之後的 `join` 不會再接上這次回覆。
+    /// 只移除自己的紀錄：已被同一場對話的新回覆取代時，新回覆照常進行。
+    fn finish(&self, reply: LiveReply, last: Event) {
+        let mut replies = lock(&self.0);
+        if replies
+            .get(&reply.id)
+            .is_some_and(|l| Arc::ptr_eq(l, &reply.live))
+        {
+            replies.remove(&reply.id);
         }
-    }
-
-    /// 送出最後一個事件（done／error）並結束；之後的 `join` 不會再接上。
-    fn finish(&self, id: Uuid, last: Event) {
-        if let Some(live) = self.lock().remove(&id) {
-            for w in live.watchers {
-                let _ = w.send(last.clone());
-            }
+        for w in lock(&reply.live).watchers.drain(..) {
+            let _ = w.send(last.clone());
         }
     }
 
     /// 接上進行中的回覆：先收到已產生的文字（一個 delta），之後與其他連線收到相同的事件。
     fn join(&self, id: Uuid) -> Option<mpsc::UnboundedReceiver<Event>> {
-        let mut replies = self.lock();
-        let live = replies.get_mut(&id)?;
+        let replies = lock(&self.0);
+        let mut live = lock(replies.get(&id)?);
         let (tx, rx) = mpsc::unbounded_channel();
         if !live.text.is_empty() {
             let _ = tx.send(delta_event(&live.text));
@@ -105,10 +123,11 @@ impl LiveReplies {
         live.watchers.push(tx);
         Some(rx)
     }
+}
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<Uuid, Live>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+/// 持有鎖的一方 panic 也照常取得：資料只是回覆文字與連線，沒有需要保護的不變量。
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// 嘗試取得這場對話的「正在產生回覆」權利；已有進行中的回覆時回傳 `false`。
@@ -158,10 +177,13 @@ pub(crate) async fn stream(
     }
     if !claim_generation(&state, id).await? {
         // 回覆正在產生：接上同一個回覆
-        return match state.live.join(id) {
-            Some(rx) => Ok(event_stream(rx)),
-            None => Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中")),
-        };
+        if let Some(rx) = state.live.join(id) {
+            return Ok(event_stream(rx));
+        }
+        // 回覆可能剛好在 claim 與 join 之間結束：再 claim 一次，由下面決定重新產生或 nothing_to_reply
+        if !claim_generation(&state, id).await? {
+            return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+        }
     }
     // claim 之後再檢查，確保檢查與產生之間不會有另一條串流插入
     let messages = match load_messages(&state, id).await {
@@ -213,15 +235,15 @@ fn spawn_stream(
         let _ = tx.send(first);
     }
     let id = conversation.id;
-    state.live.start(id, tx);
+    let reply = state.live.start(id, tx);
     tokio::spawn(async move {
-        let last = AssertUnwindSafe(generate(&state, &conversation, messages))
+        let last = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
             .catch_unwind()
             .await
             .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
         // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
         release_generation(&state, id).await;
-        state.live.finish(id, last);
+        state.live.finish(reply, last);
     });
     event_stream(rx)
 }
@@ -246,8 +268,13 @@ fn delta_event(text: &str) -> Event {
         .expect("a string always serializes")
 }
 
-/// 產生並保存回覆，片段經 `state.live` 送給所有連線；回傳最後一個事件（done／error）。
-async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>) -> Event {
+/// 產生並保存回覆，片段經 `reply` 送給所有連線；回傳最後一個事件（done／error）。
+async fn generate(
+    state: &AppState,
+    conv: &Conversation,
+    messages: Vec<Message>,
+    reply: &LiveReply,
+) -> Event {
     let req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
@@ -268,7 +295,7 @@ async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>)
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
     for _ in 0..2 {
-        match attempt(state, conv.id, &req).await {
+        match attempt(state, reply, &req).await {
             Ok(r) => {
                 outcome = Some(r);
                 break;
@@ -301,7 +328,11 @@ async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>)
 }
 
 /// 一次 AI 呼叫。失敗時回傳「是否已經送出內容給學生」，決定能不能自動重試。
-async fn attempt(state: &AppState, id: Uuid, req: &AiRequest) -> Result<(String, TurnMeta), bool> {
+async fn attempt(
+    state: &AppState,
+    reply: &LiveReply,
+    req: &AiRequest,
+) -> Result<(String, TurnMeta), bool> {
     let start = Instant::now();
     // 建立連線與等待第一個片段共用同一個首 token 期限（S-03.5）
     let first_token_deadline = start + state.config.ai_first_token_timeout;
@@ -332,7 +363,7 @@ async fn attempt(state: &AppState, id: Uuid, req: &AiRequest) -> Result<(String,
                 if !out.is_empty() {
                     emitted = true;
                     text.push_str(&out);
-                    state.live.delta(id, &out);
+                    reply.delta(&out);
                 }
             }
         }
@@ -341,7 +372,7 @@ async fn attempt(state: &AppState, id: Uuid, req: &AiRequest) -> Result<(String,
     if !rest.is_empty() {
         emitted = true;
         text.push_str(&rest);
-        state.live.delta(id, &rest);
+        reply.delta(&rest);
     }
     if text.trim().is_empty() {
         return Err(emitted);
@@ -411,4 +442,38 @@ async fn save_reply(
         stage: new_stage,
         converge_ready,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    #[test]
+    fn a_replaced_reply_finishes_only_itself() {
+        let replies = LiveReplies::default();
+        let id = Uuid::new_v4();
+        let (old_tx, mut old_rx) = mpsc::unbounded_channel();
+        let (new_tx, mut new_rx) = mpsc::unbounded_channel();
+        let old = replies.start(id, old_tx);
+        // 舊回覆釋放 claim 之後、送出最後事件之前，新回覆已開始
+        let new = replies.start(id, new_tx);
+
+        replies.finish(old, event("error", json!({"code": "ai_unavailable"})));
+        // 舊回覆的連線收到自己的最後事件後結束
+        assert!(old_rx.try_recv().is_ok());
+        assert_eq!(old_rx.try_recv().unwrap_err(), TryRecvError::Disconnected);
+        // 新回覆不受影響：仍可接上，自己的連線也還開著
+        assert!(replies.is_live(id));
+        assert_eq!(new_rx.try_recv().unwrap_err(), TryRecvError::Empty);
+
+        new.delta("嗨");
+        assert!(new_rx.try_recv().is_ok());
+        let mut joined = replies.join(id).expect("the new reply is still joinable");
+        assert!(joined.try_recv().is_ok());
+        replies.finish(new, event("done", json!({})));
+        assert!(!replies.is_live(id));
+        assert!(new_rx.try_recv().is_ok());
+        assert!(joined.try_recv().is_ok());
+    }
 }
