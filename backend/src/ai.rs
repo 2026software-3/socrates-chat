@@ -523,6 +523,17 @@ pub async fn collect(
     }
 }
 
+/// 背景用途（總結、主張分組）的 `collect`：只套用完整回覆上限，不套用首個 token 逾時。
+/// 推理模型常先推理數十秒才輸出正文，背景工作沒有人在畫面前等第一個字，
+/// 套用首字逾時只會讓它無故失敗。
+pub async fn collect_background(
+    ai: &dyn AiProvider,
+    req: AiRequest,
+    total: std::time::Duration,
+) -> Result<String, AiError> {
+    collect(ai, req, total, total).await
+}
+
 /// 單一總結欄位的長度上限（字元）。
 const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
 /// 一句主張的長度上限（字元）。
@@ -943,5 +954,42 @@ mod tests {
         let p = build_system_prompt(&PromptContext { turn: 15, ..c });
 
         assert!(p.contains("開始引導學生整理"));
+    }
+
+    /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
+    struct SlowStart(std::time::Duration);
+
+    #[async_trait]
+    impl AiProvider for SlowStart {
+        async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+            let delay = self.0;
+            Ok(futures_util::stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok("{}".to_string())
+            })
+            .boxed())
+        }
+    }
+
+    fn any_request() -> AiRequest {
+        AiRequest {
+            system: String::new(),
+            messages: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_waits_for_a_slow_first_chunk_within_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_millis(300));
+        let text = collect_background(&ai, any_request(), std::time::Duration::from_secs(2)).await;
+        assert_eq!(text.unwrap(), "{}");
+    }
+
+    #[tokio::test]
+    async fn collect_fails_past_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_secs(2));
+        let text =
+            collect_background(&ai, any_request(), std::time::Duration::from_millis(200)).await;
+        assert!(text.is_err());
     }
 }

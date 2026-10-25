@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, RULES_VERSION, build_summary_prompt, collect,
+        AiRequest, ChatRole, ChatTurn, RULES_VERSION, build_summary_prompt, collect_background,
         format_transcript, parse_summary,
     },
     auth::{RequireStudent, RequireTeacher},
@@ -115,10 +115,9 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
     for _ in 0..2 {
-        let raw = collect(
+        let raw = collect_background(
             state.ai.as_ref(),
             req.clone(),
-            state.config.ai_first_token_timeout,
             state.config.ai_total_timeout,
         )
         .await;

@@ -491,10 +491,9 @@ async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
 async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     // 第一代卡住（Hang）；在它逾時前手動重試，第二代很快成功。
     // 第一代之後失敗收尾時，不能把已完成的結果改成 failed。
-    // 第一代的首字逾時要遠大於手動重試的等待，否則它自己的自動重試會先拿走第二個腳本
+    // 總結只受完整回覆上限限制；這個上限要遠大於手動重試的等待，否則第一代的自動重試會先拿走第二個腳本
     let config = Config {
-        ai_first_token_timeout: Duration::from_millis(1500),
-        ai_total_timeout: Duration::from_millis(4000),
+        ai_total_timeout: Duration::from_millis(1500),
         ..test_config()
     };
     let ai = FakeAi::with(vec![Hang, Reply(vec![GOOD])]);
