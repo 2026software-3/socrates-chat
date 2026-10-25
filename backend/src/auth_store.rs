@@ -30,6 +30,8 @@ pub struct User {
     /// 臨時密碼登入後必須先更改。
     pub must_change_password: bool,
     pub created_at: DateTime<Utc>,
+    /// 管理者已停用此帳號（S-01.3）。
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -46,6 +48,10 @@ pub struct Session {
 pub struct SessionUser {
     pub session: Session,
     pub user: User,
+    /// 信箱在教師名單內。
+    pub teacher: bool,
+    /// 信箱在任一教室的修課名單內（S-14）。
+    pub student: bool,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -78,7 +84,8 @@ pub async fn upsert_user(
         "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, $3),
                 updated_at = now()
          WHERE google_sub = $1
-         RETURNING id, google_sub, email, display_name, is_admin, must_change_password, created_at",
+         RETURNING id, google_sub, email, display_name, is_admin, must_change_password, created_at,
+                   disabled_at IS NOT NULL AS disabled",
     )
     .bind(google_sub)
     .bind(email)
@@ -98,7 +105,7 @@ pub async fn upsert_user(
                         updated_at = now()
                  WHERE email = lower($2) AND google_sub IS NULL
                  RETURNING id, google_sub, email, display_name, is_admin,
-                           must_change_password, created_at",
+                           must_change_password, created_at, disabled_at IS NOT NULL AS disabled",
             )
             .bind(google_sub)
             .bind(email)
@@ -113,7 +120,8 @@ pub async fn upsert_user(
                         "INSERT INTO users (google_sub, email, display_name, is_admin)
                          VALUES ($1, lower($2), $3, $4)
                          RETURNING id, google_sub, email, display_name, is_admin,
-                                   must_change_password, created_at",
+                                   must_change_password, created_at,
+                                   disabled_at IS NOT NULL AS disabled",
                     )
                     .bind(google_sub)
                     .bind(email)
@@ -145,18 +153,41 @@ pub async fn create_session(
     .await
 }
 
-/// 查詢有效的 session 並更新 `last_seen_at`。
+/// `find_active_session` 一次查回的 session、使用者與角色。
+#[derive(FromRow)]
+struct SessionUserRow {
+    session_id: Uuid,
+    session_created_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    session_must_change_password: bool,
+    #[sqlx(flatten)]
+    user: User,
+    teacher: bool,
+    student: bool,
+}
+
+/// 查詢有效的 session 並更新 `last_seen_at`，連同使用者與角色一起查回。
 ///
-/// 閒置超過 7 天或建立超過 30 天視為失效（回傳 `None`）。
+/// 閒置超過 7 天或建立超過 30 天視為失效（回傳 `None`）。每個需要登入的請求都會呼叫，
+/// 所以合成一個語句，只需一次資料庫往返。
 pub async fn find_active_session(
     pool: &PgPool,
     token_hash: &[u8],
     now: DateTime<Utc>,
 ) -> Result<Option<SessionUser>, sqlx::Error> {
-    let session: Option<Session> = sqlx::query_as(
-        "UPDATE sessions SET last_seen_at = $2
-         WHERE token_hash = $1 AND last_seen_at > $3 AND created_at > $4
-         RETURNING id, user_id, created_at, last_seen_at, must_change_password",
+    let row: Option<SessionUserRow> = sqlx::query_as(
+        "WITH s AS (
+             UPDATE sessions SET last_seen_at = $2
+             WHERE token_hash = $1 AND last_seen_at > $3 AND created_at > $4
+             RETURNING id, user_id, created_at, last_seen_at, must_change_password
+         )
+         SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
+                s.must_change_password AS session_must_change_password,
+                u.id, u.google_sub, u.email, u.display_name, u.is_admin, u.must_change_password,
+                u.created_at, u.disabled_at IS NOT NULL AS disabled,
+                EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
+                EXISTS (SELECT 1 FROM enrollments e WHERE e.email = u.email) AS student
+         FROM s JOIN users u ON u.id = s.user_id",
     )
     .bind(token_hash)
     .bind(now)
@@ -164,17 +195,18 @@ pub async fn find_active_session(
     .bind(now - SESSION_ABSOLUTE_TTL)
     .fetch_optional(pool)
     .await?;
-    let Some(session) = session else {
-        return Ok(None);
-    };
-    let user = sqlx::query_as(
-        "SELECT id, google_sub, email, display_name, is_admin, must_change_password, created_at
-         FROM users WHERE id = $1",
-    )
-    .bind(session.user_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(Some(SessionUser { session, user }))
+    Ok(row.map(|r| SessionUser {
+        session: Session {
+            id: r.session_id,
+            user_id: r.user.id,
+            created_at: r.session_created_at,
+            last_seen_at: r.last_seen_at,
+            must_change_password: r.session_must_change_password,
+        },
+        user: r.user,
+        teacher: r.teacher,
+        student: r.student,
+    }))
 }
 
 /// 刪除 session（登出）；回傳是否有刪到。
@@ -229,16 +261,21 @@ pub async fn take_login_state(
 pub struct PasswordAccount {
     pub id: Uuid,
     pub password_hash: Option<String>,
+    /// 管理者已停用此帳號（S-01.3）。
+    pub disabled: bool,
 }
 
 pub async fn find_password_account(
     pool: &PgPool,
     email: &str,
 ) -> Result<Option<PasswordAccount>, sqlx::Error> {
-    sqlx::query_as("SELECT id, password_hash FROM users WHERE email = lower($1)")
-        .bind(email)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(
+        "SELECT id, password_hash, disabled_at IS NOT NULL AS disabled
+         FROM users WHERE email = lower($1)",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await
 }
 
 /// 讀取目前密碼雜湊（改密碼時驗證舊密碼用）。

@@ -6,8 +6,18 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
-import { useVoice, type VoiceHost, type VoiceReply } from '@/features/chat/voice/use-voice'
-import { useT } from '@/i18n'
+import { useVoice, type VoiceHost, type VoicePhase, type VoiceReply } from '@/features/chat/voice/use-voice'
+import { useT, type MessageKey } from '@/i18n'
+
+/** 各階段的狀態文字；`idle` 另外處理（對話模式顯示「暫停」）。 */
+const PHASE_STATUS: Record<Exclude<VoicePhase, 'idle'>, MessageKey> = {
+  countdown: 'voice.status.countdown',
+  listening: 'voice.status.listening',
+  review: 'voice.status.review',
+  transcribing: 'voice.status.transcribing',
+  waiting: 'voice.status.waiting',
+  speaking: 'voice.status.speaking',
+}
 
 /** 最新一則已完成的 AI 回覆（AI 還在回覆時為 undefined）；用字串讓 selector 結果穩定。 */
 function useLatestReply(): VoiceReply | undefined {
@@ -62,22 +72,7 @@ export function VoiceControls({
   const listening = v.phase === 'listening' || v.phase === 'countdown' || v.phase === 'review'
   const dictating = v.mode === 'dictate' && v.phase === 'listening'
 
-  const status =
-    v.phase === 'countdown'
-      ? t('voice.status.countdown')
-      : v.phase === 'listening'
-        ? t('voice.status.listening')
-        : v.phase === 'review'
-          ? t('voice.status.review')
-          : v.phase === 'transcribing'
-            ? t('voice.status.transcribing')
-            : v.phase === 'waiting'
-              ? t('voice.status.waiting')
-              : v.phase === 'speaking'
-                ? t('voice.status.speaking')
-                : converse
-                  ? t('voice.status.paused')
-                  : ''
+  const status = v.phase !== 'idle' ? t(PHASE_STATUS[v.phase]) : converse ? t('voice.status.paused') : ''
 
   return (
     <div className="w-full min-w-0 space-y-2" data-testid="voice-controls">
@@ -139,7 +134,7 @@ export function VoiceControls({
         </div>
       ) : null}
 
-      {converse && (listening || v.phase === 'review') ? (
+      {converse && listening ? (
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" onClick={v.sendNow}>
             <Send aria-hidden />

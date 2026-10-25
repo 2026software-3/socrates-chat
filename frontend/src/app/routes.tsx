@@ -15,7 +15,7 @@ import { AvailablePage } from '@/features/student/available-page'
 import { teacherFeature } from '@/features/teacher'
 import { useT } from '@/i18n'
 import type { Roles } from '@/lib/types'
-import type { ReactNode } from 'react'
+import { Suspense, type ReactNode } from 'react'
 
 // 新增功能時：在 features/<name>/index.tsx 匯出 Feature，再加進這裡。
 export const features: Feature[] = [studentFeature, chatFeature, dashboardFeature, teacherFeature, adminFeature]
@@ -59,7 +59,13 @@ function Shell() {
   }
   return (
     <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : hasAnyRole(me.roles) ? (participates(me.roles) ? allNav : staffNav) : []}>
-      {hasAnyRole(me.roles) ? <Outlet /> : <PendingPage />}
+      {hasAnyRole(me.roles) ? (
+        <Suspense fallback={<LoadingBlock />}>
+          <Outlet />
+        </Suspense>
+      ) : (
+        <PendingPage />
+      )}
     </Layout>
   )
 }

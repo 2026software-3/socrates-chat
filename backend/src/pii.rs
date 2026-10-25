@@ -4,15 +4,12 @@
 //! 以 `MaskingAi` 包住 `AiProvider`，所有 AI 呼叫（對話追問、總結、主張分組）都經過同一個遮蔽點。
 //! 規則有變動時遞增 `ai::RULES_VERSION`。
 
-use std::{
-    borrow::Cow,
-    sync::{Arc, LazyLock},
-};
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use regex::Regex;
 
-use crate::ai::{AiError, AiProvider, AiRequest, AiStream, ChatTurn};
+use crate::ai::{AiError, AiProvider, AiRequest, AiStream};
 
 /// 台灣市話區碼（去掉開頭的 0）；較長的放前面，讓 `037` 不會先被當成 `03`。
 const AREA: &str = "(?:826|836|37|49|82|89|[2-8])";
@@ -20,47 +17,36 @@ const AREA: &str = "(?:826|836|37|49|82|89|[2-8])";
 /// 市話號碼 6–8 碼，中間可有一個空白或 `-`（例如 `2345-6789`）。
 const LOCAL: &str = "(?:[0-9]{2,4}[ -][0-9]{4}|[0-9]{6,8})";
 
+const MOBILE: &str = "(?:\\+?886[ -]?|0)9(?:[ -]?[0-9]){8}";
+
 /// 依比對順序排列的規則：電子郵件、身分證字號、學號、電話（S-02.6）。
 /// 電子郵件最先，帳號常是學號、手機號碼或身分證字號，先遮蔽其他規則會讓信箱只被遮掉一部分。
-fn rules() -> [(String, &'static str); 4] {
-    let mobile = "(?:\\+?886[ -]?|0)9(?:[ -]?[0-9]){8}";
+///
+/// 規則是常數，編譯失敗代表程式有 bug；`MaskingAi::new` 會在 `AppState::new`（啟動時）
+/// 就觸發編譯，讓問題在啟動時浮現，而不是等到第一次 AI 呼叫。
+static RULES: LazyLock<[(Regex, &str); 4]> = LazyLock::new(|| {
     let landline = format!("(?:\\+?886[ -]?\\(?{AREA}\\)?|\\(?0{AREA}\\)?)[ -]?{LOCAL}");
+    let re = |pattern: &str| Regex::new(pattern).expect("pii masking rules must compile");
     [
         (
-            "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+".to_string(),
+            re("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+"),
             "[EMAIL]",
         ),
-        ("[A-Za-z][12][0-9]{8}".to_string(), "[NATIONAL_ID]"),
-        ("[0-9]{8}[A-Za-z]".to_string(), "[STUDENT_ID]"),
-        (format!("{mobile}|{landline}"), "[PHONE]"),
+        (re("[A-Za-z][12][0-9]{8}"), "[NATIONAL_ID]"),
+        (re("[0-9]{8}[A-Za-z]"), "[STUDENT_ID]"),
+        (re(&format!("{MOBILE}|{landline}")), "[PHONE]"),
     ]
-}
+});
 
-/// 編譯好的遮蔽規則。
-pub struct Masker {
-    rules: Vec<(Regex, &'static str)>,
-}
-
-impl Masker {
-    fn new() -> Result<Self, regex::Error> {
-        let rules = rules()
-            .into_iter()
-            .map(|(pattern, placeholder)| Ok((Regex::new(&pattern)?, placeholder)))
-            .collect::<Result<_, regex::Error>>()?;
-        Ok(Self { rules })
+/// 依序套用每條規則；佔位詞本身不符合任何規則，已遮蔽的片段不會被重複處理。
+/// 沒有任何比對時原字串直接傳回，不複製。
+fn mask(mut text: String) -> String {
+    for (re, placeholder) in RULES.iter() {
+        if let Some(masked) = replace_isolated(&text, re, placeholder) {
+            text = masked;
+        }
     }
-
-    /// 依序套用每條規則；佔位詞本身不符合任何規則，已遮蔽的片段不會被重複處理。
-    /// 沒有任何比對時回傳原字串的借用，不複製。
-    fn mask<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        self.rules.iter().fold(
-            Cow::Borrowed(text),
-            |text, (re, placeholder)| match replace_isolated(&text, re, placeholder) {
-                Some(masked) => Cow::Owned(masked),
-                None => text,
-            },
-        )
-    }
+    text
 }
 
 /// 只取代前後都沒有緊鄰英數字的比對結果，避免把較長的數字串或英數混合字串切一段遮掉。
@@ -73,6 +59,10 @@ fn replace_isolated(text: &str, re: &Regex, placeholder: &str) -> Option<String>
         if isolated(text[..m.start()].chars().next_back())
             && isolated(text[m.end()..].chars().next())
         {
+            if copied == 0 {
+                // 第一次取代才配置，一次配置到約略的最終大小
+                out.reserve(text.len());
+            }
             out.push_str(&text[copied..m.start()]);
             out.push_str(placeholder);
             (copied, from) = (m.end(), m.end());
@@ -88,11 +78,6 @@ fn replace_isolated(text: &str, re: &Regex, placeholder: &str) -> Option<String>
     Some(out)
 }
 
-/// 規則是常數，編譯失敗代表程式有 bug；`MaskingAi::new` 會在 `AppState::new`（啟動時）
-/// 就觸發編譯，讓問題在啟動時浮現，而不是等到第一次 AI 呼叫。
-static MASKER: LazyLock<Masker> =
-    LazyLock::new(|| Masker::new().expect("pii masking rules must compile"));
-
 /// 在送出前遮蔽請求中所有文字（系統提示與每則訊息）的 `AiProvider`。
 pub struct MaskingAi {
     inner: Arc<dyn AiProvider>,
@@ -100,25 +85,18 @@ pub struct MaskingAi {
 
 impl MaskingAi {
     pub fn new(inner: Arc<dyn AiProvider>) -> Self {
-        LazyLock::force(&MASKER);
+        LazyLock::force(&RULES);
         Self { inner }
     }
 }
 
 #[async_trait]
 impl AiProvider for MaskingAi {
-    async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        let req = AiRequest {
-            system: MASKER.mask(&req.system).into_owned(),
-            messages: req
-                .messages
-                .into_iter()
-                .map(|t| ChatTurn {
-                    role: t.role,
-                    content: MASKER.mask(&t.content).into_owned(),
-                })
-                .collect(),
-        };
+    async fn stream_chat(&self, mut req: AiRequest) -> Result<AiStream, AiError> {
+        req.system = mask(std::mem::take(&mut req.system));
+        for turn in &mut req.messages {
+            turn.content = mask(std::mem::take(&mut turn.content));
+        }
         self.inner.stream_chat(req).await
     }
 }
@@ -131,7 +109,7 @@ mod tests {
     use crate::ai::{ChatRole, ChatTurn};
 
     fn masked(text: &str) -> String {
-        MASKER.mask(text).into_owned()
+        mask(text.to_string())
     }
 
     #[test]
@@ -158,15 +136,6 @@ mod tests {
         ] {
             assert_eq!(masked(&format!("寄到 {email} 就好")), "寄到 [EMAIL] 就好");
         }
-    }
-
-    #[test]
-    fn text_without_personal_data_is_not_copied() {
-        assert!(matches!(
-            MASKER.mask("為什麼你認為拉桿是對的？"),
-            Cow::Borrowed(_)
-        ));
-        assert!(matches!(MASKER.mask("信箱 a@b.com"), Cow::Owned(_)));
     }
 
     #[test]

@@ -17,6 +17,7 @@ use axum::{
     routing::get,
 };
 use futures_util::{StreamExt, stream::BoxStream};
+use serde::Serialize;
 use serde_json::json;
 use tokio::{
     sync::mpsc,
@@ -45,12 +46,11 @@ type EventTx = mpsc::UnboundedSender<Event>;
 
 /// 嘗試取得這場對話的「正在產生回覆」權利；已有進行中的回覆時回傳 `false`。
 pub async fn claim_generation(state: &AppState, id: Uuid) -> Result<bool, sqlx::Error> {
-    let r = sqlx::query(
+    let r = sqlx::query(concat!(
         "UPDATE conversations SET generating_since = now()
-         WHERE id = $1 AND status = 'active'
-           AND (generating_since IS NULL
-                OR generating_since < now() - make_interval(secs => $2))",
-    )
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+    ))
     .bind(id)
     .bind(state.config.generation_stale_secs())
     .execute(&state.pool)
@@ -108,25 +108,17 @@ pub(crate) async fn stream(
 }
 
 /// 學生訊息剛保存、且呼叫端已取得產生權利（`generating_since`）時，開始串流 AI 回覆。
-/// `first` 是串流的第一個事件（保存好的學生訊息）。載入失敗時釋放 claim 並回傳錯誤。
+/// `conversation` 須已反映這一輪的回合數與階段；`first` 是串流的第一個事件（保存好的學生訊息）。
+/// 載入失敗時釋放 claim 並回傳錯誤。
 pub async fn begin_stream(
     state: AppState,
-    user_id: Uuid,
-    id: Uuid,
+    conversation: Conversation,
     first: Event,
 ) -> Result<EventStream, ApiError> {
-    let loaded = async {
-        let conversation = owned_conversation(&state, user_id, id).await?;
-        let messages = load_messages(&state, id).await?;
-        Ok::<_, ApiError>((conversation, messages))
-    }
-    .await;
-    match loaded {
-        Ok((conversation, messages)) => {
-            Ok(spawn_stream(state, conversation, messages, Some(first)))
-        }
+    match load_messages(&state, conversation.id).await {
+        Ok(messages) => Ok(spawn_stream(state, conversation, messages, Some(first))),
         Err(e) => {
-            release_generation(&state, id).await;
+            release_generation(&state, conversation.id).await;
             Err(e)
         }
     }
@@ -149,7 +141,7 @@ fn spawn_stream(
         let _ = tx.send(first);
     }
     tokio::spawn(async move {
-        generate(&state, &conversation, &messages, &tx).await;
+        generate(&state, &conversation, messages, &tx).await;
         release_generation(&state, conversation.id).await;
     });
     Sse::new(UnboundedReceiverStream::new(rx).map(Ok).boxed()).keep_alive(KeepAlive::default())
@@ -159,7 +151,19 @@ pub fn event(name: &str, data: serde_json::Value) -> Event {
     Event::default().event(name).data(data.to_string())
 }
 
-async fn generate(state: &AppState, conv: &Conversation, messages: &[Message], tx: &EventTx) {
+/// 每個片段都會送一次：直接序列化進事件，不經過 `serde_json::Value`。
+fn delta_event(text: &str) -> Event {
+    #[derive(Serialize)]
+    struct Delta<'a> {
+        text: &'a str,
+    }
+    Event::default()
+        .event("delta")
+        .json_data(Delta { text })
+        .expect("a string always serializes")
+}
+
+async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>, tx: &EventTx) {
     let req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
@@ -169,14 +173,10 @@ async fn generate(state: &AppState, conv: &Conversation, messages: &[Message], t
             wrap_up_turn: state.config.wrap_up_turn,
         }),
         messages: messages
-            .iter()
+            .into_iter()
             .map(|m| ChatTurn {
-                role: if m.role == "student" {
-                    ChatRole::User
-                } else {
-                    ChatRole::Assistant
-                },
-                content: m.content.clone(),
+                role: ChatRole::from_db_role(&m.role),
+                content: m.content,
             })
             .collect(),
     };
@@ -256,7 +256,7 @@ async fn attempt(
                 if !out.is_empty() {
                     emitted = true;
                     text.push_str(&out);
-                    let _ = tx.send(event("delta", json!({"text": out})));
+                    let _ = tx.send(delta_event(&out));
                 }
             }
         }
@@ -265,7 +265,7 @@ async fn attempt(
     if !rest.is_empty() {
         emitted = true;
         text.push_str(&rest);
-        let _ = tx.send(event("delta", json!({"text": rest})));
+        let _ = tx.send(delta_event(&rest));
     }
     if text.trim().is_empty() {
         return Err(emitted);
@@ -302,18 +302,6 @@ async fn save_reply(
     if status != "active" || last.is_none_or(|(r,)| r != "student") {
         return Ok(None);
     }
-    let (message_id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO messages (conversation_id, role, content, rules_version, question_type,
-                               advance_reason)
-         VALUES ($1, 'ai', $2, $3, $4, $5) RETURNING id",
-    )
-    .bind(conv.id)
-    .bind(text)
-    .bind(RULES_VERSION)
-    .bind(&meta.question_type)
-    .bind(&meta.reason)
-    .fetch_one(&mut *tx)
-    .await?;
     // 階段只進不退；第 3 階段達成條件即符合收斂條件（S-03.2、S-03.3）
     let new_stage = if meta.advance && stage < 3 {
         stage + 1
@@ -321,12 +309,26 @@ async fn save_reply(
         stage
     };
     let converge_ready = ready || (stage == 3 && meta.advance);
-    sqlx::query("UPDATE conversations SET stage = $2, converge_ready = $3 WHERE id = $1")
-        .bind(conv.id)
-        .bind(new_stage)
-        .bind(converge_ready)
-        .execute(&mut *tx)
-        .await?;
+    // 保存回覆與更新階段合成一個語句，少一次資料庫往返
+    let (message_id,): (Uuid,) = sqlx::query_as(
+        "WITH m AS (
+             INSERT INTO messages (conversation_id, role, content, rules_version, question_type,
+                                   advance_reason)
+             VALUES ($1, 'ai', $2, $3, $4, $5) RETURNING id
+         ), c AS (
+             UPDATE conversations SET stage = $6, converge_ready = $7 WHERE id = $1
+         )
+         SELECT id FROM m",
+    )
+    .bind(conv.id)
+    .bind(text)
+    .bind(RULES_VERSION)
+    .bind(&meta.question_type)
+    .bind(&meta.reason)
+    .bind(new_stage)
+    .bind(converge_ready)
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Some(Saved {
         message_id,

@@ -11,7 +11,7 @@ export const teacherFeature: Feature = {
     { path: '/teacher/dashboard', element: <ClassDashboardPage />, access: 'teacher' },
     { path: '/teacher/classrooms', element: <ClassroomsPage />, access: 'teacher' },
     { path: '/teacher/activities', element: <ActivitiesPage />, access: 'teacher' },
-    { path: '/teacher/topics', element: <TopicsPage base="/api/topics" />, access: 'teacher' },
+    { path: '/teacher/topics', element: <TopicsPage />, access: 'teacher' },
     { path: '/teacher/roster', element: <RosterPage />, access: 'teacher' },
     { path: '/teacher/summaries', element: <SummariesPage />, access: 'teacher' },
   ],

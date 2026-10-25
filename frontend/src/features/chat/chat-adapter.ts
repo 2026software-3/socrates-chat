@@ -1,6 +1,6 @@
 import type { ChatModelAdapter, ChatModelRunResult } from '@assistant-ui/react'
 import { type ReplyEvent, sendMessage, streamReply } from '@/features/chat/sse'
-import { isApiError } from '@/lib/api'
+import { isAbortError, isApiError } from '@/lib/api'
 import type { MessageSource, SentMessage, StreamDone } from '@/lib/types'
 
 export type ChatAdapterOptions = {
@@ -15,9 +15,6 @@ export type ChatAdapterOptions = {
   onEnded?: () => void
 }
 
-function isAbort(e: unknown): boolean {
-  return e instanceof DOMException && e.name === 'AbortError'
-}
 
 /**
  * 把後端「POST 訊息並以 SSE 串流回覆」的契約包成 assistant-ui 的 ChatModelAdapter。
@@ -64,7 +61,7 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
           }
         }
       } catch (e) {
-        if (abortSignal.aborted || isAbort(e)) return
+        if (abortSignal.aborted || isAbortError(e)) return
         if (isApiError(e) && e.code === 'conversation_ended') {
           options.onEnded?.()
           return

@@ -49,12 +49,11 @@ pub async fn end_conversation(
     id: Uuid,
     stale_secs: f64,
 ) -> Result<bool, sqlx::Error> {
-    let r = sqlx::query(
+    let r = sqlx::query(concat!(
         "UPDATE conversations SET status = 'ended', ended_at = now()
-         WHERE id = $1 AND status = 'active'
-           AND (generating_since IS NULL
-                OR generating_since < now() - make_interval(secs => $2))",
-    )
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+    ))
     .bind(id)
     .bind(stale_secs)
     .execute(&mut *conn)
@@ -100,12 +99,12 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let (title, description, activity_id): (String, String, Option<Uuid>) =
+    let ((title, description, activity_id), turns): ((String, String, Option<Uuid>), _) = tokio::try_join!(
         sqlx::query_as("SELECT title, description, activity_id FROM conversations WHERE id = $1")
             .bind(id)
-            .fetch_one(&state.pool)
-            .await?;
-    let turns: Vec<ChatTurn> = load_messages_for(state, id).await?;
+            .fetch_one(&state.pool),
+        load_messages_for(state, id),
+    )?;
     let req = AiRequest {
         system: build_summary_prompt(&title, &description),
         messages: vec![ChatTurn {
@@ -172,11 +171,7 @@ async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, 
     Ok(rows
         .into_iter()
         .map(|(role, content)| ChatTurn {
-            role: if role == "student" {
-                ChatRole::User
-            } else {
-                ChatRole::Assistant
-            },
+            role: ChatRole::from_db_role(&role),
             content,
         })
         .collect())

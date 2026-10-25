@@ -6,12 +6,13 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     auth::{CurrentUser, RequireTeacher},
+    catalog::nullable,
     classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
     error::ApiError,
 };
@@ -56,14 +57,6 @@ pub(crate) struct ClassroomPatch {
     #[serde(default, deserialize_with = "nullable")]
     #[schema(max_length = 2000)]
     description: Option<Option<String>>,
-}
-
-fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 fn normalized_name(name: Option<String>) -> Result<String, ApiError> {
@@ -210,11 +203,7 @@ pub(crate) async fn get_classroom(
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
 ) -> Result<Json<Classroom>, ApiError> {
-    let id = parse_id(&raw_id)?;
-    classroom_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
-        .await?
-        .map(Json)
-        .ok_or_else(ApiError::not_found)
+    visible_classroom(&state, &cu, &raw_id).await.map(Json)
 }
 
 /// 編輯教室；管理者可編輯任一教室，教師只能編輯自己建立的教室。

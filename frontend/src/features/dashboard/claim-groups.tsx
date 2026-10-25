@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { errorText, useI18n, useT } from '@/i18n'
@@ -13,7 +13,7 @@ import type { ActivityDistribution } from '@/lib/types'
 export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: ActivityDistribution; onChanged: () => void; canRegroup: boolean }) {
   const t = useT()
   const { lang } = useI18n()
-  const pct = new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 })
+  const pct = useMemo(() => new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 }), [lang])
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const total = activity.claims.reduce((n, g) => n + g.count, 0)
