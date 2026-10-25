@@ -32,6 +32,49 @@ describe('LogsPage', () => {
     }
   })
 
+  it('keeps the log on screen and does not cancel a poll that takes longer than five seconds', async () => {
+    const later = { ...entry, request_id: '22222222-2222-4222-8222-222222222222', route: '/api/admin/later' }
+    let calls = 0
+    let slowPollAborted = false
+    let releaseSlowPoll: () => void = () => {}
+    const slowPollReleased = new Promise<void>((resolve) => {
+      releaseSlowPoll = resolve
+    })
+    server.use(
+      http.get('/api/admin/logs', async ({ request }) => {
+        calls += 1
+        if (calls === 1) return HttpResponse.json({ items: [entry], capacity: 500 })
+        if (calls === 2) {
+          request.signal.addEventListener('abort', () => {
+            slowPollAborted = true
+          })
+          await slowPollReleased
+          return HttpResponse.json({ items: [later], capacity: 500 })
+        }
+        return HttpResponse.json({ items: [], capacity: 500 })
+      }),
+    )
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      renderApp(<LogsPage />)
+      expect(await screen.findByText(entry.request_id)).toBeInTheDocument()
+
+      // 第 5 秒開始的輪詢一直沒有回應；之後兩個輪詢間隔都過去了
+      await act(() => vi.advanceTimersByTimeAsync(5000))
+      await waitFor(() => expect(calls).toBe(2))
+      await act(() => vi.advanceTimersByTimeAsync(10000))
+
+      expect(calls).toBe(2)
+      expect(slowPollAborted).toBe(false)
+      expect(screen.getByText(entry.request_id)).toBeInTheDocument()
+
+      releaseSlowPoll()
+      expect(await screen.findByText(later.request_id)).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('refreshes the log every five seconds', async () => {
     let calls = 0
     server.use(

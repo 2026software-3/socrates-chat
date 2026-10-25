@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -43,8 +43,16 @@ export function LogsPage() {
     [lang],
   )
 
+  // 上一次讀取還沒回來時不再發出新的讀取：重新載入會取消進行中的請求，慢於 5 秒的回應就永遠到不了。
+  const inFlight = useRef(loading)
   useEffect(() => {
-    const id = window.setInterval(reload, 5000)
+    inFlight.current = loading
+  }, [loading])
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!inFlight.current) reload()
+    }, 5000)
     return () => window.clearInterval(id)
   }, [reload])
 
