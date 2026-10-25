@@ -155,6 +155,26 @@ async fn streams_text_chunks_and_sends_expected_request() {
 }
 
 #[tokio::test]
+async fn reasoning_becomes_one_empty_chunk_before_the_text() {
+    // 推理模型先串流推理內容才輸出正文；推理只發出一個空片段（算作首字），推理文字不外流
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"先想\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"再想\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"還在想\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n\
+                data: [DONE]\n\n";
+    let (base, _) = spawn_server(StatusCode::OK, body).await;
+    let p = OpenAiProvider::new(&base, single("k"), "m");
+    let chunks: Vec<String> = p
+        .stream_chat(request())
+        .await
+        .unwrap()
+        .map(|c| c.unwrap())
+        .collect()
+        .await;
+    assert_eq!(chunks, ["", "答案"]);
+}
+
+#[tokio::test]
 async fn error_status_becomes_ai_error() {
     let (base, _) = spawn_server(StatusCode::INTERNAL_SERVER_ERROR, "boom").await;
     let p = OpenAiProvider::new(&base, single("k"), "m");
