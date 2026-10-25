@@ -2,7 +2,7 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tracing::Span;
 
-use crate::{AppState, auth::RequireAdmin};
+use crate::{AppState, auth::RequireAdmin, reply::lock};
 
 pub const CAPACITY: usize = 500;
 
@@ -35,8 +35,9 @@ pub(crate) struct RequestLogEntry {
     pub error_code: Option<String>,
 }
 
+/// 條目以 `Arc` 保存：讀取 ring 只複製指標，不必在持鎖時複製每筆的字串。
 #[derive(Default)]
-pub(crate) struct RequestLogStore(Mutex<VecDeque<RequestLogEntry>>);
+pub(crate) struct RequestLogStore(Mutex<VecDeque<Arc<RequestLogEntry>>>);
 
 impl RequestLogStore {
     pub fn push(&self, entry: RequestLogEntry) {
@@ -44,16 +45,12 @@ impl RequestLogStore {
         if entries.len() == CAPACITY {
             entries.pop_front();
         }
-        entries.push_back(entry);
+        entries.push_back(Arc::new(entry));
     }
 
-    fn recent(&self) -> Vec<RequestLogEntry> {
+    fn recent(&self) -> Vec<Arc<RequestLogEntry>> {
         lock(&self.0).iter().rev().cloned().collect()
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// 寫入一筆已完成的 request：所有 request 都輸出完整的 tracing event；`in_ring` 為真才進入 ring。
@@ -184,8 +181,17 @@ impl Drop for StreamLog {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct RequestLogPage {
-    items: Vec<RequestLogEntry>,
+    #[serde(serialize_with = "serialize_shared")]
+    #[schema(value_type = Vec<RequestLogEntry>)]
+    items: Vec<Arc<RequestLogEntry>>,
     capacity: usize,
+}
+
+fn serialize_shared<S: serde::Serializer>(
+    items: &[Arc<RequestLogEntry>],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.iter().map(|entry| &**entry))
 }
 
 pub fn routes() -> Router<AppState> {
@@ -215,6 +221,40 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::StatusCode};
     use tower::ServiceExt;
+
+    fn entry(n: usize) -> RequestLogEntry {
+        RequestLogEntry {
+            created_at: Utc::now(),
+            request_id: format!("id-{n}"),
+            method: "GET".into(),
+            route: "/health".into(),
+            status: 200,
+            duration_ms: 1,
+            error_code: None,
+        }
+    }
+
+    #[test]
+    fn reading_the_ring_shares_entries_instead_of_copying_them() {
+        let store = RequestLogStore::default();
+        store.push(entry(1));
+        let first = store.recent();
+        let second = store.recent();
+        assert_eq!(first[0].request_id.as_ptr(), second[0].request_id.as_ptr());
+    }
+
+    #[test]
+    fn the_ring_keeps_working_after_a_holder_panicked() {
+        let store = Arc::new(RequestLogStore::default());
+        let poisoner = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.0.lock().unwrap();
+            panic!("poison the ring");
+        })
+        .join();
+        store.push(entry(1));
+        assert_eq!(store.recent().len(), 1);
+    }
 
     #[tokio::test]
     async fn a_rejected_response_from_a_route_marked_not_in_ring_stays_out_of_the_ring() {

@@ -127,7 +127,7 @@ impl LiveReplies {
 }
 
 /// 持有鎖的一方 panic 也照常取得：資料只是回覆文字與連線，沒有需要保護的不變量。
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
