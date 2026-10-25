@@ -2,6 +2,7 @@ import { Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router
 import { hasAnyRole, useAuth } from '@/auth/auth-context'
 import { canAccess, type Access, type Feature } from '@/app/feature'
 import { Layout } from '@/app/layout'
+import { RouteErrorBoundary } from '@/app/route-error-boundary'
 import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { adminFeature, opsNav } from '@/features/admin'
 import { DisabledPage } from '@/features/auth/disabled-page'
@@ -32,6 +33,7 @@ const participates = (roles: Roles) => roles.student
 /** 已登入外框：未登入導向 /login；沒有任何角色（尚未開通）只看得到說明頁。 */
 function Shell() {
   const auth = useAuth()
+  const { pathname } = useLocation()
   if (auth.status === 'loading') {
     return (
       <div className="p-4">
@@ -60,9 +62,11 @@ function Shell() {
   return (
     <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : hasAnyRole(me.roles) ? (participates(me.roles) ? allNav : staffNav) : []}>
       {hasAnyRole(me.roles) ? (
-        <Suspense fallback={<LoadingBlock />}>
-          <Outlet />
-        </Suspense>
+        <RouteErrorBoundary pathname={pathname}>
+          <Suspense fallback={<LoadingBlock />}>
+            <Outlet />
+          </Suspense>
+        </RouteErrorBoundary>
       ) : (
         <PendingPage />
       )}
