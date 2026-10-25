@@ -332,7 +332,7 @@ async fn only_one_reply_stream_per_conversation(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn concurrent_second_stream_is_rejected_while_first_runs(pool: PgPool) {
+async fn second_stream_joins_the_running_reply_instead_of_starting_another(pool: PgPool) {
     let s = setup(pool.clone(), vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
     seed_student_message(&pool, &s.conv, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
@@ -340,28 +340,73 @@ async fn concurrent_second_stream_is_rejected_while_first_runs(pool: PgPool) {
     let (app, cookie, url1) = (s.app.clone(), s.a.student.clone(), url.clone());
     let first =
         tokio::spawn(async move { text_body(send(&app, get(&url1, Some(&cookie))).await).await });
-    // 等第一條串流確實取得 claim 再送第二個請求，避免依賴固定時間
-    let mut claimed = false;
+    wait_until_generating(&s).await;
+    // 第二條串流接上同一個回覆：收到相同的結果，也不會多呼叫一次 AI
+    let second = text_body(send(&s.app, get(&url, Some(&s.a.student))).await).await;
+    let events = parse_sse(&first.await.unwrap());
+    assert_eq!(events.last().unwrap().0, "error");
+    assert_eq!(parse_sse(&second), events);
+    assert_eq!(s.ai.request_count(), 2);
+
+    // 失敗收尾後釋放，再開一次會重新產生
+    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+}
+
+/// 等到對話詳情顯示回覆正在產生（`generating`），避免依賴固定時間。
+async fn wait_until_generating(s: &Setup) {
     for _ in 0..200 {
-        let (g,): (Option<chrono::DateTime<chrono::Utc>>,) =
-            sqlx::query_as("SELECT generating_since FROM conversations")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        if g.is_some() {
-            claimed = true;
-            break;
+        if detail(s).await["generating"] == true {
+            return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    assert!(claimed, "first stream never claimed the conversation");
-    let res = send(&s.app, get(&url, Some(&s.a.student))).await;
-    assert_eq!(res.status(), StatusCode::CONFLICT);
+    panic!("reply never started generating");
+}
 
-    // 第一條失敗收尾後釋放，再開一次可成功
-    let events = parse_sse(&first.await.unwrap());
-    assert_eq!(events.last().unwrap().0, "error");
-    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+#[sqlx::test]
+async fn leaving_mid_reply_and_coming_back_resumes_the_same_reply(pool: PgPool) {
+    let pace = std::time::Duration::from_millis(150);
+    let s = setup(pool.clone(), vec![Paced(REPLY.to_vec(), pace)]).await;
+    assert_eq!(detail(&s).await["generating"], false);
+
+    // 送出訊息、收到第一段回覆後就離開頁面（中斷連線）
+    let res = send(
+        &s.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/messages", s.conv),
+            Some(&s.a.student),
+            Some(json!({"content": "嗨"})),
+        ),
+    )
+    .await;
+    let mut body = res.into_body().into_data_stream();
+    let mut seen = String::new();
+    while !seen.contains("event: delta") {
+        let chunk = futures_util::StreamExt::next(&mut body)
+            .await
+            .unwrap()
+            .unwrap();
+        seen.push_str(std::str::from_utf8(&chunk).unwrap());
+    }
+    drop(body);
+
+    // 回來時回覆還在產生：重新接上，先補上已產生的文字，再收到剩下的片段與 done
+    assert_eq!(detail(&s).await["generating"], true);
+    let events = stream_events(&s).await;
+    let text: String = events
+        .iter()
+        .filter(|(name, _)| name == "delta")
+        .map(|(_, v)| v["text"].as_str().unwrap())
+        .collect();
+    // 與一路沒有斷線的連線收到的文字相同（串流不去掉結尾空白，保存時才去掉）
+    assert_eq!(text, "你說的「正義」是什麼意思？\n");
+    assert_eq!(events.last().unwrap().0, "done");
+    assert_eq!(s.ai.request_count(), 1);
+
+    let d = detail(&s).await;
+    assert_eq!(d["generating"], false);
+    assert_eq!(d["messages"][1]["content"], "你說的「正義」是什麼意思？");
 }
 
 #[sqlx::test]

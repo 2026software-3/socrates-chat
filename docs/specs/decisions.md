@@ -259,7 +259,7 @@
 ### S-08.4 對話 API 傳輸方式與錯誤邊界（已決定）
 
 - 對話 API 採 HTTP + SSE 串流；若語音日後需要即時串流，再加 WebSocket。
-- **送出訊息即串流回覆（2026-10 修訂）**：`POST /api/conversations/{id}/messages` 保存學生訊息後，直接以 SSE 回傳 `message`（保存好的學生訊息）→ `delta`／`done`／`error`；不再要求前端另開串流。`GET /api/conversations/{id}/stream` 保留給重試（只重新產生還沒有回覆的 AI 回覆）。理由：兩步式在兩次請求之間斷線，會留下「已計回合但沒有回覆」的訊息。
+- **送出訊息即串流回覆（2026-10 修訂）**：`POST /api/conversations/{id}/messages` 保存學生訊息後，直接以 SSE 回傳 `message`（保存好的學生訊息）→ `delta`／`done`／`error`；不再要求前端另開串流。`GET /api/conversations/{id}/stream` 保留給重試（只重新產生還沒有回覆的 AI 回覆）；回覆仍在產生時，也用它接上同一個回覆（學生離開對話頁又回來，見 S-08.1 §3.1）。理由：兩步式在兩次請求之間斷線，會留下「已計回合但沒有回覆」的訊息。
 
 ## S-09 確認 PostgreSQL 部署與維運責任
 

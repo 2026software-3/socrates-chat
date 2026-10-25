@@ -1,14 +1,21 @@
 //! AI 回覆串流（F-06.2、F-06.4、F-07；規格見 S-03.2、S-03.5、S-08.1、S-08.4）。
 //!
 //! `POST /api/conversations/{id}/messages` 保存學生訊息後，直接以 SSE 串流 AI 回覆
-//! （`chat::send_message` 呼叫 `begin_stream`）。`GET /api/conversations/{id}/stream` 只用於
-//! 重試：最後一則是學生訊息、還沒有 AI 回覆時，再開一次串流。
+//! （`chat::send_message` 呼叫 `begin_stream`）。`GET /api/conversations/{id}/stream` 用於：
+//! - 重試：最後一則是學生訊息、還沒有 AI 回覆時，再開一次串流；
+//! - 接回：回覆還在產生（例如學生離開對話頁又回來），接上同一個回覆，先補上已產生的文字。
+//!
 //! 即使前端中途斷線，後端仍會把完整回覆存下來。
 //!
 //! 同一場對話同時間只允許一條回覆串流：開始前在資料庫原子 claim（`generating_since`），
 //! 結束時釋放；服務異常中斷造成的殘留 claim 會在逾時上限後視為過期。
 
-use std::convert::Infallible;
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    panic::AssertUnwindSafe,
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 
 use axum::{
     Router,
@@ -16,7 +23,7 @@ use axum::{
     response::sse::{Event, KeepAlive, KeepAliveStream, Sse},
     routing::get,
 };
-use futures_util::{StreamExt, stream::BoxStream};
+use futures_util::{FutureExt, StreamExt, stream::BoxStream};
 use serde::Serialize;
 use serde_json::json;
 use tokio::{
@@ -43,6 +50,66 @@ pub fn routes() -> Router<AppState> {
 
 /// 事件通道不設上限：一則回覆很小，且這樣慢速客戶端不會拖住 AI 的逾時計時。
 type EventTx = mpsc::UnboundedSender<Event>;
+
+/// 這個服務程序內正在產生的回覆：已送出的文字與正在收看的連線。
+/// 學生離開對話頁再回來時，`GET /stream` 從這裡接上同一個回覆，而不是被擋下或重新產生。
+#[derive(Default)]
+pub struct LiveReplies(Mutex<HashMap<Uuid, Live>>);
+
+struct Live {
+    /// 已送出的回覆文字；新接上的連線先收到這一段
+    text: String,
+    watchers: Vec<EventTx>,
+}
+
+impl LiveReplies {
+    /// 這場對話的回覆是否正在產生（可以接上）。
+    pub fn is_live(&self, id: Uuid) -> bool {
+        self.lock().contains_key(&id)
+    }
+
+    fn start(&self, id: Uuid, watcher: EventTx) {
+        let live = Live {
+            text: String::new(),
+            watchers: vec![watcher],
+        };
+        self.lock().insert(id, live);
+    }
+
+    /// 送出一段回覆給所有連線；已斷線的連線順便移除。
+    fn delta(&self, id: Uuid, text: &str) {
+        if let Some(live) = self.lock().get_mut(&id) {
+            live.text.push_str(text);
+            let ev = delta_event(text);
+            live.watchers.retain(|w| w.send(ev.clone()).is_ok());
+        }
+    }
+
+    /// 送出最後一個事件（done／error）並結束；之後的 `join` 不會再接上。
+    fn finish(&self, id: Uuid, last: Event) {
+        if let Some(live) = self.lock().remove(&id) {
+            for w in live.watchers {
+                let _ = w.send(last.clone());
+            }
+        }
+    }
+
+    /// 接上進行中的回覆：先收到已產生的文字（一個 delta），之後與其他連線收到相同的事件。
+    fn join(&self, id: Uuid) -> Option<mpsc::UnboundedReceiver<Event>> {
+        let mut replies = self.lock();
+        let live = replies.get_mut(&id)?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        if !live.text.is_empty() {
+            let _ = tx.send(delta_event(&live.text));
+        }
+        live.watchers.push(tx);
+        Some(rx)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<Uuid, Live>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 /// 嘗試取得這場對話的「正在產生回覆」權利；已有進行中的回覆時回傳 `false`。
 pub async fn claim_generation(state: &AppState, id: Uuid) -> Result<bool, sqlx::Error> {
@@ -75,9 +142,10 @@ pub type EventStream = Sse<KeepAliveStream<BoxStream<'static, Result<Event, Infa
     get,
     path = "/api/conversations/{id}/stream",
     tag = "conversations",
-    summary = "重試：重新串流尚未回覆的 AI 回覆（SSE）",
+    summary = "重試或接回 AI 回覆（SSE）",
+    description = "最後一則是學生訊息、還沒有 AI 回覆時重新產生；回覆正在產生時接上同一個回覆，第一個 delta 是目前已產生的全部文字。",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "conversation_ended / reply_in_progress / nothing_to_reply", body = crate::error::ErrorBody))
+    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "conversation_ended / reply_in_progress（回覆正在其他服務程序產生，無法接上）/ nothing_to_reply", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn stream(
     RequireStudent(cu): RequireStudent,
@@ -89,7 +157,11 @@ pub(crate) async fn stream(
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
     if !claim_generation(&state, id).await? {
-        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+        // 回覆正在產生：接上同一個回覆
+        return match state.live.join(id) {
+            Some(rx) => Ok(event_stream(rx)),
+            None => Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中")),
+        };
     }
     // claim 之後再檢查，確保檢查與產生之間不會有另一條串流插入
     let messages = match load_messages(&state, id).await {
@@ -140,10 +212,21 @@ fn spawn_stream(
     if let Some(first) = first {
         let _ = tx.send(first);
     }
+    let id = conversation.id;
+    state.live.start(id, tx);
     tokio::spawn(async move {
-        generate(&state, &conversation, messages, &tx).await;
-        release_generation(&state, conversation.id).await;
+        let last = AssertUnwindSafe(generate(&state, &conversation, messages))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
+        // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
+        release_generation(&state, id).await;
+        state.live.finish(id, last);
     });
+    event_stream(rx)
+}
+
+fn event_stream(rx: mpsc::UnboundedReceiver<Event>) -> EventStream {
     Sse::new(UnboundedReceiverStream::new(rx).map(Ok).boxed()).keep_alive(KeepAlive::default())
 }
 
@@ -163,7 +246,8 @@ fn delta_event(text: &str) -> Event {
         .expect("a string always serializes")
 }
 
-async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>, tx: &EventTx) {
+/// 產生並保存回覆，片段經 `state.live` 送給所有連線；回傳最後一個事件（done／error）。
+async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>) -> Event {
     let req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
@@ -184,7 +268,7 @@ async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>,
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
     for _ in 0..2 {
-        match attempt(state, &req, tx).await {
+        match attempt(state, conv.id, &req).await {
             Ok(r) => {
                 outcome = Some(r);
                 break;
@@ -194,39 +278,30 @@ async fn generate(state: &AppState, conv: &Conversation, messages: Vec<Message>,
         }
     }
     let Some((text, meta)) = outcome else {
-        let _ = tx.send(event("error", json!({"code": "ai_unavailable"})));
-        return;
+        return event("error", json!({"code": "ai_unavailable"}));
     };
 
     match save_reply(state, conv, &text, &meta).await {
-        Ok(Some(saved)) => {
-            let _ = tx.send(event(
-                "done",
-                json!({
-                    "message_id": saved.message_id,
-                    "question_type": meta.question_type,
-                    "stage": saved.stage,
-                    "suggest_end": saved.converge_ready,
-                }),
-            ));
-        }
+        Ok(Some(saved)) => event(
+            "done",
+            json!({
+                "message_id": saved.message_id,
+                "question_type": meta.question_type,
+                "stage": saved.stage,
+                "suggest_end": saved.converge_ready,
+            }),
+        ),
         // 對話在串流期間已結束或已有回覆
-        Ok(None) => {
-            let _ = tx.send(event("error", json!({"code": "conflict"})));
-        }
+        Ok(None) => event("error", json!({"code": "conflict"})),
         Err(e) => {
             tracing::error!(class = %crate::error::db_error_class(&e), "failed to save AI reply");
-            let _ = tx.send(event("error", json!({"code": "internal"})));
+            event("error", json!({"code": "internal"}))
         }
     }
 }
 
 /// 一次 AI 呼叫。失敗時回傳「是否已經送出內容給學生」，決定能不能自動重試。
-async fn attempt(
-    state: &AppState,
-    req: &AiRequest,
-    tx: &EventTx,
-) -> Result<(String, TurnMeta), bool> {
+async fn attempt(state: &AppState, id: Uuid, req: &AiRequest) -> Result<(String, TurnMeta), bool> {
     let start = Instant::now();
     // 建立連線與等待第一個片段共用同一個首 token 期限（S-03.5）
     let first_token_deadline = start + state.config.ai_first_token_timeout;
@@ -256,7 +331,7 @@ async fn attempt(
                 if !out.is_empty() {
                     emitted = true;
                     text.push_str(&out);
-                    let _ = tx.send(delta_event(&out));
+                    state.live.delta(id, &out);
                 }
             }
         }
@@ -265,7 +340,7 @@ async fn attempt(
     if !rest.is_empty() {
         emitted = true;
         text.push_str(&rest);
-        let _ = tx.send(delta_event(&rest));
+        state.live.delta(id, &rest);
     }
     if text.trim().is_empty() {
         return Err(emitted);

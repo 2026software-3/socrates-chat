@@ -90,6 +90,8 @@ pub(crate) struct Detail {
     #[serde(flatten)]
     conversation: Conversation,
     messages: Vec<Message>,
+    /// AI 回覆正在產生；可用 `GET /api/conversations/{id}/stream` 接上
+    generating: bool,
 }
 
 #[utoipa::path(
@@ -255,10 +257,13 @@ pub(crate) async fn detail(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Detail>, ApiError> {
     let conversation = owned_conversation(&state, cu.user.id, id).await?;
+    // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
+    let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;
     Ok(Json(Detail {
         conversation,
         messages,
+        generating,
     }))
 }
 

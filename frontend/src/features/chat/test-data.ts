@@ -32,13 +32,14 @@ export function makeMessage(overrides: Partial<Message> = {}): Message {
 }
 
 export function makeDetail(
-  overrides: Partial<Conversation> = {},
+  overrides: Partial<Conversation> & { generating?: boolean } = {},
   messages: Message[] = [
     makeMessage({ id: 'm1', role: 'student', content: '我認為應該扳動拉桿。' }),
     makeMessage({ id: 'm2', role: 'ai', content: '你說的「應該」是依據什麼原則呢？', question_type: 'clarify' }),
   ],
 ): ConversationDetail {
-  return { ...makeConversation(overrides), messages }
+  const { generating = false, ...conversation } = overrides
+  return { ...makeConversation(conversation), messages, generating }
 }
 
 export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
