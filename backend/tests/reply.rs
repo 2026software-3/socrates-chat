@@ -8,6 +8,7 @@ use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
 use serde_json::{Value, json};
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
 
 struct Setup {
@@ -18,8 +19,12 @@ struct Setup {
 }
 
 async fn setup(pool: PgPool, scripts: Vec<Script>) -> Setup {
+    setup_with_config(pool, scripts, test_config()).await
+}
+
+async fn setup_with_config(pool: PgPool, scripts: Vec<Script>, config: Config) -> Setup {
     let ai = FakeAi::with(scripts);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_config(pool, ai.clone(), config);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     Setup { app, a, ai, conv }
@@ -354,7 +359,17 @@ async fn only_one_reply_stream_per_conversation(pool: PgPool) {
 
 #[sqlx::test]
 async fn second_stream_joins_the_running_reply_instead_of_starting_another(pool: PgPool) {
-    let s = setup(pool.clone(), vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
+    // 兩次首字逾時就是第一個回覆的長度：放寬到第二條串流在平行執行時也來得及接上
+    let config = Config {
+        ai_first_token_timeout: std::time::Duration::from_secs(1),
+        ..test_config()
+    };
+    let s = setup_with_config(
+        pool.clone(),
+        vec![Hang, Hang, Reply(REPLY.to_vec())],
+        config,
+    )
+    .await;
     seed_student_message(&pool, &s.conv, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
 
@@ -386,8 +401,14 @@ async fn wait_until_generating(s: &Setup) {
 
 #[sqlx::test]
 async fn leaving_mid_reply_and_coming_back_resumes_the_same_reply(pool: PgPool) {
-    let pace = std::time::Duration::from_millis(150);
-    let s = setup(pool.clone(), vec![Paced(REPLY.to_vec(), pace)]).await;
+    // 回覆要撐過「斷線、查詢、重新接上」這段時間；測試平行執行時很慢，片段間隔放寬，逾時跟著放寬
+    let pace = std::time::Duration::from_millis(400);
+    let config = Config {
+        ai_first_token_timeout: std::time::Duration::from_secs(2),
+        ai_total_timeout: std::time::Duration::from_secs(5),
+        ..test_config()
+    };
+    let s = setup_with_config(pool.clone(), vec![Paced(REPLY.to_vec(), pace)], config).await;
     assert_eq!(detail(&s).await["generating"], false);
 
     // 送出訊息、收到第一段回覆後就離開頁面（中斷連線）
