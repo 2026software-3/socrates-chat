@@ -209,6 +209,27 @@ async fn first_token_timeout_counts_as_failure_and_retries(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn reasoning_before_the_first_word_does_not_trip_the_first_token_timeout(pool: PgPool) {
+    // 空片段代表模型開始推理（OpenAiProvider 送出）；首字逾時 200 ms，正文在 300 ms 才出現
+    let paced = [""].into_iter().chain(REPLY).collect();
+    let s = setup(
+        pool,
+        vec![Paced(paced, std::time::Duration::from_millis(150))],
+    )
+    .await;
+    let events = say(&s, "嗨").await;
+    assert_eq!(events.last().unwrap().0, "done");
+    assert_eq!(s.ai.request_count(), 1);
+    // 空片段不會變成給學生的 delta
+    assert!(
+        events
+            .iter()
+            .filter(|(n, _)| n == "delta")
+            .all(|(_, d)| !d["text"].as_str().unwrap().is_empty())
+    );
+}
+
+#[sqlx::test]
 async fn nothing_to_reply_when_last_message_is_ai(pool: PgPool) {
     let s = setup(pool, vec![Reply(REPLY.to_vec())]).await;
     let url = format!("/api/conversations/{}/stream", s.conv);

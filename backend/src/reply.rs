@@ -326,6 +326,7 @@ async fn attempt(state: &AppState, id: Uuid, req: &AiRequest) -> Result<(String,
             Err(_) | Ok(Some(Err(_))) => return Err(emitted),
             Ok(None) => break,
             Ok(Some(Ok(chunk))) => {
+                // 空片段（模型開始推理）也算首個 token，但沒有文字可送
                 got_chunk = true;
                 let out = splitter.push(&chunk);
                 if !out.is_empty() {
