@@ -113,6 +113,19 @@ mod tests {
     }
 
     #[test]
+    fn text_without_personal_data_is_not_copied() {
+        // 沒有比對，或比對到但前後緊鄰英數字（不成立）：原字串直接傳回，不重新配置
+        for text in ["為什麼你認為拉桿是對的？", "代號 XA123456789Z"] {
+            let original = text.to_string();
+            let ptr = original.as_ptr();
+            let out = mask(original);
+            assert_eq!(out, text);
+            assert_eq!(out.as_ptr(), ptr, "{text} was copied");
+        }
+        assert_eq!(masked("信箱 a@b.com"), "信箱 [EMAIL]");
+    }
+
+    #[test]
     fn masks_emails() {
         for email in [
             "student@example.com",
