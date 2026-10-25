@@ -5,12 +5,14 @@ use std::{
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{MatchedPath, Request, State},
     http::{HeaderValue, Method, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures_util::StreamExt;
 use serde::Serialize;
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -169,7 +171,8 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
     let path = req.uri().path();
     let is_api = path == "/api" || path.starts_with("/api/");
     let Some(dir) = state.config.frontend_dir.as_ref().filter(|_| !is_api) else {
-        return ApiError::not_found().into_response();
+        // 掃描式的未知路徑會擠掉真正的應用請求，因此不進 ring
+        return request_logs::not_in_ring(ApiError::not_found());
     };
     let spa = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
     match spa.oneshot(req).await {
@@ -187,7 +190,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         .extensions()
         .get::<MatchedPath>()
         .map(MatchedPath::as_str)
-        .unwrap_or("<fallback>")
+        .unwrap_or(request_logs::FALLBACK_ROUTE)
         .to_string();
     let span = tracing::info_span!(
         "http_request",
@@ -203,36 +206,41 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         res.headers_mut().insert("x-request-id", v);
     }
     let status = res.status().as_u16();
-    let duration_ms = started.elapsed().as_millis() as u64;
     let error_code = res
         .extensions()
         .get::<error::ErrorCode>()
-        .map(|code| code.0);
-    // 頁面每 5 秒輪詢；成功的讀取不放入記憶體 ring，以免逐漸淹沒真正的應用請求。
-    // 拒絕／失敗的存取仍保留，stdout 的 tracing event 則一律完整輸出。
-    if route != "/api/admin/logs" || status >= 400 {
-        state.request_logs.push(request_logs::RequestLogEntry {
-            created_at: chrono::Utc::now(),
-            request_id: id.clone(),
-            method: method.to_string(),
-            route: route.clone(),
-            status,
-            duration_ms,
-            error_code: error_code.map(str::to_string),
-        });
+        .map(|code| code.0.to_string());
+    let in_ring = request_logs::kept_in_ring(&res);
+    let entry = request_logs::RequestLogEntry {
+        created_at: chrono::Utc::now(),
+        request_id: id.clone(),
+        method: method.to_string(),
+        route: route.clone(),
+        status,
+        duration_ms: started.elapsed().as_millis() as u64,
+        error_code,
+    };
+    if is_event_stream(&res) {
+        // 串流的結果（最後的 done／error 事件）要等本文讀完才知道，因此記錄延後到本文結束或被丟棄時。
+        let (parts, body) = res.into_parts();
+        let mut log =
+            request_logs::StreamLog::new(state.request_logs.clone(), span, started, entry, in_ring);
+        let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
+            if let Ok(bytes) = &chunk {
+                log.observe(bytes);
+            }
+            chunk
+        }));
+        return Response::from_parts(parts, body);
     }
-    span.in_scope(|| {
-        tracing::info!(
-            request_id = %id,
-            method = %method,
-            route = %route,
-            status,
-            duration_ms,
-            error_code = error_code.unwrap_or(""),
-            "request completed"
-        );
-    });
+    request_logs::record(&state.request_logs, &span, entry, in_ring);
     res
+}
+
+fn is_event_stream(res: &Response) -> bool {
+    res.headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"))
 }
 
 /// CSRF 防護（S-08.2）：會改變狀態的請求，`Origin` 必須等於本站網域。

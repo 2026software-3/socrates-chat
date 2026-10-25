@@ -47,6 +47,39 @@ fn methods_in(chain: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// 去掉 `#[cfg(test)]` 模組：測試裡用的 `.route(` 不是正式路由，不該被當成需要文件的路由。
+/// 模組不一定在檔案最後，所以以大括號配對找出結尾，只移除模組本身。
+fn without_test_modules(src: &str) -> String {
+    let mut out = String::new();
+    let mut rest = src;
+    while let Some(at) = rest.find("#[cfg(test)]") {
+        out.push_str(&rest[..at]);
+        let block = &rest[at..];
+        let Some(open) = block.find('{') else {
+            rest = "";
+            break;
+        };
+        let mut depth = 0;
+        let mut end = block.len();
+        for (i, c) in block[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = &block[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn routes_in_source() -> BTreeSet<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out = BTreeSet::new();
@@ -55,7 +88,7 @@ fn routes_in_source() -> BTreeSet<String> {
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
-        let src = fs::read_to_string(&path).unwrap();
+        let src = without_test_modules(&fs::read_to_string(&path).unwrap());
         for (i, _) in src.match_indices(".route(") {
             let args = balanced(&src, i + ".route".len());
             let start = args.find('"').expect("route path literal") + 1;
