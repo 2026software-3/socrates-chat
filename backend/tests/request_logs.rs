@@ -4,7 +4,8 @@ mod common;
 
 use axum::{
     Router,
-    http::{StatusCode, header},
+    body::Body,
+    http::{Request, StatusCode, header},
 };
 use common::Script::{Fail, Reply};
 use common::*;
@@ -211,4 +212,61 @@ async fn successfully_streamed_reply_is_logged_without_an_error_code(pool: PgPoo
     let streamed = entry(&items, SEND_ROUTE).expect("stream is logged once it ends");
     assert_eq!(streamed["status"], 200);
     assert!(streamed["error_code"].is_null());
+}
+
+/// 帶任意本文與 content-type 的 POST（繞過 `json_req`，才能送出壞掉的請求）。
+fn raw_post(path: &str, cookie: &str, content_type: Option<&str>, body: &str) -> Request<Body> {
+    let mut b = Request::post(path)
+        .header(header::ORIGIN, APP_URL)
+        .header(header::COOKIE, cookie);
+    if let Some(ct) = content_type {
+        b = b.header(header::CONTENT_TYPE, ct);
+    }
+    b.body(Body::from(body.to_string())).unwrap()
+}
+
+#[sqlx::test]
+async fn json_extractor_rejections_use_the_api_error_format_and_log_their_code(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    for (content_type, body, status, code) in [
+        (
+            Some("application/json"),
+            "{not json",
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            None,
+            "{}",
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
+        ),
+        (
+            Some("application/json"),
+            "{}",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_body",
+        ),
+    ] {
+        let res = send(
+            &app,
+            raw_post("/api/topics", &a.teacher, content_type, body),
+        )
+        .await;
+        assert_eq!(res.status(), status, "{body}");
+        let json = json_body(res).await;
+        assert_eq!(json["error"]["code"], code);
+        assert!(
+            json["error"]["request_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+
+        let items = logged(&app, &a).await;
+        let logged_entry = entry(&items, "/api/topics").expect("rejection is logged");
+        assert_eq!(logged_entry["status"], status.as_u16());
+        assert_eq!(logged_entry["error_code"], code);
+    }
 }

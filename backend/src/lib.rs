@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{MatchedPath, Request, State},
-    http::{HeaderValue, Method, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
@@ -135,6 +135,7 @@ pub fn app(state: AppState) -> Router {
                 .custom_html(include_str!("redoc.html")),
         )
         .fallback(fallback)
+        .layer(middleware::from_fn(api_rejections))
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn_with_state(state.clone(), request_id))
@@ -241,6 +242,24 @@ fn is_event_stream(res: &Response) -> bool {
     res.headers()
         .get(header::CONTENT_TYPE)
         .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"))
+}
+
+/// 框架本身的拒絕（`Json`／`Path`／`Query` 解析失敗、方法不符、本文過大）是純文字，沒有 API error code。
+/// 統一轉成標準錯誤格式，讓前端與 request log 都拿得到固定的 code。
+async fn api_rejections(req: Request, next: Next) -> Response {
+    let res = next.run(req).await;
+    if res.extensions().get::<error::ErrorCode>().is_some() {
+        return res;
+    }
+    let (code, message) = match res.status() {
+        StatusCode::BAD_REQUEST => ("bad_request", "請求格式不正確"),
+        StatusCode::METHOD_NOT_ALLOWED => ("method_not_allowed", "不支援此方法"),
+        StatusCode::PAYLOAD_TOO_LARGE => ("payload_too_large", "請求內容過大"),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => ("unsupported_media_type", "不支援的內容類型"),
+        StatusCode::UNPROCESSABLE_ENTITY => ("invalid_body", "請求內容不符合格式"),
+        _ => return res,
+    };
+    ApiError::new(res.status(), code, message).into_response()
 }
 
 /// CSRF 防護（S-08.2）：會改變狀態的請求，`Origin` 必須等於本站網域。
