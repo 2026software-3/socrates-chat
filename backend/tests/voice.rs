@@ -110,9 +110,15 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
     let voice = Arc::new(FakeVoice::default());
     let app = app_with_voice(pool, voice.clone());
     let a = seed_actors(&app).await;
-    for (cookie, status) in [
-        (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
-        (None, StatusCode::UNAUTHORIZED),
+    for (cookie, status, code) in [
+        (
+            Some(a.outsider.as_str()),
+            StatusCode::FORBIDDEN,
+            "not_enrolled",
+        ),
+        (Some(a.teacher.as_str()), StatusCode::FORBIDDEN, "forbidden"),
+        (Some(a.admin.as_str()), StatusCode::FORBIDDEN, "forbidden"),
+        (None, StatusCode::UNAUTHORIZED, "unauthorized"),
     ] {
         let res = send(
             &app,
@@ -125,6 +131,10 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), status);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], code);
+        assert!(body["error"]["request_id"].is_string());
+
         let res = send(
             &app,
             json_req(
@@ -136,6 +146,9 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), status);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], code);
+        assert!(body["error"]["request_id"].is_string());
     }
     assert!(
         voice.calls.lock().unwrap().is_empty(),
