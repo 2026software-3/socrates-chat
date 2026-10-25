@@ -75,6 +75,72 @@ describe('LogsPage', () => {
     }
   })
 
+  it('starts a fresh poll when one has hung without ever answering', async () => {
+    const later = { ...entry, request_id: '33333333-3333-4333-8333-333333333333' }
+    let calls = 0
+    server.use(
+      http.get('/api/admin/logs', async () => {
+        calls += 1
+        if (calls === 2) await new Promise(() => {})
+        return HttpResponse.json({ items: [calls === 1 ? entry : later], capacity: 500 })
+      }),
+    )
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      renderApp(<LogsPage />)
+      expect(await screen.findByText(entry.request_id)).toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(5000))
+      await waitFor(() => expect(calls).toBe(2))
+      await act(() => vi.advanceTimersByTimeAsync(40000))
+      expect(await screen.findByText(later.request_id)).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops polling once the session is rejected', async () => {
+    let calls = 0
+    server.use(
+      http.get('/api/admin/logs', () => {
+        calls += 1
+        if (calls === 1) return HttpResponse.json({ items: [entry], capacity: 500 })
+        return HttpResponse.json({ error: { code: 'unauthorized', request_id: 'r1' } }, { status: 401 })
+      }),
+    )
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      renderApp(<LogsPage />)
+      expect(await screen.findByText(entry.request_id)).toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(5000))
+      await waitFor(() => expect(calls).toBe(2))
+      await act(() => vi.advanceTimersByTimeAsync(30000))
+      expect(calls).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not poll while the tab is hidden', async () => {
+    let calls = 0
+    server.use(
+      http.get('/api/admin/logs', () => {
+        calls += 1
+        return HttpResponse.json({ items: [entry], capacity: 500 })
+      }),
+    )
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    try {
+      renderApp(<LogsPage />)
+      expect(await screen.findByText(entry.request_id)).toBeInTheDocument()
+      await act(() => vi.advanceTimersByTimeAsync(20000))
+      expect(calls).toBe(1)
+    } finally {
+      hidden.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('refreshes the log every five seconds', async () => {
     let calls = 0
     server.use(

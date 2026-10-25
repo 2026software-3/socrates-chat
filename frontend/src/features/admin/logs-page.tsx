@@ -27,6 +27,9 @@ type RequestLogPage = {
   capacity: number
 }
 
+/** 一次讀取超過這個時間仍沒有回應，就視為卡住並重新發出。 */
+const STALL_MS = 30_000
+
 function statusVariant(status: number): 'destructive' | 'outline' | 'secondary' {
   if (status >= 500) return 'destructive'
   if (status >= 400) return 'outline'
@@ -43,18 +46,34 @@ export function LogsPage() {
     [lang],
   )
 
-  // 上一次讀取還沒回來時不再發出新的讀取：重新載入會取消進行中的請求，慢於 5 秒的回應就永遠到不了。
-  const inFlight = useRef(loading)
+  // 工作階段被拒絕（過期或失去管理者角色）後輪詢只會一再被拒絕，停止到使用者按重試為止。
+  const stopped = error?.status === 401 || error?.status === 403
+
+  // 目前這次讀取開始的時間；沒有進行中的讀取時為 null。
+  const loadingSince = useRef<number | null>(null)
   useEffect(() => {
-    inFlight.current = loading
+    if (!loading) loadingSince.current = null
+    else loadingSince.current ??= Date.now()
   }, [loading])
 
   useEffect(() => {
-    const id = window.setInterval(() => {
-      if (!inFlight.current) reload()
-    }, 5000)
-    return () => window.clearInterval(id)
-  }, [reload])
+    if (stopped) return
+    const poll = () => {
+      if (document.hidden) return
+      // 重新載入會取消進行中的請求，慢於 5 秒的回應就永遠到不了：讀取還在進行時不發新的，
+      // 只有卡住太久（沒有回應也沒有錯誤）才放棄它重來。
+      const since = loadingSince.current
+      if (since !== null && Date.now() - since < STALL_MS) return
+      loadingSince.current = Date.now()
+      reload()
+    }
+    const id = window.setInterval(poll, 5000)
+    document.addEventListener('visibilitychange', poll)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', poll)
+    }
+  }, [reload, stopped])
 
   return (
     <Page title={t('admin.logs.title')}>
