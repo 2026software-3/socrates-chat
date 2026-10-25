@@ -67,6 +67,8 @@ pub struct AppState {
     pub ai: Arc<dyn AiProvider>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
+    /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
+    pub live: Arc<reply::LiveReplies>,
 }
 
 impl AppState {
@@ -84,6 +86,7 @@ impl AppState {
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
             voice,
+            live: Arc::default(),
         }
     }
 

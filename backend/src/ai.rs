@@ -65,11 +65,12 @@ pub struct AiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiError;
 
+/// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
-    /// 開始串流回覆；回傳的串流依序給出文字片段。
+    /// 開始串流回覆；回傳的串流依序給出文字片段（見 `AiStream`）。
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError>;
 }
 
@@ -375,6 +376,8 @@ impl OpenAiProvider {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SseItem {
     Delta(String),
+    /// 推理模型的推理內容；文字不保留，只用來表示模型已開始回應
+    Reasoning,
     Done,
     Ignore,
 }
@@ -393,6 +396,14 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
         && !text.is_empty()
     {
         return Ok(SseItem::Delta(text.to_string()));
+    }
+    // OpenRouter 用 `reasoning`，DeepSeek／vLLM 用 `reasoning_content`
+    let delta = &v["choices"][0]["delta"];
+    if ["reasoning", "reasoning_content"]
+        .iter()
+        .any(|k| delta[*k].as_str().is_some_and(|t| !t.is_empty()))
+    {
+        return Ok(SseItem::Reasoning);
     }
     if v["choices"][0]["finish_reason"].is_string() {
         return Ok(SseItem::Done);
@@ -460,6 +471,7 @@ impl AiProvider for OpenAiProvider {
         tokio::spawn(async move {
             let mut bytes = res.bytes_stream();
             let mut decoder = SseDecoder::default();
+            let mut started = false;
             while let Some(chunk) = bytes.next().await {
                 let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
                     Ok(items) => items,
@@ -471,13 +483,22 @@ impl AiProvider for OpenAiProvider {
                 for item in items {
                     match item {
                         SseItem::Delta(t) => {
+                            started = true;
                             if tx.send(Ok(t)).await.is_err() {
+                                return;
+                            }
+                        }
+                        // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
+                        // 讓呼叫端知道模型已在回應，不套用首字逾時
+                        SseItem::Reasoning if !started => {
+                            started = true;
+                            if tx.send(Ok(String::new())).await.is_err() {
                                 return;
                             }
                         }
                         // 看到結束標記才算正常完成
                         SseItem::Done => return,
-                        SseItem::Ignore => {}
+                        SseItem::Reasoning | SseItem::Ignore => {}
                     }
                 }
             }
@@ -873,6 +894,25 @@ mod tests {
         assert_eq!(parse_sse_line(": keep-alive"), Ok(SseItem::Ignore));
         // 壞掉的 JSON 不能被當作正常內容或正常結束
         assert_eq!(parse_sse_line("data: {oops"), Err(AiError));
+    }
+
+    #[test]
+    fn reasoning_deltas_parse_as_reasoning_without_their_text() {
+        // OpenRouter 用 `reasoning`（正文是空字串），DeepSeek／vLLM 用 `reasoning_content`
+        assert_eq!(
+            parse_sse_line(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"想一下\"}}]}"
+            ),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想一下\"}}]}"),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning\":\"\"}}]}"),
+            Ok(SseItem::Ignore)
+        );
     }
 
     #[test]
