@@ -57,6 +57,7 @@ pub mod pagination;
 pub mod password;
 pub mod pii;
 pub mod reply;
+pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
@@ -73,6 +74,8 @@ pub struct AppState {
     pub voice: Arc<dyn VoiceProvider>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
+    /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
+    pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
 }
 
 impl AppState {
@@ -91,6 +94,7 @@ impl AppState {
             ai: Arc::new(MaskingAi::new(ai)),
             voice,
             live: Arc::default(),
+            request_logs: Arc::default(),
         }
     }
 
@@ -119,6 +123,7 @@ pub fn app(state: AppState) -> Router {
         .merge(catalog::routes())
         .merge(chat::routes())
         .merge(reply::routes())
+        .merge(request_logs::routes())
         .merge(summary::routes())
         .merge(voice::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
@@ -130,7 +135,7 @@ pub fn app(state: AppState) -> Router {
         .fallback(fallback)
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
-        .layer(middleware::from_fn(request_id))
+        .layer(middleware::from_fn_with_state(state.clone(), request_id))
         .with_state(state)
 }
 
@@ -174,7 +179,7 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
 }
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
-async fn request_id(req: Request, next: Next) -> Response {
+async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let id = uuid::Uuid::new_v4().to_string();
     let method = req.method().clone();
     // 只記錄路由模板；原始 URL 可能含 email 等個資。
@@ -202,8 +207,20 @@ async fn request_id(req: Request, next: Next) -> Response {
     let error_code = res
         .extensions()
         .get::<error::ErrorCode>()
-        .map(|code| code.0)
-        .unwrap_or("");
+        .map(|code| code.0);
+    // 頁面每 5 秒輪詢；成功的讀取不放入記憶體 ring，以免逐漸淹沒真正的應用請求。
+    // 拒絕／失敗的存取仍保留，stdout 的 tracing event 則一律完整輸出。
+    if route != "/api/admin/logs" || status >= 400 {
+        state.request_logs.push(request_logs::RequestLogEntry {
+            created_at: chrono::Utc::now(),
+            request_id: id.clone(),
+            method: method.to_string(),
+            route: route.clone(),
+            status,
+            duration_ms,
+            error_code: error_code.map(str::to_string),
+        });
+    }
     span.in_scope(|| {
         tracing::info!(
             request_id = %id,
@@ -211,7 +228,7 @@ async fn request_id(req: Request, next: Next) -> Response {
             route = %route,
             status,
             duration_ms,
-            error_code,
+            error_code = error_code.unwrap_or(""),
             "request completed"
         );
     });

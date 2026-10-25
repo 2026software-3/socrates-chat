@@ -278,6 +278,7 @@
 
 - Migration 只往前、採「先擴充、後收縮」；正式環境部署前單獨執行 `sqlx migrate run`；CI 加上 `cargo sqlx prepare --check`。
 - 監控：`/health` 存活、`/ready` 檢查資料庫；JSON 日誌不含敏感內容；列出告警條件。
+- 暫時維運介面（2026-10-26）：系統管理者可查看目前程序記憶體中最新 500 筆安全 request metadata；每 5 秒更新、程序重啟即清空，Docker stdout 仍是完整日誌來源，不讓應用程式讀取 Docker socket。
 - 備份：每日 `pg_dump` 並以公鑰加密，保留 7 份每日＋4 份每週；私鑰離線保存，由 2 位指定的系統管理者各持一份，解密與還原都留紀錄。
 - RPO 24 小時、RTO 4 小時；還原演練每 6 個月一次，並在上線前做一次。
 - 詳見 [`S-09.3-ops-procedures.md`](S-09.3-ops-procedures.md)。
