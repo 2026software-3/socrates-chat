@@ -28,15 +28,7 @@ export type VoiceHost = {
 }
 
 export type VoiceMode = 'off' | 'dictate' | 'converse'
-/**
- * - `idle`：沒有在收音或播放
- * - `listening`：收音中
- * - `countdown`：靜音後的「即將送出」倒數
- * - `waiting`：已送出，等 AI 回覆
- * - `transcribing`：備援辨識已停止錄音，等後端回傳文字
- * - `review`：備援辨識的文字已填入輸入框，等學生確認（倒數或按鈕送出，或再說一段）
- * - `speaking`：播放 AI 語音
- */
+
 type Timers = { silence?: number; countdown?: number; max?: number; hint?: number }
 
 function clearAllTimers(t: Timers) {
@@ -46,6 +38,15 @@ function clearAllTimers(t: Timers) {
   window.clearTimeout(t.hint)
 }
 
+/**
+ * - `idle`：沒有在收音或播放
+ * - `listening`：收音中
+ * - `countdown`：靜音後的「即將送出」倒數
+ * - `waiting`：已送出，等 AI 回覆
+ * - `transcribing`：備援辨識已停止錄音，等後端回傳文字
+ * - `review`：備援辨識的文字已填入輸入框，等學生確認（倒數或按鈕送出，或再說一段）
+ * - `speaking`：播放 AI 語音
+ */
 export type VoicePhase = 'idle' | 'listening' | 'countdown' | 'review' | 'transcribing' | 'waiting' | 'speaking'
 export type VoiceNotice = 'permission' | 'unavailable' | 'failed' | 'speechFailed' | 'hint'
 
