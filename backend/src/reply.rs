@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     panic::AssertUnwindSafe,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
 };
 
 use axum::{
@@ -31,6 +31,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -42,6 +43,7 @@ use crate::{
     auth::RequireStudent,
     chat::{Conversation, Message, load_messages, owned_conversation},
     error::ApiError,
+    mutex::lock,
 };
 
 pub fn routes() -> Router<AppState> {
@@ -123,11 +125,6 @@ impl LiveReplies {
         live.watchers.push(tx);
         Some(rx)
     }
-}
-
-/// 持有鎖的一方 panic 也照常取得：資料只是回覆文字與連線，沒有需要保護的不變量。
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// 嘗試取得這場對話的「正在產生回覆」權利；已有進行中的回覆時回傳 `false`。
@@ -236,15 +233,18 @@ fn spawn_stream(
     }
     let id = conversation.id;
     let reply = state.live.start(id, tx);
-    tokio::spawn(async move {
-        let last = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
-        // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
-        release_generation(&state, id).await;
-        state.live.finish(reply, last);
-    });
+    tokio::spawn(
+        async move {
+            let last = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
+            // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
+            release_generation(&state, id).await;
+            state.live.finish(reply, last);
+        }
+        .in_current_span(),
+    );
     event_stream(rx)
 }
 

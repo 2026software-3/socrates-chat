@@ -117,7 +117,14 @@ describe('app shell', () => {
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '系統維運' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
-    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教室管理', '教師管理', '修課名單', '題目庫'])
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual([
+      '總覽',
+      '教室管理',
+      '教師管理',
+      '修課名單',
+      '題目庫',
+      '執行日誌',
+    ])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })
 

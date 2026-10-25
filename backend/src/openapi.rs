@@ -8,7 +8,7 @@ use utoipa::{
 
 use crate::{
     accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard,
-    error::ErrorBody, reply, roster, roster_store, summary, voice,
+    error::ErrorBody, reply, request_logs, roster, roster_store, summary, voice,
 };
 
 struct SessionCookie;
@@ -126,6 +126,7 @@ impl Modify for SessionCookie {
         catalog::close_activity, catalog::available,
         chat::create, chat::list, chat::detail, chat::remove, chat::send_message,
         reply::stream,
+        request_logs::list,
         summary::end, summary::get_summary, summary::retry, summary::list,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech,
