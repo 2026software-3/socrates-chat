@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -81,21 +82,24 @@ pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
 
 /// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
 pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
-    tokio::spawn(async move {
-        if let Err(e) = generate(&state, id, attempt).await {
-            // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
-            tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
-            // 盡力把這一代標記為失敗，避免永遠停在 pending
-            let _ = sqlx::query(
-                "UPDATE summaries SET status = 'failed', completed_at = now()
-                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
-            )
-            .bind(id)
-            .bind(attempt)
-            .execute(&state.pool)
-            .await;
+    tokio::spawn(
+        async move {
+            if let Err(e) = generate(&state, id, attempt).await {
+                // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
+                tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
+                // 盡力把這一代標記為失敗，避免永遠停在 pending
+                let _ = sqlx::query(
+                    "UPDATE summaries SET status = 'failed', completed_at = now()
+                     WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
+                )
+                .bind(id)
+                .bind(attempt)
+                .execute(&state.pool)
+                .await;
+            }
         }
-    });
+        .in_current_span(),
+    );
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {

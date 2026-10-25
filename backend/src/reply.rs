@@ -31,6 +31,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -236,15 +237,18 @@ fn spawn_stream(
     }
     let id = conversation.id;
     let reply = state.live.start(id, tx);
-    tokio::spawn(async move {
-        let last = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
-        // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
-        release_generation(&state, id).await;
-        state.live.finish(reply, last);
-    });
+    tokio::spawn(
+        async move {
+            let last = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
+            // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
+            release_generation(&state, id).await;
+            state.live.finish(reply, last);
+        }
+        .in_current_span(),
+    );
     event_stream(rx)
 }
 

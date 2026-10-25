@@ -1,8 +1,11 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Instant,
+};
 
 use axum::{
     Json, Router,
-    extract::{Request, State},
+    extract::{MatchedPath, Request, State},
     http::{HeaderValue, Method, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -12,6 +15,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
+use tracing::Instrument;
 use utoipa_redoc::{Redoc, Servable};
 
 use crate::{
@@ -169,13 +173,48 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
     }
 }
 
-/// 為每個請求產生 request ID：放進錯誤回應與 `x-request-id` 標頭。
+/// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
 async fn request_id(req: Request, next: Next) -> Response {
     let id = uuid::Uuid::new_v4().to_string();
-    let mut res = error::REQUEST_ID.scope(id.clone(), next.run(req)).await;
+    let method = req.method().clone();
+    // 只記錄路由模板；原始 URL 可能含 email 等個資。
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or("<fallback>")
+        .to_string();
+    let span = tracing::info_span!(
+        "http_request",
+        request_id = %id,
+        method = %method,
+        route = %route
+    );
+    let started = Instant::now();
+    let mut res = error::REQUEST_ID
+        .scope(id.clone(), next.run(req).instrument(span.clone()))
+        .await;
     if let Ok(v) = HeaderValue::from_str(&id) {
         res.headers_mut().insert("x-request-id", v);
     }
+    let status = res.status().as_u16();
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let error_code = res
+        .extensions()
+        .get::<error::ErrorCode>()
+        .map(|code| code.0)
+        .unwrap_or("");
+    span.in_scope(|| {
+        tracing::info!(
+            request_id = %id,
+            method = %method,
+            route = %route,
+            status,
+            duration_ms,
+            error_code,
+            "request completed"
+        );
+    });
     res
 }
 
