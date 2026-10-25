@@ -261,7 +261,7 @@ pub(crate) struct Credential {
 }
 
 /// 信箱是否屬於教師或管理者（教師清單、`ADMIN_EMAILS` 或已是管理者的使用者）。
-async fn is_staff_email(
+pub(crate) async fn is_staff_email(
     state: &AppState,
     conn: &mut sqlx::PgConnection,
     email: &str,

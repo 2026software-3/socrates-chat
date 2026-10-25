@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::{
     Json, Router,
@@ -22,6 +22,14 @@ use crate::{
     pii::MaskingAi,
     voice::{OpenAiVoice, VoiceProvider},
 };
+
+/// SQL 條件：這場對話沒有進行中的回覆（未 claim，或 claim 已超過 `$2` 秒的逾時上限而視為過期）。
+/// 送出訊息、重試與結束對話共用同一個條件，改一處即同時生效；定義在所有模組之前才能被它們使用。
+macro_rules! generation_unclaimed {
+    () => {
+        "(generating_since IS NULL OR generating_since < now() - make_interval(secs => $2))"
+    };
+}
 
 pub mod accounts;
 pub mod activity_store;
@@ -59,6 +67,8 @@ pub struct AppState {
     pub ai: Arc<dyn AiProvider>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
+    /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
+    pub live: Arc<reply::LiveReplies>,
 }
 
 impl AppState {
@@ -76,6 +86,7 @@ impl AppState {
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
             voice,
+            live: Arc::default(),
         }
     }
 
@@ -131,8 +142,12 @@ async fn redoc_js() -> impl IntoResponse {
     )
 }
 
-async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
-    Json(openapi::document())
+/// 文件在執行期間不會變，只序列化一次。
+async fn openapi_json() -> impl IntoResponse {
+    static DOC: LazyLock<String> = LazyLock::new(|| {
+        serde_json::to_string(&openapi::document()).expect("openapi document serializes")
+    });
+    ([(header::CONTENT_TYPE, "application/json")], DOC.as_str())
 }
 
 async fn health() -> Json<Health> {

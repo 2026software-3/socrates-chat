@@ -90,6 +90,8 @@ pub(crate) struct Detail {
     #[serde(flatten)]
     conversation: Conversation,
     messages: Vec<Message>,
+    /// AI 回覆正在產生；可用 `GET /api/conversations/{id}/stream` 接上
+    generating: bool,
 }
 
 #[utoipa::path(
@@ -255,10 +257,13 @@ pub(crate) async fn detail(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Detail>, ApiError> {
     let conversation = owned_conversation(&state, cu.user.id, id).await?;
+    // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
+    let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;
     Ok(Json(Detail {
         conversation,
         messages,
+        generating,
     }))
 }
 
@@ -294,7 +299,7 @@ pub(crate) async fn send_message(
         Some("speech-openai") => "speech-openai",
         Some(_) => return Err(ApiError::bad_request("invalid_source", "訊息來源不正確")),
     };
-    let conversation = owned_conversation(&state, cu.user.id, id).await?;
+    let mut conversation = owned_conversation(&state, cu.user.id, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
@@ -302,20 +307,19 @@ pub(crate) async fn send_message(
     let mut tx = state.pool.begin().await?;
     // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
     // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
-    let turn: Option<(i32,)> = sqlx::query_as(
+    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
         "UPDATE conversations SET turn_count = turn_count + 1,
                 generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
-         WHERE id = $1 AND status = 'active'
-           AND (generating_since IS NULL
-                OR generating_since < now() - make_interval(secs => $2))
-         RETURNING turn_count",
-    )
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+        " RETURNING turn_count, stage",
+    ))
     .bind(id)
     .bind(state.config.generation_stale_secs())
     .bind(state.config.max_turns as i32)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((turn,)) = turn else {
+    let Some((turn, stage)) = turn else {
         return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
     };
     let m = sqlx::query_as(
@@ -345,7 +349,10 @@ pub(crate) async fn send_message(
         summary::spawn_generation(state.clone(), id, 1);
         return Ok(reply::single_event(first));
     }
-    reply::begin_stream(state, cu.user.id, id, first).await
+    // 回合數與階段取自上面鎖住該列的 UPDATE；其餘欄位建立後不變，不必重新查詢
+    conversation.turn_count = turn;
+    conversation.stage = stage;
+    reply::begin_stream(state, conversation, first).await
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

@@ -28,6 +28,16 @@ export type VoiceHost = {
 }
 
 export type VoiceMode = 'off' | 'dictate' | 'converse'
+
+type Timers = { silence?: number; countdown?: number; max?: number; hint?: number }
+
+function clearAllTimers(t: Timers) {
+  window.clearTimeout(t.silence)
+  window.clearInterval(t.countdown)
+  window.clearTimeout(t.max)
+  window.clearTimeout(t.hint)
+}
+
 /**
  * - `idle`：沒有在收音或播放
  * - `listening`：收音中
@@ -69,7 +79,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const spokenRef = useRef('') // 這次發言辨識到的文字
   const lastReplyRef = useRef<VoiceReply>(undefined)
   const handledReplyRef = useRef<string>(undefined)
-  const timers = useRef<{ silence?: number; countdown?: number; max?: number; hint?: number }>({})
+  const timers = useRef<Timers>({})
 
   useEffect(() => {
     hostRef.current = host
@@ -85,11 +95,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   }, [])
 
   const clearTimers = useCallback(() => {
-    const t = timers.current
-    window.clearTimeout(t.silence)
-    window.clearInterval(t.countdown)
-    window.clearTimeout(t.max)
-    window.clearTimeout(t.hint)
+    clearAllTimers(timers.current)
     timers.current = {}
     setCountdown(0)
   }, [])
@@ -275,11 +281,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     () => () => {
       recRef.current?.stop()
       speakerRef.current?.stop()
-      const t = timers.current
-      window.clearTimeout(t.silence)
-      window.clearInterval(t.countdown)
-      window.clearTimeout(t.max)
-      window.clearTimeout(t.hint)
+      clearAllTimers(timers.current)
     },
     [],
   )

@@ -20,7 +20,7 @@ use crate::{
     classrooms::visible_classroom,
     error::ApiError,
     pagination::{self, Page, Pagination},
-    roster::normalize_email,
+    roster::{is_staff_email, normalize_email},
     roster_store::{self, StudentRow},
 };
 
@@ -78,16 +78,16 @@ pub(crate) async fn list_students(
     }
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
     let search = q.map(pagination::like_pattern);
-    let rows = roster_store::list_students(
-        &state.pool,
-        classroom.id,
-        cursor.as_ref().map(|c| c.0.as_str()),
-        (limit + 1) as i64,
-        search.as_deref(),
-    )
-    .await?;
-    let total =
-        roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()).await?;
+    let (rows, total) = tokio::try_join!(
+        roster_store::list_students(
+            &state.pool,
+            classroom.id,
+            cursor.as_ref().map(|c| c.0.as_str()),
+            (limit + 1) as i64,
+            search.as_deref(),
+        ),
+        roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()),
+    )?;
     let Page { items, next_cursor } = pagination::page(rows, limit, "students", |row| {
         (row.email.clone(), fingerprint.clone())
     })?;
@@ -242,14 +242,7 @@ pub(crate) async fn delete_student(
         ));
     }
     let mut tx = state.pool.begin().await?;
-    let (staff,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1)
-             OR EXISTS (SELECT 1 FROM users WHERE email = $1 AND is_admin)",
-    )
-    .bind(&email)
-    .fetch_one(&mut *tx)
-    .await?;
-    if staff || state.config.admin_emails.contains(&email) {
+    if is_staff_email(&state, &mut tx, &email).await? {
         return Err(ApiError::conflict("not_a_student", "只能刪除學生帳號"));
     }
     // 刪除會連同所有教室的資料一併刪除：教師只能刪除完全屬於自己教室的學生（範圍待確認，S-02.5）；

@@ -229,11 +229,11 @@ pub(crate) struct ActivityPatch {
 }
 
 async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
-    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM topics WHERE id = $1")
+    let (exists,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM topics WHERE id = $1)")
         .bind(id)
         .fetch_one(pool)
         .await?;
-    Ok(n > 0)
+    Ok(exists)
 }
 
 /// 活動分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
@@ -485,13 +485,13 @@ pub(crate) async fn available(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {
-    let activities =
-        activity_store::list_published_for_student(&state.pool, &cu.user.email).await?;
-    let topics = sqlx::query_as(
-        "SELECT id, title, description, category, is_active FROM topics
-         WHERE is_active ORDER BY created_at, id",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let (activities, topics) = tokio::try_join!(
+        activity_store::list_published_for_student(&state.pool, &cu.user.email),
+        sqlx::query_as(
+            "SELECT id, title, description, category, is_active FROM topics
+             WHERE is_active ORDER BY created_at, id",
+        )
+        .fetch_all(&state.pool),
+    )?;
     Ok(Json(Available { activities, topics }))
 }

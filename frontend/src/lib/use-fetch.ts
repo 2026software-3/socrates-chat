@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, isApiError, type ApiError } from '@/lib/api'
+import { api, isAbortError, isApiError, type ApiError } from '@/lib/api'
 import type { Page } from '@/lib/types'
 
 export type FetchState<T> = {
@@ -28,7 +28,7 @@ export function useFetch<T>(path: string | null): FetchState<T> {
         setError(undefined)
       })
       .catch((e: unknown) => {
-        if (e instanceof DOMException && e.name === 'AbortError') return
+        if (isAbortError(e)) return
         setError(isApiError(e) ? e : undefined)
       })
       .finally(() => {
@@ -86,7 +86,7 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
         setError(undefined)
       })
       .catch((e: unknown) => {
-        if (e instanceof DOMException && e.name === 'AbortError') return
+        if (isAbortError(e)) return
         setError(isApiError(e) ? e : undefined)
       })
       .finally(() => {
@@ -108,7 +108,7 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
       .get<P>(`${path}${sep}cursor=${encodeURIComponent(cursor)}`, c.signal)
       .then((next) => setPages((previous) => [...(previous ?? []), next]))
       .catch((e: unknown) => {
-        if (e instanceof DOMException && e.name === 'AbortError') return
+        if (isAbortError(e)) return
         setMoreError(isApiError(e) ? e : undefined)
       })
       .finally(() => {

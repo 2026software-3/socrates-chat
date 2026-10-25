@@ -6,8 +6,7 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream::BoxStream};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -22,6 +21,32 @@ pub const RULES_VERSION: &str = "v1.11/zh-TW";
 pub enum ChatRole {
     User,
     Assistant,
+}
+
+impl ChatRole {
+    /// 資料庫 `messages.role`（`student`／`ai`）對應的角色。
+    pub fn from_db_role(role: &str) -> Self {
+        if role == "student" {
+            Self::User
+        } else {
+            Self::Assistant
+        }
+    }
+}
+
+/// 取出模型輸出中第一個 `{` 到最後一個 `}` 之間的 JSON；找不到或格式不符回傳 `None`。
+fn extract_json<T: DeserializeOwned>(raw: &str) -> Option<T> {
+    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
+    if end < start {
+        return None;
+    }
+    serde_json::from_str(&raw[start..=end]).ok()
+}
+
+/// 去掉前後空白並截到 `max` 個字元；結果為空時回傳 `None`。
+fn clip(s: &str, max: usize) -> Option<String> {
+    let s: String = s.trim().chars().take(max).collect();
+    (!s.is_empty()).then_some(s)
 }
 
 #[derive(Debug, Clone)]
@@ -40,11 +65,12 @@ pub struct AiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiError;
 
+/// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
-    /// 開始串流回覆；回傳的串流依序給出文字片段。
+    /// 開始串流回覆；回傳的串流依序給出文字片段（見 `AiStream`）。
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError>;
 }
 
@@ -86,10 +112,9 @@ impl MetaSplitter {
                     && META_DELIM.starts_with(&self.held[self.held.len() - n..])
             })
             .unwrap_or(0);
-        let cut = self.held.len() - keep;
-        let text = self.held[..cut].to_string();
-        self.held.drain(..cut);
-        text
+        // 送出前段、留下後段：沿用原本的配置，不另外複製
+        let rest = self.held.split_off(self.held.len() - keep);
+        std::mem::replace(&mut self.held, rest)
     }
 
     /// 串流結束：回傳尚未送出的文字與結構化段落。
@@ -131,21 +156,13 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
         advance: bool,
         reason: Option<String>,
     }
-    let parsed = raw
-        .find('{')
-        .zip(raw.rfind('}'))
-        .filter(|(a, b)| a <= b)
-        .and_then(|(a, b)| serde_json::from_str::<Raw>(&raw[a..=b]).ok());
-    match parsed {
+    match extract_json::<Raw>(raw) {
         Some(r) => TurnMeta {
             question_type: r
                 .question_type
                 .filter(|q| QUESTION_TYPES.contains(&q.as_str())),
             advance: r.advance,
-            reason: r
-                .reason
-                .map(|s| s.trim().chars().take(MAX_REASON_CHARS).collect::<String>())
-                .filter(|s| !s.is_empty()),
+            reason: r.reason.and_then(|s| clip(&s, MAX_REASON_CHARS)),
         },
         None => TurnMeta {
             question_type: None,
@@ -319,7 +336,7 @@ impl OpenAiProvider {
     /// 只在尚未開始串流時重試，串流開始後的失敗不會重送（已有部分文字給了學生）。
     async fn send_with_failover(
         &self,
-        body: &serde_json::Value,
+        body: &(impl Serialize + Sync),
     ) -> Result<reqwest::Response, AiError> {
         let mut server_errored: Vec<usize> = Vec::new();
         for _ in 0..=MAX_KEY_RETRIES {
@@ -359,6 +376,8 @@ impl OpenAiProvider {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SseItem {
     Delta(String),
+    /// 推理模型的推理內容；文字不保留，只用來表示模型已開始回應
+    Reasoning,
     Done,
     Ignore,
 }
@@ -378,6 +397,14 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
     {
         return Ok(SseItem::Delta(text.to_string()));
     }
+    // OpenRouter 用 `reasoning`，DeepSeek／vLLM 用 `reasoning_content`
+    let delta = &v["choices"][0]["delta"];
+    if ["reasoning", "reasoning_content"]
+        .iter()
+        .any(|k| delta[*k].as_str().is_some_and(|t| !t.is_empty()))
+    {
+        return Ok(SseItem::Reasoning);
+    }
     if v["choices"][0]["finish_reason"].is_string() {
         return Ok(SseItem::Done);
     }
@@ -394,11 +421,14 @@ impl SseDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<SseItem>, AiError> {
         self.buf.extend_from_slice(bytes);
         let mut items = Vec::new();
-        while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = self.buf.drain(..=i).collect();
-            let line = std::str::from_utf8(&line).map_err(|_| AiError)?;
+        // 逐行就地解碼，最後一次丟掉已處理的部分，不為每一行配置新的緩衝
+        let mut start = 0;
+        while let Some(i) = self.buf[start..].iter().position(|&b| b == b'\n') {
+            let line = std::str::from_utf8(&self.buf[start..start + i]).map_err(|_| AiError)?;
             items.push(parse_sse_line(line.trim_end())?);
+            start += i + 1;
         }
+        self.buf.drain(..start);
         Ok(items)
     }
 }
@@ -406,20 +436,42 @@ impl SseDecoder {
 #[async_trait]
 impl AiProvider for OpenAiProvider {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        let mut messages = vec![json!({"role": "system", "content": req.system})];
-        messages.extend(req.messages.iter().map(|m| {
-            json!({
-                "role": if m.role == ChatRole::User { "user" } else { "assistant" },
-                "content": m.content,
-            })
-        }));
-        let res = self
-            .send_with_failover(&json!({"model": self.model, "stream": true, "messages": messages}))
-            .await?;
+        // 直接借用請求的文字序列化，不先複製成 `serde_json::Value`；欄位依字母排列，
+        // 與先前 `json!`（BTreeMap）輸出的位元組相同
+        #[derive(Serialize)]
+        struct Body<'a> {
+            messages: Vec<Msg<'a>>,
+            model: &'a str,
+            stream: bool,
+        }
+        #[derive(Serialize)]
+        struct Msg<'a> {
+            content: &'a str,
+            role: &'static str,
+        }
+        let system = Msg {
+            content: &req.system,
+            role: "system",
+        };
+        let turns = req.messages.iter().map(|m| Msg {
+            content: &m.content,
+            role: if m.role == ChatRole::User {
+                "user"
+            } else {
+                "assistant"
+            },
+        });
+        let body = Body {
+            messages: std::iter::once(system).chain(turns).collect(),
+            model: &self.model,
+            stream: true,
+        };
+        let res = self.send_with_failover(&body).await?;
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
             let mut bytes = res.bytes_stream();
             let mut decoder = SseDecoder::default();
+            let mut started = false;
             while let Some(chunk) = bytes.next().await {
                 let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
                     Ok(items) => items,
@@ -431,13 +483,22 @@ impl AiProvider for OpenAiProvider {
                 for item in items {
                     match item {
                         SseItem::Delta(t) => {
+                            started = true;
                             if tx.send(Ok(t)).await.is_err() {
+                                return;
+                            }
+                        }
+                        // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
+                        // 讓呼叫端知道模型已在回應，不套用首字逾時
+                        SseItem::Reasoning if !started => {
+                            started = true;
+                            if tx.send(Ok(String::new())).await.is_err() {
                                 return;
                             }
                         }
                         // 看到結束標記才算正常完成
                         SseItem::Done => return,
-                        SseItem::Ignore => {}
+                        SseItem::Reasoning | SseItem::Ignore => {}
                     }
                 }
             }
@@ -481,6 +542,17 @@ pub async fn collect(
             }
         }
     }
+}
+
+/// 背景用途（總結、主張分組）的 `collect`：只套用完整回覆上限，不套用首個 token 逾時。
+/// 推理模型常先推理數十秒才輸出正文，背景工作沒有人在畫面前等第一個字，
+/// 套用首字逾時只會讓它無故失敗。
+pub async fn collect_background(
+    ai: &dyn AiProvider,
+    req: AiRequest,
+    total: std::time::Duration,
+) -> Result<String, AiError> {
+    collect(ai, req, total, total).await
 }
 
 /// 單一總結欄位的長度上限（字元）。
@@ -534,22 +606,11 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
         reasons: String,
         claim: Option<String>,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
-    let clean = |s: String| -> Option<String> {
-        let s: String = s.trim().chars().take(MAX_SUMMARY_FIELD_CHARS).collect();
-        (!s.is_empty()).then_some(s)
-    };
+    let r: Raw = extract_json(raw)?;
     Some(Summary {
-        stance: clean(r.stance)?,
-        reasons: clean(r.reasons)?,
-        claim: r
-            .claim
-            .map(|c| c.trim().chars().take(MAX_CLAIM_CHARS).collect::<String>())
-            .filter(|c| !c.is_empty()),
+        stance: clip(&r.stance, MAX_SUMMARY_FIELD_CHARS)?,
+        reasons: clip(&r.reasons, MAX_SUMMARY_FIELD_CHARS)?,
+        claim: r.claim.and_then(|c| clip(&c, MAX_CLAIM_CHARS)),
     })
 }
 
@@ -581,15 +642,8 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
     struct Raw {
         group: String,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
-    let name: String = r.group.trim().chars().take(MAX_GROUP_NAME_CHARS).collect();
-    if name.is_empty() {
-        return None;
-    }
+    let r: Raw = extract_json(raw)?;
+    let name = clip(&r.group, MAX_GROUP_NAME_CHARS)?;
     let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
     Some(
         existing
@@ -630,18 +684,13 @@ pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<u
     struct Raw {
         groups: Vec<Group>,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
+    let r: Raw = extract_json(raw)?;
     let mut seen = vec![false; claim_count];
     let mut out: Vec<(String, Vec<usize>)> = Vec::new();
     for g in r.groups {
-        let name: String = g.name.trim().chars().take(MAX_GROUP_NAME_CHARS).collect();
-        if name.is_empty() {
+        let Some(name) = clip(&g.name, MAX_GROUP_NAME_CHARS) else {
             continue;
-        }
+        };
         let members: Vec<usize> = g
             .members
             .into_iter()
@@ -848,6 +897,25 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_deltas_parse_as_reasoning_without_their_text() {
+        // OpenRouter 用 `reasoning`（正文是空字串），DeepSeek／vLLM 用 `reasoning_content`
+        assert_eq!(
+            parse_sse_line(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"想一下\"}}]}"
+            ),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想一下\"}}]}"),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning\":\"\"}}]}"),
+            Ok(SseItem::Ignore)
+        );
+    }
+
+    #[test]
     fn decoder_handles_multibyte_char_split_across_chunks() {
         let line = "data: {\"choices\":[{\"delta\":{\"content\":\"正義\"}}]}\n";
         let bytes = line.as_bytes();
@@ -926,5 +994,42 @@ mod tests {
         let p = build_system_prompt(&PromptContext { turn: 15, ..c });
 
         assert!(p.contains("開始引導學生整理"));
+    }
+
+    /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
+    struct SlowStart(std::time::Duration);
+
+    #[async_trait]
+    impl AiProvider for SlowStart {
+        async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+            let delay = self.0;
+            Ok(futures_util::stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok("{}".to_string())
+            })
+            .boxed())
+        }
+    }
+
+    fn any_request() -> AiRequest {
+        AiRequest {
+            system: String::new(),
+            messages: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_waits_for_a_slow_first_chunk_within_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_millis(300));
+        let text = collect_background(&ai, any_request(), std::time::Duration::from_secs(2)).await;
+        assert_eq!(text.unwrap(), "{}");
+    }
+
+    #[tokio::test]
+    async fn collect_fails_past_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_secs(2));
+        let text =
+            collect_background(&ai, any_request(), std::time::Duration::from_millis(200)).await;
+        assert!(text.is_err());
     }
 }

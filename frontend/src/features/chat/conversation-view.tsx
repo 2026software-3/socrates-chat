@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -59,6 +59,15 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   )
   const initialMessages = useMemo(() => toInitialMessages(detail), [detail])
   const runtime = useLocalRuntime(adapter, { initialMessages })
+
+  // 離開對話頁時回覆還在產生：回來後直接接上（只重開串流），不必按重試
+  const resumed = useRef(false)
+  useEffect(() => {
+    const last = detail.messages.at(-1)
+    if (resumed.current || !detail.generating || last?.role !== 'student') return
+    resumed.current = true
+    runtime.thread.startRun({ parentId: last.id })
+  }, [detail, runtime])
 
   const ended = status === 'ended'
 

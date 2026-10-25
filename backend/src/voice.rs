@@ -157,7 +157,7 @@ impl VoiceProvider for OpenAiVoice {
         }
         res.bytes()
             .await
-            .map(|b| b.to_vec())
+            .map(Vec::from)
             .map_err(|_| VoiceError::Failed)
     }
 }
@@ -265,7 +265,8 @@ pub(crate) async fn transcribe(
     }
     let text = state
         .voice
-        .transcribe(body.0.to_vec(), mime, language)
+        // 請求本體獨占時直接取得緩衝，不複製（最多 10 MB）
+        .transcribe(Vec::from(body.0), mime, language)
         .await
         .map_err(voice_error)?;
     Ok(Json(Transcript { text }))

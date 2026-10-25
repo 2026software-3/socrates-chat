@@ -28,7 +28,7 @@ describe('teacher topic bank', () => {
         return HttpResponse.json(created, { status: 201 })
       }),
     )
-    renderTeacherPage(<TopicsPage base="/api/topics" />)
+    renderTeacherPage(<TopicsPage />)
     expect(await screen.findByText('電車難題')).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('標題'), '說謊可以嗎')
     await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
@@ -45,7 +45,7 @@ describe('teacher topic bank', () => {
         return HttpResponse.json({ ...trolley, ...((await request.json()) as object) })
       }),
     )
-    renderTeacherPage(<TopicsPage base="/api/topics" />)
+    renderTeacherPage(<TopicsPage />)
     await userEvent.click(await screen.findByRole('switch', { name: '啟用「電車難題」' }))
     await screen.findByText('已停用')
     expect(url).toBe('/api/topics/t1')

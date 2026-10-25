@@ -103,6 +103,8 @@ pub enum Script {
     FailAfter(Vec<&'static str>),
     /// 永遠不回應
     Hang,
+    /// 每個片段前都先等一段時間，模擬回覆產生到一半
+    Paced(Vec<&'static str>, std::time::Duration),
 }
 
 /// 假的 AI：依序執行腳本（用完後一律失敗），並記錄收到的請求。
@@ -142,6 +144,12 @@ impl AiProvider for FakeAi {
             )
             .boxed()),
             Some(Script::Hang) => std::future::pending().await,
+            Some(Script::Paced(chunks, delay)) => Ok(stream::iter(chunks)
+                .then(move |c| async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(c.to_string())
+                })
+                .boxed()),
             Some(Script::Fail) | None => Err(AiError),
         }
     }
