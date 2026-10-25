@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 const SEND_ROUTE: &str = "/api/conversations/{id}/messages";
+/// 會被記錄的公開路由，用來填滿 ring（`/health` 探測不進 ring）。
+const FILLER: &str = "/api/openapi.json";
 
 /// 管理者目前看得到的 request log（最新在前）。
 async fn logged(app: &Router, a: &Actors) -> Vec<Value> {
@@ -21,12 +23,9 @@ async fn logged(app: &Router, a: &Actors) -> Vec<Value> {
 }
 
 /// 用健康檢查填滿整個 ring（500 筆），之後的記錄都會擠掉先前的內容。
-async fn fill_ring_with_health_checks(app: &Router) {
+async fn fill_ring(app: &Router) {
     for _ in 0..500 {
-        assert_eq!(
-            send(app, get("/health", None)).await.status(),
-            StatusCode::OK
-        );
+        assert_eq!(send(app, get(FILLER, None)).await.status(), StatusCode::OK);
     }
 }
 
@@ -39,7 +38,7 @@ async fn admin_sees_recent_sanitized_request_logs_newest_first(pool: PgPool) {
     let app = test_app(pool);
     let actors = seed_actors(&app).await;
 
-    let health = send(&app, get("/health", None)).await;
+    let health = send(&app, get(FILLER, None)).await;
     let health_id = health.headers()[header::HeaderName::from_static("x-request-id")]
         .to_str()
         .unwrap()
@@ -59,7 +58,7 @@ async fn admin_sees_recent_sanitized_request_logs_newest_first(pool: PgPool) {
     let items = body["items"].as_array().unwrap();
     assert_eq!(items[0]["request_id"], health_id);
     assert_eq!(items[0]["method"], "GET");
-    assert_eq!(items[0]["route"], "/health");
+    assert_eq!(items[0]["route"], FILLER);
     assert_eq!(items[0]["status"], 200);
     assert!(items[0]["error_code"].is_null());
     assert!(items[0]["duration_ms"].is_u64());
@@ -96,23 +95,20 @@ async fn request_logs_keep_only_the_latest_five_hundred_entries(pool: PgPool) {
     let actors = seed_actors(&app).await;
 
     for _ in 0..501 {
-        assert_eq!(
-            send(&app, get("/health", None)).await.status(),
-            StatusCode::OK
-        );
+        assert_eq!(send(&app, get(FILLER, None)).await.status(), StatusCode::OK);
     }
 
     let body = json_body(send(&app, get("/api/admin/logs", Some(&actors.admin))).await).await;
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 500);
-    assert!(items.iter().all(|entry| entry["route"] == "/health"));
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
 }
 
 #[sqlx::test]
 async fn rejected_admin_log_polls_do_not_evict_recent_history(pool: PgPool) {
     let app = test_app(pool);
     let actors = seed_actors(&app).await;
-    fill_ring_with_health_checks(&app).await;
+    fill_ring(&app).await;
 
     // 過期分頁的輪詢（401）與非管理者的輪詢（403）反覆發生
     for cookie in [
@@ -130,14 +126,14 @@ async fn rejected_admin_log_polls_do_not_evict_recent_history(pool: PgPool) {
 
     let items = logged(&app, &actors).await;
     assert_eq!(items.len(), 500);
-    assert!(items.iter().all(|entry| entry["route"] == "/health"));
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
 }
 
 #[sqlx::test]
 async fn unknown_path_404s_do_not_evict_recent_history(pool: PgPool) {
     let app = test_app(pool);
     let actors = seed_actors(&app).await;
-    fill_ring_with_health_checks(&app).await;
+    fill_ring(&app).await;
 
     for i in 0..5 {
         let res = send(&app, get(&format!("/probe/{i}"), None)).await;
@@ -146,7 +142,7 @@ async fn unknown_path_404s_do_not_evict_recent_history(pool: PgPool) {
 
     let items = logged(&app, &actors).await;
     assert_eq!(items.len(), 500);
-    assert!(items.iter().all(|entry| entry["route"] == "/health"));
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
 }
 
 #[sqlx::test]
@@ -269,4 +265,80 @@ async fn json_extractor_rejections_use_the_api_error_format_and_log_their_code(p
         assert_eq!(logged_entry["status"], status.as_u16());
         assert_eq!(logged_entry["error_code"], code);
     }
+}
+
+/// 掛上暫存前端目錄的 app（`/` 與 `/assets/app.js` 由 fallback 提供）。
+fn app_with_frontend(pool: PgPool) -> Router {
+    let dir = std::env::temp_dir().join(format!("socrates-fe-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html><title>SPA</title>").unwrap();
+    std::fs::write(dir.join("assets/app.js"), "console.log('hi')").unwrap();
+    let mut config = test_config();
+    config.frontend_dir = Some(dir);
+    test_app_with_config(pool, FakeAi::with(vec![]), config)
+}
+
+#[sqlx::test]
+async fn probes_static_files_and_unmatched_requests_do_not_evict_recent_history(pool: PgPool) {
+    let app = app_with_frontend(pool);
+    let a = seed_actors(&app).await;
+    fill_ring(&app).await;
+
+    for path in [
+        "/",
+        "/assets/app.js",
+        "/some/spa/page",
+        "/health",
+        "/health",
+    ] {
+        assert_eq!(
+            send(&app, get(path, None)).await.status(),
+            StatusCode::OK,
+            "{path}"
+        );
+    }
+    // 沒帶 Origin 的狀態變更請求打到未知路徑：被 CSRF 檢查擋下，仍然不進 ring
+    for i in 0..3 {
+        let req = Request::post(format!("/probe/{i}"))
+            .header(header::COOKIE, &a.student)
+            .body(Body::empty())
+            .unwrap();
+        let res = send(&app, req).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    let items = logged(&app, &a).await;
+    assert_eq!(items.len(), 500);
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
+}
+
+#[sqlx::test]
+async fn method_not_allowed_on_the_log_route_keeps_allow_and_stays_out_of_the_ring(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    let res = send(
+        &app,
+        raw_post("/api/admin/logs", &a.admin, Some("application/json"), "{}"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(res.headers().contains_key(header::ALLOW));
+    assert_eq!(json_body(res).await["error"]["code"], "method_not_allowed");
+
+    let items = logged(&app, &a).await;
+    assert!(entry(&items, "/api/admin/logs").is_none());
+}
+
+#[sqlx::test]
+async fn rejections_outside_the_api_are_left_alone(pool: PgPool) {
+    let app = test_app(pool);
+    let res = send(
+        &app,
+        raw_post("/health", "sid=none", Some("application/json"), "{}"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(res.headers().contains_key(header::ALLOW));
+    assert!(!json_body(res).await["error"]["code"].is_string());
 }

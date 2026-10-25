@@ -53,7 +53,9 @@ pub mod dashboard;
 pub mod error;
 pub mod identity;
 pub mod key_pool;
+pub mod logging;
 pub mod login_rate_limit;
+pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
 pub mod password;
@@ -162,18 +164,18 @@ async fn openapi_json() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], DOC.as_str())
 }
 
-async fn health() -> Json<Health> {
-    Json(Health { status: "ok" })
+/// 健康檢查會被外部探測器頻繁呼叫，不進 request log ring（stdout 仍輸出）。
+async fn health() -> Response {
+    request_logs::not_in_ring(Json(Health { status: "ok" }))
 }
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
 /// 找不到的檔案退回 `index.html`（前端路由，S-08.1）。
 async fn fallback(State(state): State<AppState>, req: Request) -> Response {
     let path = req.uri().path();
-    let is_api = path == "/api" || path.starts_with("/api/");
+    let is_api = is_api_path(path);
     let Some(dir) = state.config.frontend_dir.as_ref().filter(|_| !is_api) else {
-        // 掃描式的未知路徑會擠掉真正的應用請求，因此不進 ring
-        return request_logs::not_in_ring(ApiError::not_found());
+        return ApiError::not_found().into_response();
     };
     let spa = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
     match spa.oneshot(req).await {
@@ -211,12 +213,14 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         .extensions()
         .get::<error::ErrorCode>()
         .map(|code| code.0.to_string());
-    let in_ring = request_logs::kept_in_ring(&res);
+    // 沒有對應路由的請求（掃描、前端靜態檔、被 CSRF 擋下的未知路徑）會擠掉真正的應用請求，不進 ring；
+    // 其餘由路由或處理函式自己標記。stdout 的 tracing event 一律輸出。
+    let in_ring = route != request_logs::FALLBACK_ROUTE && request_logs::kept_in_ring(&res);
     let entry = request_logs::RequestLogEntry {
         created_at: chrono::Utc::now(),
-        request_id: id.clone(),
+        request_id: id,
         method: method.to_string(),
-        route: route.clone(),
+        route,
         status,
         duration_ms: started.elapsed().as_millis() as u64,
         error_code,
@@ -244,11 +248,17 @@ fn is_event_stream(res: &Response) -> bool {
         .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"))
 }
 
+fn is_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
 /// 框架本身的拒絕（`Json`／`Path`／`Query` 解析失敗、方法不符、本文過大）是純文字，沒有 API error code。
-/// 統一轉成標準錯誤格式，讓前端與 request log 都拿得到固定的 code。
+/// `/api` 底下統一轉成標準錯誤格式，讓前端與 request log 都拿得到固定的 code；
+/// 原回應的標頭（例如 405 的 `Allow`）與 extension（例如不進 ring 的標記）都保留。
 async fn api_rejections(req: Request, next: Next) -> Response {
+    let is_api = is_api_path(req.uri().path());
     let res = next.run(req).await;
-    if res.extensions().get::<error::ErrorCode>().is_some() {
+    if !is_api || res.extensions().get::<error::ErrorCode>().is_some() {
         return res;
     }
     let (code, message) = match res.status() {
@@ -259,7 +269,15 @@ async fn api_rejections(req: Request, next: Next) -> Response {
         StatusCode::UNPROCESSABLE_ENTITY => ("invalid_body", "請求內容不符合格式"),
         _ => return res,
     };
-    ApiError::new(res.status(), code, message).into_response()
+    let (original, _) = res.into_parts();
+    let mut replaced = ApiError::new(original.status, code, message).into_response();
+    for (name, value) in &original.headers {
+        if name != header::CONTENT_TYPE && name != header::CONTENT_LENGTH {
+            replaced.headers_mut().append(name.clone(), value.clone());
+        }
+    }
+    replaced.extensions_mut().extend(original.extensions);
+    replaced
 }
 
 /// CSRF 防護（S-08.2）：會改變狀態的請求，`Origin` 必須等於本站網域。

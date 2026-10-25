@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     panic::AssertUnwindSafe,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
 };
 
 use axum::{
@@ -43,6 +43,7 @@ use crate::{
     auth::RequireStudent,
     chat::{Conversation, Message, load_messages, owned_conversation},
     error::ApiError,
+    mutex::lock,
 };
 
 pub fn routes() -> Router<AppState> {
@@ -124,11 +125,6 @@ impl LiveReplies {
         live.watchers.push(tx);
         Some(rx)
     }
-}
-
-/// 持有鎖的一方 panic 也照常取得：資料只是回覆文字與連線，沒有需要保護的不變量。
-pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// 嘗試取得這場對話的「正在產生回覆」權利；已有進行中的回覆時回傳 `false`。

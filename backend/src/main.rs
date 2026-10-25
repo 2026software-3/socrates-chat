@@ -2,16 +2,14 @@ use std::sync::Arc;
 
 use socrates_chat_backend::{
     AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config,
-    identity::GoogleIdentity, password, summary,
+    identity::GoogleIdentity, logging, password, summary,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .json()
-        .with_ansi(false)
+    logging::json_subscriber()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 

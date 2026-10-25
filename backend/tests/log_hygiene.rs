@@ -70,10 +70,8 @@ async fn failing_ai_base_url() -> String {
 #[sqlx::test]
 async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) {
     let logs = Captured::default();
-    tracing_subscriber::fmt()
-        .json()
+    socrates_chat_backend::logging::json_subscriber()
         .with_writer(logs.clone())
-        .with_ansi(false)
         .with_max_level(tracing::Level::TRACE)
         .init();
 
@@ -139,6 +137,22 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
                 && fields.get("request_id") == Some(&json!(login_request_id))
         })
         .expect("每個 request 都應以回應的 x-request-id 留下完成紀錄");
+    // 沒有錯誤的 request 不輸出 error_code（與 API 的 null 一致），而不是空字串
+    let completions: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| entry.get("fields"))
+        .filter(|fields| fields.get("message") == Some(&json!("request completed")))
+        .collect();
+    assert!(
+        completions
+            .iter()
+            .all(|f| f.get("error_code") != Some(&json!("")))
+    );
+    assert!(
+        completions
+            .iter()
+            .any(|f| { f.get("status") == Some(&json!(200)) && f.get("error_code").is_none() })
+    );
     assert_eq!(request_fields["method"], "POST");
     assert_eq!(request_fields["route"], "/api/auth/login");
     assert_eq!(request_fields["status"], 401);
