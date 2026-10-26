@@ -1,9 +1,14 @@
-"""偵測 Whisper 把 initial_prompt 當成辨識結果吐出來的情況（無語音或聲音很短、很不清楚時會發生）。"""
+"""initial_prompt 的選擇，以及偵測 Whisper 把它當成辨識結果吐出來的情況（無語音或聲音很短、很不清楚時會發生）。"""
 import re
 
 # 輸出中有多少比例的字落在「也出現在提示詞裡的連續片段（至少 2 字）」，達到才算幾乎全是提示詞的內容
 COVERAGE = 0.9
 MIN_PIECE = 2
+
+
+def pick_prompt(request_prompt, default_prompt):
+    """請求帶的 prompt 優先，其次是設定的預設值；兩者都沒有就不帶（回傳 None）。"""
+    return (request_prompt or "").strip() or (default_prompt or "").strip() or None
 
 
 def _normalize(text):

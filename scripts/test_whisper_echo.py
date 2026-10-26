@@ -1,7 +1,7 @@
-"""whisper_echo 的單元測試。執行：python3 scripts/test_whisper_echo.py"""
+"""whisper_echo 的單元測試（提示詞過濾與提示詞選擇）。執行：python3 scripts/test_whisper_echo.py"""
 import unittest
 
-from whisper_echo import is_prompt_echo
+from whisper_echo import is_prompt_echo, pick_prompt
 
 PROMPT = "蘇格拉底、柏拉圖、產婆術、未經檢視的人生、無知之知、德爾菲神諭、詰問法、美德即知識。"
 
@@ -44,6 +44,23 @@ class PromptEchoTest(unittest.TestCase):
     def test_known_false_positive_a_list_made_only_of_terms(self):
         # 已知限制：學生只念出幾個術語並用頓號隔開，會被當成洩漏
         self.assertTrue(is_prompt_echo("蘇格拉底、柏拉圖", PROMPT))
+
+
+class PickPromptTest(unittest.TestCase):
+    def test_no_request_prompt_and_no_default_means_no_prompt(self):
+        # 預設不帶提示詞：沒有請求的 prompt、環境變數也沒設，就不要用
+        for request in [None, "", "   "]:
+            self.assertIsNone(pick_prompt(request, ""), repr(request))
+
+    def test_request_prompt_is_used(self):
+        self.assertEqual(pick_prompt("產婆術、詰問法", ""), "產婆術、詰問法")
+
+    def test_request_prompt_wins_over_the_configured_default(self):
+        self.assertEqual(pick_prompt("產婆術", "蘇格拉底"), "產婆術")
+
+    def test_configured_default_applies_only_when_the_request_has_none(self):
+        self.assertEqual(pick_prompt(None, "蘇格拉底"), "蘇格拉底")
+        self.assertEqual(pick_prompt("", "蘇格拉底"), "蘇格拉底")
 
 
 if __name__ == "__main__":
