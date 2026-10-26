@@ -197,14 +197,14 @@ pub(crate) async fn create(
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
     params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的")),
-    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody))
+    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Query(query): Query<ConversationQuery>,
 ) -> Result<Json<Page<Conversation>>, ApiError> {
-    let archived = query.archived.as_deref() == Some("true");
+    let archived = pagination::parse_archived(query.archived.as_deref())?;
     let query = query.page;
     let limit = query.limit()?;
     let cursor: Option<(DateTime<Utc>, Uuid)> = query.cursor("conversations")?;

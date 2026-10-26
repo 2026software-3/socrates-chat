@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/auth/auth-context'
 import { errorText, useT } from '@/i18n'
-import { api } from '@/lib/api'
-import type { Available, Conversation } from '@/lib/types'
+import { api, isApiError } from '@/lib/api'
+import type { Available, Conversation, Page } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 type Source = { activity_id: string } | { topic_id: string }
@@ -19,6 +19,16 @@ type Item = {
   description: string
   category?: string | null
   source: Source
+}
+
+/** 自己是否有封存的對話屬於這個活動；查不到（含請求失敗）就當作沒有。 */
+async function hasArchivedConversation(activityId: string): Promise<boolean> {
+  try {
+    const page = await api.get<Page<Conversation>>('/api/conversations?archived=true&limit=200')
+    return page.items.some((c) => c.activity_id === activityId)
+  } catch {
+    return false
+  }
 }
 
 /** 學生選擇討論來源：教師活動與題庫分成兩區（F-04.1）。 */
@@ -47,6 +57,13 @@ export function AvailablePage() {
       const created = await api.post<Conversation>('/api/conversations', item.source)
       navigate(`/conversations/${created.id}`)
     } catch (e) {
+      // 這個活動的對話被自己封存了：清單預設看不到它，直接帶去「已封存」檢視
+      if (isApiError(e) && e.code === 'activity_already_started' && 'activity_id' in item.source) {
+        if (await hasArchivedConversation(item.source.activity_id)) {
+          navigate('/conversations?archived=true')
+          return
+        }
+      }
       setStartError(e)
       reload() // 來源可能剛被關閉，重新載入清單
     } finally {

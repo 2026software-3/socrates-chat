@@ -224,8 +224,8 @@ pub async fn find_startable_at(
 }
 
 /// 封存或復原活動；活動不存在或不在操作者可管理的教室時回 `None`。
-pub async fn set_archived_visible(
-    pool: &PgPool,
+pub async fn set_archived_visible<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     actor_id: Uuid,
     is_admin: bool,

@@ -426,3 +426,213 @@ async fn the_deleted_conversation_count_ignores_personal_practice(pool: PgPool) 
     // 個人練習不受影響
     assert_eq!(count(&pool, "conversations").await, 2);
 }
+
+#[sqlx::test]
+async fn delete_without_a_valid_body_is_a_400_after_the_404_check(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let activity = published_activity_with_topic(&app, &a, "題").await;
+    let missing = uuid::Uuid::new_v4();
+    for (path, absent) in [
+        (
+            format!("/api/activities/{activity}"),
+            format!("/api/activities/{missing}"),
+        ),
+        (
+            format!("/api/classrooms/{}", a.classroom),
+            format!("/api/classrooms/{missing}"),
+        ),
+    ] {
+        // 沒有 body、body 不是 JSON、缺少確認欄位：一律是專案格式的 400
+        for req in [
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(&path)
+                .header(axum::http::header::ORIGIN, APP_URL)
+                .header(axum::http::header::COOKIE, &a.teacher)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(&path)
+                .header(axum::http::header::ORIGIN, APP_URL)
+                .header(axum::http::header::COOKIE, &a.teacher)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from("not json"))
+                .unwrap(),
+            json_req("DELETE", &path, Some(&a.teacher), Some(json!({}))),
+        ] {
+            let res = send(&app, req).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{path}");
+            assert_eq!(
+                json_body(res).await["error"]["code"],
+                "confirmation_mismatch"
+            );
+        }
+        // 不存在的對象仍然是 404，不受 body 影響
+        let res = send(
+            &app,
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(&absent)
+                .header(axum::http::header::ORIGIN, APP_URL)
+                .header(axum::http::header::COOKIE, &a.teacher)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{absent}");
+    }
+    assert_eq!(count(&pool, "classrooms").await, 1);
+    assert_eq!(count(&pool, "activities").await, 1);
+}
+
+#[sqlx::test]
+async fn archived_filter_is_strict(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    for (path, cookie) in [
+        ("/api/activities", &a.teacher),
+        ("/api/conversations", &a.student),
+    ] {
+        for ok in ["true", "false"] {
+            let res = send(&app, get(&format!("{path}?archived={ok}"), Some(cookie))).await;
+            assert_eq!(res.status(), StatusCode::OK, "{path} {ok}");
+        }
+        for bad in ["1", "True", "yes", ""] {
+            let res = send(&app, get(&format!("{path}?archived={bad}"), Some(cookie))).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{path} {bad:?}");
+            assert_eq!(json_body(res).await["error"]["code"], "invalid_archived");
+        }
+    }
+}
+
+#[sqlx::test]
+async fn an_archived_activity_cannot_be_published_or_closed_until_restored(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let id = published_activity_with_topic(&app, &a, "題").await;
+    status_of(
+        &app,
+        "POST",
+        &format!("/api/activities/{id}/archive"),
+        Some(&a.teacher),
+        json!({}),
+    )
+    .await;
+    for action in ["publish", "close"] {
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                &format!("/api/activities/{id}/{action}"),
+                Some(&a.teacher),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CONFLICT, "{action}");
+        assert_eq!(json_body(res).await["error"]["code"], "activity_archived");
+    }
+    status_of(
+        &app,
+        "POST",
+        &format!("/api/activities/{id}/unarchive"),
+        Some(&a.teacher),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status_of(
+            &app,
+            "POST",
+            &format!("/api/activities/{id}/close"),
+            Some(&a.teacher),
+            json!({})
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn archive_audit_is_written_once_per_real_transition(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let id = published_activity_with_topic(&app, &a, "題").await;
+    let archive = format!("/api/activities/{id}/archive");
+    for _ in 0..2 {
+        assert_eq!(
+            status_of(&app, "POST", &archive, Some(&a.teacher), json!({})).await,
+            StatusCode::OK
+        );
+    }
+    let classroom = format!("/api/classrooms/{}", a.classroom);
+    for _ in 0..2 {
+        status_of(
+            &app,
+            "PATCH",
+            &classroom,
+            Some(&a.teacher),
+            json!({"is_archived": true}),
+        )
+        .await;
+    }
+    let actions: Vec<String> = audit_actions(&pool)
+        .await
+        .into_iter()
+        .map(|x| x.0)
+        .collect();
+    assert_eq!(actions, ["activity_archived", "classroom_archived"]);
+}
+
+#[sqlx::test]
+async fn a_conversation_started_while_deleting_is_still_counted(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let id: uuid::Uuid = published_activity_with_topic(&app, &a, "題")
+        .await
+        .parse()
+        .unwrap();
+    let student: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    // 開始對話會先對活動列取 FOR SHARE；在它提交前發出刪除，刪除必須等它
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM activities WHERE id = $1 FOR SHARE")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let deleting = tokio::spawn({
+        let app = app.clone();
+        let teacher = a.teacher.clone();
+        async move {
+            status_of(
+                &app,
+                "DELETE",
+                &format!("/api/activities/{id}"),
+                Some(&teacher),
+                json!({"confirm_title": "題"}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sqlx::query(
+        "INSERT INTO conversations (user_id, activity_id, classroom_id, title)
+         SELECT $1, id, classroom_id, 't' FROM activities WHERE id = $2",
+    )
+    .bind(student)
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(deleting.await.unwrap(), StatusCode::NO_CONTENT);
+    assert_eq!(count(&pool, "conversations").await, 0);
+    assert_eq!(deleted_count(&pool, "activity_deleted").await, Some(1));
+}

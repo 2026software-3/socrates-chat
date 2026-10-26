@@ -64,7 +64,7 @@ export type PagedState<T, P extends Page<T>> = {
  * `path` 可帶查詢字串（篩選、搜尋）；`path` 改變時從第一頁重新載入。`path` 為 `null` 時不發請求。
  */
 export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | null): PagedState<T, P> {
-  const [pages, setPages] = useState<P[]>()
+  const [loaded, setLoaded] = useState<{ path: string | null; pages: P[] }>()
   const [error, setError] = useState<ApiError>()
   const [moreError, setMoreError] = useState<ApiError>()
   const [loading, setLoading] = useState(path !== null)
@@ -82,7 +82,7 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
     api
       .get<P>(path, c.signal)
       .then((first) => {
-        setPages([first])
+        setLoaded({ path, pages: [first] })
         setError(undefined)
       })
       .catch((e: unknown) => {
@@ -95,6 +95,8 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
     return () => c.abort()
   }, [path, tick])
 
+  // 換了 path（篩選、檢視）後，舊路徑的資料不再顯示，直到新的第一頁回來
+  const pages = loaded?.path === path ? loaded.pages : undefined
   const last = pages?.[pages.length - 1]
   const cursor = last?.next_cursor ?? null
 
@@ -106,7 +108,11 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
     const sep = path.includes('?') ? '&' : '?'
     api
       .get<P>(`${path}${sep}cursor=${encodeURIComponent(cursor)}`, c.signal)
-      .then((next) => setPages((previous) => [...(previous ?? []), next]))
+      .then((next) =>
+        setLoaded((previous) =>
+          previous?.path === path ? { path, pages: [...previous.pages, next] } : previous,
+        ),
+      )
       .catch((e: unknown) => {
         if (isAbortError(e)) return
         setMoreError(isApiError(e) ? e : undefined)

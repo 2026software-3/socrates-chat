@@ -1,6 +1,6 @@
 import { Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -15,10 +15,11 @@ import { useFetch } from '@/lib/use-fetch'
 
 /** 我的對話列表（不含訊息）；可刪除對話。 */
 export function ConversationListPage() {
-  const [archived, setArchived] = useState(false)
+  const [params, setParams] = useSearchParams()
+  const archived = params.get('archived') === 'true'
   const [cursors, setCursors] = useState<(string | null)[]>([null])
   const cursor = cursors[cursors.length - 1]
-  return <ConversationList key={`${archived}:${cursor ?? ''}`} archived={archived} onViewChange={(next) => { setArchived(next); setCursors([null]) }} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} />
+  return <ConversationList key={`${archived}:${cursor ?? ''}`} archived={archived} onViewChange={(next) => { setParams(next ? { archived: 'true' } : {}); setCursors([null]) }} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} />
 }
 
 function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious }: { archived: boolean; onViewChange: (archived: boolean) => void; cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {

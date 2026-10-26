@@ -2,7 +2,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, State, rejection::JsonRejection},
     http::StatusCode,
     routing::get,
 };
@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    accounts::{audit, audit_deletion, clean_reason},
+    accounts::{DeleteSpec, audit, clean_reason, confirmation, delete_with_audit},
     auth::{CurrentUser, RequireTeacher},
     catalog::nullable,
     classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
@@ -254,29 +254,39 @@ pub(crate) async fn update_classroom(
         })
         .transpose()?;
     let reason = body.reason;
-    let current = visible_classroom(&state, &cu, &raw_id).await?;
-    if current.is_archived && (name.is_some() || year_label.is_some() || description.is_some()) {
-        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
-    }
+    visible_classroom(&state, &cu, &raw_id).await?;
     let changes = ClassroomChanges {
         is_archived: body.is_archived,
         name,
         year_label,
         description,
     };
+    // 鎖住教室列後在同一個交易內更新並寫稽核，封存狀態是否改變以鎖定後的值為準
+    let mut tx = state.pool.begin().await?;
+    let was_archived: bool =
+        sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+    if was_archived
+        && (changes.name.is_some() || changes.year_label.is_some() || changes.description.is_some())
+    {
+        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+    }
     let updated =
-        classroom_store::update_visible(&state.pool, id, cu.user.id, cu.roles.admin, changes)
+        classroom_store::update_visible(&mut *tx, id, cu.user.id, cu.roles.admin, changes)
             .await
             .map_err(map_store_error)?
             .ok_or_else(ApiError::not_found)?;
-    if updated.is_archived != current.is_archived {
+    if updated.is_archived != was_archived {
         let action = if updated.is_archived {
             "classroom_archived"
         } else {
             "classroom_restored"
         };
         audit(
-            &state.pool,
+            &mut *tx,
             cu.user.id,
             action,
             &updated.name,
@@ -284,6 +294,7 @@ pub(crate) async fn update_classroom(
         )
         .await?;
     }
+    tx.commit().await?;
     Ok(Json(updated))
 }
 
@@ -310,9 +321,11 @@ pub(crate) async fn delete_classroom(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
-    Json(body): Json<DeleteClassroomBody>,
+    body: Result<Json<DeleteClassroomBody>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
+    // 先確認教室存在且可管理（否則 404），再檢查確認欄位
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    let body = confirmation(body)?;
     if body.confirm_name.trim() != classroom.name.trim() {
         return Err(ApiError::bad_request(
             "confirmation_mismatch",
@@ -320,30 +333,20 @@ pub(crate) async fn delete_classroom(
         ));
     }
     // 名單、活動與其中的對話、總結由外鍵連動刪除；個人練習、點數與成就不受影響
-    let mut tx = state.pool.begin().await?;
-    let conversations: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM conversations WHERE classroom_id = $1")
-            .bind(classroom.id)
-            .fetch_one(&mut *tx)
-            .await?;
-    let deleted = sqlx::query("DELETE FROM classrooms WHERE id = $1")
-        .bind(classroom.id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    if deleted == 0 {
-        return Err(ApiError::not_found());
-    }
-    audit_deletion(
-        &mut *tx,
+    delete_with_audit(
+        &state.pool,
+        &DeleteSpec {
+            lock: "SELECT id FROM classrooms WHERE id = $1 FOR UPDATE",
+            count_conversations: "SELECT count(*) FROM conversations WHERE classroom_id = $1",
+            delete: "DELETE FROM classrooms WHERE id = $1",
+            action: "classroom_deleted",
+        },
+        classroom.id,
         cu.user.id,
-        "classroom_deleted",
         &classroom.name,
-        clean_reason(body.reason).as_deref(),
-        conversations,
+        body.reason,
     )
     .await?;
-    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -109,26 +109,17 @@ pub(crate) async fn audit(
     target_email: &str,
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO audit_logs (actor_id, action, target_email, reason) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(actor)
-    .bind(action)
-    .bind(target_email)
-    .bind(reason)
-    .execute(conn)
-    .await?;
-    Ok(())
+    audit_counted(conn, actor, action, target_email, reason, None).await
 }
 
-/// 刪除教室或活動的稽核紀錄，另記一併刪除的對話數量（S-14）。
-pub(crate) async fn audit_deletion(
+/// 稽核紀錄另帶數量；刪除教室或活動時記錄一併刪除的對話數（S-14）。
+pub(crate) async fn audit_counted(
     conn: impl sqlx::PgExecutor<'_>,
     actor: Uuid,
     action: &str,
     target: &str,
     reason: Option<&str>,
-    deleted_conversations: i64,
+    item_count: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO audit_logs (actor_id, action, target_email, reason, item_count) VALUES ($1, $2, $3, $4, $5)",
@@ -137,9 +128,61 @@ pub(crate) async fn audit_deletion(
     .bind(action)
     .bind(target)
     .bind(reason)
-    .bind(deleted_conversations as i32)
+    .bind(item_count.map(|n| n as i32))
     .execute(conn)
     .await?;
+    Ok(())
+}
+
+/// 刪除請求的 JSON body 缺少、格式錯誤或不是 JSON 時，與名稱不符同樣回 400，維持專案的錯誤格式。
+pub(crate) fn confirmation<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ApiError> {
+    body.map(|Json(value)| value)
+        .map_err(|_| ApiError::bad_request("confirmation_mismatch", "請提供要刪除對象的名稱以確認"))
+}
+
+/// 教室與活動刪除共用的 SQL 與稽核動作。
+pub(crate) struct DeleteSpec {
+    /// 鎖住要刪的列；開始對話會對同一列取 `FOR SHARE`，所以鎖住後再計數不會漏掉新對話
+    pub lock: &'static str,
+    pub count_conversations: &'static str,
+    pub delete: &'static str,
+    pub action: &'static str,
+}
+
+/// 在同一個交易中鎖列、計算一併刪除的對話數、刪除並寫入稽核日誌（S-14）。
+pub(crate) async fn delete_with_audit(
+    pool: &sqlx::PgPool,
+    spec: &DeleteSpec,
+    id: Uuid,
+    actor: Uuid,
+    target: &str,
+    reason: Option<String>,
+) -> Result<(), ApiError> {
+    let mut tx = pool.begin().await?;
+    let locked: Option<Uuid> = sqlx::query_scalar(spec.lock)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if locked.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let conversations: i64 = sqlx::query_scalar(spec.count_conversations)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query(spec.delete).bind(id).execute(&mut *tx).await?;
+    audit_counted(
+        &mut *tx,
+        actor,
+        spec.action,
+        target,
+        clean_reason(reason).as_deref(),
+        Some(conversations),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 

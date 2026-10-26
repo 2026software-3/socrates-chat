@@ -239,6 +239,27 @@ describe('ActivitiesPage', () => {
     expect(await screen.findByText('活動已刪除。')).toBeInTheDocument()
   })
 
+  it('does not keep showing the old rows while the archived view is loading', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics)),
+      http.get('/api/activities', async ({ request }) => {
+        if (new URL(request.url).searchParams.get('archived') === 'true') {
+          await gate
+          return pageOf([])
+        }
+        return pageOf([act()])
+      }),
+    )
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '已封存' }))
+    await waitFor(() => expect(screen.queryByText('第一週討論')).not.toBeInTheDocument())
+    release()
+    expect(await screen.findByText('沒有已封存的活動。')).toBeInTheDocument()
+  })
+
   it('edits an activity in a dialog and sends the changed fields', async () => {
     let list = [act()]
     let body: unknown

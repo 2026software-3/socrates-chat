@@ -5,7 +5,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::StatusCode,
     routing::{get, patch, post},
 };
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    accounts::{audit, audit_deletion, clean_reason},
+    accounts::{DeleteSpec, audit, clean_reason, confirmation, delete_with_audit},
     activity_store,
     auth::{RequireStudent, RequireTeacher},
     classrooms::{ClassroomFilter, filtered_classroom, visible_classroom},
@@ -291,7 +291,7 @@ pub(crate) struct ActivityQuery {
         ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
         ("archived" = Option<bool>, Query, description = "true 只列已封存的活動；預設只列未封存的"),
     ),
-    responses((status = 200, description = "活動分頁，依 created_at DESC, id ASC", body = ActivityPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "活動分頁，依 created_at DESC, id ASC", body = ActivityPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_activities(
     RequireTeacher(cu): RequireTeacher,
@@ -306,7 +306,7 @@ pub(crate) async fn list_activities(
         cu.user.id,
         cu.roles.admin,
         classroom,
-        query.archived.as_deref() == Some("true"),
+        pagination::parse_archived(query.archived.as_deref())?,
         after,
         (limit + 1) as i64,
     )
@@ -471,6 +471,10 @@ async fn set_status(
         .await?
         .ok_or_else(ApiError::not_found)?;
     crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
+    // 已封存的活動要先復原才能改變開放狀態
+    if activity.is_archived {
+        return Err(ApiError::conflict("activity_archived", "活動已封存"));
+    }
     activity_store::set_status_visible(&state.pool, id, cu.user.id, cu.roles.admin, status)
         .await?
         .map(Json)
@@ -483,7 +487,7 @@ async fn set_status(
     tag = "activities",
     summary = "發布（或重新開放）活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived / activity_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn publish_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -499,7 +503,7 @@ pub(crate) async fn publish_activity(
     tag = "activities",
     summary = "停止開放活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived / activity_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn close_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -521,27 +525,39 @@ async fn set_archived(
     archived: bool,
     reason: Option<String>,
 ) -> Result<Json<Activity>, ApiError> {
-    let activity = activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
+    // 鎖住活動列，封存與稽核在同一個交易內；狀態沒有改變時不重複寫稽核
+    let mut tx = state.pool.begin().await?;
+    let current: Option<(bool, Uuid)> = sqlx::query_as(
+        "SELECT a.is_archived, a.classroom_id FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
+         WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
+    )
+    .bind(id)
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (was_archived, classroom) = current.ok_or_else(ApiError::not_found)?;
+    crate::classrooms::ensure_writable(&mut *tx, classroom).await?;
     let updated =
-        activity_store::set_archived_visible(&state.pool, id, cu.user.id, cu.roles.admin, archived)
+        activity_store::set_archived_visible(&mut *tx, id, cu.user.id, cu.roles.admin, archived)
             .await?
             .ok_or_else(ApiError::not_found)?;
-    let action = if archived {
-        "activity_archived"
-    } else {
-        "activity_restored"
-    };
-    audit(
-        &state.pool,
-        cu.user.id,
-        action,
-        &updated.title,
-        clean_reason(reason).as_deref(),
-    )
-    .await?;
+    if was_archived != archived {
+        let action = if archived {
+            "activity_archived"
+        } else {
+            "activity_restored"
+        };
+        audit(
+            &mut *tx,
+            cu.user.id,
+            action,
+            &updated.title,
+            clean_reason(reason).as_deref(),
+        )
+        .await?;
+    }
+    tx.commit().await?;
     Ok(Json(updated))
 }
 
@@ -601,11 +617,13 @@ pub(crate) async fn delete_activity(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Json(body): Json<DeleteActivityBody>,
+    body: Result<Json<DeleteActivityBody>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
+    // 先確認活動存在且可管理（否則 404），再檢查確認欄位
     let activity = activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    let body = confirmation(body)?;
     if body.confirm_title.trim() != activity.title.trim() {
         return Err(ApiError::bad_request(
             "confirmation_mismatch",
@@ -613,30 +631,20 @@ pub(crate) async fn delete_activity(
         ));
     }
     // 對話、訊息、總結與主張分組由外鍵連動刪除；封存的教室也可以刪除其中的活動
-    let mut tx = state.pool.begin().await?;
-    let conversations: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM conversations WHERE activity_id = $1")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
-    let deleted = sqlx::query("DELETE FROM activities WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    if deleted == 0 {
-        return Err(ApiError::not_found());
-    }
-    audit_deletion(
-        &mut *tx,
+    delete_with_audit(
+        &state.pool,
+        &DeleteSpec {
+            lock: "SELECT id FROM activities WHERE id = $1 FOR UPDATE",
+            count_conversations: "SELECT count(*) FROM conversations WHERE activity_id = $1",
+            delete: "DELETE FROM activities WHERE id = $1",
+            action: "activity_deleted",
+        },
+        id,
         cu.user.id,
-        "activity_deleted",
         &activity.title,
-        clean_reason(body.reason).as_deref(),
-        conversations,
+        body.reason,
     )
     .await?;
-    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

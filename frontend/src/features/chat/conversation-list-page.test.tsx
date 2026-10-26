@@ -79,6 +79,20 @@ describe('ConversationListPage', () => {
     await waitFor(() => expect(calls).toEqual(['archive:c1', 'unarchive:c9']))
   })
 
+  it('opens on the archived view when asked by the URL', async () => {
+    mockMe(makeMe({ student: true }))
+    const queries: string[] = []
+    server.use(
+      http.get('/api/conversations', ({ request }) => {
+        queries.push(new URL(request.url).search)
+        return HttpResponse.json({ items: [makeConversation({ id: 'c9', title: '合成題目：舊對話', is_archived: true })], next_cursor: null })
+      }),
+    )
+    renderApp(null, { route: '/conversations?archived=true' })
+    expect(await screen.findByRole('button', { name: '復原 合成題目：舊對話' })).toBeInTheDocument()
+    expect(queries[0]).toContain('archived=true')
+  })
+
   it('deletes only after confirmation and removes the row', async () => {
     setup([makeConversation(), makeConversation({ id: 'c2', title: '合成題目：功利主義' })])
     const deleted: string[] = []
