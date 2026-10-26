@@ -37,9 +37,9 @@ pub struct Config {
     /// 主模型被限流（429）時依序改用的模型；空表示不啟用備援
     pub openai_fallback_models: Vec<String>,
     pub openai_base_url: String,
-    /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
     pub openai_stt_base_url: Option<String>,
+    /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     pub openai_stt_model: Option<String>,
     pub openai_tts_model: Option<String>,
     /// 語音合成的聲音名稱。
