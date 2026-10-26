@@ -361,49 +361,21 @@ async fn server_error_tries_each_key_at_most_once() {
 type ModelSeen = Arc<Mutex<Vec<(String, String)>>>;
 
 async fn spawn_model_server(behaviour: Vec<(&'static str, StatusCode)>) -> (String, ModelSeen) {
-    #[derive(Clone)]
-    struct S {
-        by_model: Arc<HashMap<String, StatusCode>>,
-        seen: ModelSeen,
-    }
-    let seen: ModelSeen = Arc::default();
-    let state = S {
-        by_model: Arc::new(
-            behaviour
-                .into_iter()
-                .map(|(m, st)| (m.to_string(), st))
-                .collect(),
-        ),
-        seen: seen.clone(),
-    };
-    let app = Router::new()
-        .route(
-            "/chat/completions",
-            post(
-                |State(s): State<S>, h: HeaderMap, Json(v): Json<Value>| async move {
-                    let key = h["authorization"]
-                        .to_str()
-                        .unwrap()
-                        .trim_start_matches("Bearer ");
-                    let model = v["model"].as_str().unwrap().to_string();
-                    s.seen
-                        .lock()
-                        .unwrap()
-                        .push((model.clone(), key.to_string()));
-                    let status = s.by_model[&model];
-                    if status.is_success() {
-                        (status, OK_BODY).into_response()
-                    } else {
-                        (status, "nope").into_response()
-                    }
-                },
-            ),
-        )
-        .with_state(state);
+    spawn_stream_server(
+        behaviour
+            .into_iter()
+            .map(|(m, st)| (m, st, if st.is_success() { OK_BODY } else { "nope" }))
+            .collect(),
+    )
+    .await
+}
+
+/// 綁在隨機埠上跑起來，回傳 base URL。
+async fn serve(app: Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{addr}"), seen)
+    format!("http://{addr}")
 }
 
 fn seen_of(seen: &ModelSeen) -> Vec<(String, String)> {
@@ -584,10 +556,7 @@ async fn spawn_stream_server(
             ),
         )
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{addr}"), seen)
+    (serve(app).await, seen)
 }
 
 fn models_seen(seen: &ModelSeen) -> Vec<String> {
@@ -702,4 +671,20 @@ async fn without_fallbacks_an_in_stream_capacity_error_still_fails() {
     let p = OpenAiProvider::new(&base, single("k"), "primary");
     assert!(text_of(&p).await.is_err());
     assert_eq!(models_seen(&seen), ["primary"]);
+}
+
+#[tokio::test]
+async fn with_fallbacks_ignores_the_primary_and_duplicates() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("b1", StatusCode::TOO_MANY_REQUESTS),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec![
+        "primary".into(),
+        "b1".into(),
+        "b1".into(),
+    ]);
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(models_seen(&seen), ["primary", "b1"]);
 }

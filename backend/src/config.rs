@@ -104,15 +104,13 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
 /// 金鑰清單檔的預設位置：後端通常在 `backend/` 執行，所以也找上一層（專案根目錄）。
 const DEFAULT_KEY_FILES: [&str; 2] = [".apikeylist", "../.apikeylist"];
 
-/// 逗號分隔的模型清單：去掉空白與空項、重複的只留第一個；順序就是備援的先後。
+/// 逗號分隔的模型清單：去掉空白與空項；順序就是備援的先後（重複的由 `with_fallbacks` 略過）。
 fn parse_model_list(raw: &str) -> Vec<String> {
-    let mut models: Vec<String> = Vec::new();
-    for m in raw.split(',').map(str::trim).filter(|m| !m.is_empty()) {
-        if !models.iter().any(|x| x == m) {
-            models.push(m.to_string());
-        }
-    }
-    models
+    raw.split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// 讀取所有 API key：`OPENAI_API_KEYS`（逗號分隔）加上金鑰清單檔（一行一把），合併去重。
@@ -318,7 +316,5 @@ mod tests {
             parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
             ["google/gemma:free", "nvidia/x:free", "a"]
         );
-        // 重複的只留第一個，順序就是備援的先後
-        assert_eq!(parse_model_list("a,b,a"), ["a", "b"]);
     }
 }

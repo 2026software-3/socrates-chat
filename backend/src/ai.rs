@@ -321,6 +321,17 @@ enum SendFailure {
     Failed,
 }
 
+impl SendFailure {
+    /// 到目前為止的失敗全是 429 就算限流（還沒有任何失敗時也是：key 是被先前的 429 冷卻住的）。
+    fn from_only_rate_limited(only_rate_limited: bool) -> Self {
+        if only_rate_limited {
+            Self::RateLimited
+        } else {
+            Self::Failed
+        }
+    }
+}
+
 impl OpenAiProvider {
     pub fn new(base_url: &str, keys: Arc<KeyPool>, model: &str) -> Self {
         Self {
@@ -376,7 +387,7 @@ impl OpenAiProvider {
         let mut server_errored: Vec<usize> = Vec::new();
         // 到目前為止的失敗是否全是 429
         let mut only_rate_limited = true;
-        for attempt in 0..=MAX_KEY_RETRIES {
+        for _ in 0..=MAX_KEY_RETRIES {
             let Ok(lease) = Self::acquire_key(keys, may_wait).await else {
                 // 後面還有備援模型時，這只是要換模型的訊號，不是錯誤
                 if may_wait {
@@ -384,12 +395,7 @@ impl OpenAiProvider {
                 } else {
                     tracing::warn!("no usable AI key for this model");
                 }
-                // 一把都不能用，而且這次還沒送出過請求：是先前的冷卻還沒結束（多半是 429）
-                return Err(if attempt == 0 || only_rate_limited {
-                    SendFailure::RateLimited
-                } else {
-                    SendFailure::Failed
-                });
+                return Err(SendFailure::from_only_rate_limited(only_rate_limited));
             };
             if server_errored.contains(&lease.index) {
                 return Err(SendFailure::Failed);
@@ -420,11 +426,7 @@ impl OpenAiProvider {
                 return Err(SendFailure::Failed);
             }
         }
-        Err(if only_rate_limited {
-            SendFailure::RateLimited
-        } else {
-            SendFailure::Failed
-        })
+        Err(SendFailure::from_only_rate_limited(only_rate_limited))
     }
 }
 
@@ -561,17 +563,28 @@ impl OpenAiProvider {
             .await
     }
 
-    /// 從 `from` 之後找第一個能送出請求的備援模型；只在 429 類的失敗才往下一個找。
-    async fn next_fallback(
+    /// 從第 `start` 個模型起，找第一個能送出請求的；只在限流（429）時往下一個找，
+    /// 其他失敗直接放棄。換過模型的會留下日誌。
+    async fn first_available(
         &self,
-        from: usize,
+        start: usize,
         req: &AiRequest,
     ) -> Option<(usize, reqwest::Response)> {
-        for i in from + 1..self.targets.len() {
+        let last = self.targets.len() - 1;
+        for i in start..=last {
             match self.send_to(i, req).await {
-                Ok(res) => return Some((i, res)),
-                Err(SendFailure::RateLimited) if i + 1 < self.targets.len() => {
-                    tracing::warn!(model = %self.targets[i].model, "AI model rate limited, trying the next model");
+                Ok(res) => {
+                    if i > 0 {
+                        tracing::warn!(model = %self.targets[i].model, "AI request served by a fallback model");
+                    }
+                    return Some((i, res));
+                }
+                Err(SendFailure::RateLimited) if i < last => {
+                    tracing::warn!(
+                        model = %self.targets[i].model,
+                        next = %self.targets[i + 1].model,
+                        "AI model rate limited, trying the next model"
+                    );
                 }
                 Err(_) => return None,
             }
@@ -581,11 +594,10 @@ impl OpenAiProvider {
 
     /// 把成功的串流回應轉成逐段文字的串流。回應是第 `index` 個模型的；
     /// 還沒送出任何內容就收到容量錯誤時，在串流內部改用下一個備援模型。
-    fn into_stream(self, res: reqwest::Response, index: usize, req: AiRequest) -> AiStream {
+    fn into_stream(self, res: reqwest::Response, mut index: usize, req: AiRequest) -> AiStream {
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
             let mut current = res;
-            let mut index = index;
             loop {
                 match pump(current, &tx).await {
                     Pump::Finished => return,
@@ -598,9 +610,8 @@ impl OpenAiProvider {
                             model = %self.targets[index].model,
                             "AI model reported a capacity error before any content, trying the next model"
                         );
-                        match self.next_fallback(index, &req).await {
+                        match self.first_available(index + 1, &req).await {
                             Some((next, res)) => {
-                                tracing::warn!(model = %self.targets[next].model, "AI request served by a fallback model");
                                 current = res;
                                 index = next;
                             }
@@ -669,26 +680,8 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
 #[async_trait]
 impl AiProvider for OpenAiProvider {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        let last = self.targets.len() - 1;
-        for i in 0..=last {
-            match self.send_to(i, &req).await {
-                Ok(res) => {
-                    if i > 0 {
-                        tracing::warn!(model = %self.targets[i].model, "AI request served by a fallback model");
-                    }
-                    return Ok(self.clone().into_stream(res, i, req));
-                }
-                Err(SendFailure::RateLimited) if i < last => {
-                    tracing::warn!(
-                        model = %self.targets[i].model,
-                        next = %self.targets[i + 1].model,
-                        "AI model rate limited, trying the next model"
-                    );
-                }
-                Err(_) => return Err(AiError),
-            }
-        }
-        Err(AiError)
+        let (index, res) = self.first_available(0, &req).await.ok_or(AiError)?;
+        Ok(self.clone().into_stream(res, index, req))
     }
 }
 
