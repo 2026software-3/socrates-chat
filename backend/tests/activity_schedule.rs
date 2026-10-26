@@ -130,17 +130,12 @@ async fn schedule_authorization_and_existing_conversations(pool: PgPool) {
         .status(),
         StatusCode::NOT_FOUND
     );
-    let res = send(
-        &app,
-        json_req(
-            "PATCH",
-            &path,
-            Some(&a.teacher),
-            Some(json!({"closes_at":"2000-01-01T00:00:00Z"})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK);
+    // API 不接受新設定的過去時間，直接寫資料庫模擬活動已結束
+    sqlx::query("UPDATE activities SET closes_at = '2000-01-01T00:00:00Z' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         send(
             &app,
@@ -250,24 +245,21 @@ async fn schedule_round_trip_validation_and_null_patch(pool: PgPool) {
 
 #[sqlx::test]
 async fn unavailable_schedule_hides_catalog_and_rejects_direct_start(pool: PgPool) {
-    let app = test_app(pool);
+    let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let id = published_activity_with_topic(&app, &a, "schedule").await;
-    for patch in [
-        json!({"opens_at": "2100-01-01T00:00:00Z"}),
-        json!({"opens_at": null, "closes_at": "2000-01-01T00:00:00Z"}),
+    for (opens, closes) in [
+        (Some("2100-01-01T00:00:00Z"), None),
+        // 已結束：API 不接受新設定的過去時間，直接寫資料庫模擬
+        (None, Some("2000-01-01T00:00:00Z")),
     ] {
-        let res = send(
-            &app,
-            json_req(
-                "PATCH",
-                &format!("/api/activities/{id}"),
-                Some(&a.teacher),
-                Some(patch),
-            ),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::OK);
+        sqlx::query("UPDATE activities SET opens_at = $2::timestamptz, closes_at = $3::timestamptz WHERE id = $1::uuid")
+            .bind(&id)
+            .bind(opens)
+            .bind(closes)
+            .execute(&pool)
+            .await
+            .unwrap();
         let catalog = json_body(send(&app, get("/api/catalog", Some(&a.student))).await).await;
         assert!(catalog["activities"].as_array().unwrap().is_empty());
         let res = send(
