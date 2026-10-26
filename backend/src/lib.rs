@@ -6,7 +6,7 @@ use std::{
 use axum::{
     Json, Router,
     body::Body,
-    extract::{MatchedPath, Request, State},
+    extract::{DefaultBodyLimit, MatchedPath, Request, State},
     http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -66,6 +66,24 @@ pub mod roster;
 pub mod roster_store;
 pub mod summary;
 pub mod voice;
+
+/// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
+/// 約 40 bytes／行；1 MiB 可容納超過兩萬筆）；訊息上限 4000 字元，UTF-8 加上 JSON 跳脫也不到 30 KB。
+/// 語音辨識上傳音訊，另有自己的上限（`voice::MAX_AUDIO_BYTES`）。
+pub const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
+/// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
+pub const LONG_RUNNING_ROUTES: [&str; 4] = [
+    // 同步等 AI 重新分組
+    "/api/dashboard/class/regroup",
+    // 上傳最多 10 MB 音訊，並同步等語音服務
+    "/api/voice/transcribe",
+    // 同步等語音服務合成語音
+    "/api/voice/speech",
+    // 管理者匯入時逐一雜湊新帳號的臨時密碼（Argon2），名單大時會超過一般逾時
+    "/api/classrooms/{id}/roster/import",
+];
 
 /// 所有 handler 共用的狀態。
 #[derive(Clone)]
@@ -139,6 +157,12 @@ pub fn app(state: AppState) -> Router {
         .fallback(fallback)
         .layer(middleware::from_fn(api_rejections))
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
+        // 明確設定全域 body 上限；語音辨識在自己的 router 內放寬。超過時的 413 由 `api_rejections` 轉成 JSON
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_timeout,
+        ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn_with_state(state.clone(), request_id))
         .with_state(state)
@@ -278,6 +302,26 @@ async fn api_rejections(req: Request, next: Next) -> Response {
     }
     replaced.extensions_mut().extend(original.extensions);
     replaced
+}
+
+/// 請求逾時（#325）：從收到請求到送出回應標頭為止（含讀取 body 與 handler 處理），
+/// 避免慢速送出 body 的連線（slow-loris）長時間占用。逾時時中止 handler（交易未提交即回滾），
+/// 回 `408 request_timeout`。
+async fn request_timeout(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let limit = if req
+        .extensions()
+        .get::<MatchedPath>()
+        .is_some_and(|p| LONG_RUNNING_ROUTES.contains(&p.as_str()))
+    {
+        state.config.long_request_timeout()
+    } else {
+        state.config.request_timeout
+    };
+    match tokio::time::timeout(limit, next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout", "請求逾時")
+            .into_response(),
+    }
 }
 
 /// CSRF 防護（S-08.2）：會改變狀態的請求，`Origin` 必須等於本站網域。

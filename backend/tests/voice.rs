@@ -167,10 +167,30 @@ async fn transcribe_validates_input(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let body = json_body(res).await;
-    assert_eq!(body["error"]["code"], "payload_too_large");
-    assert!(body["error"]["request_id"].is_string());
+    // 與其他端點相同的 JSON 錯誤格式（#324）
+    assert_json_error(res, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+}
+
+#[sqlx::test]
+async fn transcribe_accepts_audio_larger_than_the_json_body_limit(pool: PgPool) {
+    // 語音辨識有自己的 10 MB 上限，不受全域 JSON body 上限影響（#324）
+    let voice = Arc::new(FakeVoice::default());
+    let app = app_with_voice(pool, voice.clone());
+    let a = seed_actors(&app).await;
+    let size = socrates_chat_backend::MAX_BODY_BYTES * 3;
+    assert!(size < socrates_chat_backend::voice::MAX_AUDIO_BYTES);
+    let res = send(
+        &app,
+        audio_req(
+            "/api/voice/transcribe?language=en",
+            Some(&a.student),
+            "audio/webm",
+            vec![0; size],
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(voice.calls.lock().unwrap()[0].0, size);
 }
 
 #[sqlx::test]

@@ -92,6 +92,7 @@ pub fn test_config() -> Config {
         // 縮短逾時讓逾時測試很快跑完
         ai_first_token_timeout: Duration::from_millis(200),
         ai_total_timeout: Duration::from_millis(1000),
+        request_timeout: Duration::from_secs(10),
     }
 }
 
@@ -199,6 +200,31 @@ pub async fn send(app: &Router, req: Request<Body>) -> Response<Body> {
 pub async fn json_body(res: Response<Body>) -> Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
+pub async fn assert_json_error(res: Response<Body>, status: StatusCode, code: &str) {
+    assert_eq!(res.status(), status);
+    let rid = res.headers()["x-request-id"].to_str().unwrap().to_string();
+    assert!(
+        res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    let body = json_body(res).await;
+    assert_eq!(body["error"]["code"], code);
+    assert_eq!(body["error"]["request_id"], rid);
+}
+
+/// 一般請求逾時很短的設定。登入等前置步驟要用一般設定的 app 先做好，再換成這個。
+pub fn short_timeout() -> Config {
+    Config {
+        request_timeout: Duration::from_millis(300),
+        ai_first_token_timeout: Duration::from_secs(3),
+        ai_total_timeout: Duration::from_secs(5),
+        ..test_config()
+    }
 }
 
 pub fn location(res: &Response<Body>) -> String {
