@@ -163,7 +163,7 @@ pub(crate) async fn list_classrooms(
     tag = "classrooms",
     summary = "建立教室",
     request_body = NewClassroom,
-    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_classroom(
     RequireTeacher(cu): RequireTeacher,
@@ -363,14 +363,17 @@ pub(crate) async fn ensure_writable<'e>(
     }
 }
 
-pub(crate) async fn ensure_conversation_writable(
-    state: &AppState,
+/// 取得「自己的」對話並確認它所在的教室未封存，只查一次對話。
+/// 呼叫端應傳入交易中的連線：教室列的 `FOR SHARE` 鎖會持續到交易結束，
+/// 封存教室（`FOR UPDATE`）因此不會在檢查與寫入之間插進來。
+pub(crate) async fn writable_conversation(
+    conn: &mut sqlx::PgConnection,
     user: Uuid,
     id: Uuid,
-) -> Result<(), ApiError> {
-    let conv = crate::chat::owned_conversation(state, user, id).await?;
-    if let Some(room) = conv.classroom_id {
-        ensure_writable(&state.pool, room).await?;
+) -> Result<crate::chat::Conversation, ApiError> {
+    let conversation = crate::chat::owned_conversation_in(&mut *conn, user, id).await?;
+    if let Some(room) = conversation.classroom_id {
+        ensure_writable(&mut *conn, room).await?;
     }
-    Ok(())
+    Ok(conversation)
 }

@@ -469,18 +469,19 @@ async fn set_status(
     id: Uuid,
     status: &'static str,
 ) -> Result<Json<Activity>, ApiError> {
+    // 一個語句同時檢查可見性、教室與活動未封存並更新；沒有命中時才查原因（404 或 409）
+    if let Some(activity) =
+        activity_store::set_status_writable(&state.pool, id, cu.user.id, cu.roles.admin, status)
+            .await?
+    {
+        return Ok(Json(activity));
+    }
     let activity = activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
         .await?
         .ok_or_else(ApiError::not_found)?;
     crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
     // 已封存的活動要先復原才能改變開放狀態
-    if activity.is_archived {
-        return Err(ApiError::conflict("activity_archived", "活動已封存"));
-    }
-    activity_store::set_status_visible(&state.pool, id, cu.user.id, cu.roles.admin, status)
-        .await?
-        .map(Json)
-        .ok_or_else(ApiError::not_found)
+    Err(ApiError::conflict("activity_archived", "活動已封存"))
 }
 
 #[utoipa::path(

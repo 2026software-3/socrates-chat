@@ -91,7 +91,8 @@ function ActivityForm({
       await onSubmit({ ...values, title: values.title.trim() })
       if (resetOnSuccess) setValues(initial)
     } catch (err) {
-      setServerError(errorText(t, err))
+      // 前端自己丟的一般 Error（例如尚無可用教室）直接顯示其訊息
+      setServerError(err instanceof Error && err.name !== 'ApiError' ? err.message : errorText(t, err))
     } finally {
       busy.current = false
       setPending(false)
@@ -277,7 +278,9 @@ export function ActivitiesPage() {
   const t = useT()
   const classrooms = useFetch<Classroom[]>('/api/classrooms')
   const [roomId, setRoomId] = useState('')
-  const writableRooms = (classrooms.data ?? []).filter((r) => !r.is_archived)
+  const writableRooms = useMemo(() => (classrooms.data ?? []).filter((r) => !r.is_archived), [classrooms.data])
+  // 只有確定載入且未封存的教室才可編輯；載入中或失敗時視為不可用
+  const writableRoomIds = useMemo(() => new Set(writableRooms.map((r) => r.id)), [writableRooms])
   const selectedRoom = writableRooms.some((r) => r.id === roomId) ? roomId : writableRooms[0]?.id
   const [showArchived, setShowArchived] = useState(false)
   const [deleting, setDeleting] = useState<Activity>()
@@ -399,8 +402,8 @@ export function ActivitiesPage() {
               key={a.id}
               activity={a}
               topic={topicById.get(a.topic_id)}
-              archived={!!classrooms.data?.find((room) => room.id === a.classroom_id)?.is_archived}
-              busy={busyIds.has(a.id) || !!classrooms.data?.find((room) => room.id === a.classroom_id)?.is_archived}
+              archived={!writableRoomIds.has(a.classroom_id)}
+              busy={busyIds.has(a.id) || !writableRoomIds.has(a.classroom_id)}
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}
               onToggle={() => void toggle(a)}

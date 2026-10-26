@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ActivitiesPage } from '@/features/teacher/activities-page'
-import { mockClassrooms, ROOM_A, renderTeacherPage } from '@/features/teacher/test-helpers'
+import { classroom, mockClassrooms, ROOM_A, renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Activity, Topic } from '@/lib/types'
 import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
@@ -458,6 +458,37 @@ describe('ActivitiesPage', () => {
     if (!row) throw new Error('row not found')
     expect(await within(row).findByRole('alert')).toBeInTheDocument()
     expect(count).toBe(1)
+  })
+
+  it('shows the frontend-raised message when every classroom is archived', async () => {
+    mockList([])
+    mockClassrooms([{ ...classroom(ROOM_A, '2026 春季班'), is_archived: true }])
+    let posted = false
+    server.use(
+      http.post('/api/activities', () => {
+        posted = true
+        return HttpResponse.json(act(), { status: 201 })
+      }),
+    )
+    renderTeacherPage(<ActivitiesPage />)
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
+    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    expect(await screen.findByText('請先建立或選擇未封存的教室。')).toBeInTheDocument()
+    expect(posted).toBe(false)
+  })
+
+  it('treats a classroom that failed to load as not editable', async () => {
+    server.use(
+      http.get('/api/classrooms', () => apiError(500, 'internal')),
+      http.get('/api/topics', () => HttpResponse.json(topics)),
+      http.get('/api/activities', () => pageOf([act()])),
+    )
+    renderTeacherPage(<ActivitiesPage />)
+    await screen.findByText('第一週討論')
+    expect(screen.getByRole('button', { name: '發布' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '編輯' })).toBeDisabled()
   })
 
   it('explains a failed topic list and still blocks creating without a topic', async () => {

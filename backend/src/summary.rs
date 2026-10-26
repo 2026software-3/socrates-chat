@@ -214,8 +214,9 @@ pub(crate) async fn end(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
-    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
-    let conv = owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與結束寫入在同一個交易內
+    let mut tx = state.pool.begin().await?;
+    let conv = crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     if conv.status == "ended" {
         // 重複結束不會再產生一次總結
         return Ok((StatusCode::OK, Json(view(&state, id).await?)));
@@ -223,7 +224,6 @@ pub(crate) async fn end(
     if conv.turn_count == 0 {
         return Err(ApiError::conflict("empty_conversation", "還沒有討論內容"));
     }
-    let mut tx = state.pool.begin().await?;
     let ended = end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
     if !ended {
@@ -271,8 +271,9 @@ pub(crate) async fn retry(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
-    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
-    owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與重試寫入在同一個交易內
+    let mut tx = state.pool.begin().await?;
+    crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     // 只有失敗，或產生中卻已超過逾時上限（例如服務重啟）才能重試
     // 重試開新的一代（attempt + 1）；舊的背景任務之後寫入會因代數不符而被忽略
     let next: Option<(i32,)> = sqlx::query_as(
@@ -285,8 +286,9 @@ pub(crate) async fn retry(
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     let Some((attempt,)) = next else {
         // 沒有總結列代表對話還沒結束
         view(&state, id).await?;
