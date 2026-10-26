@@ -1,33 +1,46 @@
-import { Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
+import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { formatDate } from '@/lib/format'
-import { useI18n, useT } from '@/i18n'
+import { errorText, useI18n, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
 import type { Conversation, Page as PageResult } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 /** 我的對話列表（不含訊息）；可刪除對話。 */
 export function ConversationListPage() {
+  const [params, setParams] = useSearchParams()
+  const archived = params.get('archived') === 'true'
   const [cursors, setCursors] = useState<(string | null)[]>([null])
   const cursor = cursors[cursors.length - 1]
-  return <ConversationList key={cursor ?? ''} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} />
+  return <ConversationList key={`${archived}:${cursor ?? ''}`} archived={archived} onViewChange={(next) => { setParams(next ? { archived: 'true' } : {}); setCursors([null]) }} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} />
 }
 
-function ConversationList({ cursor, onNext, onPrevious }: { cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {
+function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious }: { archived: boolean; onViewChange: (archived: boolean) => void; cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {
   const t = useT()
-  const { data, error, loading, reload } = useFetch<PageResult<Conversation>>(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`)
+  const { data, error, loading, reload } = useFetch<PageResult<Conversation>>(`/api/conversations?${new URLSearchParams({ ...(archived ? { archived: 'true' } : {}), ...(cursor ? { cursor } : {}) }).toString()}`)
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set())
   const [target, setTarget] = useState<Conversation>()
   const [pending, setPending] = useState(false)
   const [deleteError, setDeleteError] = useState<unknown>()
 
   const items = data?.items.filter((c) => !removed.has(c.id))
+
+  async function toggleArchive(c: Conversation) {
+    try {
+      await api.post(`/api/conversations/${c.id}/${c.is_archived ? 'unarchive' : 'archive'}`)
+      setRemoved((s) => new Set(s).add(c.id))
+      toast.success(t(c.is_archived ? 'chat.list.restoredToast' : 'chat.list.archivedToast'))
+    } catch (e) {
+      toast.error(errorText(t, e))
+    }
+  }
 
   async function confirmDelete() {
     if (!target || pending) return
@@ -53,11 +66,12 @@ function ConversationList({ cursor, onNext, onPrevious }: { cursor: string | nul
 
   return (
     <Page title={t('chat.list.title')}>
+      <ArchiveViewToggle archived={archived} onChange={onViewChange} />
       {loading && !data ? <LoadingBlock /> : null}
       {error && !data ? <ErrorBlock error={error} onRetry={reload} /> : null}
       {items && items.length === 0 ? (
         <EmptyBlock>
-          <span className="block">{t('chat.list.empty')}</span>
+          <span className="block">{t(archived ? 'chat.list.emptyArchived' : 'chat.list.empty')}</span>
           <Button asChild variant="link">
             <Link to="/">{t('chat.list.browse')}</Link>
           </Button>
@@ -69,6 +83,7 @@ function ConversationList({ cursor, onNext, onPrevious }: { cursor: string | nul
             <ConversationRow
               key={c.id}
               conversation={c}
+              onArchive={() => void toggleArchive(c)}
               onDelete={() => {
                 setDeleteError(undefined)
                 setTarget(c)
@@ -98,7 +113,7 @@ function ConversationList({ cursor, onNext, onPrevious }: { cursor: string | nul
   )
 }
 
-function ConversationRow({ conversation: c, onDelete }: { conversation: Conversation; onDelete: () => void }) {
+function ConversationRow({ conversation: c, onArchive, onDelete }: { conversation: Conversation; onArchive: () => void; onDelete: () => void }) {
   const t = useT()
   const { lang } = useI18n()
   const created = formatDate(c.created_at, lang)
@@ -120,16 +135,26 @@ function ConversationRow({ conversation: c, onDelete }: { conversation: Conversa
           {created ? <span>{t('chat.list.created', { date: created })}</span> : null}
         </p>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        className="self-start sm:self-auto"
-        aria-label={t('chat.list.delete', { title: c.title })}
-        onClick={onDelete}
-      >
-        <Trash2 aria-hidden />
-        {t('common.delete')}
-      </Button>
+      <div className="flex gap-2 self-start sm:self-auto">
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={t(c.is_archived ? 'chat.list.restoreAria' : 'chat.list.archiveAria', { title: c.title })}
+          onClick={onArchive}
+        >
+          {c.is_archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
+          {t(c.is_archived ? 'chat.list.restore' : 'chat.list.archive')}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={t('chat.list.delete', { title: c.title })}
+          onClick={onDelete}
+        >
+          <Trash2 aria-hidden />
+          {t('common.delete')}
+        </Button>
+      </div>
     </li>
   )
 }

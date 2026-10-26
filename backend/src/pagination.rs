@@ -105,3 +105,15 @@ pub fn fingerprint(filters: &impl Serialize) -> String {
     let bytes = serde_json::to_vec(filters).unwrap_or_default();
     URL_SAFE_NO_PAD.encode(&Sha256::digest(bytes)[..8])
 }
+
+/// `?archived=` 只接受 `true` 或 `false`；沒帶代表 `false`，其他值回 400。
+pub fn parse_archived(raw: Option<&str>) -> Result<bool, ApiError> {
+    match raw {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err(ApiError::bad_request(
+            "invalid_archived",
+            "archived 只能是 true 或 false",
+        )),
+    }
+}

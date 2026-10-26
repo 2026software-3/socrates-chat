@@ -42,7 +42,8 @@
 - 活動必須選題庫題目（S-04.7）：建立時 `topic_id` 必填，沒帶、為 `null` 或題目不存在都回 `400 invalid_topic`，`PATCH` 也不能清除。活動已有學生開始的對話後，換成不同題目回 `409 activity_topic_locked`（同一個題目、只改標題或說明不受限；對話被刪除後又可更換）。
 - 活動屬於教室（F-28.3、S-14）：`POST /api/activities` 本文必須帶 `classroom_id`（沒帶回 `400 invalid_classroom`），建立後不可更改（`PATCH` 沒有這個欄位）。教室不存在與不是自己管理的教室一律回相同的 `404 not_found`；教師只能建立、讀取、修改、發布與停止自己建立的教室內的活動（其他教師的活動回 `404`），管理者可管理所有教室。題目是全域的：兩個教室可以引用同一題目，各教室的活動互不影響。
 - `GET /api/activities?classroom_id=` 列出自己管理的教室內的活動（管理者為全部），回應每筆都有 `classroom_id`；帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。
-- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目；舊的 `/api/available` 已移除。
+- 活動封存與刪除（S-14）：活動回應帶 `is_archived`（預設 `false`）。`POST /api/activities/{id}/archive`、`/unarchive`（選填 `?reason=` 寫入稽核日誌）封存與復原；教室已封存時回 `409 classroom_archived`。封存的活動不出現在學生清單、不能開始新對話（`400 invalid_conversation_source`），既有對話照舊；`GET /api/activities` 預設只列未封存的，`?archived=true` 只列已封存的；`archived` 只接受 `true` 或 `false`，其他值回 `400 invalid_archived`。已封存的活動不能發布或停止開放（`409 activity_archived`），需先復原；重複封存同一活動不會重複寫稽核。`DELETE /api/activities/{id}` 永久刪除活動與其所有對話、總結，JSON body 的 `confirm_title` 必須等於活動標題（`400 confirmation_mismatch`），選填 `reason`；封存的活動與封存教室內的活動都可直接刪除，成功回 `204`；缺少 body 與名稱不符都回 `400 confirmation_mismatch`（不存在的活動先回 `404`）。封存、復原、刪除都寫入稽核日誌（`activity_archived`／`activity_restored`／`activity_deleted`，對象為活動標題；刪除另記 `item_count`＝一併刪除的對話數）。
+- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、未封存、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生（F-28.2）
 
@@ -66,16 +67,18 @@
 - 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，最多 255 字元，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空白或超長名稱回 `400 invalid_classroom_name`。年度標籤最多 100 字元、說明最多 2,000 字元，超限分別回 `invalid_classroom_year_label`、`invalid_classroom_description`。選填欄位前後空白會去除，空字串會保存為 `null`。
 - `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。
 - 管理者可管理所有教室。依 Issue「教室由教師建立」，目前只有教師可建立教室（管理者建立權限**待需求方確認**，尚未定案）；建立者欄位固定為建立請求的教師。教室名稱唯一性由資料庫約束保證，併發建立相同名稱時僅一個成功。沒有提供任何欄位的空 PATCH 不會更新 `updated_at`。
-- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。教室回應帶 `is_archived`（預設 `false`）；PATCH 可傳 `is_archived: true` 封存、`false` 復原。封存後教室、活動、修課名單及既有對話為唯讀，寫入回 `409 classroom_archived`（開始活動對話沿用 `400 invalid_conversation_source`）。教師與管理者仍可查閱，名單與原有資料保留；復原後恢復操作。個人練習不受封存影響。名單見上一節。
+- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。教室回應帶 `is_archived`（預設 `false`）；PATCH 可傳 `is_archived: true` 封存、`false` 復原。封存後教室、活動、修課名單及既有對話為唯讀，寫入回 `409 classroom_archived`（學生刪除、封存自己的對話不受限制，見「對話」一節；開始活動對話沿用 `400 invalid_conversation_source`）。教師與管理者仍可查閱，名單與原有資料保留；復原後恢復操作。個人練習不受封存影響。名單見上一節。
+- 教室刪除（S-14）：`DELETE /api/classrooms/{id}` 永久刪除教室，連同活動、修課名單、活動對話與總結，個人練習、點數、成就與帳號不受影響；JSON body 的 `confirm_name` 必須等於教室名稱（`400 confirmation_mismatch`），選填 `reason`；封存的教室可直接刪除，成功回 `204`，名稱隨即可再使用。不存在或不是自己管理的教室先回 `404`；body 缺少、不是 JSON 或缺 `confirm_name` 與名稱不符一樣回 `400 confirmation_mismatch`。刪除時先鎖住教室列再計數，稽核的對話數量不會漏掉同時開始的對話。PATCH 封存與復原可帶選填 `reason`。封存、復原、刪除都寫入稽核日誌（`classroom_archived`／`classroom_restored`／`classroom_deleted`，對象為教室名稱；刪除另記 `item_count`＝一併刪除的對話數）。只有建立者與管理者可操作，其他教師回 `404`。
 
 ## 對話（只有修課名單內的學生）
 
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
-- `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。
+- `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
 - 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。活動還必須在學生所屬教室的名單內：活動不存在、未發布與學生不在活動所屬教室名單內，回應完全相同，不外露活動是否存在。
-- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動之後被刪除或停用也不變；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。
+- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。
 - 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）：已有時以該活動開始對話回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個。刪除該場對話後可重新開始；只帶 `topic_id` 的個人練習不受限。
+- 對話封存（S-14）：`POST /api/conversations/{id}/archive`、`/unarchive` 只改變本人清單的顯示（回 `204`，他人的對話回 `404`），不受教室封存限制，不影響教師端總結、彙整、點數，也不解除「一人一活動一場」；封存的活動對話要重開必須先刪除。`DELETE /api/conversations/{id}` 不受教室封存限制。教室或活動被刪除時其中的對話一併刪除。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
   1. `message`：保存好的學生訊息，另有 `auto_ended`。

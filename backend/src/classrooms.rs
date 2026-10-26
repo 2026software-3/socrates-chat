@@ -2,7 +2,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, State, rejection::JsonRejection},
     http::StatusCode,
     routing::get,
 };
@@ -11,6 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    accounts::{
+        DeleteSpec, audit, clean_reason, confirmation, delete_with_audit, ensure_confirmed,
+    },
     auth::{CurrentUser, RequireTeacher},
     catalog::nullable,
     classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
@@ -29,7 +32,9 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/classrooms/{id}",
-            get(get_classroom).patch(update_classroom),
+            get(get_classroom)
+                .patch(update_classroom)
+                .delete(delete_classroom),
         )
 }
 
@@ -49,6 +54,9 @@ pub(crate) struct NewClassroom {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct ClassroomPatch {
     is_archived: Option<bool>,
+    /// 封存或復原的選填原因，寫入稽核日誌
+    #[schema(max_length = 500)]
+    reason: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
     #[schema(max_length = 255)]
     name: Option<Option<String>>,
@@ -247,21 +255,95 @@ pub(crate) async fn update_classroom(
             )
         })
         .transpose()?;
-    let current = visible_classroom(&state, &cu, &raw_id).await?;
-    if current.is_archived && (name.is_some() || year_label.is_some() || description.is_some()) {
-        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
-    }
+    let reason = body.reason;
     let changes = ClassroomChanges {
         is_archived: body.is_archived,
         name,
         year_label,
         description,
     };
-    classroom_store::update_visible(&state.pool, id, cu.user.id, cu.roles.admin, changes)
-        .await
-        .map_err(map_store_error)?
-        .map(Json)
-        .ok_or_else(ApiError::not_found)
+    // 鎖住教室列後在同一個交易內更新並寫稽核，封存狀態是否改變以鎖定後的值為準
+    let mut tx = state.pool.begin().await?;
+    let was_archived: bool =
+        sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+    if was_archived
+        && (changes.name.is_some() || changes.year_label.is_some() || changes.description.is_some())
+    {
+        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+    }
+    let updated =
+        classroom_store::update_visible(&mut *tx, id, cu.user.id, cu.roles.admin, changes)
+            .await
+            .map_err(map_store_error)?
+            .ok_or_else(ApiError::not_found)?;
+    if updated.is_archived != was_archived {
+        let action = if updated.is_archived {
+            "classroom_archived"
+        } else {
+            "classroom_restored"
+        };
+        audit(
+            &mut *tx,
+            cu.user.id,
+            action,
+            &updated.name,
+            clean_reason(reason).as_deref(),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(updated))
+}
+
+/// 刪除教室的確認：必須與教室名稱相同（S-14）。
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct DeleteClassroomBody {
+    confirm_name: String,
+    /// 選填原因，寫入稽核日誌
+    #[schema(max_length = 500)]
+    reason: Option<String>,
+}
+
+/// 永久刪除教室；封存的教室可直接刪除，不必先復原。
+#[utoipa::path(
+    delete,
+    path = "/api/classrooms/{id}",
+    tag = "classrooms",
+    summary = "永久刪除教室，連同活動、修課名單、活動對話與總結（不可復原）",
+    params(("id" = Uuid, Path, description = "教室 ID")),
+    request_body = DeleteClassroomBody,
+    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn delete_classroom(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(raw_id): Path<String>,
+    body: Result<Json<DeleteClassroomBody>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    // 先確認教室存在且可管理（否則 404），再檢查確認欄位
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    let body = confirmation(body)?;
+    ensure_confirmed(&body.confirm_name, &classroom.name)?;
+    // 名單、活動與其中的對話、總結由外鍵連動刪除；個人練習、點數與成就不受影響
+    delete_with_audit(
+        &state.pool,
+        &DeleteSpec {
+            lock: "SELECT id FROM classrooms WHERE id = $1 FOR UPDATE",
+            count_conversations: "SELECT count(*) FROM conversations WHERE classroom_id = $1",
+            delete: "DELETE FROM classrooms WHERE id = $1",
+            action: "classroom_deleted",
+        },
+        classroom.id,
+        cu.user.id,
+        &classroom.name,
+        body.reason,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Archived classrooms are read-only. Personal practice has no classroom.

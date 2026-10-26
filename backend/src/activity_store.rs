@@ -18,6 +18,8 @@ pub struct Activity {
     /// 活動所屬的教室，建立後不可更改（S-14）
     pub classroom_id: Uuid,
     pub status: String,
+    /// 封存：學生看不到、不能開新對話，既有對話照舊（S-14）
+    pub is_archived: bool,
     pub opens_at: Option<DateTime<Utc>>,
     pub closes_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -26,7 +28,7 @@ pub struct Activity {
 macro_rules! activity_select {
     ($tail:literal) => {
         concat!(
-            "SELECT a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.opens_at, a.closes_at, a.created_at
+            "SELECT a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
             $tail
         )
@@ -40,6 +42,7 @@ pub async fn list(
     actor_id: Uuid,
     is_admin: bool,
     classroom: Option<Uuid>,
+    archived: bool,
     after: Option<(DateTime<Utc>, Uuid)>,
     limit: i64,
 ) -> Result<Vec<Activity>, sqlx::Error> {
@@ -47,13 +50,15 @@ pub async fn list(
     sqlx::query_as(activity_select!(
         "JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE ($1 OR cl.created_by = $2) AND ($3::uuid IS NULL OR a.classroom_id = $3)
-           AND ($4::timestamptz IS NULL
-                OR a.created_at < $4 OR (a.created_at = $4 AND a.id > $5))
-         ORDER BY a.created_at DESC, a.id ASC LIMIT $6"
+           AND a.is_archived = $4
+           AND ($5::timestamptz IS NULL
+                OR a.created_at < $5 OR (a.created_at = $5 AND a.id > $6))
+         ORDER BY a.created_at DESC, a.id ASC LIMIT $7"
     ))
     .bind(is_admin)
     .bind(actor_id)
     .bind(classroom)
+    .bind(archived)
     .bind(after_time)
     .bind(after_id)
     .bind(limit)
@@ -110,7 +115,7 @@ pub async fn create_with_schedule<'e>(
     sqlx::query_as(
         "INSERT INTO activities (title, description, topic_id, classroom_id, created_by, opens_at, closes_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, title, description, topic_id, classroom_id, status, opens_at, closes_at, created_at",
+         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
     )
     .bind(title)
     .bind(description)
@@ -135,7 +140,7 @@ pub async fn set_status_visible(
         "UPDATE activities a SET status = $2, updated_at = now()
          FROM classrooms cl
          WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
-         RETURNING a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.opens_at, a.closes_at, a.created_at",
+         RETURNING a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at",
     )
     .bind(id)
     .bind(status)
@@ -160,7 +165,7 @@ pub async fn list_published_for_student_at(
     at: Option<DateTime<Utc>>,
 ) -> Result<Vec<Activity>, sqlx::Error> {
     sqlx::query_as(activity_select!(
-        "WHERE a.status = 'published'
+        "WHERE a.status = 'published' AND NOT a.is_archived
            AND (a.opens_at IS NULL OR COALESCE($2, statement_timestamp()) >= a.opens_at)
            AND (a.closes_at IS NULL OR COALESCE($2, statement_timestamp()) < a.closes_at)
            AND NOT EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = a.classroom_id AND cl.is_archived)
@@ -204,7 +209,7 @@ pub async fn find_startable_at(
     sqlx::query_as(
         "SELECT a.id, a.topic_id, a.classroom_id, a.title, a.description FROM activities a
          JOIN classrooms cl ON cl.id = a.classroom_id
-         WHERE a.id = $1 AND a.status = 'published' AND NOT cl.is_archived
+         WHERE a.id = $1 AND a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
            AND (a.opens_at IS NULL OR COALESCE($3, statement_timestamp()) >= a.opens_at)
            AND (a.closes_at IS NULL OR COALESCE($3, statement_timestamp()) < a.closes_at)
            AND EXISTS (SELECT 1 FROM enrollments e
@@ -215,5 +220,21 @@ pub async fn find_startable_at(
     .bind(email)
     .bind(at)
     .fetch_optional(conn)
+    .await
+}
+
+/// 封存或復原活動；呼叫端已在交易內鎖住該列並確認操作者可管理。
+pub async fn set_archived<'e>(
+    conn: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    archived: bool,
+) -> Result<Activity, sqlx::Error> {
+    sqlx::query_as(
+        "UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
+         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
+    )
+    .bind(id)
+    .bind(archived)
+    .fetch_one(conn)
     .await
 }

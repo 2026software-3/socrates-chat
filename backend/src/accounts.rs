@@ -106,23 +106,100 @@ pub(crate) async fn audit(
     conn: impl sqlx::PgExecutor<'_>,
     actor: Uuid,
     action: &str,
-    target_email: &str,
+    target: &str,
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    audit_counted(conn, actor, action, target, reason, None).await
+}
+
+/// 稽核紀錄另帶數量；刪除教室或活動時記錄一併刪除的對話數（S-14）。
+pub(crate) async fn audit_counted(
+    conn: impl sqlx::PgExecutor<'_>,
+    actor: Uuid,
+    action: &str,
+    target: &str,
+    reason: Option<&str>,
+    item_count: Option<i64>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO audit_logs (actor_id, action, target_email, reason) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO audit_logs (actor_id, action, target_email, reason, item_count) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(actor)
     .bind(action)
-    .bind(target_email)
+    .bind(target)
     .bind(reason)
+    .bind(item_count.map(|n| n as i32))
     .execute(conn)
     .await?;
     Ok(())
 }
 
+/// 刪除請求的 JSON body 缺少、格式錯誤或不是 JSON 時，與名稱不符同樣回 400，維持專案的錯誤格式。
+pub(crate) fn confirmation<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ApiError> {
+    body.map(|Json(value)| value)
+        .map_err(|_| ApiError::bad_request("confirmation_mismatch", "請提供要刪除對象的名稱以確認"))
+}
+
+/// 輸入的名稱必須與對象名稱相同（比對時去除前後空白）。
+pub(crate) fn ensure_confirmed(given: &str, expected: &str) -> Result<(), ApiError> {
+    if given.trim() == expected.trim() {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "confirmation_mismatch",
+            "確認的名稱與要刪除的對象不符",
+        ))
+    }
+}
+
+/// 教室與活動刪除共用的 SQL 與稽核動作。
+pub(crate) struct DeleteSpec {
+    /// 鎖住要刪的列；開始對話會對同一列取 `FOR SHARE`，所以鎖住後再計數不會漏掉新對話
+    pub lock: &'static str,
+    pub count_conversations: &'static str,
+    pub delete: &'static str,
+    pub action: &'static str,
+}
+
+/// 在同一個交易中鎖列、計算一併刪除的對話數、刪除並寫入稽核日誌（S-14）。
+pub(crate) async fn delete_with_audit(
+    pool: &sqlx::PgPool,
+    spec: &DeleteSpec,
+    id: Uuid,
+    actor: Uuid,
+    target: &str,
+    reason: Option<String>,
+) -> Result<(), ApiError> {
+    let mut tx = pool.begin().await?;
+    let locked: Option<Uuid> = sqlx::query_scalar(spec.lock)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if locked.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let conversations: i64 = sqlx::query_scalar(spec.count_conversations)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query(spec.delete).bind(id).execute(&mut *tx).await?;
+    audit_counted(
+        &mut *tx,
+        actor,
+        spec.action,
+        target,
+        clean_reason(reason).as_deref(),
+        Some(conversations),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 原因為選填；去空白後為空視為沒有，並限制長度。
-fn clean_reason(reason: Option<String>) -> Option<String> {
+pub(crate) fn clean_reason(reason: Option<String>) -> Option<String> {
     reason
         .map(|r| r.trim().chars().take(500).collect::<String>())
         .filter(|r| !r.is_empty())

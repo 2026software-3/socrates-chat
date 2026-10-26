@@ -56,8 +56,8 @@ pub async fn list(
     .await
 }
 
-pub async fn get_visible(
-    pool: &PgPool,
+pub async fn get_visible<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     actor_id: Uuid,
     is_admin: bool,
@@ -103,8 +103,8 @@ pub struct ClassroomChanges {
     pub description: Option<Option<String>>,
 }
 
-pub async fn update_visible(
-    pool: &PgPool,
+pub async fn update_visible<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     actor_id: Uuid,
     is_admin: bool,
