@@ -23,8 +23,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # fmt/clippy 不需要 Postgres，獨立一個 job 與測試並行，也能更早回報 lint 失敗
+  backend-lint:
+    name: Backend (fmt, clippy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+      # rustup installs the toolchain pinned in backend/rust-toolchain.toml
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
   backend:
-    name: Backend (fmt, clippy, test, coverage)
+    name: Backend (test, coverage)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -53,14 +72,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
       - run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
-          tool: cargo-llvm-cov
-      # 取代 `cargo test`：同時跑測試並量測覆蓋率；目前只報告，不設門檻（見 docs/specs/decisions.md）
-      - run: cargo llvm-cov --locked --lcov --output-path lcov.info
+          tool: cargo-llvm-cov,cargo-nextest
+      # 取代 `cargo test`：nextest 讓各測試檔並行執行（cargo test 是一個檔案接一個檔案），
+      # 同時量測覆蓋率；目前只報告，不設門檻（見 docs/specs/decisions.md）。
+      # 整合測試用 sqlx::test，每個測試各自一個資料庫，可安全並行。
+      - run: cargo llvm-cov nextest --locked --lcov --output-path lcov.info
+      # nextest 不跑 doctest
+      - run: cargo test --doc --locked
       - run: |
           {
             echo '### Backend coverage'
