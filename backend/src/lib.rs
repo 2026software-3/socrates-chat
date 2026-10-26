@@ -38,6 +38,7 @@ macro_rules! generation_unclaimed {
 }
 
 pub mod accounts;
+pub mod achievements;
 pub mod activity_store;
 pub mod ai;
 pub mod auth;

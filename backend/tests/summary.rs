@@ -62,6 +62,17 @@ async fn ending_generates_a_saved_summary(pool: PgPool) {
     assert_eq!(s["status"], "ready");
     assert_eq!(s["stance"], "會拉桿");
     assert_eq!(s["reasons"], "救五人優先");
+    let unlocks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM achievement_unlocks u JOIN users ON users.id = u.user_id
+         WHERE email = 'student@example.com' AND achievement_id = 'first_dialogue'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        unlocks, 1,
+        "a ready summary awards the first-dialogue achievement"
+    );
 
     // 對話已結束，不能再送訊息；AI 收到的是完整逐字稿
     let (st, _) = student_says(&app, &a, &conv, "還想補充").await;
