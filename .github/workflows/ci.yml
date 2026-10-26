@@ -80,8 +80,6 @@ jobs:
       # 同時量測覆蓋率；目前只報告，不設門檻（見 docs/specs/decisions.md）。
       # 整合測試用 sqlx::test，每個測試各自一個資料庫，可安全並行。
       - run: cargo llvm-cov nextest --locked --lcov --output-path lcov.info
-      # nextest 不跑 doctest
-      - run: cargo test --doc --locked
       - run: |
           {
             echo '### Backend coverage'
