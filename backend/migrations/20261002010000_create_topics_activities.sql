@@ -19,10 +19,15 @@ CREATE TABLE activities (
     description text NOT NULL DEFAULT '',
     -- 活動必須選題庫題目（S-04.7）；活動已有對話後不能更換題目，由 API 檢查
     topic_id    uuid NOT NULL REFERENCES topics (id),
-    -- 活動只屬於這間教室；教室不能刪除，所以沒有連動刪除
-    classroom_id uuid NOT NULL REFERENCES classrooms (id),
+    -- 活動只屬於這間教室；刪除教室時一併刪除活動（S-14）
+    classroom_id uuid NOT NULL REFERENCES classrooms (id) ON DELETE CASCADE,
+    -- 封存：學生看不到也不能開新對話，既有對話與總結照舊；可復原（S-14）
+    is_archived boolean NOT NULL DEFAULT false,
     -- draft：草稿；published：開放學生選擇；closed：停止開放
     status      text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'closed')),
+    opens_at    timestamptz,
+    closes_at   timestamptz,
+    CONSTRAINT activities_schedule_check CHECK (closes_at > opens_at),
     created_by  uuid REFERENCES users (id) ON DELETE SET NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()

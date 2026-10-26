@@ -28,7 +28,12 @@ export type Activity = {
   description: string
   /** 活動必須選題庫題目（建立與編輯都必填）。 */
   topic_id: string
+  opens_at: string | null
+  closes_at: string | null
+  classroom_id: string
   status: ActivityStatus
+  /** 已封存：學生看不到、不能開新對話，可復原 */
+  is_archived: boolean
   created_at: string
 }
 
@@ -50,6 +55,8 @@ export type Conversation = {
   converge_ready: boolean
   created_at: string
   ended_at: string | null
+  /** 學生已封存：只從自己的清單隱藏，可復原 */
+  is_archived: boolean
 }
 
 export type MessageRole = 'student' | 'ai'
@@ -153,6 +160,7 @@ export type ClassDashboard = {
 export type EmailList = { emails: string[] }
 
 export type Classroom = {
+  is_archived: boolean
   id: string
   name: string
   year_label: string | null

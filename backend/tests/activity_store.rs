@@ -34,10 +34,10 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
     );
     let (a, b) = (room(&pool, t1, "A").await, room(&pool, t2, "B").await);
     let topic = topic(&pool).await;
-    let in_a = activity_store::create(&pool, a, t1, "甲", "", topic)
+    let in_a = activity_store::create_with_schedule(&pool, a, t1, "甲", "", topic, (None, None))
         .await
         .unwrap();
-    let in_b = activity_store::create(&pool, b, t2, "乙", "", topic)
+    let in_b = activity_store::create_with_schedule(&pool, b, t2, "乙", "", topic, (None, None))
         .await
         .unwrap();
 
@@ -49,12 +49,12 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
         .unwrap();
     assert_eq!(topics, 1);
 
-    let mine = activity_store::list(&pool, t1, false, None, None, 200)
+    let mine = activity_store::list(&pool, t1, false, None, false, None, 200)
         .await
         .unwrap();
     assert_eq!(mine.iter().map(|x| x.id).collect::<Vec<_>>(), [in_a.id]);
     assert_eq!(
-        activity_store::list(&pool, t1, true, None, None, 200)
+        activity_store::list(&pool, t1, true, None, false, None, 200)
             .await
             .unwrap()
             .len(),
@@ -73,7 +73,7 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
             .is_some()
     );
     assert!(
-        activity_store::list(&pool, t1, false, Some(b), None, 200)
+        activity_store::list(&pool, t1, false, Some(b), false, None, 200)
             .await
             .unwrap()
             .is_empty()
@@ -85,10 +85,10 @@ async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool
     let owner = user(&pool, "t@example.com").await;
     let (a, b) = (room(&pool, owner, "A").await, room(&pool, owner, "B").await);
     let topic = topic(&pool).await;
-    let in_a = activity_store::create(&pool, a, owner, "甲", "", topic)
+    let in_a = activity_store::create_with_schedule(&pool, a, owner, "甲", "", topic, (None, None))
         .await
         .unwrap();
-    let in_b = activity_store::create(&pool, b, owner, "乙", "", topic)
+    let in_b = activity_store::create_with_schedule(&pool, b, owner, "乙", "", topic, (None, None))
         .await
         .unwrap();
     sqlx::query("UPDATE activities SET status = 'published'")
@@ -129,41 +129,59 @@ async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool
 }
 
 #[sqlx::test]
-async fn conversation_classroom_survives_the_activity_and_blocks_classroom_deletion(pool: PgPool) {
+async fn deleting_an_activity_or_classroom_deletes_its_conversations(pool: PgPool) {
     let owner = user(&pool, "t@example.com").await;
     let student = user(&pool, "s@example.com").await;
     let a = room(&pool, owner, "A").await;
     let topic = topic(&pool).await;
-    let activity = activity_store::create(&pool, a, owner, "甲", "", topic)
-        .await
-        .unwrap();
-    let conv: Uuid = sqlx::query_scalar(
-        "INSERT INTO conversations (user_id, activity_id, classroom_id, title) VALUES ($1, $2, $3, 't') RETURNING id",
-    )
-    .bind(student).bind(activity.id).bind(a)
-    .fetch_one(&pool).await.unwrap();
+    let mut convs = Vec::new();
+    let mut activities = Vec::new();
+    for title in ["甲", "乙"] {
+        let activity =
+            activity_store::create_with_schedule(&pool, a, owner, title, "", topic, (None, None))
+                .await
+                .unwrap();
+        let conv: Uuid = sqlx::query_scalar(
+            "INSERT INTO conversations (user_id, activity_id, classroom_id, title) VALUES ($1, $2, $3, 't') RETURNING id",
+        )
+        .bind(student).bind(activity.id).bind(a)
+        .fetch_one(&pool).await.unwrap();
+        convs.push(conv);
+        activities.push(activity.id);
+    }
+    let remaining = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
 
+    // 刪除活動：只帶走該活動的對話（S-14）
     sqlx::query("DELETE FROM activities WHERE id = $1")
-        .bind(activity.id)
+        .bind(activities[0])
         .execute(&pool)
         .await
         .unwrap();
-    let kept: Option<Uuid> =
-        sqlx::query_scalar("SELECT classroom_id FROM conversations WHERE id = $1")
-            .bind(conv)
+    assert_eq!(remaining().await, 1);
+
+    // 刪除教室：其中的活動與對話一併刪除；個人練習不受影響
+    sqlx::query("INSERT INTO conversations (user_id, title) VALUES ($1, '練習')")
+        .bind(student)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM classrooms WHERE id = $1")
+        .bind(a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining().await, 1);
+    let practice: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversations WHERE classroom_id IS NULL")
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(kept, Some(a));
-
-    // 教室不能刪除（有對話引用時資料庫拒絕）
-    assert!(
-        sqlx::query("DELETE FROM classrooms WHERE id = $1")
-            .bind(a)
-            .execute(&pool)
-            .await
-            .is_err()
-    );
+    assert_eq!(practice, 1);
 }
 
 #[sqlx::test]

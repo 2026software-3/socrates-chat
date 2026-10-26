@@ -286,7 +286,7 @@ pub(crate) async fn is_staff_email(
     summary = "匯入教室的修課名單（只新增）",
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ImportBody,
-    responses((status = 200, description = "匯入結果", body = ImportResult), crate::error::CommonErrors)
+    responses((status = 200, description = "匯入結果", body = ImportResult), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn import_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -299,6 +299,8 @@ pub(crate) async fn import_roster(
     let mut added = 0;
     let mut credentials = Vec::new();
     let mut tx = state.pool.begin().await?;
+    // 封存檢查與寫入同一個交易：教室列的共享鎖持續到提交，封存不會插在中間
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     // 整批名單、帳號與稽核一起提交，避免失敗時遺失一次性的臨時密碼。
     // 匯入只新增，不移除名單上原有的人
     for email in &parsed.emails {
@@ -340,7 +342,7 @@ pub(crate) async fn import_roster(
         ("id" = Uuid, Path, description = "教室 ID"),
         ("email" = String, Path, description = "電子郵件")
     ),
-    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn remove_from_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -349,6 +351,7 @@ pub(crate) async fn remove_from_roster(
 ) -> Result<StatusCode, ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
     let mut tx = state.pool.begin().await?;
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     if !roster_store::remove(&mut tx, classroom.id, &email).await? {
         return Err(ApiError::not_found());
     }

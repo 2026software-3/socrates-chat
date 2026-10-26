@@ -207,14 +207,16 @@ async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
     tag = "conversations",
     summary = "結束對話並在背景產生總結",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "classroom_archived / empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn end(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
-    let conv = owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與結束寫入在同一個交易內
+    let mut tx = state.pool.begin().await?;
+    let conv = crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     if conv.status == "ended" {
         // 重複結束不會再產生一次總結
         return Ok((StatusCode::OK, Json(view(&state, id).await?)));
@@ -222,7 +224,6 @@ pub(crate) async fn end(
     if conv.turn_count == 0 {
         return Err(ApiError::conflict("empty_conversation", "還沒有討論內容"));
     }
-    let mut tx = state.pool.begin().await?;
     let ended = end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
     if !ended {
@@ -263,14 +264,16 @@ pub(crate) async fn get_summary(
     tag = "conversations",
     summary = "總結失敗後重試",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "summary_not_retryable", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "classroom_archived / summary_not_retryable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn retry(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
-    owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與重試寫入在同一個交易內
+    let mut tx = state.pool.begin().await?;
+    crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     // 只有失敗，或產生中卻已超過逾時上限（例如服務重啟）才能重試
     // 重試開新的一代（attempt + 1）；舊的背景任務之後寫入會因代數不符而被忽略
     let next: Option<(i32,)> = sqlx::query_as(
@@ -283,8 +286,9 @@ pub(crate) async fn retry(
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     let Some((attempt,)) = next else {
         // 沒有總結列代表對話還沒結束
         view(&state, id).await?;

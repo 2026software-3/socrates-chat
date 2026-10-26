@@ -1,6 +1,8 @@
 import { Pencil } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { useAuth } from '@/auth/auth-context'
+import { ArchiveViewToggle } from '@/components/archive-view-toggle'
+import { NameConfirmDialog } from '@/components/name-confirm-dialog'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -123,6 +125,10 @@ export function ClassroomsPage() {
   const canCreate = auth.status === 'authed' && auth.me.roles.teacher
   const { data, error, loading, reload } = useFetch<Classroom[]>('/api/classrooms')
   const [editing, setEditing] = useState<Classroom>()
+  const [showArchived, setShowArchived] = useState(false)
+  const [deleting, setDeleting] = useState<Classroom>()
+  const [archiving, setArchiving] = useState<string>()
+  const [archiveError, setArchiveError] = useState<unknown>()
   const [notice, setNotice] = useState('')
   const [createFormVersion, setCreateFormVersion] = useState(0)
 
@@ -150,11 +156,31 @@ export function ClassroomsPage() {
     reload()
   }
 
+  async function toggleArchive(room: Classroom) {
+    if (archiving) return
+    setArchiving(room.id)
+    setArchiveError(undefined)
+    try {
+      await api.patch<Classroom>(`/api/classrooms/${room.id}`, { is_archived: !room.is_archived })
+      reload()
+    } catch (err) { setArchiveError(err) }
+    finally { setArchiving(undefined) }
+  }
+
+  async function remove(room: Classroom) {
+    await api.delete(`/api/classrooms/${room.id}`, { confirm_name: room.name })
+    setDeleting(undefined)
+    setNotice(t('classrooms.deleted'))
+    reload()
+  }
+
+  const visible = data?.filter((room) => room.is_archived === showArchived)
   const title = canCreate ? t('classrooms.title.teacher') : t('classrooms.title.admin')
 
   return (
     <Page title={title}>
       <p className="text-muted-foreground text-sm">{t('classrooms.intro')}</p>
+      {archiveError ? <ErrorBlock error={archiveError} /> : null}
       {notice ? <p role="status" className="text-sm text-green-700 dark:text-green-400">{notice}</p> : null}
       {canCreate ? (
         <section aria-label={t('classrooms.create')} className="rounded-md border p-4">
@@ -169,21 +195,37 @@ export function ClassroomsPage() {
         </section>
       ) : null}
 
+      <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {loading && !data ? <LoadingBlock /> : null}
       {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
-      {data && data.length === 0 ? (
-        <EmptyBlock>{canCreate ? t('classrooms.empty') : t('classrooms.empty.admin')}</EmptyBlock>
+      {visible && visible.length === 0 ? (
+        <EmptyBlock>
+          {showArchived ? t('classrooms.emptyArchived') : canCreate ? t('classrooms.empty') : t('classrooms.empty.admin')}
+        </EmptyBlock>
       ) : null}
-      {data && data.length > 0 ? (
+      {visible && visible.length > 0 ? (
         <ul aria-label={title} className="divide-y rounded-md border">
-          {data.map((classroom) => (
+          {visible.map((classroom) => (
             <li key={classroom.id} aria-label={classroom.name} className="flex items-start justify-between gap-3 px-4 py-3">
               <div className="min-w-0 space-y-1">
                 <h2 className="font-medium">{classroom.name}</h2>
+                {classroom.is_archived ? <p>{t('classrooms.archived')}</p> : null}
                 {classroom.year_label ? <p className="text-muted-foreground text-sm">{classroom.year_label}</p> : null}
                 {classroom.description ? <p className="text-sm">{classroom.description}</p> : null}
               </div>
+              <div className="flex gap-2">
+              <Button variant="outline" disabled={!!archiving} onClick={() => void toggleArchive(classroom)}>
+                {t(classroom.is_archived ? 'classrooms.restore' : 'classrooms.archive')}
+              </Button>
               <Button
+                variant="outline"
+                disabled={!!archiving}
+                onClick={() => setDeleting(classroom)}
+              >
+                {t('classrooms.delete')}
+              </Button>
+              <Button
+                disabled={classroom.is_archived || !!archiving}
                 type="button"
                 variant="ghost"
                 size="icon"
@@ -195,9 +237,20 @@ export function ClassroomsPage() {
               >
                 <Pencil aria-hidden />
               </Button>
+              </div>
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {deleting ? (
+        <NameConfirmDialog
+          title={t('classrooms.deleteTitle')}
+          description={t('classrooms.deleteBody')}
+          name={deleting.name}
+          onConfirm={() => remove(deleting)}
+          onCancel={() => setDeleting(undefined)}
+        />
       ) : null}
 
       <Dialog open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)}>

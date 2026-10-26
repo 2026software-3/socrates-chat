@@ -107,7 +107,7 @@ pub(crate) struct RegroupBody {
     tag = "dashboard",
     summary = "請 AI 重新分組某活動的主張",
     request_body = RegroupBody,
-    responses((status = 204, description = "已重新分組"), (status = 404, description = "not_found：活動不存在或不在自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
+    responses((status = 204, description = "已重新分組"), (status = 404, description = "not_found：活動不存在或不在自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn regroup(
     RequireTeacher(cu): RequireTeacher,
@@ -118,12 +118,10 @@ pub(crate) async fn regroup(
         return Err(ApiError::forbidden("forbidden", "沒有權限"));
     }
     // 只能重新分組自己教室內的活動；他人的與不存在的活動回應相同
-    if activity_store::get_visible(&state.pool, body.activity_id, cu.user.id, false)
+    let activity = activity_store::get_visible(&state.pool, body.activity_id, cu.user.id, false)
         .await?
-        .is_none()
-    {
-        return Err(ApiError::not_found());
-    }
+        .ok_or_else(ApiError::not_found)?;
+    crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
         "SELECT s.conversation_id, s.claim, a.title
          FROM summaries s
@@ -160,6 +158,8 @@ pub(crate) async fn regroup(
             "AI 暫時無法回覆",
         ))?;
     let mut tx = state.pool.begin().await?;
+    // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
+    crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;
     // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定
     sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1")
         .bind(body.activity_id)
