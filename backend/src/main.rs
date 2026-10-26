@@ -57,7 +57,8 @@ async fn main() {
         &config.openai_base_url,
         config.openai_keys.clone(),
         &config.openai_model,
-    );
+    )
+    .with_fallbacks(config.openai_fallback_models.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
