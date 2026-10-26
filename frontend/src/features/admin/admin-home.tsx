@@ -3,7 +3,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { useT, type MessageKey } from '@/i18n'
-import type { EmailList, Topic } from '@/lib/types'
+import type { ClassDashboard, EmailList, Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 type Props = { to: string; title: MessageKey; desc: MessageKey; action: MessageKey; count: string }
@@ -30,7 +30,7 @@ function OpsCard({ to, title, desc, action, count }: Props) {
 export function AdminHome() {
   const t = useT()
   const teachers = useFetch<EmailList>('/api/admin/teachers')
-  const roster = useFetch<EmailList>('/api/roster')
+  const students = useFetch<ClassDashboard>('/api/dashboard/class')
   const topics = useFetch<Topic[]>('/api/admin/topics')
   const n = (v: number | undefined) => (v === undefined ? '–' : String(v))
 
@@ -53,7 +53,7 @@ export function AdminHome() {
           title="admin.home.roster"
           desc="admin.home.rosterDesc"
           action="admin.home.rosterAction"
-          count={n(roster.data?.emails.length)}
+          count={n(students.data?.students_total)}
         />
         <OpsCard
           to="/admin/topics"

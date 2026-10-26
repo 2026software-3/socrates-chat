@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { toast } from 'sonner'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -22,14 +23,15 @@ import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
 import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { LoadMore } from '@/components/load-more'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { errorText, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
-import type { RosterImportResult, StudentRow } from '@/lib/types'
-import { useFetch } from '@/lib/use-fetch'
+import type { Classroom, RosterImportResult, StudentPage, StudentRow } from '@/lib/types'
+import { useFetch, usePagedFetch } from '@/lib/use-fetch'
 
 /** 匯入表單：貼上文字或載入檔案內容到文字框（檔案本身不上傳）。 */
-function ImportPanel({ onImported }: { onImported: () => void }) {
+function ImportPanel({ classroomId, onImported }: { classroomId: string; onImported: () => void }) {
   const t = useT()
   const [text, setText] = useState('')
   const [pending, setPending] = useState(false)
@@ -61,7 +63,7 @@ function ImportPanel({ onImported }: { onImported: () => void }) {
     setError(undefined)
     setResult(undefined)
     try {
-      const r = await api.post<RosterImportResult>('/api/roster/import', {
+      const r = await api.post<RosterImportResult>(`/api/classrooms/${classroomId}/roster/import`, {
         text,
       })
       setResult(r)
@@ -194,11 +196,62 @@ function StatusBadge({ status }: { status: 'disabled' | 'pending' | 'active' }) 
   )
 }
 
-/** 教師與管理者：學生帳號管理——名單與帳號狀態、匯入、移出名單、刪除帳號；管理者另可重設密碼、停用與復原。 */
+const selectClass =
+  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm shadow-xs focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none'
+
+/** 教師與管理者：學生帳號管理——先選教室，再看該教室的名單與帳號狀態、匯入、移出名單、刪除帳號；管理者另可重設密碼、停用與復原。 */
 export function RosterPage() {
   const t = useT()
-  const roster = useFetch<StudentRow[]>('/api/students')
+  const auth = useAuth()
+  const classrooms = useFetch<Classroom[]>('/api/classrooms')
+  const [selected, setSelected] = useState<string>()
+  const list = classrooms.data
+  const current = list?.find((c) => c.id === selected) ?? list?.[0]
+  const isTeacher = auth.status === 'authed' && auth.me.roles.teacher
+
+  return (
+    <Page title={t('teacher.roster.title')}>
+      {classrooms.loading && !list ? <LoadingBlock /> : null}
+      {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
+      {list && list.length === 0 ? (
+        <EmptyBlock>
+          <p>{isTeacher ? t('teacher.roster.noClassrooms') : t('teacher.roster.noClassroomsAdmin')}</p>
+          {isTeacher ? (
+            <Link to="/teacher/classrooms" className="mt-2 inline-block underline">
+              {t('teacher.roster.goToClassrooms')}
+            </Link>
+          ) : null}
+        </EmptyBlock>
+      ) : null}
+      {list && list.length > 0 && current ? (
+        <>
+          <div className="max-w-sm space-y-1.5">
+            <Label htmlFor="roster-classroom">{t('teacher.roster.classroomLabel')}</Label>
+            <select id="roster-classroom" className={selectClass} value={current.id} onChange={(e) => setSelected(e.target.value)}>
+              {list.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.year_label ? `${c.name}（${c.year_label}）` : c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* 以教室為 key：換教室時重設搜尋、對話框與匯入結果 */}
+          <ClassroomRoster key={current.id} classroom={current} />
+        </>
+      ) : null}
+    </Page>
+  )
+}
+
+/** 單一教室的學生名單與操作。 */
+function ClassroomRoster({ classroom }: { classroom: Classroom }) {
+  const t = useT()
+  // 搜尋與人數都由後端計算：送出搜尋後從第一頁重新載入，其餘頁按「載入更多」才取
+  const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
+  const roster = usePagedFetch<StudentRow, StudentPage>(
+    `/api/classrooms/${classroom.id}/students${query ? `?q=${encodeURIComponent(query)}` : ''}`,
+  )
   const auth = useAuth()
   const isAdmin = auth.status === 'authed' && auth.me.roles.admin
   const [toReset, setToReset] = useState<string>()
@@ -211,11 +264,8 @@ export function RosterPage() {
   // 手機用卡片、桌面用表格：只渲染其中一種，避免同一份資料在畫面上出現兩次
   const wide = useMediaQuery('(min-width: 768px)')
 
-  const students = roster.data
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return (students ?? []).filter((s) => s.email.toLowerCase().includes(q) || (s.display_name ?? '').toLowerCase().includes(q))
-  }, [students, query])
+  const students = roster.items
+  const total = roster.page?.total ?? 0
 
   function open(a: AccountAction) {
     setReason('')
@@ -308,32 +358,45 @@ export function RosterPage() {
   }
 
   return (
-    <Page title={t('teacher.roster.title')}>
-      {roster.loading && !roster.data ? <LoadingBlock /> : null}
+    <div className="space-y-4">
+      <h2 className="text-xl font-medium">{t('teacher.roster.heading', { name: classroom.name })}</h2>
+      {roster.loading && !students ? <LoadingBlock /> : null}
       {roster.error ? <ErrorBlock error={roster.error} onRetry={roster.reload} /> : null}
       {actionError && action === null ? (
         <Alert variant="destructive" role="alert">
           <AlertDescription>{actionError}</AlertDescription>
         </Alert>
       ) : null}
-      {students && students.length === 0 ? <EmptyBlock>{t('teacher.roster.empty')}</EmptyBlock> : null}
-      {students && students.length > 0 ? (
+      {students && total === 0 && !query ? <EmptyBlock>{t('teacher.roster.empty')}</EmptyBlock> : null}
+      {students && (total > 0 || query) ? (
         <div className="space-y-3">
           <p className="text-sm font-medium" aria-live="polite">
-            {t('teacher.roster.count', { count: students.length })}
+            {t('teacher.roster.count', { count: total })}
           </p>
-          <div className="max-w-sm space-y-1.5">
-            <Label htmlFor="roster-search">{t('teacher.roster.searchLabel')}</Label>
-            <Input id="roster-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          {filtered.length === 0 ? (
+          <form
+            className="flex max-w-sm items-end gap-2"
+            role="search"
+            onSubmit={(e) => {
+              e.preventDefault()
+              setQuery(input.trim())
+            }}
+          >
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="roster-search">{t('teacher.roster.searchLabel')}</Label>
+              <Input id="roster-search" type="search" maxLength={100} value={input} onChange={(e) => setInput(e.target.value)} />
+            </div>
+            <Button type="submit" variant="outline">
+              {t('teacher.roster.searchButton')}
+            </Button>
+          </form>
+          {students.length === 0 ? (
             <EmptyBlock>{t('teacher.roster.noMatch')}</EmptyBlock>
           ) : (
             <>
               {!wide ? (
                 /* 手機：每位學生一張卡片，操作按鈕不會被擠到畫面外 */
                 <ul className="space-y-3" aria-label={t('teacher.roster.title')}>
-                  {filtered.map((s) => {
+                  {students.map((s) => {
                     const status = statusOf(s)
                     return (
                       <li key={s.email} className="space-y-3 rounded-lg border p-3">
@@ -364,7 +427,7 @@ export function RosterPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filtered.map((s) => (
+                      {students.map((s) => (
                         <TableRow key={s.email}>
                           <TableCell className="break-all">
                             {s.email}
@@ -385,10 +448,12 @@ export function RosterPage() {
               )}
             </>
           )}
+          <LoadMore hasMore={roster.hasMore} loading={roster.loadingMore} error={roster.moreError} onLoadMore={roster.loadMore} />
         </div>
       ) : null}
 
       <ImportPanel
+        classroomId={classroom.id}
         onImported={() => {
           setActionError(undefined)
           roster.reload()
@@ -401,11 +466,11 @@ export function RosterPage() {
         open={action?.kind === 'remove'}
         onOpenChange={closeDialog}
         title={t('teacher.roster.removeTitle')}
-        description={t('teacher.roster.removeBody', { email: target })}
+        description={t('teacher.roster.removeBody', { email: target, classroom: classroom.name })}
         confirmLabel={t('teacher.roster.remove')}
         pending={pending}
         error={action?.kind === 'remove' ? actionError : undefined}
-        onConfirm={() => void run(() => api.delete(`/api/roster/${encodeURIComponent(target)}`), 'teacher.roster.removed')}
+        onConfirm={() => void run(() => api.delete(`/api/classrooms/${classroom.id}/roster/${encodeURIComponent(target)}`), 'teacher.roster.removed')}
       />
 
       <AccountDialog
@@ -451,7 +516,7 @@ export function RosterPage() {
           <Input id="delete-confirm" value={confirmText} autoComplete="off" onChange={(e) => setConfirmText(e.target.value)} />
         </div>
       </AccountDialog>
-    </Page>
+    </div>
   )
 }
 

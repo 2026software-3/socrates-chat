@@ -3,9 +3,9 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { renderTeacherPage } from '@/features/teacher/test-helpers'
+import { mockClassrooms, renderTeacherPage, ROOM_A } from '@/features/teacher/test-helpers'
 import type { StudentRow } from '@/lib/types'
-import { apiError } from '@/test/render'
+import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
 
 const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => ({
@@ -25,7 +25,8 @@ const roster = [
 ]
 
 function mockStudents(rows: StudentRow[] = roster) {
-  server.use(http.get('/api/students', () => HttpResponse.json(rows)))
+  mockClassrooms()
+  server.use(http.get(`/api/classrooms/${ROOM_A}/students`, () => pageOf(rows, null, { total: rows.length })))
 }
 
 describe('student account management', () => {

@@ -167,7 +167,30 @@ async fn transcribe_validates_input(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    // 與其他端點相同的 JSON 錯誤格式（#324）
+    assert_json_error(res, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+}
+
+#[sqlx::test]
+async fn transcribe_accepts_audio_larger_than_the_json_body_limit(pool: PgPool) {
+    // 語音辨識有自己的 10 MB 上限，不受全域 JSON body 上限影響（#324）
+    let voice = Arc::new(FakeVoice::default());
+    let app = app_with_voice(pool, voice.clone());
+    let a = seed_actors(&app).await;
+    let size = socrates_chat_backend::MAX_BODY_BYTES * 3;
+    assert!(size < socrates_chat_backend::voice::MAX_AUDIO_BYTES);
+    let res = send(
+        &app,
+        audio_req(
+            "/api/voice/transcribe?language=en",
+            Some(&a.student),
+            "audio/webm",
+            vec![0; size],
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(voice.calls.lock().unwrap()[0].0, size);
 }
 
 #[sqlx::test]
@@ -325,6 +348,25 @@ async fn openai_voice_sends_multipart_transcription_with_model_and_language() {
 }
 
 #[tokio::test]
+async fn openai_voice_sends_transcription_to_the_stt_base_url_when_set() {
+    // 辨識可指向自架的 Whisper 服務；合成與對話仍走 OPENAI_BASE_URL
+    let (chat_base, chat_calls) = spawn_fake_openai().await;
+    let (stt_base, stt_calls) = spawn_fake_openai().await;
+    let mut c = test_config();
+    c.openai_base_url = chat_base;
+    c.openai_stt_base_url = Some(stt_base);
+    c.openai_stt_model = Some("stt-test".into());
+    c.openai_tts_model = Some("tts-test".into());
+    let v = OpenAiVoice::from_config(&c);
+    v.transcribe(vec![5; 20], "audio/webm", "en").await.unwrap();
+    v.speak("hi", "en").await.unwrap();
+    assert_eq!(stt_calls.lock().unwrap().len(), 1);
+    assert_eq!(stt_calls.lock().unwrap()[0].0, "/audio/transcriptions");
+    assert_eq!(chat_calls.lock().unwrap().len(), 1);
+    assert_eq!(chat_calls.lock().unwrap()[0].0, "/audio/speech");
+}
+
+#[tokio::test]
 async fn openai_voice_requests_mp3_speech_with_the_configured_model() {
     let (base, captured) = spawn_fake_openai().await;
     let audio = openai_voice(&base).speak("你好", "zh").await.unwrap();
@@ -346,4 +388,30 @@ async fn openai_voice_reports_failure_when_the_service_is_unreachable() {
         Err(VoiceError::Failed)
     );
     assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+}
+
+#[tokio::test]
+async fn openai_voice_failures_never_change_the_shared_key_state() {
+    use axum::http::StatusCode;
+    for status in [StatusCode::FORBIDDEN, StatusCode::TOO_MANY_REQUESTS] {
+        let app = Router::new()
+            .route("/audio/transcriptions", post(move || async move { status }))
+            .route("/audio/speech", post(move || async move { status }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = test_config();
+        c.openai_base_url = base;
+        c.openai_stt_model = Some("stt-test".into());
+        c.openai_tts_model = Some("tts-test".into());
+        let v = OpenAiVoice::from_config(&c);
+        assert_eq!(
+            v.transcribe(vec![1], "audio/webm", "en").await,
+            Err(VoiceError::Failed)
+        );
+        assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+        // 語音端點的錯誤（例如模型沒開放）不能讓對話用的 key 被冷卻或停用
+        assert_eq!(c.openai_keys.usable_count(), 1, "{status}");
+        assert!(c.openai_keys.acquire().is_some(), "{status}");
+    }
 }

@@ -175,18 +175,7 @@ async fn deleting_the_account_removes_its_ledger(pool: PgPool) {
 #[sqlx::test]
 async fn students_only_see_their_own_points(pool: PgPool) {
     let (app, a, student) = seeded(&pool).await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/roster/import",
-            Some(&a.admin),
-            Some(json!({"text": "other@example.com"})),
-        ),
-    )
-    .await;
-    assert!(res.status().is_success());
-    let other_cookie = login_as(&app, "sub-other", "other@example.com").await;
+    let other_cookie = add_student(&app, &a, "sub-other", "other@example.com").await;
     let other = user_id(&pool, "other@example.com").await;
     record(&pool, &conversation_entry(student, "mine")).await;
     record(&pool, &conversation_entry(other, "theirs")).await;
