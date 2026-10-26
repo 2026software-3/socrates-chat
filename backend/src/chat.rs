@@ -115,7 +115,7 @@ pub(crate) struct Detail {
     tag = "conversations",
     summary = "開始對話（活動或題目）",
     request_body = NewConversation,
-    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source：來源不可用，含活動不存在、未發布，或學生不在活動所屬教室的名單內（不區分原因）", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / activity_already_started", body = crate::error::ErrorBody))
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source：來源不可用，含活動不存在、未發布、已封存、不在開放期間、所在教室已封存，或學生不在活動所屬教室的名單內（不區分原因）", body = crate::error::ErrorBody), (status = 409, description = "activity_already_started", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
@@ -247,10 +247,19 @@ pub async fn owned_conversation(
     user_id: Uuid,
     id: Uuid,
 ) -> Result<Conversation, ApiError> {
+    owned_conversation_in(&state.pool, user_id, id).await
+}
+
+/// 同 [`owned_conversation`]，可在交易或指定連線中執行。
+pub(crate) async fn owned_conversation_in<'e>(
+    conn: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<Conversation, ApiError> {
     sqlx::query_as(conversation_select!("WHERE id = $1 AND user_id = $2"))
         .bind(id)
         .bind(user_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(conn)
         .await?
         .ok_or_else(ApiError::not_found)
 }
@@ -324,13 +333,14 @@ pub(crate) async fn send_message(
         Some("speech-openai") => "speech-openai",
         Some(_) => return Err(ApiError::bad_request("invalid_source", "訊息來源不正確")),
     };
-    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
-    let mut conversation = owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與寫入在同一個交易內，教室列的共享鎖持續到提交
+    let mut tx = state.pool.begin().await?;
+    let mut conversation =
+        crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
     // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
-    let mut tx = state.pool.begin().await?;
     // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
     // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
     let turn: Option<(i32, i16)> = sqlx::query_as(concat!(

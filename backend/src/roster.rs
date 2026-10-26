@@ -295,11 +295,12 @@ pub(crate) async fn import_roster(
     Json(body): Json<ImportBody>,
 ) -> Result<Json<ImportResult>, ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    crate::classrooms::ensure_writable(&state.pool, classroom.id).await?;
     let parsed = parse_roster(&body.text);
     let mut added = 0;
     let mut credentials = Vec::new();
     let mut tx = state.pool.begin().await?;
+    // 封存檢查與寫入同一個交易：教室列的共享鎖持續到提交，封存不會插在中間
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     // 整批名單、帳號與稽核一起提交，避免失敗時遺失一次性的臨時密碼。
     // 匯入只新增，不移除名單上原有的人
     for email in &parsed.emails {
@@ -349,8 +350,8 @@ pub(crate) async fn remove_from_roster(
     Path((raw_id, email)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    crate::classrooms::ensure_writable(&state.pool, classroom.id).await?;
     let mut tx = state.pool.begin().await?;
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     if !roster_store::remove(&mut tx, classroom.id, &email).await? {
         return Err(ApiError::not_found());
     }

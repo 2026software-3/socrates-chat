@@ -158,6 +158,8 @@ pub(crate) async fn regroup(
             "AI 暫時無法回覆",
         ))?;
     let mut tx = state.pool.begin().await?;
+    // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
+    crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;
     // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定
     sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1")
         .bind(body.activity_id)

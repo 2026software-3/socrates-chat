@@ -6,56 +6,53 @@ use serde_json::json;
 use sqlx::PgPool;
 
 #[sqlx::test]
-async fn database_clock_boundaries_and_one_sided_schedules(pool: PgPool) {
-    use chrono::{DateTime, Duration, Utc};
+async fn database_clock_decides_and_one_sided_schedules_work(pool: PgPool) {
     use socrates_chat_backend::activity_store;
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let id: uuid::Uuid = published_activity_with_topic(&app, &a, "boundaries")
+    let id: uuid::Uuid = published_activity_with_topic(&app, &a, "schedule")
         .await
         .parse()
         .unwrap();
-    let start: DateTime<Utc> = "2030-01-01T00:00:00Z".parse().unwrap();
-    let end = start + Duration::hours(1);
-    for (opens, closes) in [
-        (Some(start), Some(end)),
-        (Some(start), None),
-        (None, Some(end)),
-        (None, None),
+    // 開放與結束時間以相對於資料庫現在時間的秒數表示：(opens, closes, 是否開放中)
+    for (opens, closes, open_now) in [
+        (Some(-3600), Some(3600), true),
+        (Some(-3600), None, true),
+        (None, Some(3600), true),
+        (None, None, true),
+        (Some(3600), Some(7200), false),
+        (Some(3600), None, false),
+        (Some(-7200), Some(-3600), false),
+        (None, Some(-3600), false),
     ] {
-        sqlx::query("UPDATE activities SET opens_at=$2, closes_at=$3 WHERE id=$1")
-            .bind(id)
-            .bind(opens)
-            .bind(closes)
-            .execute(&pool)
-            .await
-            .unwrap();
-        for at in [
-            start - Duration::microseconds(1),
-            start,
-            end - Duration::microseconds(1),
-            end,
-        ] {
-            let expected = opens.is_none_or(|o| at >= o) && closes.is_none_or(|c| at < c);
-            let listed = activity_store::list_published_for_student_at(
-                &pool,
-                "student@example.com",
-                Some(at),
-            )
-            .await
-            .unwrap();
-            assert_eq!(listed.iter().any(|a| a.id == id), expected);
-            let mut conn = pool.acquire().await.unwrap();
-            let allowed =
-                activity_store::find_startable_at(&mut conn, id, "student@example.com", Some(at))
-                    .await
-                    .unwrap();
-            assert_eq!(allowed.is_some(), expected);
-        }
-    }
-    let err = sqlx::query("UPDATE activities SET opens_at=$2, closes_at=$2 WHERE id=$1")
+        sqlx::query(
+            "UPDATE activities
+             SET opens_at = now() + make_interval(secs => $2::float8),
+                 closes_at = now() + make_interval(secs => $3::float8)
+             WHERE id = $1",
+        )
         .bind(id)
-        .bind(start)
+        .bind(opens)
+        .bind(closes)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let listed = activity_store::list_published_for_student(&pool, "student@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.iter().any(|a| a.id == id),
+            open_now,
+            "{opens:?} {closes:?}"
+        );
+        let mut conn = pool.acquire().await.unwrap();
+        let allowed = activity_store::find_startable(&mut conn, id, "student@example.com")
+            .await
+            .unwrap();
+        assert_eq!(allowed.is_some(), open_now, "{opens:?} {closes:?}");
+    }
+    let err = sqlx::query("UPDATE activities SET opens_at=now(), closes_at=now() WHERE id=$1")
+        .bind(id)
         .execute(&pool)
         .await
         .unwrap_err();
@@ -71,18 +68,14 @@ async fn database_clock_boundaries_and_one_sided_schedules(pool: PgPool) {
             .await
             .unwrap();
         assert!(
-            activity_store::list_published_for_student_at(
-                &pool,
-                "student@example.com",
-                Some(start)
-            )
-            .await
-            .unwrap()
-            .is_empty()
+            activity_store::list_published_for_student(&pool, "student@example.com")
+                .await
+                .unwrap()
+                .is_empty()
         );
         let mut conn = pool.acquire().await.unwrap();
         assert!(
-            activity_store::find_startable_at(&mut conn, id, "student@example.com", Some(start))
+            activity_store::find_startable(&mut conn, id, "student@example.com")
                 .await
                 .unwrap()
                 .is_none()

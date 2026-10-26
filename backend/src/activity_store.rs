@@ -83,26 +83,6 @@ pub async fn get_visible(
     .await
 }
 
-pub async fn create(
-    pool: &PgPool,
-    classroom_id: Uuid,
-    created_by: Uuid,
-    title: &str,
-    description: &str,
-    topic_id: Uuid,
-) -> Result<Activity, sqlx::Error> {
-    create_with_schedule(
-        pool,
-        classroom_id,
-        created_by,
-        title,
-        description,
-        topic_id,
-        (None, None),
-    )
-    .await
-}
-
 pub async fn create_with_schedule<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     classroom_id: Uuid,
@@ -128,8 +108,8 @@ pub async fn create_with_schedule<'e>(
     .await
 }
 
-/// 改變狀態；活動不存在或不在操作者可管理的教室時回 `None`。
-pub async fn set_status_visible(
+/// 改變狀態；活動不存在、不在操作者可管理的教室、教室或活動已封存時回 `None`（呼叫端再分辨原因）。
+pub async fn set_status_writable(
     pool: &PgPool,
     id: Uuid,
     actor_id: Uuid,
@@ -140,6 +120,7 @@ pub async fn set_status_visible(
         "UPDATE activities a SET status = $2, updated_at = now()
          FROM classrooms cl
          WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
+           AND NOT cl.is_archived AND NOT a.is_archived
          RETURNING a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at",
     )
     .bind(id)
@@ -150,31 +131,21 @@ pub async fn set_status_visible(
     .await
 }
 
-/// 學生可選的活動：已發布，且所在教室的名單內有這位學生。
+/// 學生可選的活動：已發布、未封存、在開放期間內（以資料庫時間計算），且所在教室的名單內有這位學生。
 pub async fn list_published_for_student(
     pool: &PgPool,
     email: &str,
 ) -> Result<Vec<Activity>, sqlx::Error> {
-    list_published_for_student_at(pool, email, None).await
-}
-
-/// Internal callers may supply a fixed clock for deterministic boundary tests.
-pub async fn list_published_for_student_at(
-    pool: &PgPool,
-    email: &str,
-    at: Option<DateTime<Utc>>,
-) -> Result<Vec<Activity>, sqlx::Error> {
     sqlx::query_as(activity_select!(
         "WHERE a.status = 'published' AND NOT a.is_archived
-           AND (a.opens_at IS NULL OR COALESCE($2, statement_timestamp()) >= a.opens_at)
-           AND (a.closes_at IS NULL OR COALESCE($2, statement_timestamp()) < a.closes_at)
+           AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
+           AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
            AND NOT EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = a.classroom_id AND cl.is_archived)
            AND EXISTS (SELECT 1 FROM enrollments e
                        WHERE e.classroom_id = a.classroom_id AND e.email = lower($1))
          ORDER BY a.created_at DESC, a.id"
     ))
     .bind(email)
-    .bind(at)
     .fetch_all(pool)
     .await
 }
@@ -197,28 +168,18 @@ pub async fn find_startable(
     id: Uuid,
     email: &str,
 ) -> Result<Option<Startable>, sqlx::Error> {
-    find_startable_at(conn, id, email, None).await
-}
-
-pub async fn find_startable_at(
-    conn: &mut PgConnection,
-    id: Uuid,
-    email: &str,
-    at: Option<DateTime<Utc>>,
-) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
         "SELECT a.id, a.topic_id, a.classroom_id, a.title, a.description FROM activities a
          JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
-           AND (a.opens_at IS NULL OR COALESCE($3, statement_timestamp()) >= a.opens_at)
-           AND (a.closes_at IS NULL OR COALESCE($3, statement_timestamp()) < a.closes_at)
+           AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
+           AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
            AND EXISTS (SELECT 1 FROM enrollments e
                        WHERE e.classroom_id = a.classroom_id AND e.email = lower($2))
          FOR SHARE OF a, cl",
     )
     .bind(id)
     .bind(email)
-    .bind(at)
     .fetch_optional(conn)
     .await
 }

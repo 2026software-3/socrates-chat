@@ -41,7 +41,7 @@ use crate::{
         build_system_prompt, parse_meta,
     },
     auth::RequireStudent,
-    chat::{Conversation, Message, load_messages, owned_conversation},
+    chat::{Conversation, Message, load_messages},
     error::ApiError,
     mutex::lock,
 };
@@ -168,8 +168,10 @@ pub(crate) async fn stream(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<EventStream, ApiError> {
-    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
-    let conversation = owned_conversation(&state, cu.user.id, id).await?;
+    let conversation = {
+        let mut conn = state.pool.acquire().await?;
+        crate::classrooms::writable_conversation(&mut conn, cu.user.id, id).await?
+    };
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
