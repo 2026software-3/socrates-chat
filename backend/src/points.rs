@@ -3,6 +3,8 @@
 //! 帳本只新增；同一事件（使用者、來源類型、來源 ID）只入帳一次，由資料庫的 UNIQUE 約束保證。
 //! 入帳函式接受連線而非連線池，讓呼叫端把入帳與觸發它的事件放在同一個交易內（S-07.2 2.2）。
 
+use std::num::{NonZeroI32, NonZeroU32};
+
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -42,16 +44,86 @@ impl Source {
 }
 
 /// 一筆要寫入的帳本紀錄。
+///
+/// 欄位私有，只能透過下面的建構函式產生，讓 `delta`、`source` 與 `unit_price` 的組合必定符合
+/// 資料庫的 CHECK 約束（S-07.2 2.1）。組合錯誤不會等到寫入時才以 `sqlx::Error` 回來。
 #[derive(Clone, Debug)]
 pub struct Entry<'a> {
-    pub user_id: Uuid,
+    user_id: Uuid,
     /// 正為入帳、負為扣除
-    pub delta: i32,
-    pub reason: &'a str,
-    pub source: Source,
-    pub source_id: &'a str,
+    delta: i32,
+    reason: &'a str,
+    source: Source,
+    source_id: &'a str,
     /// 只有扣除時記錄當下價格
-    pub unit_price: Option<i32>,
+    unit_price: Option<i32>,
+}
+
+impl<'a> Entry<'a> {
+    /// 入帳：完成對話、解鎖成就、任務領取。delta 為正，不記錄價格。
+    ///
+    /// # Panics
+    ///
+    /// `source` 不是入帳來源（`Conversation`、`Achievement`、`Task`）時 panic；扣點請用 [`Entry::purchase`]，
+    /// 調整請用 [`Entry::adjustment`]。
+    pub fn award(
+        user_id: Uuid,
+        points: NonZeroU32,
+        reason: &'a str,
+        source: Source,
+        source_id: &'a str,
+    ) -> Self {
+        assert!(
+            matches!(
+                source,
+                Source::Conversation | Source::Achievement | Source::Task
+            ),
+            "award 只接受入帳來源，收到 {}",
+            source.as_str()
+        );
+        Self {
+            user_id,
+            delta: to_delta(points.get()),
+            reason,
+            source,
+            source_id,
+            unit_price: None,
+        }
+    }
+
+    /// 部件解鎖／兌換扣點。扣的點數等於當下價格；免費部件（`price` 為 0）寫入 `delta = 0`。
+    pub fn purchase(user_id: Uuid, reason: &'a str, part_id: &'a str, price: u32) -> Self {
+        let price = to_delta(price);
+        Self {
+            user_id,
+            delta: -price,
+            reason,
+            source: Source::Purchase,
+            source_id: part_id,
+            unit_price: Some(price),
+        }
+    }
+
+    /// 管理者手動調整。delta 可正可負（S-07.2 2.4），不記錄價格。
+    pub fn adjustment(
+        user_id: Uuid,
+        delta: NonZeroI32,
+        reason: &'a str,
+        adjustment_id: &'a str,
+    ) -> Self {
+        Self {
+            user_id,
+            delta: delta.get(),
+            reason,
+            source: Source::AdminAdjustment,
+            source_id: adjustment_id,
+            unit_price: None,
+        }
+    }
+}
+
+fn to_delta(points: u32) -> i32 {
+    i32::try_from(points).expect("點數超出 i32 範圍")
 }
 
 /// 寫入一筆帳本紀錄；回傳是否真的寫入。

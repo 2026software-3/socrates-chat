@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::num::{NonZeroI32, NonZeroU32};
+
 use axum::{Router, http::StatusCode};
 use common::*;
 use serde_json::{Value, json};
@@ -19,14 +21,13 @@ async fn user_id(pool: &PgPool, email: &str) -> Uuid {
 
 /// 完成對話發點的帳本紀錄（數值只是測試用）。
 fn conversation_entry(user_id: Uuid, conversation_id: &str) -> Entry<'_> {
-    Entry {
+    Entry::award(
         user_id,
-        delta: 10,
-        reason: "conversation_completed",
-        source: Source::Conversation,
-        source_id: conversation_id,
-        unit_price: None,
-    }
+        NonZeroU32::new(10).unwrap(),
+        "conversation_completed",
+        Source::Conversation,
+        conversation_id,
+    )
 }
 
 async fn record(pool: &PgPool, entry: &Entry<'_>) -> bool {
@@ -87,11 +88,13 @@ async fn different_events_each_get_recorded(pool: PgPool) {
     assert!(record(&pool, &conversation_entry(student, &c1)).await);
     assert!(record(&pool, &conversation_entry(student, &c2)).await);
     // 同一個 source_id、不同來源類型是不同事件
-    let achievement = Entry {
-        source: Source::Achievement,
-        reason: "achievement_unlocked",
-        ..conversation_entry(student, &c1)
-    };
+    let achievement = Entry::award(
+        student,
+        NonZeroU32::new(10).unwrap(),
+        "achievement_unlocked",
+        Source::Achievement,
+        &c1,
+    );
     assert!(record(&pool, &achievement).await);
 
     assert_eq!(my_points(&app, &a.student).await["balance"], 30);
@@ -102,14 +105,7 @@ async fn balance_is_the_sum_of_credits_and_debits(pool: PgPool) {
     let (app, a, student) = seeded(&pool).await;
     let conv = Uuid::new_v4().to_string();
     record(&pool, &conversation_entry(student, &conv)).await;
-    let purchase = Entry {
-        user_id: student,
-        delta: -7,
-        reason: "part_unlocked",
-        source: Source::Purchase,
-        source_id: "part-hat",
-        unit_price: Some(7),
-    };
+    let purchase = Entry::purchase(student, "part_unlocked", "part-hat", 7);
     record(&pool, &purchase).await;
 
     let mut conn = pool.acquire().await.unwrap();
@@ -311,6 +307,52 @@ async fn the_database_keeps_delta_and_unit_price_consistent(pool: PgPool) {
             "{source_type} / {delta} / {unit_price:?} should be rejected"
         );
     }
+}
+
+#[sqlx::test]
+async fn constructors_produce_entries_the_database_accepts(pool: PgPool) {
+    let (app, a, student) = seeded(&pool).await;
+    let conv = Uuid::new_v4().to_string();
+
+    // 入帳 +10、免費部件 0、管理者調整 -3、付費部件 -7：餘額 0
+    assert!(record(&pool, &conversation_entry(student, &conv)).await);
+    assert!(
+        record(
+            &pool,
+            &Entry::purchase(student, "part_unlocked", "free-part", 0)
+        )
+        .await
+    );
+    let adjustment_id = Uuid::new_v4().to_string();
+    let adjustment = Entry::adjustment(
+        student,
+        NonZeroI32::new(-3).unwrap(),
+        "correction",
+        &adjustment_id,
+    );
+    assert!(record(&pool, &adjustment).await);
+    assert!(
+        record(
+            &pool,
+            &Entry::purchase(student, "part_unlocked", "part-hat", 7)
+        )
+        .await
+    );
+
+    assert_eq!(ledger_rows(&pool, student).await, 4);
+    assert_eq!(my_points(&app, &a.student).await["balance"], 0);
+}
+
+#[test]
+#[should_panic(expected = "award 只接受入帳來源")]
+fn award_rejects_spending_sources() {
+    let _ = Entry::award(
+        Uuid::nil(),
+        NonZeroU32::new(1).unwrap(),
+        "wrong",
+        Source::Purchase,
+        "part",
+    );
 }
 
 #[sqlx::test]
