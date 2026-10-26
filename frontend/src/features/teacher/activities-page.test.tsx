@@ -1,10 +1,10 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ActivitiesPage } from '@/features/teacher/activities-page'
-import { renderTeacherPage } from '@/features/teacher/test-helpers'
+import { mockClassrooms, ROOM_A, renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Activity, Topic } from '@/lib/types'
 import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
@@ -29,9 +29,12 @@ const topics: Topic[] = [
 function act(over: Partial<Activity> = {}): Activity {
   return {
     id: 'a1',
+    classroom_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     title: '第一週討論',
     description: '請討論公平',
     topic_id: 't1',
+    opens_at: null,
+    closes_at: null,
     status: 'draft',
     created_at: '2026-03-01T08:00:00Z',
     ...over,
@@ -51,6 +54,7 @@ function mockList(list: Activity[]) {
 }
 
 function setup() {
+  mockClassrooms()
   return renderTeacherPage(<ActivitiesPage />)
 }
 
@@ -160,7 +164,7 @@ describe('ActivitiesPage', () => {
     await userEvent.selectOptions(await screen.findByLabelText('題目'), 't2')
     await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
     expect(await screen.findByText('活動已建立（草稿）。')).toBeInTheDocument()
-    expect(body).toEqual({ title: '新活動', topic_id: 't2' })
+    expect(body).toEqual({ title: '新活動', topic_id: 't2', classroom_id: ROOM_A })
     expect(await screen.findByText('草稿')).toBeInTheDocument()
     expect(screen.getByLabelText('活動標題')).toHaveValue('')
   })
@@ -413,5 +417,52 @@ describe('ActivitiesPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
     expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
     expect(posted).toBe(false)
+  })
+})
+
+describe('activity schedules', () => {
+  it('rejects an end at or before the start without posting', async () => {
+    mockList([])
+    let posted = false
+    server.use(http.post('/api/activities', () => { posted = true; return HttpResponse.json(act()) }))
+    setup()
+    await screen.findByLabelText('題目')
+    await userEvent.type(screen.getByLabelText('活動標題'), 'scheduled')
+    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    fireEvent.change(screen.getByLabelText('開始時間（選填）'), { target: { value: '2030-01-01T10:00' } })
+    fireEvent.change(screen.getByLabelText('結束時間（選填）'), { target: { value: '2030-01-01T10:00' } })
+    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    expect(await screen.findByText('結束時間必須晚於開始時間。')).toBeInTheDocument()
+    expect(posted).toBe(false)
+  })
+
+  it('loads browser-local times and clears a schedule with null', async () => {
+    const opens = '2030-01-01T00:00:00Z'
+    mockList([act({ opens_at: opens, closes_at: null })])
+    let body: unknown
+    server.use(http.patch('/api/activities/a1', async ({ request }) => {
+      body = await request.json()
+      return HttpResponse.json(act())
+    }))
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '編輯' }))
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByLabelText('開始時間（選填）') as HTMLInputElement
+    expect(new Date(input.value).toISOString()).toBe(opens.replace('Z', '.000Z'))
+    fireEvent.change(input, { target: { value: '' } })
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(body).toMatchObject({ opens_at: null }))
+  })
+
+  it('shows scheduled times, closed availability, and translated schedule errors', async () => {
+    mockList([act({ status: 'published', opens_at: '2100-01-01T00:00:00Z', closes_at: null })])
+    server.use(http.patch('/api/activities/a1', () => apiError(400, 'invalid_schedule')))
+    setup()
+    expect(await screen.findByText('未開放')).toBeInTheDocument()
+    expect(screen.getByText(/2100/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '編輯' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '儲存' }))
+    expect(await screen.findByText('結束時間必須晚於開始時間。')).toBeInTheDocument()
   })
 })

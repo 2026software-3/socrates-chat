@@ -23,6 +23,9 @@ CREATE TABLE activities (
     classroom_id uuid NOT NULL REFERENCES classrooms (id),
     -- draft：草稿；published：開放學生選擇；closed：停止開放
     status      text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'closed')),
+    opens_at    timestamptz,
+    closes_at   timestamptz,
+    CONSTRAINT activities_schedule_check CHECK (closes_at > opens_at),
     created_by  uuid REFERENCES users (id) ON DELETE SET NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()

@@ -12,6 +12,7 @@ const existing: Classroom = {
   year_label: '2026',
   description: '春季討論課',
   created_at: '2026-10-01T00:00:00Z',
+  is_archived: false,
   updated_at: '2026-10-01T00:00:00Z',
 }
 
@@ -128,4 +129,23 @@ describe('classroom management', () => {
     expect(await screen.findByText('目前沒有任何教室。')).toBeInTheDocument()
     expect(screen.queryByText('你還沒有教室，先建立一間吧。')).not.toBeInTheDocument()
   })
+})
+
+it('archives a classroom, keeps it visible and restores it', async () => {
+  let row = { ...existing, is_archived: false }
+  server.use(
+    http.get('/api/classrooms', () => HttpResponse.json([row])),
+    http.patch('/api/classrooms/:id', async ({ request }) => {
+      row = { ...row, ...await request.json() as { is_archived: boolean } }
+      return HttpResponse.json(row)
+    }),
+  )
+  renderTeacher()
+  await screen.findByText(existing.name)
+  await userEvent.click(screen.getByRole('button', { name: '封存教室' }))
+  expect(await screen.findByText('已封存（唯讀）')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: `編輯 ${existing.name}` })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: '復原教室' }))
+  await waitFor(() => expect(screen.queryByText('已封存（唯讀）')).not.toBeInTheDocument())
+  expect(row.is_archived).toBe(false)
 })

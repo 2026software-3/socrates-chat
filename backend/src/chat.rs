@@ -100,7 +100,7 @@ pub(crate) struct Detail {
     tag = "conversations",
     summary = "開始對話（活動或題目）",
     request_body = NewConversation,
-    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source：來源不可用，含活動不存在、未發布，或學生不在活動所屬教室的名單內（不區分原因）", body = crate::error::ErrorBody), (status = 409, description = "activity_already_started", body = crate::error::ErrorBody))
+    responses((status = 201, description = "對話", body = Conversation), (status = 400, description = "invalid_conversation_source：來源不可用，含活動不存在、未發布，或學生不在活動所屬教室的名單內（不區分原因）", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / activity_already_started", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create(
     RequireStudent(cu): RequireStudent,
@@ -281,7 +281,7 @@ pub(crate) struct NewMessage {
     summary = "送出學生訊息並以 SSE 串流 AI 回覆",
     params(("id" = Uuid, Path, description = "對話 ID")),
     request_body = NewMessage,
-    responses((status = 200, description = "text/event-stream。事件依序：message（保存好的學生訊息，含 auto_ended）；若未達回合上限再接 delta {text}* 與 done {message_id, question_type, stage, suggest_end} 或 error {code}", content_type = "text/event-stream", body = String), (status = 400, description = "invalid_message / invalid_source", body = crate::error::ErrorBody), (status = 409, description = "conversation_ended / reply_in_progress", body = crate::error::ErrorBody))
+    responses((status = 200, description = "text/event-stream。事件依序：message（保存好的學生訊息，含 auto_ended）；若未達回合上限再接 delta {text}* 與 done {message_id, question_type, stage, suggest_end} 或 error {code}", content_type = "text/event-stream", body = String), (status = 400, description = "invalid_message / invalid_source", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / conversation_ended / reply_in_progress", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn send_message(
     RequireStudent(cu): RequireStudent,
@@ -299,6 +299,7 @@ pub(crate) async fn send_message(
         Some("speech-openai") => "speech-openai",
         Some(_) => return Err(ApiError::bad_request("invalid_source", "訊息來源不正確")),
     };
+    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
     let mut conversation = owned_conversation(&state, cu.user.id, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
@@ -376,6 +377,7 @@ pub(crate) async fn remove(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
     // 該場的訊息（以及之後的總結與分析）一併刪除
     let r = sqlx::query("DELETE FROM conversations WHERE id = $1 AND user_id = $2")
         .bind(id)

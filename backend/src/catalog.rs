@@ -218,6 +218,8 @@ pub(crate) struct NewActivity {
     /// 活動所屬的教室（必填、建立後不可更改）；沒帶回 `invalid_classroom`，
     /// 教室不存在或不是自己管理的教室一律回 `404 not_found`
     classroom_id: Option<Uuid>,
+    opens_at: Option<DateTime<Utc>>,
+    closes_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -226,6 +228,23 @@ pub(crate) struct ActivityPatch {
     description: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
     topic_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "nullable")]
+    opens_at: Option<Option<DateTime<Utc>>>,
+    #[serde(default, deserialize_with = "nullable")]
+    closes_at: Option<Option<DateTime<Utc>>>,
+}
+
+fn validate_schedule(
+    opens: Option<DateTime<Utc>>,
+    closes: Option<DateTime<Utc>>,
+) -> Result<(), ApiError> {
+    if matches!((opens, closes), (Some(o), Some(c)) if c <= o) {
+        return Err(ApiError::bad_request(
+            "invalid_schedule",
+            "結束時間必須晚於開始時間",
+        ));
+    }
+    Ok(())
 }
 
 async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
@@ -312,7 +331,7 @@ pub(crate) async fn get_activity(
     tag = "activities",
     summary = "在教室內建立活動（草稿）",
     request_body = NewActivity,
-    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_title / invalid_topic / invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_schedule / invalid_title / invalid_topic / invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -333,15 +352,20 @@ pub(crate) async fn create_activity(
     if !topic_exists(&state.pool, topic_id).await? {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
     }
-    let a = activity_store::create(
-        &state.pool,
+    validate_schedule(b.opens_at, b.closes_at)?;
+    let mut tx = state.pool.begin().await?;
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
+    let a = activity_store::create_with_schedule(
+        &mut *tx,
         classroom.id,
         cu.user.id,
         b.title.trim(),
         &b.description,
         topic_id,
+        (b.opens_at, b.closes_at),
     )
     .await?;
+    tx.commit().await?;
     Ok((StatusCode::CREATED, Json(a)))
 }
 
@@ -352,7 +376,7 @@ pub(crate) async fn create_activity(
     summary = "修改活動（merge-patch）",
     params(("id" = Uuid, Path, description = "活動 ID")),
     request_body = ActivityPatch,
-    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_schedule / invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked / classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -377,8 +401,9 @@ pub(crate) async fn update_activity(
     // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
     // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
     let mut tx = state.pool.begin().await?;
-    let current: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT a.topic_id FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
+    type CurrentSchedule = (Uuid, Uuid, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+    let current: Option<CurrentSchedule> = sqlx::query_as(
+        "SELECT a.topic_id, a.classroom_id, a.opens_at, a.closes_at FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
     )
     .bind(id)
@@ -386,9 +411,13 @@ pub(crate) async fn update_activity(
     .bind(cu.user.id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((current_topic,)) = current else {
+    let Some((current_topic, classroom, old_opens, old_closes)) = current else {
         return Err(ApiError::not_found());
     };
+    crate::classrooms::ensure_writable(&mut *tx, classroom).await?;
+    let opens_at = p.opens_at.unwrap_or(old_opens);
+    let closes_at = p.closes_at.unwrap_or(old_closes);
+    validate_schedule(opens_at, closes_at)?;
     if let Some(t) = new_topic
         && t != current_topic
     {
@@ -406,14 +435,16 @@ pub(crate) async fn update_activity(
     }
     let activity = sqlx::query_as(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
-                topic_id = COALESCE($4, topic_id), updated_at = now()
+                topic_id = COALESCE($4, topic_id), opens_at = $5, closes_at = $6, updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, topic_id, classroom_id, status, created_at",
+         RETURNING id, title, description, topic_id, classroom_id, status, opens_at, closes_at, created_at",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
     .bind(new_topic)
+    .bind(opens_at)
+    .bind(closes_at)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -426,6 +457,10 @@ async fn set_status(
     id: Uuid,
     status: &'static str,
 ) -> Result<Json<Activity>, ApiError> {
+    let activity = activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
     activity_store::set_status_visible(&state.pool, id, cu.user.id, cu.roles.admin, status)
         .await?
         .map(Json)
@@ -438,7 +473,7 @@ async fn set_status(
     tag = "activities",
     summary = "發布（或重新開放）活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn publish_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -454,7 +489,7 @@ pub(crate) async fn publish_activity(
     tag = "activities",
     summary = "停止開放活動",
     params(("id" = Uuid, Path, description = "活動 ID")),
-    responses((status = 200, description = "活動", body = Activity), crate::error::CommonErrors)
+    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn close_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -478,7 +513,7 @@ pub(crate) struct Available {
     get,
     path = "/api/catalog",
     tag = "catalog",
-    summary = "學生可選的活動與題目",
+    summary = "學生可選的活動與題目（活動須已發布且在開放期間內；教室未封存）",
     responses((status = 200, description = "可選項目", body = Available))
 )]
 pub(crate) async fn available(

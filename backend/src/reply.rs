@@ -161,13 +161,14 @@ pub type EventStream = Sse<KeepAliveStream<BoxStream<'static, Result<Event, Infa
     summary = "重試或接回 AI 回覆（SSE）",
     description = "最後一則是學生訊息、還沒有 AI 回覆時重新產生；回覆正在產生時接上同一個回覆，第一個 delta 是目前已產生的全部文字。",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "conversation_ended / reply_in_progress（回覆正在其他服務程序產生，無法接上）/ nothing_to_reply", body = crate::error::ErrorBody))
+    responses((status = 200, description = "text/event-stream：delta {text}* 後接 done 或 error {code}", content_type = "text/event-stream", body = String), (status = 409, description = "classroom_archived / conversation_ended / reply_in_progress（回覆正在其他服務程序產生，無法接上）/ nothing_to_reply", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn stream(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<EventStream, ApiError> {
+    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
     let conversation = owned_conversation(&state, cu.user.id, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));

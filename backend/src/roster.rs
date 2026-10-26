@@ -286,7 +286,7 @@ pub(crate) async fn is_staff_email(
     summary = "匯入教室的修課名單（只新增）",
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ImportBody,
-    responses((status = 200, description = "匯入結果", body = ImportResult), crate::error::CommonErrors)
+    responses((status = 200, description = "匯入結果", body = ImportResult), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn import_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -295,6 +295,7 @@ pub(crate) async fn import_roster(
     Json(body): Json<ImportBody>,
 ) -> Result<Json<ImportResult>, ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    crate::classrooms::ensure_writable(&state.pool, classroom.id).await?;
     let parsed = parse_roster(&body.text);
     let mut added = 0;
     let mut credentials = Vec::new();
@@ -340,7 +341,7 @@ pub(crate) async fn import_roster(
         ("id" = Uuid, Path, description = "教室 ID"),
         ("email" = String, Path, description = "電子郵件")
     ),
-    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn remove_from_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -348,6 +349,7 @@ pub(crate) async fn remove_from_roster(
     Path((raw_id, email)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    crate::classrooms::ensure_writable(&state.pool, classroom.id).await?;
     let mut tx = state.pool.begin().await?;
     if !roster_store::remove(&mut tx, classroom.id, &email).await? {
         return Err(ApiError::not_found());

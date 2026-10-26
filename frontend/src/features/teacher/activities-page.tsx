@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -13,7 +13,7 @@ import { LoadMore } from '@/components/load-more'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
-import type { Activity, ActivityStatus, Topic } from '@/lib/types'
+import type { Activity, ActivityStatus, Classroom, Topic } from '@/lib/types'
 import { useFetch, usePagedFetch } from '@/lib/use-fetch'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
@@ -22,7 +22,18 @@ const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'
   closed: 'outline',
 }
 
-type Values = { title: string; description: string; topicId: string }
+type Values = { title: string; description: string; topicId: string; opensAt: string; closesAt: string }
+
+/** datetime-local uses the browser's time zone; retain seconds and milliseconds on edit. */
+function localTime(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, -1)
+}
+
+function utcTime(local: string): string | null {
+  return local ? new Date(local).toISOString() : null
+}
 
 const selectClass =
   'border-input bg-background h-9 w-full rounded-md border px-3 text-sm focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 outline-none disabled:opacity-50'
@@ -65,6 +76,12 @@ function ActivityForm({
     setTitleError(titleMissing)
     setTopicError(topicMissing)
     if (titleMissing || topicMissing) return
+    if ((values.opensAt && !Number.isFinite(new Date(values.opensAt).getTime())) ||
+        (values.closesAt && !Number.isFinite(new Date(values.closesAt).getTime())) ||
+        (values.opensAt && values.closesAt && new Date(values.closesAt) <= new Date(values.opensAt))) {
+      setServerError(t('error.invalid_schedule'))
+      return
+    }
     setServerError(undefined)
     busy.current = true
     setPending(true)
@@ -133,6 +150,13 @@ function ActivityForm({
         ) : null}
         {topicsFailed ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicsFailed')}</p> : null}
       </div>
+      {(['opensAt', 'closesAt'] as const).map((field) => (
+        <div key={field} className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-${field}`}>{t(field === 'opensAt' ? 'teacher.activities.opensAt' : 'teacher.activities.closesAt')}</Label>
+          <Input id={`${idPrefix}-${field}`} type="datetime-local" step="0.001" value={values[field]}
+            onChange={(e) => setValues({ ...values, [field]: e.target.value })} />
+        </div>
+      ))}
       {serverError ? (
         <Alert variant="destructive" role="alert">
           <AlertDescription>{serverError}</AlertDescription>
@@ -150,18 +174,33 @@ function ActivityRow({
   topic,
   busy,
   error,
+  archived,
   onEdit,
   onToggle,
 }: {
   activity: Activity
   topic: Topic | undefined
   busy: boolean
+  archived: boolean
   error: string | undefined
   onEdit: () => void
   onToggle: () => void
 }) {
   const t = useT()
   const { lang } = useI18n()
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    // Refresh on the exact next boundary, then schedule the following one.
+    const next = [activity.opens_at, activity.closes_at].filter((v): v is string => !!v)
+      .map((v) => new Date(v).getTime()).filter((v) => v > now).sort((a, b) => a - b)[0]
+    if (next === undefined) return
+    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(next - now, 2147483647))
+    return () => window.clearTimeout(timer)
+  }, [activity.opens_at, activity.closes_at, now])
+  const isOpen = !archived && activity.status === 'published' &&
+    (!activity.opens_at || now >= new Date(activity.opens_at).getTime()) &&
+    (!activity.closes_at || now < new Date(activity.closes_at).getTime())
+  const dateTime = (iso: string) => new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso))
   const toggleKey = {
     draft: 'teacher.activities.publish',
     published: 'teacher.activities.close',
@@ -176,6 +215,11 @@ function ActivityRow({
               <h3 className="font-medium break-words">{activity.title}</h3>
               <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
             </div>
+            <p className="text-sm">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</p>
+            <p className="text-muted-foreground text-sm">
+              {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
+              {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
+            </p>
             {activity.description ? (
               <p className="text-muted-foreground text-sm break-words whitespace-pre-line">{activity.description}</p>
             ) : null}
@@ -217,6 +261,10 @@ function ActivityRow({
 /** 教師／管理者：建立、編輯、發布、停止開放討論活動。 */
 export function ActivitiesPage() {
   const t = useT()
+  const classrooms = useFetch<Classroom[]>('/api/classrooms')
+  const [roomId, setRoomId] = useState('')
+  const writableRooms = (classrooms.data ?? []).filter((r) => !r.is_archived)
+  const selectedRoom = writableRooms.some((r) => r.id === roomId) ? roomId : writableRooms[0]?.id
   const list = usePagedFetch<Activity>('/api/activities')
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
@@ -229,10 +277,14 @@ export function ActivitiesPage() {
   const [rowError, setRowError] = useState<{ id: string; message: string }>()
 
   async function create(v: Values) {
+    if (!selectedRoom) throw new Error(t('teacher.activities.roomRequired'))
     await api.post<Activity>('/api/activities', {
       title: v.title,
       ...(v.description.trim() ? { description: v.description.trim() } : {}),
       topic_id: v.topicId,
+      classroom_id: selectedRoom,
+      ...(v.opensAt ? { opens_at: utcTime(v.opensAt) } : {}),
+      ...(v.closesAt ? { closes_at: utcTime(v.closesAt) } : {}),
     })
     toast.success(t('teacher.activities.created'))
     setRowError(undefined)
@@ -246,6 +298,8 @@ export function ActivitiesPage() {
       title: v.title,
       description: v.description.trim(),
       ...(topicChanged ? { topic_id: v.topicId } : {}),
+      ...(v.opensAt !== localTime(a.opens_at) ? { opens_at: utcTime(v.opensAt) } : {}),
+      ...(v.closesAt !== localTime(a.closes_at) ? { closes_at: utcTime(v.closesAt) } : {}),
     })
     toast.success(t('teacher.activities.updated'))
     setEditing(null)
@@ -276,9 +330,14 @@ export function ActivitiesPage() {
       <Card>
         <CardContent className="space-y-3">
           <h2 className="text-lg font-medium">{t('teacher.activities.createHeading')}</h2>
+          <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
+          <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+            {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+          </select>
+          {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
           <ActivityForm
             idPrefix="create"
-            initial={{ title: '', description: '', topicId: '' }}
+            initial={{ title: '', description: '', topicId: '', opensAt: '', closesAt: '' }}
             topics={topics}
             topicsFailed={!!available.error}
             submitLabel={t('teacher.activities.createButton')}
@@ -299,7 +358,8 @@ export function ActivitiesPage() {
               key={a.id}
               activity={a}
               topic={topicById.get(a.topic_id)}
-              busy={busyIds.has(a.id)}
+              archived={!!classrooms.data?.find((room) => room.id === a.classroom_id)?.is_archived}
+              busy={busyIds.has(a.id) || !!classrooms.data?.find((room) => room.id === a.classroom_id)?.is_archived}
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}
               onToggle={() => void toggle(a)}
@@ -322,6 +382,8 @@ export function ActivitiesPage() {
                 title: editing.title,
                 description: editing.description,
                 topicId: editing.topic_id,
+                opensAt: localTime(editing.opens_at),
+                closesAt: localTime(editing.closes_at),
               }}
               topics={topics}
               topicsFailed={!!available.error}

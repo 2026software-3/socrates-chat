@@ -2,6 +2,9 @@ import { defineMessages } from '@/i18n/define'
 
 export const classroomsMessages = defineMessages({
   'zh-TW': {
+    'classrooms.archive': '封存教室',
+    'classrooms.restore': '復原教室',
+    'classrooms.archived': '已封存（唯讀）',
     'classrooms.nav': '教室管理',
     'classrooms.title.teacher': '我的教室',
     'classrooms.title.admin': '教室管理',
@@ -22,6 +25,9 @@ export const classroomsMessages = defineMessages({
     'classrooms.required': '請輸入教室名稱。',
   },
   en: {
+    'classrooms.archive': 'Archive classroom',
+    'classrooms.restore': 'Restore classroom',
+    'classrooms.archived': 'Archived (read-only)',
     'classrooms.nav': 'Classrooms',
     'classrooms.title.teacher': 'My classrooms',
     'classrooms.title.admin': 'Manage classrooms',
@@ -42,6 +48,9 @@ export const classroomsMessages = defineMessages({
     'classrooms.required': 'Enter a classroom name.',
   },
   es: {
+    'classrooms.archive': 'Archivar aula',
+    'classrooms.restore': 'Restaurar aula',
+    'classrooms.archived': 'Archivada (solo lectura)',
     'classrooms.nav': 'Aulas',
     'classrooms.title.teacher': 'Mis aulas',
     'classrooms.title.admin': 'Gestionar aulas',

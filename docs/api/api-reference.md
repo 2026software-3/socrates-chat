@@ -31,6 +31,10 @@
 
 ## 題庫與活動
 
+- 建立／編輯活動接受 `opens_at`、`closes_at`：含時區偏移的 ISO 8601 字串或 `null`，回應一律 UTC。建立時省略代表無限制；PATCH 省略保留，`null` 清除。兩者都有值時結束必須晚於開始，否則 `400 invalid_schedule`，不保存任何變更。
+- 「開放中」＝已發布且 `opens_at <= 資料庫現在時間 < closes_at`，空值代表該邊不設限。學生可選清單與直接開始對話共用此規則，未開放來源回 `400 invalid_conversation_source`，不區分原因。時間不會自動改寫 `status`；活動到期不影響既有對話、總結與歷史紀錄。
+- 教師時間表單依瀏覽器時區輸入及顯示，傳送時轉 UTC；已有人開始對話的活動仍可修改時間。建立活動須選擇未封存的教室。
+
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - `GET /api/activities?limit=&cursor=` 依 `created_at DESC, id ASC` 分頁，草稿、已發布、已停止開放都列出；`activities(created_at DESC, id)` 有索引。前端依需要載入（「載入更多」），不先取完所有分頁。
@@ -62,7 +66,7 @@
 - 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，最多 255 字元，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空白或超長名稱回 `400 invalid_classroom_name`。年度標籤最多 100 字元、說明最多 2,000 字元，超限分別回 `invalid_classroom_year_label`、`invalid_classroom_description`。選填欄位前後空白會去除，空字串會保存為 `null`。
 - `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。
 - 管理者可管理所有教室。依 Issue「教室由教師建立」，目前只有教師可建立教室（管理者建立權限**待需求方確認**，尚未定案）；建立者欄位固定為建立請求的教師。教室名稱唯一性由資料庫約束保證，併發建立相同名稱時僅一個成功。沒有提供任何欄位的空 PATCH 不會更新 `updated_at`。
-- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。封存與活動歸屬尚未包含在此切片；名單見上一節。
+- PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。教室回應帶 `is_archived`（預設 `false`）；PATCH 可傳 `is_archived: true` 封存、`false` 復原。封存後教室、活動、修課名單及既有對話為唯讀，寫入回 `409 classroom_archived`（開始活動對話沿用 `400 invalid_conversation_source`）。教師與管理者仍可查閱，名單與原有資料保留；復原後恢復操作。個人練習不受封存影響。名單見上一節。
 
 ## 對話（只有修課名單內的學生）
 

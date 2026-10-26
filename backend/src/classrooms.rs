@@ -48,6 +48,7 @@ pub(crate) struct NewClassroom {
 /// PATCH 欄位：未提供時保留原值，`null` 可清除選填欄位。
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct ClassroomPatch {
+    is_archived: Option<bool>,
     #[serde(default, deserialize_with = "nullable")]
     #[schema(max_length = 255)]
     name: Option<Option<String>>,
@@ -154,7 +155,7 @@ pub(crate) async fn list_classrooms(
     tag = "classrooms",
     summary = "建立教室",
     request_body = NewClassroom,
-    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_classroom(
     RequireTeacher(cu): RequireTeacher,
@@ -214,7 +215,7 @@ pub(crate) async fn get_classroom(
     summary = "編輯教室",
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ClassroomPatch,
-    responses((status = 200, description = "已更新", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "已更新", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_classroom(
     RequireTeacher(cu): RequireTeacher,
@@ -246,7 +247,12 @@ pub(crate) async fn update_classroom(
             )
         })
         .transpose()?;
+    let current = visible_classroom(&state, &cu, &raw_id).await?;
+    if current.is_archived && (name.is_some() || year_label.is_some() || description.is_some()) {
+        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+    }
     let changes = ClassroomChanges {
+        is_archived: body.is_archived,
         name,
         year_label,
         description,
@@ -256,4 +262,33 @@ pub(crate) async fn update_classroom(
         .map_err(map_store_error)?
         .map(Json)
         .ok_or_else(ApiError::not_found)
+}
+
+/// Archived classrooms are read-only. Personal practice has no classroom.
+pub(crate) async fn ensure_writable<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    id: Uuid,
+) -> Result<(), ApiError> {
+    let archived: bool =
+        sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1 FOR SHARE")
+            .bind(id)
+            .fetch_one(executor)
+            .await?;
+    if archived {
+        Err(ApiError::conflict("classroom_archived", "教室已封存"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) async fn ensure_conversation_writable(
+    state: &AppState,
+    user: Uuid,
+    id: Uuid,
+) -> Result<(), ApiError> {
+    let conv = crate::chat::owned_conversation(state, user, id).await?;
+    if let Some(room) = conv.classroom_id {
+        ensure_writable(&state.pool, room).await?;
+    }
+    Ok(())
 }

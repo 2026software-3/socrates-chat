@@ -207,13 +207,14 @@ async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
     tag = "conversations",
     summary = "結束對話並在背景產生總結",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "classroom_archived / empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn end(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
+    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
     let conv = owned_conversation(&state, cu.user.id, id).await?;
     if conv.status == "ended" {
         // 重複結束不會再產生一次總結
@@ -263,13 +264,14 @@ pub(crate) async fn get_summary(
     tag = "conversations",
     summary = "總結失敗後重試",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "summary_not_retryable", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "classroom_archived / summary_not_retryable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn retry(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
+    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
     owned_conversation(&state, cu.user.id, id).await?;
     // 只有失敗，或產生中卻已超過逾時上限（例如服務重啟）才能重試
     // 重試開新的一代（attempt + 1）；舊的背景任務之後寫入會因代數不符而被忽略

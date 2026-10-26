@@ -8,6 +8,7 @@ CREATE TABLE classrooms (
     ),
     year_label  text CHECK (char_length(year_label) <= 100),
     description text CHECK (char_length(description) <= 2000),
+    is_archived boolean NOT NULL DEFAULT false,
     created_by  uuid NOT NULL REFERENCES users (id),
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
