@@ -255,6 +255,26 @@ fn validate_schedule(
     Ok(())
 }
 
+/// 新設定的開始／結束時間不可早於現在。比較基準取到分鐘（表單只到分鐘，送達時已過數秒），
+/// 只檢查被改動的值：既有的過去時間（例如已結束的活動）沒改動就不受影響。
+fn validate_not_past(
+    new: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+    old: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+) -> Result<(), ApiError> {
+    let now = Utc::now().timestamp();
+    let floor = now - now.rem_euclid(60);
+    let past = |new: Option<DateTime<Utc>>, old: Option<DateTime<Utc>>| {
+        new != old && matches!(new, Some(t) if t.timestamp() < floor)
+    };
+    if past(new.0, old.0) || past(new.1, old.1) {
+        return Err(ApiError::bad_request(
+            "schedule_in_past",
+            "開始與結束時間不可早於現在",
+        ));
+    }
+    Ok(())
+}
+
 async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
     let (exists,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM topics WHERE id = $1)")
         .bind(id)
@@ -343,7 +363,7 @@ pub(crate) async fn get_activity(
     tag = "activities",
     summary = "在教室內建立活動（草稿）",
     request_body = NewActivity,
-    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_schedule / invalid_title / invalid_topic / invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_schedule / schedule_in_past / invalid_title / invalid_topic / invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -364,6 +384,7 @@ pub(crate) async fn create_activity(
     if !topic_exists(&state.pool, topic_id).await? {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
     }
+    validate_not_past((b.opens_at, b.closes_at), (None, None))?;
     validate_schedule(b.opens_at, b.closes_at)?;
     let mut tx = state.pool.begin().await?;
     crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
@@ -388,7 +409,7 @@ pub(crate) async fn create_activity(
     summary = "修改活動（merge-patch）",
     params(("id" = Uuid, Path, description = "活動 ID")),
     request_body = ActivityPatch,
-    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_schedule / invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked / classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_schedule / schedule_in_past / invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked / classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -429,6 +450,7 @@ pub(crate) async fn update_activity(
     crate::classrooms::ensure_writable(&mut *tx, classroom).await?;
     let opens_at = p.opens_at.unwrap_or(old_opens);
     let closes_at = p.closes_at.unwrap_or(old_closes);
+    validate_not_past((opens_at, closes_at), (old_opens, old_closes))?;
     validate_schedule(opens_at, closes_at)?;
     if let Some(t) = new_topic
         && t != current_topic
