@@ -408,6 +408,23 @@ async fn falls_back_to_the_next_model_when_every_key_is_rate_limited() {
 }
 
 #[tokio::test]
+async fn falls_back_when_the_retry_budget_runs_out_on_rate_limits() {
+    // key 比重試次數多：用完重試額度時仍沒有用盡 key，結果還是要算限流而換模型
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("backup", StatusCode::OK),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, pool_of(&["a", "b", "c", "d", "e"]), "primary")
+        .with_fallbacks(vec!["backup".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(
+        models_seen(&seen),
+        ["primary", "primary", "primary", "primary", "backup"]
+    );
+}
+
+#[tokio::test]
 async fn later_requests_skip_a_cooling_model_without_waiting() {
     let (base, seen) = spawn_model_server(vec![
         ("primary", StatusCode::TOO_MANY_REQUESTS),
