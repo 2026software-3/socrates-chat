@@ -223,24 +223,18 @@ pub async fn find_startable_at(
     .await
 }
 
-/// 封存或復原活動；活動不存在或不在操作者可管理的教室時回 `None`。
-pub async fn set_archived_visible<'e>(
-    pool: impl sqlx::PgExecutor<'e>,
+/// 封存或復原活動；呼叫端已在交易內鎖住該列並確認操作者可管理。
+pub async fn set_archived<'e>(
+    conn: impl sqlx::PgExecutor<'e>,
     id: Uuid,
-    actor_id: Uuid,
-    is_admin: bool,
     archived: bool,
-) -> Result<Option<Activity>, sqlx::Error> {
+) -> Result<Activity, sqlx::Error> {
     sqlx::query_as(
-        "UPDATE activities a SET is_archived = $2, updated_at = now()
-         FROM classrooms cl
-         WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
-         RETURNING a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at",
+        "UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
+         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
     )
     .bind(id)
     .bind(archived)
-    .bind(is_admin)
-    .bind(actor_id)
-    .fetch_optional(pool)
+    .fetch_one(conn)
     .await
 }

@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    accounts::{DeleteSpec, audit, clean_reason, confirmation, delete_with_audit},
+    accounts::{
+        DeleteSpec, audit, clean_reason, confirmation, delete_with_audit, ensure_confirmed,
+    },
     auth::{CurrentUser, RequireTeacher},
     catalog::nullable,
     classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
@@ -254,7 +256,6 @@ pub(crate) async fn update_classroom(
         })
         .transpose()?;
     let reason = body.reason;
-    visible_classroom(&state, &cu, &raw_id).await?;
     let changes = ClassroomChanges {
         is_archived: body.is_archived,
         name,
@@ -326,12 +327,7 @@ pub(crate) async fn delete_classroom(
     // 先確認教室存在且可管理（否則 404），再檢查確認欄位
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
     let body = confirmation(body)?;
-    if body.confirm_name.trim() != classroom.name.trim() {
-        return Err(ApiError::bad_request(
-            "confirmation_mismatch",
-            "確認的名稱與要刪除的教室不符",
-        ));
-    }
+    ensure_confirmed(&body.confirm_name, &classroom.name)?;
     // 名單、活動與其中的對話、總結由外鍵連動刪除；個人練習、點數與成就不受影響
     delete_with_audit(
         &state.pool,

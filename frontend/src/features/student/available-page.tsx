@@ -24,8 +24,10 @@ type Item = {
 /** 自己是否有封存的對話屬於這個活動；查不到（含請求失敗）就當作沒有。 */
 async function hasArchivedConversation(activityId: string): Promise<boolean> {
   try {
-    const page = await api.get<Page<Conversation>>('/api/conversations?archived=true&limit=200')
-    return page.items.some((c) => c.activity_id === activityId)
+    const page = await api.get<Page<Conversation>>(
+      `/api/conversations?archived=true&activity_id=${encodeURIComponent(activityId)}&limit=1`,
+    )
+    return page.items.length > 0
   } catch {
     return false
   }

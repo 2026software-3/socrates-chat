@@ -636,3 +636,58 @@ async fn a_conversation_started_while_deleting_is_still_counted(pool: PgPool) {
     assert_eq!(count(&pool, "conversations").await, 0);
     assert_eq!(deleted_count(&pool, "activity_deleted").await, Some(1));
 }
+
+#[sqlx::test]
+async fn the_conversation_list_can_be_narrowed_to_one_activity(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let topic = create_topic(&app, &a, "題").await;
+    let first = publish_activity(&app, &a, "活動一", &topic).await;
+    let second = publish_activity(&app, &a, "活動二", &topic).await;
+    let conv = start_from_activity(&app, &a.student, &first).await;
+    start_from_activity(&app, &a.student, &second).await;
+    send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/archive"),
+            Some(&a.student),
+            None,
+        ),
+    )
+    .await;
+
+    let list = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/conversations?archived=true&activity_id={first}&limit=1"),
+                Some(&a.student),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(list["items"][0]["id"], conv.as_str());
+    // 另一個活動的對話沒有封存，不會出現在已封存檢視
+    let list = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/conversations?archived=true&activity_id={second}"),
+                Some(&a.student),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert!(list["items"].as_array().unwrap().is_empty());
+    let res = send(
+        &app,
+        get("/api/conversations?activity_id=nope", Some(&a.student)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_activity_id");
+}

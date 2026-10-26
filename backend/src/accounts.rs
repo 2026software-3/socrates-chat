@@ -106,10 +106,10 @@ pub(crate) async fn audit(
     conn: impl sqlx::PgExecutor<'_>,
     actor: Uuid,
     action: &str,
-    target_email: &str,
+    target: &str,
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    audit_counted(conn, actor, action, target_email, reason, None).await
+    audit_counted(conn, actor, action, target, reason, None).await
 }
 
 /// 稽核紀錄另帶數量；刪除教室或活動時記錄一併刪除的對話數（S-14）。
@@ -140,6 +140,18 @@ pub(crate) fn confirmation<T>(
 ) -> Result<T, ApiError> {
     body.map(|Json(value)| value)
         .map_err(|_| ApiError::bad_request("confirmation_mismatch", "請提供要刪除對象的名稱以確認"))
+}
+
+/// 輸入的名稱必須與對象名稱相同（比對時去除前後空白）。
+pub(crate) fn ensure_confirmed(given: &str, expected: &str) -> Result<(), ApiError> {
+    if given.trim() == expected.trim() {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "confirmation_mismatch",
+            "確認的名稱與要刪除的對象不符",
+        ))
+    }
 }
 
 /// 教室與活動刪除共用的 SQL 與稽核動作。

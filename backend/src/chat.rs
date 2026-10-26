@@ -90,6 +90,8 @@ pub(crate) struct ConversationQuery {
     #[serde(flatten)]
     page: Pagination,
     archived: Option<String>,
+    /// 只列這個活動的對話
+    activity_id: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -196,8 +198,8 @@ pub(crate) async fn create(
     path = "/api/conversations",
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
-    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的")),
-    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived", body = crate::error::ErrorBody))
+    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的"), ("activity_id" = Option<Uuid>, Query, description = "只列這個活動的對話")),
+    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
@@ -205,25 +207,32 @@ pub(crate) async fn list(
     Query(query): Query<ConversationQuery>,
 ) -> Result<Json<Page<Conversation>>, ApiError> {
     let archived = pagination::parse_archived(query.archived.as_deref())?;
+    let query_activity = query.activity_id;
     let query = query.page;
     let limit = query.limit()?;
     let cursor: Option<(DateTime<Utc>, Uuid)> = query.cursor("conversations")?;
-    let rows = if let Some((time, id)) = cursor {
-        sqlx::query_as(conversation_select!(
-            "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $5 AND created_at <= $2 AND (created_at < $2 OR id > $3) ORDER BY created_at DESC, id ASC LIMIT $4"
-        ))
-        .bind(cu.user.id).bind(time).bind(id).bind((limit + 1) as i64).bind(archived)
-        .fetch_all(&state.pool).await?
-    } else {
-        sqlx::query_as(conversation_select!(
-            "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $3 ORDER BY created_at DESC, id ASC LIMIT $2"
-        ))
-        .bind(cu.user.id)
-        .bind((limit + 1) as i64)
-        .bind(archived)
-        .fetch_all(&state.pool)
-        .await?
-    };
+    let (after_time, after_id) = cursor.unzip();
+    let activity =
+        match query_activity.as_deref() {
+            Some(raw) => Some(Uuid::parse_str(raw).map_err(|_| {
+                ApiError::bad_request("invalid_activity_id", "activity_id 格式不正確")
+            })?),
+            None => None,
+        };
+    let rows = sqlx::query_as(conversation_select!(
+        "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $2
+           AND ($3::uuid IS NULL OR activity_id = $3)
+           AND ($4::timestamptz IS NULL OR created_at < $4 OR (created_at = $4 AND id > $5))
+         ORDER BY created_at DESC, id ASC LIMIT $6"
+    ))
+    .bind(cu.user.id)
+    .bind(archived)
+    .bind(activity)
+    .bind(after_time)
+    .bind(after_id)
+    .bind((limit + 1) as i64)
+    .fetch_all(&state.pool)
+    .await?;
     Ok(Json(pagination::page(
         rows,
         limit,

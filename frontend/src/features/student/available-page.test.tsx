@@ -167,7 +167,7 @@ describe('student available page', () => {
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
     expect(await screen.findByText('list page')).toBeInTheDocument()
-    expect(queries).toEqual(['?archived=true&limit=200'])
+    expect(queries).toEqual(['?archived=true&activity_id=act-1&limit=1'])
   })
 
   it('keeps the message when the existing conversation is not archived', async () => {

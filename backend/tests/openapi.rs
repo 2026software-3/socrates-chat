@@ -86,7 +86,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
         (
             "/api/conversations",
             "ConversationPage",
-            vec!["limit", "cursor", "archived"],
+            vec!["limit", "cursor", "archived", "activity_id"],
         ),
         (
             "/api/classrooms/{id}/students",

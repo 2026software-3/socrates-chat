@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    accounts::{DeleteSpec, audit, clean_reason, confirmation, delete_with_audit},
+    accounts::{
+        DeleteSpec, audit, clean_reason, confirmation, delete_with_audit, ensure_confirmed,
+    },
     activity_store,
     auth::{RequireStudent, RequireTeacher},
     classrooms::{ClassroomFilter, filtered_classroom, visible_classroom},
@@ -527,8 +529,8 @@ async fn set_archived(
 ) -> Result<Json<Activity>, ApiError> {
     // 鎖住活動列，封存與稽核在同一個交易內；狀態沒有改變時不重複寫稽核
     let mut tx = state.pool.begin().await?;
-    let current: Option<(bool, Uuid)> = sqlx::query_as(
-        "SELECT a.is_archived, a.classroom_id FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
+    let current: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT a.is_archived, cl.is_archived FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
     )
     .bind(id)
@@ -536,12 +538,11 @@ async fn set_archived(
     .bind(cu.user.id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (was_archived, classroom) = current.ok_or_else(ApiError::not_found)?;
-    crate::classrooms::ensure_writable(&mut *tx, classroom).await?;
-    let updated =
-        activity_store::set_archived_visible(&mut *tx, id, cu.user.id, cu.roles.admin, archived)
-            .await?
-            .ok_or_else(ApiError::not_found)?;
+    let (was_archived, classroom_archived) = current.ok_or_else(ApiError::not_found)?;
+    if classroom_archived {
+        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+    }
+    let updated = activity_store::set_archived(&mut *tx, id, archived).await?;
     if was_archived != archived {
         let action = if archived {
             "activity_archived"
@@ -624,12 +625,7 @@ pub(crate) async fn delete_activity(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let body = confirmation(body)?;
-    if body.confirm_title.trim() != activity.title.trim() {
-        return Err(ApiError::bad_request(
-            "confirmation_mismatch",
-            "確認的名稱與要刪除的活動不符",
-        ));
-    }
+    ensure_confirmed(&body.confirm_title, &activity.title)?;
     // 對話、訊息、總結與主張分組由外鍵連動刪除；封存的教室也可以刪除其中的活動
     delete_with_audit(
         &state.pool,
