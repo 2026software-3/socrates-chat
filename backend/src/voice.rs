@@ -62,6 +62,7 @@ pub trait VoiceProvider: Send + Sync {
 pub struct OpenAiVoice {
     http: reqwest::Client,
     base_url: String,
+    stt_base_url: String,
     keys: Arc<KeyPool>,
     stt_model: Option<String>,
     tts_model: Option<String>,
@@ -76,6 +77,12 @@ impl OpenAiVoice {
                 .build()
                 .unwrap_or_default(),
             base_url: c.openai_base_url.trim_end_matches('/').to_string(),
+            stt_base_url: c
+                .openai_stt_base_url
+                .as_deref()
+                .unwrap_or(&c.openai_base_url)
+                .trim_end_matches('/')
+                .to_string(),
             keys: c.openai_keys.clone(),
             stt_model: c.openai_stt_model.clone(),
             tts_model: c.openai_tts_model.clone(),
@@ -117,7 +124,7 @@ impl VoiceProvider for OpenAiVoice {
             .text("language", language.to_string());
         let res = self
             .http
-            .post(format!("{}/audio/transcriptions", self.base_url))
+            .post(format!("{}/audio/transcriptions", self.stt_base_url))
             .bearer_auth(&lease.key)
             .multipart(form)
             .send()
