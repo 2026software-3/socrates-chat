@@ -62,6 +62,7 @@ pub trait VoiceProvider: Send + Sync {
 pub struct OpenAiVoice {
     http: reqwest::Client,
     base_url: String,
+    stt_base_url: String,
     keys: Arc<KeyPool>,
     stt_model: Option<String>,
     tts_model: Option<String>,
@@ -76,6 +77,12 @@ impl OpenAiVoice {
                 .build()
                 .unwrap_or_default(),
             base_url: c.openai_base_url.trim_end_matches('/').to_string(),
+            stt_base_url: c
+                .openai_stt_base_url
+                .as_deref()
+                .unwrap_or(&c.openai_base_url)
+                .trim_end_matches('/')
+                .to_string(),
             keys: c.openai_keys.clone(),
             stt_model: c.openai_stt_model.clone(),
             tts_model: c.openai_tts_model.clone(),
@@ -117,7 +124,7 @@ impl VoiceProvider for OpenAiVoice {
             .text("language", language.to_string());
         let res = self
             .http
-            .post(format!("{}/audio/transcriptions", self.base_url))
+            .post(format!("{}/audio/transcriptions", self.stt_base_url))
             .bearer_auth(&lease.key)
             .multipart(form)
             .send()
@@ -157,7 +164,7 @@ impl VoiceProvider for OpenAiVoice {
         }
         res.bytes()
             .await
-            .map(|b| b.to_vec())
+            .map(Vec::from)
             .map_err(|_| VoiceError::Failed)
     }
 }
@@ -265,7 +272,8 @@ pub(crate) async fn transcribe(
     }
     let text = state
         .voice
-        .transcribe(body.0.to_vec(), mime, language)
+        // 請求本體獨占時直接取得緩衝，不複製（最多 10 MB）
+        .transcribe(Vec::from(body.0), mime, language)
         .await
         .map_err(voice_error)?;
     Ok(Json(Transcript { text }))

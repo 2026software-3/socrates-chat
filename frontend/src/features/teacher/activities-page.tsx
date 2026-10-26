@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadMore } from '@/components/load-more'
-import { formatDate } from '@/features/teacher/format'
+import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Activity, ActivityStatus, Topic } from '@/lib/types'
@@ -220,7 +220,8 @@ export function ActivitiesPage() {
   const list = usePagedFetch<Activity>('/api/activities')
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
-  const topics = (available.data ?? []).filter((tp) => tp.is_active)
+  const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
+  const topicById = useMemo(() => new Map(topics.map((tp) => [tp.id, tp])), [topics])
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const busyRef = useRef(new Set<string>())
@@ -297,7 +298,7 @@ export function ActivitiesPage() {
             <ActivityRow
               key={a.id}
               activity={a}
-              topic={topics.find((tp) => tp.id === a.topic_id)}
+              topic={topicById.get(a.topic_id)}
               busy={busyIds.has(a.id)}
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}

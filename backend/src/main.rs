@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use socrates_chat_backend::{
     AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config,
-    identity::GoogleIdentity, password, summary,
+    identity::GoogleIdentity, logging, password, summary,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
+    logging::json_subscriber()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
@@ -57,7 +57,8 @@ async fn main() {
         &config.openai_base_url,
         config.openai_keys.clone(),
         &config.openai_model,
-    );
+    )
+    .with_fallbacks(config.openai_fallback_models.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

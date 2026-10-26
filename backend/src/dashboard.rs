@@ -69,27 +69,34 @@ pub(crate) async fn personal(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Personal>, ApiError> {
-    let (total_conversations, total_turns): (i64, i64) = sqlx::query_as(
-        "SELECT count(*), COALESCE(sum(turn_count), 0)::bigint FROM conversations WHERE user_id = $1",
-    )
-    .bind(cu.user.id)
-    .fetch_one(&state.pool)
-    .await?;
-    let ready: Vec<RecentRow> = sqlx::query_as(
-        "SELECT c.id AS conversation_id, c.title, c.ended_at, c.stage, c.turn_count,
-                s.stance, s.claim
-         FROM summaries s JOIN conversations c ON c.id = s.conversation_id
-         WHERE c.user_id = $1 AND s.status = 'ready'
-         ORDER BY c.ended_at DESC NULLS LAST, c.id",
-    )
-    .bind(cu.user.id)
-    .fetch_all(&state.pool)
-    .await?;
+    // 已完成的總數在資料庫算，只取最近 10 筆的內容
+    let ((total_conversations, total_turns, completed), recent): ((i64, i64, i64), Vec<RecentRow>) =
+        tokio::try_join!(
+            sqlx::query_as(
+                "SELECT count(*), COALESCE(sum(turn_count), 0)::bigint,
+                        (SELECT count(*) FROM summaries s
+                         JOIN conversations c ON c.id = s.conversation_id
+                         WHERE c.user_id = $1 AND s.status = 'ready')
+                 FROM conversations WHERE user_id = $1",
+            )
+            .bind(cu.user.id)
+            .fetch_one(&state.pool),
+            sqlx::query_as(
+                "SELECT c.id AS conversation_id, c.title, c.ended_at, c.stage, c.turn_count,
+                        s.stance, s.claim
+                 FROM summaries s JOIN conversations c ON c.id = s.conversation_id
+                 WHERE c.user_id = $1 AND s.status = 'ready'
+                 ORDER BY c.ended_at DESC NULLS LAST, c.id
+                 LIMIT 10",
+            )
+            .bind(cu.user.id)
+            .fetch_all(&state.pool),
+        )?;
     Ok(Json(Personal {
         total_conversations,
         total_turns,
-        completed: ready.len() as i64,
-        recent: ready.into_iter().take(10).collect(),
+        completed,
+        recent,
     }))
 }
 
@@ -160,11 +167,14 @@ pub(crate) async fn class(
     Query(filter): Query<ClassroomFilter>,
 ) -> Result<Json<Class>, ApiError> {
     let classroom = filtered_classroom(&state, &cu, &filter).await?;
-    let students_total = match classroom {
-        Some(id) => roster_store::count_in_classroom(&state.pool, id).await?,
-        None => roster_store::count_students(&state.pool, cu.user.id, cu.roles.admin).await?,
+    let students_total = async {
+        match classroom {
+            Some(id) => roster_store::count_in_classroom(&state.pool, id).await,
+            None => roster_store::count_students(&state.pool, cu.user.id, cu.roles.admin).await,
+        }
     };
     if cu.roles.admin {
+        let students_total = students_total.await?;
         return Ok(Json(Class {
             masked: true,
             students_total,
@@ -175,7 +185,7 @@ pub(crate) async fn class(
     }
     // 只有學生會有對話；事後被移出名單或改成教師也不影響已完成的對話（S-01.4）。
     // 內連接教室與活動：從題目庫開始的個人練習不屬於任何教室，教師看不到，也不納入統計（S-02.1、S-14）。
-    let rows: Vec<ClassRow> = sqlx::query_as(
+    let rows = sqlx::query_as::<_, ClassRow>(
         "SELECT c.user_id, c.activity_id, a.title AS activity_title,
                 s.claim, s.reasons, g.name AS group_name
          FROM summaries s
@@ -189,8 +199,8 @@ pub(crate) async fn class(
     .bind(cu.roles.admin)
     .bind(cu.user.id)
     .bind(classroom)
-    .fetch_all(&state.pool)
-    .await?;
+    .fetch_all(&state.pool);
+    let (students_total, rows) = tokio::try_join!(students_total, rows)?;
     let mut by_activity: BTreeMap<Uuid, ActivityAcc> = BTreeMap::new();
     let mut participants = std::collections::HashSet::new();
     for r in &rows {

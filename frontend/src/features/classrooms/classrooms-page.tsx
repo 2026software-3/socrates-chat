@@ -150,7 +150,7 @@ export function ClassroomsPage() {
     reload()
   }
 
-  const title = auth.status === 'authed' && auth.me.roles.teacher ? t('classrooms.title.teacher') : t('classrooms.title.admin')
+  const title = canCreate ? t('classrooms.title.teacher') : t('classrooms.title.admin')
 
   return (
     <Page title={title}>

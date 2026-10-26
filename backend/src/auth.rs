@@ -32,16 +32,6 @@ const COOKIE_NAME: &str = "sid";
 /// 帳號已被管理者停用（S-01.3）：登入後看到「帳號已停用」。
 const ACCOUNT_DISABLED: ApiError = ApiError::forbidden("account_disabled", "帳號已停用");
 
-async fn is_disabled(state: &AppState, user_id: Uuid) -> Result<bool, sqlx::Error> {
-    let (disabled,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND disabled_at IS NOT NULL)",
-    )
-    .bind(user_id)
-    .fetch_one(&state.pool)
-    .await?;
-    Ok(disabled)
-}
-
 pub fn routes(trusted_proxies: Vec<client_ip::Cidr>) -> Router<AppState> {
     Router::new()
         .route("/api/auth/google/login", get(login))
@@ -148,22 +138,17 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        let SessionUser { user, session } =
-            auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
-                .await?
-                .ok_or_else(ApiError::unauthorized)?;
         // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
-        let (teacher, student, disabled): (bool, bool, bool) = sqlx::query_as(
-            "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1),
-                    EXISTS (SELECT 1 FROM enrollments WHERE email = $1),
-                    EXISTS (SELECT 1 FROM users WHERE id = $2 AND disabled_at IS NOT NULL)",
-        )
-        .bind(&user.email)
-        .bind(user.id)
-        .fetch_one(&state.pool)
-        .await?;
+        let SessionUser {
+            user,
+            session,
+            teacher,
+            student,
+        } = auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
+            .await?
+            .ok_or_else(ApiError::unauthorized)?;
         // 停用的帳號即使還有 session 也不能使用（停用時雖已清除 session，這裡再擋一次）
-        if disabled {
+        if user.disabled {
             return Err(ACCOUNT_DISABLED);
         }
         let roles = Roles {
@@ -330,10 +315,7 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     )
     .await
     .map_err(|_| "login_failed")?;
-    if is_disabled(state, user.id)
-        .await
-        .map_err(|_| "login_failed")?
-    {
+    if user.disabled {
         return Err("account_disabled");
     }
     // 登入一律建立新 session（防止 session fixation）
@@ -379,6 +361,20 @@ pub(crate) struct MeResponse {
     roles: Roles,
 }
 
+impl From<CurrentUser> for MeResponse {
+    fn from(cu: CurrentUser) -> Self {
+        let u = cu.user;
+        Self {
+            id: u.id,
+            email: u.email,
+            display_name: u.display_name,
+            is_admin: u.is_admin,
+            must_change_password: cu.must_change_password,
+            roles: cu.roles,
+        }
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/me",
@@ -387,15 +383,7 @@ pub(crate) struct MeResponse {
     responses((status = 200, description = "目前使用者", body = MeResponse))
 )]
 pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
-    let u = cu.user;
-    Json(MeResponse {
-        id: u.id,
-        email: u.email,
-        display_name: u.display_name,
-        is_admin: u.is_admin,
-        must_change_password: cu.must_change_password,
-        roles: cu.roles,
-    })
+    Json(cu.into())
 }
 
 /// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
@@ -428,11 +416,10 @@ pub(crate) struct MePatch {
     )
 )]
 pub(crate) async fn update_me(
-    RequireStudent(cu): RequireStudent,
+    RequireStudent(mut cu): RequireStudent,
     State(state): State<AppState>,
     Json(p): Json<MePatch>,
 ) -> Result<Json<MeResponse>, ApiError> {
-    let mut u = cu.user;
     if let Some(name) = p.display_name {
         let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
         if name.as_deref().is_some_and(|n| !valid_display_name(n)) {
@@ -441,23 +428,16 @@ pub(crate) async fn update_me(
                 "顯示名稱最多 20 個字元，且不可包含控制字元",
             ));
         }
-        u.display_name = sqlx::query_scalar(
+        cu.user.display_name = sqlx::query_scalar(
             "UPDATE users SET display_name = $2, updated_at = now()
              WHERE id = $1 RETURNING display_name",
         )
-        .bind(u.id)
+        .bind(cu.user.id)
         .bind(name)
         .fetch_one(&state.pool)
         .await?;
     }
-    Ok(Json(MeResponse {
-        id: u.id,
-        email: u.email,
-        display_name: u.display_name,
-        is_admin: u.is_admin,
-        must_change_password: cu.must_change_password,
-        roles: cu.roles,
-    }))
+    Ok(Json(cu.into()))
 }
 
 // ---- 內建帳號密碼登入（S-08.2 第 1 節）----
@@ -468,10 +448,13 @@ fn dummy_hash() -> &'static str {
     HASH.get_or_init(|| password::hash(&password::generate_temporary()).unwrap_or_default())
 }
 
-async fn verify_blocking(password: String, hash: String) -> bool {
-    tokio::task::spawn_blocking(move || password::verify(&password, &hash))
-        .await
-        .unwrap_or(false)
+/// `hash` 為 `None` 時改比對 `dummy_hash`（第一次呼叫時的雜湊也在 blocking 執行緒上完成）。
+async fn verify_blocking(password: String, hash: Option<String>) -> bool {
+    tokio::task::spawn_blocking(move || {
+        password::verify(&password, hash.as_deref().unwrap_or_else(|| dummy_hash()))
+    })
+    .await
+    .unwrap_or(false)
 }
 
 pub async fn hash_blocking(password: String) -> Result<String, ApiError> {
@@ -517,32 +500,25 @@ pub(crate) async fn password_login(
     let email = body.email.trim().to_lowercase();
     let now = Utc::now();
     // 沒有連線資訊（例如測試）時 ip_key 為空字串：退回只以信箱計
-    let ip_key = client_ip::resolve(
+    let ip_key = client_ip::client_key(
         connect_info.map(|Extension(ConnectInfo(addr))| addr.ip()),
         headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
         &state.config.trusted_proxies,
-    )
-    .map(client_ip::rate_limit_key)
-    .unwrap_or_default();
+    );
     if auth_store::is_locked(&state.pool, &email, &ip_key, now).await? {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too_many_attempts",
-            "嘗試次數過多，請稍後再試",
-        ));
+        return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
     }
     let account = auth_store::find_password_account(&state.pool, &email).await?;
     let real_hash = account.as_ref().and_then(|a| a.password_hash.clone());
     let has_password = real_hash.is_some();
-    let hash = real_hash.unwrap_or_else(|| dummy_hash().to_string());
-    let ok = verify_blocking(body.password, hash).await && has_password;
+    let ok = verify_blocking(body.password, real_hash).await && has_password;
     let (Some(account), true) = (account, ok) else {
         auth_store::record_login_failure(&state.pool, &email, &ip_key, now).await?;
         return Err(INVALID_CREDENTIALS);
     };
     auth_store::clear_login_failures_for(&state.pool, &email, &ip_key).await?;
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
-    if is_disabled(&state, account.id).await? {
+    if account.disabled {
         return Err(ACCOUNT_DISABLED);
     }
     // 登入一律建立新 session（防止 session fixation）
@@ -598,7 +574,7 @@ pub(crate) async fn change_password(
     let Some(current_hash) = auth_store::password_hash_of(&state.pool, cu.user.id).await? else {
         return Err(wrong_current);
     };
-    if !verify_blocking(body.current_password, current_hash).await {
+    if !verify_blocking(body.current_password, Some(current_hash)).await {
         return Err(wrong_current);
     }
     let new_hash = hash_blocking(body.new_password).await?;

@@ -18,8 +18,8 @@ use uuid::Uuid;
 use crate::{
     AppState, activity_store,
     ai::{
-        AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt, collect,
-        parse_group_name, parse_regroup,
+        AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
+        collect_background, parse_group_name, parse_regroup,
     },
     auth::RequireTeacher,
     error::{ApiError, db_error_class},
@@ -63,13 +63,7 @@ async fn try_assign(
             content: claim.to_string(),
         }],
     };
-    let raw = collect(
-        state.ai.as_ref(),
-        req,
-        state.config.ai_first_token_timeout,
-        state.config.ai_total_timeout,
-    )
-    .await;
+    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
     let Some(name) = raw.ok().and_then(|r| parse_group_name(&r, &existing)) else {
         return Ok(()); // 分組失敗：這場暫時沒有群組
     };
@@ -156,13 +150,7 @@ pub(crate) async fn regroup(
             content: "請分組。".into(),
         }],
     };
-    let raw = collect(
-        state.ai.as_ref(),
-        req,
-        state.config.ai_first_token_timeout,
-        state.config.ai_total_timeout,
-    )
-    .await;
+    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
     let groups = raw
         .ok()
         .and_then(|r| parse_regroup(&r, claims.len()))

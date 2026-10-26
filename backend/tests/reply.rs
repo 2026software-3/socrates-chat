@@ -8,6 +8,7 @@ use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
 use serde_json::{Value, json};
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
 
 struct Setup {
@@ -18,8 +19,12 @@ struct Setup {
 }
 
 async fn setup(pool: PgPool, scripts: Vec<Script>) -> Setup {
+    setup_with_config(pool, scripts, test_config()).await
+}
+
+async fn setup_with_config(pool: PgPool, scripts: Vec<Script>, config: Config) -> Setup {
     let ai = FakeAi::with(scripts);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_config(pool, ai.clone(), config);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
     Setup { app, a, ai, conv }
@@ -209,6 +214,27 @@ async fn first_token_timeout_counts_as_failure_and_retries(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn reasoning_before_the_first_word_does_not_trip_the_first_token_timeout(pool: PgPool) {
+    // 空片段代表模型開始推理（OpenAiProvider 送出）；首字逾時 200 ms，正文在 300 ms 才出現
+    let paced = [""].into_iter().chain(REPLY).collect();
+    let s = setup(
+        pool,
+        vec![Paced(paced, std::time::Duration::from_millis(150))],
+    )
+    .await;
+    let events = say(&s, "嗨").await;
+    assert_eq!(events.last().unwrap().0, "done");
+    assert_eq!(s.ai.request_count(), 1);
+    // 空片段不會變成給學生的 delta
+    assert!(
+        events
+            .iter()
+            .filter(|(n, _)| n == "delta")
+            .all(|(_, d)| !d["text"].as_str().unwrap().is_empty())
+    );
+}
+
+#[sqlx::test]
 async fn nothing_to_reply_when_last_message_is_ai(pool: PgPool) {
     let s = setup(pool, vec![Reply(REPLY.to_vec())]).await;
     let url = format!("/api/conversations/{}/stream", s.conv);
@@ -332,36 +358,97 @@ async fn only_one_reply_stream_per_conversation(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn concurrent_second_stream_is_rejected_while_first_runs(pool: PgPool) {
-    let s = setup(pool.clone(), vec![Hang, Hang, Reply(REPLY.to_vec())]).await;
+async fn second_stream_joins_the_running_reply_instead_of_starting_another(pool: PgPool) {
+    // 兩次首字逾時就是第一個回覆的長度：放寬到第二條串流在平行執行時也來得及接上
+    let config = Config {
+        ai_first_token_timeout: std::time::Duration::from_secs(1),
+        ..test_config()
+    };
+    let s = setup_with_config(
+        pool.clone(),
+        vec![Hang, Hang, Reply(REPLY.to_vec())],
+        config,
+    )
+    .await;
     seed_student_message(&pool, &s.conv, "嗨").await;
     let url = format!("/api/conversations/{}/stream", s.conv);
 
     let (app, cookie, url1) = (s.app.clone(), s.a.student.clone(), url.clone());
     let first =
         tokio::spawn(async move { text_body(send(&app, get(&url1, Some(&cookie))).await).await });
-    // 等第一條串流確實取得 claim 再送第二個請求，避免依賴固定時間
-    let mut claimed = false;
+    wait_until_generating(&s).await;
+    // 第二條串流接上同一個回覆：收到相同的結果，也不會多呼叫一次 AI
+    let second = text_body(send(&s.app, get(&url, Some(&s.a.student))).await).await;
+    let events = parse_sse(&first.await.unwrap());
+    assert_eq!(events.last().unwrap().0, "error");
+    assert_eq!(parse_sse(&second), events);
+    assert_eq!(s.ai.request_count(), 2);
+
+    // 失敗收尾後釋放，再開一次會重新產生
+    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+}
+
+/// 等到對話詳情顯示回覆正在產生（`generating`），避免依賴固定時間。
+async fn wait_until_generating(s: &Setup) {
     for _ in 0..200 {
-        let (g,): (Option<chrono::DateTime<chrono::Utc>>,) =
-            sqlx::query_as("SELECT generating_since FROM conversations")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        if g.is_some() {
-            claimed = true;
-            break;
+        if detail(s).await["generating"] == true {
+            return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    assert!(claimed, "first stream never claimed the conversation");
-    let res = send(&s.app, get(&url, Some(&s.a.student))).await;
-    assert_eq!(res.status(), StatusCode::CONFLICT);
+    panic!("reply never started generating");
+}
 
-    // 第一條失敗收尾後釋放，再開一次可成功
-    let events = parse_sse(&first.await.unwrap());
-    assert_eq!(events.last().unwrap().0, "error");
-    assert_eq!(stream_events(&s).await.last().unwrap().0, "done");
+#[sqlx::test]
+async fn leaving_mid_reply_and_coming_back_resumes_the_same_reply(pool: PgPool) {
+    // 回覆要撐過「斷線、查詢、重新接上」這段時間；測試平行執行時很慢，片段間隔放寬，逾時跟著放寬
+    let pace = std::time::Duration::from_millis(400);
+    let config = Config {
+        ai_first_token_timeout: std::time::Duration::from_secs(2),
+        ai_total_timeout: std::time::Duration::from_secs(5),
+        ..test_config()
+    };
+    let s = setup_with_config(pool.clone(), vec![Paced(REPLY.to_vec(), pace)], config).await;
+    assert_eq!(detail(&s).await["generating"], false);
+
+    // 送出訊息、收到第一段回覆後就離開頁面（中斷連線）
+    let res = send(
+        &s.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/messages", s.conv),
+            Some(&s.a.student),
+            Some(json!({"content": "嗨"})),
+        ),
+    )
+    .await;
+    let mut body = res.into_body().into_data_stream();
+    let mut seen = String::new();
+    while !seen.contains("event: delta") {
+        let chunk = futures_util::StreamExt::next(&mut body)
+            .await
+            .unwrap()
+            .unwrap();
+        seen.push_str(std::str::from_utf8(&chunk).unwrap());
+    }
+    drop(body);
+
+    // 回來時回覆還在產生：重新接上，先補上已產生的文字，再收到剩下的片段與 done
+    assert_eq!(detail(&s).await["generating"], true);
+    let events = stream_events(&s).await;
+    let text: String = events
+        .iter()
+        .filter(|(name, _)| name == "delta")
+        .map(|(_, v)| v["text"].as_str().unwrap())
+        .collect();
+    // 與一路沒有斷線的連線收到的文字相同（串流不去掉結尾空白，保存時才去掉）
+    assert_eq!(text, "你說的「正義」是什麼意思？\n");
+    assert_eq!(events.last().unwrap().0, "done");
+    assert_eq!(s.ai.request_count(), 1);
+
+    let d = detail(&s).await;
+    assert_eq!(d["generating"], false);
+    assert_eq!(d["messages"][1]["content"], "你說的「正義」是什麼意思？");
 }
 
 #[sqlx::test]

@@ -352,6 +352,25 @@ async fn openai_voice_sends_multipart_transcription_with_model_and_language() {
 }
 
 #[tokio::test]
+async fn openai_voice_sends_transcription_to_the_stt_base_url_when_set() {
+    // 辨識可指向自架的 Whisper 服務；合成與對話仍走 OPENAI_BASE_URL
+    let (chat_base, chat_calls) = spawn_fake_openai().await;
+    let (stt_base, stt_calls) = spawn_fake_openai().await;
+    let mut c = test_config();
+    c.openai_base_url = chat_base;
+    c.openai_stt_base_url = Some(stt_base);
+    c.openai_stt_model = Some("stt-test".into());
+    c.openai_tts_model = Some("tts-test".into());
+    let v = OpenAiVoice::from_config(&c);
+    v.transcribe(vec![5; 20], "audio/webm", "en").await.unwrap();
+    v.speak("hi", "en").await.unwrap();
+    assert_eq!(stt_calls.lock().unwrap().len(), 1);
+    assert_eq!(stt_calls.lock().unwrap()[0].0, "/audio/transcriptions");
+    assert_eq!(chat_calls.lock().unwrap().len(), 1);
+    assert_eq!(chat_calls.lock().unwrap()[0].0, "/audio/speech");
+}
+
+#[tokio::test]
 async fn openai_voice_requests_mp3_speech_with_the_configured_model() {
     let (base, captured) = spawn_fake_openai().await;
     let audio = openai_voice(&base).speak("你好", "zh").await.unwrap();

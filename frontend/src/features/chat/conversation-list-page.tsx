@@ -6,7 +6,7 @@ import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
-import { useDateFormat } from '@/features/chat/format'
+import { formatDate } from '@/lib/format'
 import { useI18n, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
 import type { Conversation, Page as PageResult } from '@/lib/types'
@@ -101,8 +101,7 @@ function ConversationList({ cursor, onNext, onPrevious }: { cursor: string | nul
 function ConversationRow({ conversation: c, onDelete }: { conversation: Conversation; onDelete: () => void }) {
   const t = useT()
   const { lang } = useI18n()
-  const formatDate = useDateFormat(lang)
-  const created = formatDate(c.created_at)
+  const created = formatDate(c.created_at, lang)
   return (
     <li className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0 space-y-1">

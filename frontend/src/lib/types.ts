@@ -64,7 +64,8 @@ export type Message = {
   created_at: string
 }
 
-export type ConversationDetail = Conversation & { messages: Message[] }
+/** 對話詳情；`generating` 表示 AI 回覆正在產生，可用 `GET …/stream` 接上。 */
+export type ConversationDetail = Conversation & { messages: Message[]; generating: boolean }
 
 /** 送出訊息的回應；`auto_ended` 表示達回合上限，對話已自動結束、總結產生中。 */
 export type SentMessage = Message & { auto_ended: boolean }

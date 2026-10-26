@@ -82,6 +82,8 @@ pub fn test_config() -> Config {
         openai_keys: Arc::new(KeyPool::new(vec!["test-key".to_string()]).unwrap()),
         openai_model: "test-model".to_string(),
         openai_base_url: "http://127.0.0.1:1".to_string(),
+        openai_stt_base_url: None,
+        openai_fallback_models: vec![],
         openai_stt_model: None,
         openai_tts_model: None,
         openai_tts_voice: "alloy".to_string(),
@@ -106,6 +108,8 @@ pub enum Script {
     Hang,
     /// 等一段時間後才給出這段文字並正常結束（慢速的 AI）
     Delayed(Duration, &'static str),
+    /// 每個片段前都先等一段時間，模擬回覆產生到一半
+    Paced(Vec<&'static str>, std::time::Duration),
 }
 
 /// 假的 AI：依序執行腳本（用完後一律失敗），並記錄收到的請求。
@@ -150,6 +154,12 @@ impl AiProvider for FakeAi {
                 Ok(text.to_string())
             })
             .boxed()),
+            Some(Script::Paced(chunks, delay)) => Ok(stream::iter(chunks)
+                .then(move |c| async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(c.to_string())
+                })
+                .boxed()),
             Some(Script::Fail) | None => Err(AiError),
         }
     }
