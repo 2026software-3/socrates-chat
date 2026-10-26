@@ -354,3 +354,181 @@ async fn server_error_tries_each_key_at_most_once() {
     assert!(text_of(&p).await.is_err());
     assert_eq!(*seen.lock().unwrap(), ["a", "b"]);
 }
+
+// ---- 整個模型被限流時換備援模型 ----
+
+/// 依請求 body 的 `model` 回不同狀態的假伺服器；記錄每次收到的 (model, key)。
+type ModelSeen = Arc<Mutex<Vec<(String, String)>>>;
+
+async fn spawn_model_server(behaviour: Vec<(&'static str, StatusCode)>) -> (String, ModelSeen) {
+    #[derive(Clone)]
+    struct S {
+        by_model: Arc<HashMap<String, StatusCode>>,
+        seen: ModelSeen,
+    }
+    let seen: ModelSeen = Arc::default();
+    let state = S {
+        by_model: Arc::new(
+            behaviour
+                .into_iter()
+                .map(|(m, st)| (m.to_string(), st))
+                .collect(),
+        ),
+        seen: seen.clone(),
+    };
+    let app = Router::new()
+        .route(
+            "/chat/completions",
+            post(
+                |State(s): State<S>, h: HeaderMap, Json(v): Json<Value>| async move {
+                    let key = h["authorization"]
+                        .to_str()
+                        .unwrap()
+                        .trim_start_matches("Bearer ");
+                    let model = v["model"].as_str().unwrap().to_string();
+                    s.seen
+                        .lock()
+                        .unwrap()
+                        .push((model.clone(), key.to_string()));
+                    let status = s.by_model[&model];
+                    if status.is_success() {
+                        (status, OK_BODY).into_response()
+                    } else {
+                        (status, "nope").into_response()
+                    }
+                },
+            ),
+        )
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), seen)
+}
+
+fn seen_of(seen: &ModelSeen) -> Vec<(String, String)> {
+    seen.lock().unwrap().clone()
+}
+
+fn pair(model: &str, key: &str) -> (String, String) {
+    (model.to_string(), key.to_string())
+}
+
+#[tokio::test]
+async fn falls_back_to_the_next_model_when_every_key_is_rate_limited() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("backup", StatusCode::OK),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, pool_of(&["a", "b"]), "primary")
+        .with_fallbacks(vec!["backup".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    // 主模型每把 key 都試過才換；備援用的 key 不會因主模型的 429 而被冷卻
+    assert_eq!(
+        seen_of(&seen),
+        [
+            pair("primary", "a"),
+            pair("primary", "b"),
+            pair("backup", "a")
+        ]
+    );
+}
+
+#[tokio::test]
+async fn later_requests_skip_a_cooling_model_without_waiting() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("backup", StatusCode::OK),
+    ])
+    .await;
+    // 冷卻 5 秒：若還去等主模型的 key 恢復，這個測試會超過時間
+    let keys = Arc::new(
+        KeyPool::new(vec!["a".into(), "b".into()])
+            .unwrap()
+            .with_default_cooldown(std::time::Duration::from_secs(5)),
+    );
+    let p = OpenAiProvider::new(&base, keys, "primary").with_fallbacks(vec!["backup".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    let started = std::time::Instant::now();
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    // 第二次請求沒有再打主模型
+    let primary_calls = seen_of(&seen)
+        .iter()
+        .filter(|(m, _)| m == "primary")
+        .count();
+    assert_eq!(primary_calls, 2);
+}
+
+#[tokio::test]
+async fn tries_every_fallback_in_order_and_fails_when_all_are_limited() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("b1", StatusCode::TOO_MANY_REQUESTS),
+        ("b2", StatusCode::TOO_MANY_REQUESTS),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary")
+        .with_fallbacks(vec!["b1".into(), "b2".into()]);
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(
+        seen_of(&seen),
+        [pair("primary", "k"), pair("b1", "k"), pair("b2", "k")]
+    );
+}
+
+#[tokio::test]
+async fn skips_a_limited_fallback_and_uses_the_next_one() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("b1", StatusCode::TOO_MANY_REQUESTS),
+        ("b2", StatusCode::OK),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary")
+        .with_fallbacks(vec!["b1".into(), "b2".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(seen_of(&seen).last(), Some(&pair("b2", "k")));
+}
+
+#[tokio::test]
+async fn does_not_fall_back_when_the_primary_succeeds() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::OK),
+        ("backup", StatusCode::OK),
+    ])
+    .await;
+    let p =
+        OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["backup".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(seen_of(&seen), [pair("primary", "k")]);
+}
+
+#[tokio::test]
+async fn does_not_fall_back_on_errors_other_than_rate_limiting() {
+    for status in [
+        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::BAD_GATEWAY,
+    ] {
+        let (base, seen) =
+            spawn_model_server(vec![("primary", status), ("backup", StatusCode::OK)]).await;
+        let p = OpenAiProvider::new(&base, pool_of(&["a", "b"]), "primary")
+            .with_fallbacks(vec!["backup".into()]);
+        assert!(text_of(&p).await.is_err(), "{status}");
+        assert!(
+            seen_of(&seen).iter().all(|(m, _)| m == "primary"),
+            "{status}: 不該打到備援模型"
+        );
+    }
+}
+
+#[tokio::test]
+async fn without_fallbacks_a_rate_limited_model_still_fails() {
+    let (base, seen) = spawn_model_server(vec![("primary", StatusCode::TOO_MANY_REQUESTS)]).await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary");
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(seen_of(&seen), [pair("primary", "k")]);
+}

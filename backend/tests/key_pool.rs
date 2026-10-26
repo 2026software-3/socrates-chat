@@ -173,3 +173,24 @@ fn debug_output_never_contains_keys() {
     let lease = p.acquire().unwrap();
     assert!(!format!("{lease:?}").contains("sk-secret"));
 }
+
+#[test]
+fn fork_has_the_same_keys_and_settings_but_independent_cooldowns() {
+    let original = pool(2)
+        .with_default_cooldown(Duration::from_secs(7))
+        .with_auth_cooldown(Duration::from_secs(70));
+    let forked = original.fork();
+    assert_eq!(forked.len(), 2);
+    assert_eq!(forked.default_cooldown(), Duration::from_secs(7));
+    assert_eq!(forked.auth_cooldown(), Duration::from_secs(70));
+    // 在原本的池子冷卻一把，不影響分出去的池子
+    let lease = original.acquire().unwrap();
+    original.mark_rate_limited(lease.index, None);
+    assert_eq!(original.usable_count(), 1);
+    assert_eq!(forked.usable_count(), 2);
+    // 反過來也一樣，而且分出去時原本池子的冷卻狀態不會被帶過去
+    let lease = forked.acquire().unwrap();
+    forked.mark_rejected(lease.index);
+    assert_eq!(original.usable_count(), 1);
+    assert_eq!(forked.usable_count(), 1);
+}

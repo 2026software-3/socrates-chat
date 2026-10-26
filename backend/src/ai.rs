@@ -296,8 +296,13 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
-    keys: Arc<KeyPool>,
+    /// 第一個是主模型，其後是備援模型（依序）；每個模型各有自己的 key 池冷卻狀態
+    targets: Vec<ModelTarget>,
+}
+
+struct ModelTarget {
     model: String,
+    keys: Arc<KeyPool>,
 }
 
 /// 開始串流前遇到限流或伺服器錯誤時，最多換幾把 key 重試。
@@ -306,43 +311,86 @@ const MAX_KEY_RETRIES: usize = 3;
 /// 不要讓學生的請求卡在一個遠遠等不到的冷卻上（呼叫端另有首 token 逾時）。
 const MAX_KEY_WAIT: Duration = Duration::from_secs(30);
 
+/// 對單一模型送出請求失敗的原因，用來決定要不要換備援模型。
+enum SendFailure {
+    /// 這個模型被限流：每次失敗都是 429，或它的 key 在先前的 429 之後還在冷卻中。可以換備援模型。
+    RateLimited,
+    /// 其他原因（連線失敗、5xx、key 被拒絕、請求本身有誤）。換模型無濟於事，不換。
+    Failed,
+}
+
 impl OpenAiProvider {
     pub fn new(base_url: &str, keys: Arc<KeyPool>, model: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            keys,
-            model: model.to_string(),
+            targets: vec![ModelTarget {
+                model: model.to_string(),
+                keys,
+            }],
         }
+    }
+
+    /// 主模型被限流（429）時依序改用的備援模型。與主模型相同或重複的會略過。
+    /// 每個備援模型有獨立的 key 冷卻狀態：主模型的 429 是整個模型的問題，不能讓 key 因此冷卻。
+    pub fn with_fallbacks(mut self, models: Vec<String>) -> Self {
+        for model in models {
+            if self.targets.iter().any(|t| t.model == model) {
+                continue;
+            }
+            let keys = Arc::new(self.targets[0].keys.fork());
+            self.targets.push(ModelTarget { model, keys });
+        }
+        self
     }
 
     /// 取一把可用的 key；全部冷卻時等最快恢復的那把（不超過 `MAX_KEY_WAIT`）。
-    async fn acquire_key(&self) -> Result<crate::key_pool::Lease, AiError> {
+    /// `may_wait` 為 false（後面還有備援模型可換）時不等，直接放棄。
+    async fn acquire_key(
+        keys: &KeyPool,
+        may_wait: bool,
+    ) -> Result<crate::key_pool::Lease, AiError> {
         for _ in 0..=MAX_KEY_RETRIES {
-            if let Some(lease) = self.keys.acquire() {
+            if let Some(lease) = keys.acquire() {
                 return Ok(lease);
             }
-            match self.keys.next_available_in() {
-                Some(wait) if wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
+            match keys.next_available_in() {
+                Some(wait) if may_wait && wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
                 _ => break,
             }
         }
-        tracing::error!("no usable AI key");
         Err(AiError)
     }
 
-    /// 送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
+    /// 對一個模型送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
     /// （但每把 key 在一次請求中最多試一次，避免對故障的供應商連續猛打）。
     /// 只在尚未開始串流時重試，串流開始後的失敗不會重送（已有部分文字給了學生）。
     async fn send_with_failover(
         &self,
+        keys: &KeyPool,
         body: &(impl Serialize + Sync),
-    ) -> Result<reqwest::Response, AiError> {
+        may_wait: bool,
+    ) -> Result<reqwest::Response, SendFailure> {
         let mut server_errored: Vec<usize> = Vec::new();
-        for _ in 0..=MAX_KEY_RETRIES {
-            let lease = self.acquire_key().await?;
+        // 到目前為止的失敗是否全是 429
+        let mut only_rate_limited = true;
+        for attempt in 0..=MAX_KEY_RETRIES {
+            let Ok(lease) = Self::acquire_key(keys, may_wait).await else {
+                // 後面還有備援模型時，這只是要換模型的訊號，不是錯誤
+                if may_wait {
+                    tracing::error!("no usable AI key");
+                } else {
+                    tracing::warn!("no usable AI key for this model");
+                }
+                // 一把都不能用，而且這次還沒送出過請求：是先前的冷卻還沒結束（多半是 429）
+                return Err(if attempt == 0 || only_rate_limited {
+                    SendFailure::RateLimited
+                } else {
+                    SendFailure::Failed
+                });
+            };
             if server_errored.contains(&lease.index) {
-                return Err(AiError);
+                return Err(SendFailure::Failed);
             }
             tracing::debug!(key = lease.index + 1, "sending AI request");
             let res = self
@@ -352,24 +400,29 @@ impl OpenAiProvider {
                 .json(body)
                 .send()
                 .await
-                .map_err(|_| AiError)?;
+                .map_err(|_| SendFailure::Failed)?;
             let status = res.status();
             if status.is_success() {
                 return Ok(res);
             }
             tracing::warn!(status = %status, key = lease.index + 1, "AI provider returned an error status");
+            only_rate_limited &= status.as_u16() == 429;
             if status.is_server_error() {
                 server_errored.push(lease.index);
             }
-            if !self.keys.report_failure(
+            if !keys.report_failure(
                 lease.index,
                 status.as_u16(),
                 parse_retry_after(res.headers()),
             ) {
-                return Err(AiError);
+                return Err(SendFailure::Failed);
             }
         }
-        Err(AiError)
+        Err(if only_rate_limited {
+            SendFailure::RateLimited
+        } else {
+            SendFailure::Failed
+        })
     }
 }
 
@@ -440,7 +493,7 @@ impl AiProvider for OpenAiProvider {
         // 與先前 `json!`（BTreeMap）輸出的位元組相同
         #[derive(Serialize)]
         struct Body<'a> {
-            messages: Vec<Msg<'a>>,
+            messages: &'a [Msg<'a>],
             model: &'a str,
             stream: bool,
         }
@@ -461,52 +514,80 @@ impl AiProvider for OpenAiProvider {
                 "assistant"
             },
         });
-        let body = Body {
-            messages: std::iter::once(system).chain(turns).collect(),
-            model: &self.model,
-            stream: true,
-        };
-        let res = self.send_with_failover(&body).await?;
-        let (tx, rx) = mpsc::channel(32);
-        tokio::spawn(async move {
-            let mut bytes = res.bytes_stream();
-            let mut decoder = SseDecoder::default();
-            let mut started = false;
-            while let Some(chunk) = bytes.next().await {
-                let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
-                    Ok(items) => items,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                        return;
+        let messages: Vec<Msg> = std::iter::once(system).chain(turns).collect();
+        let last = self.targets.len() - 1;
+        for (i, target) in self.targets.iter().enumerate() {
+            let body = Body {
+                messages: &messages,
+                model: &target.model,
+                stream: true,
+            };
+            // 後面還有備援模型時不等 key 冷卻，直接換
+            match self
+                .send_with_failover(&target.keys, &body, i == last)
+                .await
+            {
+                Ok(res) => {
+                    if i > 0 {
+                        tracing::warn!(model = %target.model, "AI request served by a fallback model");
                     }
-                };
-                for item in items {
-                    match item {
-                        SseItem::Delta(t) => {
-                            started = true;
-                            if tx.send(Ok(t)).await.is_err() {
-                                return;
-                            }
+                    return Ok(into_stream(res));
+                }
+                Err(SendFailure::RateLimited) if i < last => {
+                    tracing::warn!(
+                        model = %target.model,
+                        next = %self.targets[i + 1].model,
+                        "AI model rate limited, trying the next model"
+                    );
+                }
+                Err(_) => return Err(AiError),
+            }
+        }
+        Err(AiError)
+    }
+}
+
+/// 把成功的串流回應轉成逐段文字的串流。
+fn into_stream(res: reqwest::Response) -> AiStream {
+    let (tx, rx) = mpsc::channel(32);
+    tokio::spawn(async move {
+        let mut bytes = res.bytes_stream();
+        let mut decoder = SseDecoder::default();
+        let mut started = false;
+        while let Some(chunk) = bytes.next().await {
+            let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+                Ok(items) => items,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            for item in items {
+                match item {
+                    SseItem::Delta(t) => {
+                        started = true;
+                        if tx.send(Ok(t)).await.is_err() {
+                            return;
                         }
-                        // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
-                        // 讓呼叫端知道模型已在回應，不套用首字逾時
-                        SseItem::Reasoning if !started => {
-                            started = true;
-                            if tx.send(Ok(String::new())).await.is_err() {
-                                return;
-                            }
-                        }
-                        // 看到結束標記才算正常完成
-                        SseItem::Done => return,
-                        SseItem::Reasoning | SseItem::Ignore => {}
                     }
+                    // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
+                    // 讓呼叫端知道模型已在回應，不套用首字逾時
+                    SseItem::Reasoning if !started => {
+                        started = true;
+                        if tx.send(Ok(String::new())).await.is_err() {
+                            return;
+                        }
+                    }
+                    // 看到結束標記才算正常完成
+                    SseItem::Done => return,
+                    SseItem::Reasoning | SseItem::Ignore => {}
                 }
             }
-            // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
-            let _ = tx.send(Err(AiError)).await;
-        });
-        Ok(ReceiverStream::new(rx).boxed())
-    }
+        }
+        // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
+        let _ = tx.send(Err(AiError)).await;
+    });
+    ReceiverStream::new(rx).boxed()
 }
 
 // ---- 非串流呼叫與總結 ----

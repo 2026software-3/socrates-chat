@@ -68,6 +68,20 @@ impl KeyPool {
         })
     }
 
+    /// 同一批 key、同樣的冷卻設定，但冷卻狀態全新而且互不影響。備援模型用自己的池子，
+    /// 這樣主模型的 429（整個模型被限流，不是 key 的問題）不會讓備援模型拿不到 key。
+    pub fn fork(&self) -> KeyPool {
+        KeyPool {
+            keys: self.keys.clone(),
+            inner: Mutex::new(Inner {
+                cooling_until: vec![None; self.keys.len()],
+                next: 0,
+            }),
+            default_cooldown: self.default_cooldown,
+            auth_cooldown: self.auth_cooldown,
+        }
+    }
+
     pub fn with_default_cooldown(mut self, d: Duration) -> Self {
         self.default_cooldown = d;
         self

@@ -34,6 +34,8 @@ pub struct Config {
     pub openai_keys: Arc<KeyPool>,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
+    /// 主模型被限流（429）時依序改用的模型；空表示不啟用備援
+    pub openai_fallback_models: Vec<String>,
     pub openai_base_url: String,
     /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     pub openai_stt_model: Option<String>,
@@ -99,6 +101,17 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
 
 /// 金鑰清單檔的預設位置：後端通常在 `backend/` 執行，所以也找上一層（專案根目錄）。
 const DEFAULT_KEY_FILES: [&str; 2] = [".apikeylist", "../.apikeylist"];
+
+/// 逗號分隔的模型清單：去掉空白與空項、重複的只留第一個；順序就是備援的先後。
+fn parse_model_list(raw: &str) -> Vec<String> {
+    let mut models: Vec<String> = Vec::new();
+    for m in raw.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+        if !models.iter().any(|x| x == m) {
+            models.push(m.to_string());
+        }
+    }
+    models
+}
 
 /// 讀取所有 API key：`OPENAI_API_KEYS`（逗號分隔）加上金鑰清單檔（一行一把），合併去重。
 /// 清單檔由 `OPENAI_API_KEYS_FILE` 指定（指定了就必須讀得到），否則找預設位置，找不到也沒關係。
@@ -200,6 +213,9 @@ impl Config {
                 no_key_error(env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty()))
             })?),
             openai_model: required("OPENAI_MODEL")?,
+            openai_fallback_models: parse_model_list(
+                &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
+            ),
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
@@ -286,5 +302,18 @@ mod tests {
         for (wrap, max) in [(0, 20), (21, 20), (15, 0), (5, 1001), (5, u32::MAX)] {
             assert!(validate_turns(wrap, max).is_err(), "{wrap}/{max}");
         }
+    }
+
+    #[test]
+    fn model_list_is_split_on_commas_trimmed_and_cleaned() {
+        assert_eq!(parse_model_list(""), Vec::<String>::new());
+        assert_eq!(parse_model_list("  , ,"), Vec::<String>::new());
+        assert_eq!(parse_model_list("a"), ["a"]);
+        assert_eq!(
+            parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
+            ["google/gemma:free", "nvidia/x:free", "a"]
+        );
+        // 重複的只留第一個，順序就是備援的先後
+        assert_eq!(parse_model_list("a,b,a"), ["a", "b"]);
     }
 }
