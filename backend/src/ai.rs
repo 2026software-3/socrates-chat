@@ -293,6 +293,7 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
 
 // ---- OpenAI 實作 ----
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
@@ -300,6 +301,7 @@ pub struct OpenAiProvider {
     targets: Vec<ModelTarget>,
 }
 
+#[derive(Clone)]
 struct ModelTarget {
     model: String,
     keys: Arc<KeyPool>,
@@ -433,6 +435,28 @@ pub enum SseItem {
     Reasoning,
     Done,
     Ignore,
+    /// 串流內的錯誤區塊（HTTP 已回 200，內容卻是 `error`）。`capacity` 表示容量或限流類的錯誤
+    /// （429、gRPC 的 ResourceExhausted），換一個模型有機會成功；其他錯誤換模型沒有幫助。
+    /// 供應商的錯誤文字不保留，也不寫入日誌。
+    Error {
+        capacity: bool,
+    },
+}
+
+/// 錯誤區塊是不是容量或限流類：code 為 429，或訊息含 ResourceExhausted（大小寫、底線、空白不拘）。
+fn is_capacity_error(err: &serde_json::Map<String, serde_json::Value>) -> bool {
+    if err.get("code").and_then(|c| c.as_u64()) == Some(429) {
+        return true;
+    }
+    err.get("message")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| {
+            m.chars()
+                .filter(|c| !matches!(c, '_' | ' ' | '-'))
+                .collect::<String>()
+                .to_ascii_lowercase()
+                .contains("resourceexhausted")
+        })
 }
 
 /// 解析 OpenAI 串流的一行（`data: {...}`）。格式錯誤回傳 `Err`，不會當作正常結束。
@@ -449,6 +473,11 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
         && !text.is_empty()
     {
         return Ok(SseItem::Delta(text.to_string()));
+    }
+    if let Some(err) = v["error"].as_object() {
+        return Ok(SseItem::Error {
+            capacity: is_capacity_error(err),
+        });
     }
     // OpenRouter 用 `reasoning`，DeepSeek／vLLM 用 `reasoning_content`
     let delta = &v["choices"][0]["delta"];
@@ -486,27 +515,34 @@ impl SseDecoder {
     }
 }
 
-#[async_trait]
-impl AiProvider for OpenAiProvider {
-    async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        // 直接借用請求的文字序列化，不先複製成 `serde_json::Value`；欄位依字母排列，
-        // 與先前 `json!`（BTreeMap）輸出的位元組相同
-        #[derive(Serialize)]
-        struct Body<'a> {
-            messages: &'a [Msg<'a>],
-            model: &'a str,
-            stream: bool,
-        }
-        #[derive(Serialize)]
-        struct Msg<'a> {
-            content: &'a str,
-            role: &'static str,
-        }
-        let system = Msg {
+/// 送給供應商的請求本文。直接借用請求的文字序列化，不先複製成 `serde_json::Value`；
+/// 欄位依字母排列，與先前 `json!`（BTreeMap）輸出的位元組相同。
+#[derive(Serialize)]
+struct ChatBody<'a> {
+    messages: &'a [ChatMsg<'a>],
+    model: &'a str,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct ChatMsg<'a> {
+    content: &'a str,
+    role: &'static str,
+}
+
+impl OpenAiProvider {
+    /// 對第 `index` 個模型送出請求（含該模型自己的 key 重試）。
+    async fn send_to(
+        &self,
+        index: usize,
+        req: &AiRequest,
+    ) -> Result<reqwest::Response, SendFailure> {
+        let target = &self.targets[index];
+        let system = ChatMsg {
             content: &req.system,
             role: "system",
         };
-        let turns = req.messages.iter().map(|m| Msg {
+        let turns = req.messages.iter().map(|m| ChatMsg {
             content: &m.content,
             role: if m.role == ChatRole::User {
                 "user"
@@ -514,28 +550,137 @@ impl AiProvider for OpenAiProvider {
                 "assistant"
             },
         });
-        let messages: Vec<Msg> = std::iter::once(system).chain(turns).collect();
+        let messages: Vec<ChatMsg> = std::iter::once(system).chain(turns).collect();
+        let body = ChatBody {
+            messages: &messages,
+            model: &target.model,
+            stream: true,
+        };
+        // 後面還有備援模型時不等 key 冷卻，直接換
+        self.send_with_failover(&target.keys, &body, index + 1 == self.targets.len())
+            .await
+    }
+
+    /// 從 `from` 之後找第一個能送出請求的備援模型；只在 429 類的失敗才往下一個找。
+    async fn next_fallback(
+        &self,
+        from: usize,
+        req: &AiRequest,
+    ) -> Option<(usize, reqwest::Response)> {
+        for i in from + 1..self.targets.len() {
+            match self.send_to(i, req).await {
+                Ok(res) => return Some((i, res)),
+                Err(SendFailure::RateLimited) if i + 1 < self.targets.len() => {
+                    tracing::warn!(model = %self.targets[i].model, "AI model rate limited, trying the next model");
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// 把成功的串流回應轉成逐段文字的串流。回應是第 `index` 個模型的；
+    /// 還沒送出任何內容就收到容量錯誤時，在串流內部改用下一個備援模型。
+    fn into_stream(self, res: reqwest::Response, index: usize, req: AiRequest) -> AiStream {
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut current = res;
+            let mut index = index;
+            loop {
+                match pump(current, &tx).await {
+                    Pump::Finished => return,
+                    Pump::Failed => {
+                        let _ = tx.send(Err(AiError)).await;
+                        return;
+                    }
+                    Pump::CapacityBeforeContent => {
+                        tracing::warn!(
+                            model = %self.targets[index].model,
+                            "AI model reported a capacity error before any content, trying the next model"
+                        );
+                        match self.next_fallback(index, &req).await {
+                            Some((next, res)) => {
+                                tracing::warn!(model = %self.targets[next].model, "AI request served by a fallback model");
+                                current = res;
+                                index = next;
+                            }
+                            None => {
+                                let _ = tx.send(Err(AiError)).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        ReceiverStream::new(rx).boxed()
+    }
+}
+
+/// 一個串流回應讀完的結果。
+enum Pump {
+    /// 看到結束標記，正常完成
+    Finished,
+    /// 失敗（連線中斷、格式錯誤、串流內的其他錯誤、已開始輸出後的任何錯誤）；呼叫端要送出錯誤
+    Failed,
+    /// 還沒送出任何內容（正文或推理）就收到容量錯誤；可以換備援模型
+    CapacityBeforeContent,
+}
+
+async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>) -> Pump {
+    let mut bytes = res.bytes_stream();
+    let mut decoder = SseDecoder::default();
+    let mut started = false;
+    while let Some(chunk) = bytes.next().await {
+        let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+            Ok(items) => items,
+            Err(_) => return Pump::Failed,
+        };
+        for item in items {
+            match item {
+                SseItem::Delta(t) => {
+                    started = true;
+                    if tx.send(Ok(t)).await.is_err() {
+                        return Pump::Finished;
+                    }
+                }
+                // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
+                // 讓呼叫端知道模型已在回應，不套用首字逾時
+                SseItem::Reasoning if !started => {
+                    started = true;
+                    if tx.send(Ok(String::new())).await.is_err() {
+                        return Pump::Finished;
+                    }
+                }
+                SseItem::Error { capacity: true } if !started => {
+                    return Pump::CapacityBeforeContent;
+                }
+                SseItem::Error { .. } => return Pump::Failed,
+                // 看到結束標記才算正常完成
+                SseItem::Done => return Pump::Finished,
+                SseItem::Reasoning | SseItem::Ignore => {}
+            }
+        }
+    }
+    // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
+    Pump::Failed
+}
+
+#[async_trait]
+impl AiProvider for OpenAiProvider {
+    async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
         let last = self.targets.len() - 1;
-        for (i, target) in self.targets.iter().enumerate() {
-            let body = Body {
-                messages: &messages,
-                model: &target.model,
-                stream: true,
-            };
-            // 後面還有備援模型時不等 key 冷卻，直接換
-            match self
-                .send_with_failover(&target.keys, &body, i == last)
-                .await
-            {
+        for i in 0..=last {
+            match self.send_to(i, &req).await {
                 Ok(res) => {
                     if i > 0 {
-                        tracing::warn!(model = %target.model, "AI request served by a fallback model");
+                        tracing::warn!(model = %self.targets[i].model, "AI request served by a fallback model");
                     }
-                    return Ok(into_stream(res));
+                    return Ok(self.clone().into_stream(res, i, req));
                 }
                 Err(SendFailure::RateLimited) if i < last => {
                     tracing::warn!(
-                        model = %target.model,
+                        model = %self.targets[i].model,
                         next = %self.targets[i + 1].model,
                         "AI model rate limited, trying the next model"
                     );
@@ -545,49 +690,6 @@ impl AiProvider for OpenAiProvider {
         }
         Err(AiError)
     }
-}
-
-/// 把成功的串流回應轉成逐段文字的串流。
-fn into_stream(res: reqwest::Response) -> AiStream {
-    let (tx, rx) = mpsc::channel(32);
-    tokio::spawn(async move {
-        let mut bytes = res.bytes_stream();
-        let mut decoder = SseDecoder::default();
-        let mut started = false;
-        while let Some(chunk) = bytes.next().await {
-            let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
-                Ok(items) => items,
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    return;
-                }
-            };
-            for item in items {
-                match item {
-                    SseItem::Delta(t) => {
-                        started = true;
-                        if tx.send(Ok(t)).await.is_err() {
-                            return;
-                        }
-                    }
-                    // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
-                    // 讓呼叫端知道模型已在回應，不套用首字逾時
-                    SseItem::Reasoning if !started => {
-                        started = true;
-                        if tx.send(Ok(String::new())).await.is_err() {
-                            return;
-                        }
-                    }
-                    // 看到結束標記才算正常完成
-                    SseItem::Done => return,
-                    SseItem::Reasoning | SseItem::Ignore => {}
-                }
-            }
-        }
-        // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
-        let _ = tx.send(Err(AiError)).await;
-    });
-    ReceiverStream::new(rx).boxed()
 }
 
 // ---- 非串流呼叫與總結 ----
@@ -993,6 +1095,39 @@ mod tests {
         assert_eq!(
             parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning\":\"\"}}]}"),
             Ok(SseItem::Ignore)
+        );
+    }
+
+    #[test]
+    fn error_chunks_are_classified_as_capacity_errors_or_other_errors() {
+        let err = |code: u32, msg: &str| {
+            format!("data: {{\"choices\":[],\"error\":{{\"code\":{code},\"message\":\"{msg}\"}}}}")
+        };
+        let capacity = Ok(SseItem::Error { capacity: true });
+        let other = Ok(SseItem::Error { capacity: false });
+        // 實測：NVIDIA 的並發上限用 HTTP 200 加 502 ResourceExhausted 的區塊送出
+        assert_eq!(
+            parse_sse_line(&err(
+                502,
+                "Upstream error from Nvidia: ResourceExhausted: Worker local total request limit reached (16/16)"
+            )),
+            capacity
+        );
+        // 寫法不同的 gRPC 狀態名稱
+        assert_eq!(parse_sse_line(&err(503, "RESOURCE_EXHAUSTED")), capacity);
+        assert_eq!(parse_sse_line(&err(500, "resource exhausted")), capacity);
+        assert_eq!(parse_sse_line(&err(429, "slow down")), capacity);
+        assert_eq!(parse_sse_line(&err(502, "Upstream error: Internal")), other);
+        assert_eq!(parse_sse_line(&err(400, "bad request")), other);
+        // 有 error 但沒有 code 也是錯誤，只是不算容量錯誤
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[],\"error\":{\"message\":\"boom\"}}"),
+            other
+        );
+        // 帶有正文的區塊仍以正文為準，不因為多了 error 欄位而被丟掉
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"content\":\"嗨\"}}],\"error\":null}"),
+            Ok(SseItem::Delta("嗨".to_string()))
         );
     }
 

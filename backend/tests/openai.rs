@@ -532,3 +532,174 @@ async fn without_fallbacks_a_rate_limited_model_still_fails() {
     assert!(text_of(&p).await.is_err());
     assert_eq!(seen_of(&seen), [pair("primary", "k")]);
 }
+
+// ---- 串流內的容量錯誤（HTTP 200，內容是一個 error 區塊）----
+
+const CAPACITY_ERROR: &str = "data: {\"choices\":[],\"error\":{\"code\":502,\"message\":\"Upstream error from Nvidia: ResourceExhausted: Worker local total request limit reached (16/16)\",\"metadata\":{\"error_type\":\"provider_unavailable\"}}}\n\n";
+const CODE_429_ERROR: &str =
+    "data: {\"choices\":[],\"error\":{\"code\":429,\"message\":\"slow down\"}}\n\n";
+const OTHER_ERROR: &str =
+    "data: {\"choices\":[],\"error\":{\"code\":502,\"message\":\"Upstream error: Internal\"}}\n\n";
+const CONTENT_THEN_CAPACITY_ERROR: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"半\"}}]}\n\n\
+    data: {\"choices\":[],\"error\":{\"code\":502,\"message\":\"ResourceExhausted\"}}\n\n";
+const REASONING_THEN_CAPACITY_ERROR: &str = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"想\"}}]}\n\n\
+    data: {\"choices\":[],\"error\":{\"code\":502,\"message\":\"ResourceExhausted\"}}\n\n";
+
+/// 依 `model` 回 HTTP 200 加指定串流本文的假伺服器（或指定的錯誤狀態）；記錄 (model, key)。
+async fn spawn_stream_server(
+    behaviour: Vec<(&'static str, StatusCode, &'static str)>,
+) -> (String, ModelSeen) {
+    #[derive(Clone)]
+    struct S {
+        by_model: Arc<HashMap<String, (StatusCode, &'static str)>>,
+        seen: ModelSeen,
+    }
+    let seen: ModelSeen = Arc::default();
+    let state = S {
+        by_model: Arc::new(
+            behaviour
+                .into_iter()
+                .map(|(m, st, body)| (m.to_string(), (st, body)))
+                .collect(),
+        ),
+        seen: seen.clone(),
+    };
+    let app = Router::new()
+        .route(
+            "/chat/completions",
+            post(
+                |State(s): State<S>, h: HeaderMap, Json(v): Json<Value>| async move {
+                    let key = h["authorization"]
+                        .to_str()
+                        .unwrap()
+                        .trim_start_matches("Bearer ");
+                    let model = v["model"].as_str().unwrap().to_string();
+                    s.seen
+                        .lock()
+                        .unwrap()
+                        .push((model.clone(), key.to_string()));
+                    let (status, body) = s.by_model[&model];
+                    (status, body).into_response()
+                },
+            ),
+        )
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), seen)
+}
+
+fn models_seen(seen: &ModelSeen) -> Vec<String> {
+    seen_of(seen).into_iter().map(|(m, _)| m).collect()
+}
+
+#[tokio::test]
+async fn in_stream_capacity_error_before_any_content_falls_back() {
+    for (name, error) in [
+        ("ResourceExhausted", CAPACITY_ERROR),
+        ("code 429", CODE_429_ERROR),
+    ] {
+        let (base, seen) = spawn_stream_server(vec![
+            ("primary", StatusCode::OK, error),
+            ("backup", StatusCode::OK, OK_BODY),
+        ])
+        .await;
+        let p = OpenAiProvider::new(&base, single("k"), "primary")
+            .with_fallbacks(vec!["backup".into()]);
+        assert_eq!(text_of(&p).await.unwrap(), "ok", "{name}");
+        assert_eq!(models_seen(&seen), ["primary", "backup"], "{name}");
+    }
+}
+
+#[tokio::test]
+async fn in_stream_capacity_error_does_not_cool_the_primary_down() {
+    // 容量錯誤只是這一次沒搶到名額，不是整個模型暫停：下一個請求仍先試主模型
+    let (base, seen) = spawn_stream_server(vec![
+        ("primary", StatusCode::OK, CAPACITY_ERROR),
+        ("backup", StatusCode::OK, OK_BODY),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, pool_of(&["a", "b"]), "primary")
+        .with_fallbacks(vec!["backup".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(
+        models_seen(&seen),
+        ["primary", "backup", "primary", "backup"]
+    );
+}
+
+#[tokio::test]
+async fn in_stream_capacity_errors_walk_the_whole_chain_in_order() {
+    let (base, seen) = spawn_stream_server(vec![
+        ("primary", StatusCode::OK, CAPACITY_ERROR),
+        ("b1", StatusCode::OK, CAPACITY_ERROR),
+        ("b2", StatusCode::OK, OK_BODY),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary")
+        .with_fallbacks(vec!["b1".into(), "b2".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(models_seen(&seen), ["primary", "b1", "b2"]);
+
+    let (base, seen) = spawn_stream_server(vec![
+        ("primary", StatusCode::OK, CAPACITY_ERROR),
+        ("b1", StatusCode::OK, CAPACITY_ERROR),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["b1".into()]);
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(models_seen(&seen), ["primary", "b1"]);
+}
+
+#[tokio::test]
+async fn http_429_and_in_stream_capacity_errors_can_be_mixed_in_one_chain() {
+    let (base, seen) = spawn_stream_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS, "nope"),
+        ("b1", StatusCode::OK, CAPACITY_ERROR),
+        ("b2", StatusCode::OK, OK_BODY),
+    ])
+    .await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary")
+        .with_fallbacks(vec!["b1".into(), "b2".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(models_seen(&seen), ["primary", "b1", "b2"]);
+}
+
+#[tokio::test]
+async fn other_in_stream_errors_do_not_fall_back() {
+    let (base, seen) = spawn_stream_server(vec![
+        ("primary", StatusCode::OK, OTHER_ERROR),
+        ("backup", StatusCode::OK, OK_BODY),
+    ])
+    .await;
+    let p =
+        OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["backup".into()]);
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(models_seen(&seen), ["primary"]);
+}
+
+#[tokio::test]
+async fn capacity_error_after_content_or_reasoning_started_does_not_fall_back() {
+    // 已經有內容（或推理，呼叫端已據此解除首字逾時）給了學生，不能再換成另一個模型的回覆
+    for body in [CONTENT_THEN_CAPACITY_ERROR, REASONING_THEN_CAPACITY_ERROR] {
+        let (base, seen) = spawn_stream_server(vec![
+            ("primary", StatusCode::OK, body),
+            ("backup", StatusCode::OK, OK_BODY),
+        ])
+        .await;
+        let p = OpenAiProvider::new(&base, single("k"), "primary")
+            .with_fallbacks(vec!["backup".into()]);
+        assert!(text_of(&p).await.is_err());
+        assert_eq!(models_seen(&seen), ["primary"]);
+    }
+}
+
+#[tokio::test]
+async fn without_fallbacks_an_in_stream_capacity_error_still_fails() {
+    let (base, seen) = spawn_stream_server(vec![("primary", StatusCode::OK, CAPACITY_ERROR)]).await;
+    let p = OpenAiProvider::new(&base, single("k"), "primary");
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(models_seen(&seen), ["primary"]);
+}
