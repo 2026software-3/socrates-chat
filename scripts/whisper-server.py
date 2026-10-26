@@ -11,6 +11,7 @@ GPU 需要 cuBLAS／cuDNN 9（pip 的 nvidia-cublas-cu12、nvidia-cudnn-cu12 即
 WHISPER_COMPUTE（預設 float16；CPU 用 int8）、WHISPER_PERF_LOG（每個請求一行 JSON，預設不寫）、
 WHISPER_INITIAL_PROMPT（提示詞，用來帶入課堂術語；預設為下面的哲學術語，設成空字串可關閉）。
 請求帶 OpenAI 的 `prompt` 欄位時，以請求的為準。
+輸出幾乎全是提示詞內的詞時（模型把提示詞當辨識結果吐出來），回空字串，見 whisper_echo.py。
 WHISPER_VAD（預設 1）：先用 Silero VAD 濾掉無語音的片段。帶提示詞時一定要開：實測 small 遇到靜音或雜訊會把提示詞整段當成辨識結果吐出來。
 """
 import io
@@ -34,6 +35,7 @@ if "_WHISPER_REEXEC" not in os.environ:
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from faster_whisper import WhisperModel
+from whisper_echo import is_prompt_echo
 
 MODEL = os.environ.get("WHISPER_MODEL", "base")
 DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
@@ -70,6 +72,10 @@ def transcribe(file: UploadFile = File(...), model_name: str = Form("", alias="m
     segments, info = model.transcribe(io.BytesIO(audio), language=language or None, beam_size=5,
                                     initial_prompt=prompt or INITIAL_PROMPT or None, vad_filter=VAD)
     text = "".join(s.text for s in segments).strip()
+    used_prompt = prompt or INITIAL_PROMPT
+    echoed = is_prompt_echo(text, used_prompt)
+    if echoed:
+        text = ""
     elapsed = time.time() - started
     if PERF_LOG:
         with open(PERF_LOG, "a") as f:
@@ -77,7 +83,7 @@ def transcribe(file: UploadFile = File(...), model_name: str = Form("", alias="m
                 "ts": round(started), "model": MODEL, "device": DEVICE, "compute": COMPUTE,
                 "audio_s": round(info.duration, 2), "elapsed_s": round(elapsed, 3),
                 "rtf": round(elapsed / info.duration, 4) if info.duration else None,
-                "upload_bytes": len(audio), "gpu_used_mb": gpu_mb(),
+                "upload_bytes": len(audio), "prompt_echo_dropped": echoed, "gpu_used_mb": gpu_mb(),
             }) + "\n")
     return {"text": text}
 
