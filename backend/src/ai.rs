@@ -322,7 +322,7 @@ enum SendFailure {
 }
 
 impl SendFailure {
-    /// 到目前為止的失敗全是 429 就算限流（還沒有任何失敗時也是：key 是被先前的 429 冷卻住的）。
+    /// 到目前為止的失敗全是 429 就算限流。
     fn from_only_rate_limited(only_rate_limited: bool) -> Self {
         if only_rate_limited {
             Self::RateLimited
@@ -385,8 +385,9 @@ impl OpenAiProvider {
         may_wait: bool,
     ) -> Result<reqwest::Response, SendFailure> {
         let mut server_errored: Vec<usize> = Vec::new();
-        // 到目前為止的失敗是否全是 429
-        let mut only_rate_limited = true;
+        // 到目前為止的失敗是否全是 429。還沒送出請求就沒有 key 可用時，要看冷卻的原因：
+        // 是先前的 429 才算限流；key 被拒絕（401/402/403）換模型也沒用
+        let mut only_rate_limited = keys.usable_count() > 0 || keys.has_rate_limited_key();
         for _ in 0..=MAX_KEY_RETRIES {
             let Ok(lease) = Self::acquire_key(keys, may_wait).await else {
                 // 後面還有備援模型時，這只是要換模型的訊號，不是錯誤
@@ -606,6 +607,10 @@ impl OpenAiProvider {
                         return;
                     }
                     Pump::CapacityBeforeContent => {
+                        // 呼叫端已經放棄（例如首字逾時後重試）：不要再替沒人讀的回覆消耗備援額度
+                        if tx.is_closed() {
+                            return;
+                        }
                         tracing::warn!(
                             model = %self.targets[index].model,
                             "AI model reported a capacity error before any content, trying the next model"

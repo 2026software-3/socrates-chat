@@ -705,3 +705,68 @@ async fn with_fallbacks_ignores_the_primary_and_duplicates() {
     assert!(text_of(&p).await.is_err());
     assert_eq!(models_seen(&seen), ["primary", "b1"]);
 }
+
+#[tokio::test]
+async fn a_key_pool_cooling_from_rejection_does_not_trigger_a_fallback() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::UNAUTHORIZED),
+        ("backup", StatusCode::OK),
+    ])
+    .await;
+    let p =
+        OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["backup".into()]);
+    // 第一次：被拒絕，不換模型
+    assert!(text_of(&p).await.is_err());
+    // 第二次：key 還在拒絕後的冷卻中，同樣不是限流，不該換模型
+    assert!(text_of(&p).await.is_err());
+    assert_eq!(models_seen(&seen), ["primary"]);
+}
+
+#[tokio::test]
+async fn a_pool_cooling_from_rate_limits_still_falls_back_on_later_requests() {
+    let (base, seen) = spawn_model_server(vec![
+        ("primary", StatusCode::TOO_MANY_REQUESTS),
+        ("backup", StatusCode::OK),
+    ])
+    .await;
+    let p =
+        OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["backup".into()]);
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    // 主模型的 key 還在 429 的冷卻中：不再打主模型，直接用備援
+    assert_eq!(text_of(&p).await.unwrap(), "ok");
+    assert_eq!(models_seen(&seen), ["primary", "backup", "backup"]);
+}
+
+#[tokio::test]
+async fn stops_trying_fallbacks_once_the_caller_has_dropped_the_stream() {
+    // 主模型先送出 200 標頭，稍後才送容量錯誤；這段時間內呼叫端已經放棄
+    let seen: ModelSeen = Arc::default();
+    let s = seen.clone();
+    let app = Router::new().route(
+        "/chat/completions",
+        post(move |h: HeaderMap, Json(v): Json<Value>| {
+            let s = s.clone();
+            async move {
+                let key = h["authorization"].to_str().unwrap().to_string();
+                let model = v["model"].as_str().unwrap().to_string();
+                s.lock().unwrap().push((model.clone(), key));
+                if model == "primary" {
+                    let body = futures_util::stream::once(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        Ok::<_, std::convert::Infallible>(CAPACITY_ERROR)
+                    });
+                    (StatusCode::OK, axum::body::Body::from_stream(body)).into_response()
+                } else {
+                    (StatusCode::OK, OK_BODY).into_response()
+                }
+            }
+        }),
+    );
+    let base = serve(app).await;
+    let p =
+        OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["backup".into()]);
+    let stream = p.stream_chat(request()).await.unwrap();
+    drop(stream);
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert_eq!(models_seen(&seen), ["primary"]);
+}

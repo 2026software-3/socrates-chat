@@ -22,6 +22,8 @@ const MIN_COOLDOWN: Duration = Duration::from_secs(1);
 struct Inner {
     /// 每把 key 何時恢復可用；`None` 表示現在就能用。
     cooling_until: Vec<Option<Instant>>,
+    /// 這把 key 的冷卻是因為被拒絕（401/402/403），而不是被限流；冷卻結束時清掉。
+    rejected: Vec<bool>,
     next: usize,
 }
 
@@ -60,6 +62,7 @@ impl KeyPool {
         Some(Self {
             inner: Mutex::new(Inner {
                 cooling_until: vec![None; keys.len()],
+                rejected: vec![false; keys.len()],
                 next: 0,
             }),
             keys,
@@ -75,6 +78,7 @@ impl KeyPool {
             keys: self.keys.clone(),
             inner: Mutex::new(Inner {
                 cooling_until: vec![None; self.keys.len()],
+                rejected: vec![false; self.keys.len()],
                 next: 0,
             }),
             default_cooldown: self.default_cooldown,
@@ -122,6 +126,7 @@ impl KeyPool {
             let index = (inner.next + offset) % n;
             if inner.cooling_until[index].is_none_or(|t| t <= now) {
                 inner.cooling_until[index] = None;
+                inner.rejected[index] = false;
                 inner.next = (index + 1) % n;
                 return Some(Lease {
                     index,
@@ -170,6 +175,9 @@ impl KeyPool {
     /// 該 key 被拒絕（無效、額度用盡或無權限）：冷卻一段較長的時間後再試，不永久停用。
     pub fn mark_rejected(&self, index: usize) {
         self.cool(index, self.auth_cooldown);
+        if let Some(flag) = self.lock().rejected.get_mut(index) {
+            *flag = true;
+        }
         tracing::error!(
             key = index + 1,
             cooldown_secs = self.auth_cooldown.as_secs(),
@@ -187,6 +195,18 @@ impl KeyPool {
             _ => return false,
         }
         true
+    }
+
+    /// 有沒有 key 正因為被限流（不是被拒絕）而冷卻。全部不可用時，用來分辨
+    /// 「模型被限流」與「key 無效」：後者換模型也沒用。
+    pub fn has_rate_limited_key(&self) -> bool {
+        let inner = self.lock();
+        let now = Instant::now();
+        inner
+            .cooling_until
+            .iter()
+            .zip(&inner.rejected)
+            .any(|(t, rejected)| !rejected && t.is_some_and(|t| t > now))
     }
 
     /// 現在可用的 key 數（冷卻已結束的也算）。

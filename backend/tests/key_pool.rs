@@ -194,3 +194,13 @@ fn fork_has_the_same_keys_and_settings_but_independent_cooldowns() {
     assert_eq!(original.usable_count(), 1);
     assert_eq!(forked.usable_count(), 1);
 }
+
+#[test]
+fn only_rate_limited_cooldowns_count_as_rate_limited() {
+    let pool = KeyPool::new(vec!["a".into(), "b".into()]).unwrap();
+    assert!(!pool.has_rate_limited_key());
+    pool.mark_rejected(0);
+    assert!(!pool.has_rate_limited_key());
+    pool.mark_rate_limited(1, None);
+    assert!(pool.has_rate_limited_key());
+}
