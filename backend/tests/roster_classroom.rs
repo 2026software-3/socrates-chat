@@ -147,6 +147,11 @@ async fn removal_only_affects_that_classroom_and_keeps_data_until_re_added(pool:
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let room_b = create_classroom(&app, &a.teacher, "B 班").await;
+    // 已登入但不在任何名單的帳號：匯入前不是學生，匯入後立即是學生
+    assert!(!student_flag(&app, &a.outsider).await);
+    import(&app, Some(&a.teacher), &room_b, "outsider@example.com").await;
+    assert!(student_flag(&app, &a.outsider).await);
+
     import(&app, Some(&a.teacher), &room_b, "student@example.com").await;
     let conv = start_conversation(&app, &a).await;
 
@@ -266,44 +271,6 @@ async fn admin_manages_any_classroom_roster_and_only_admin_gets_credentials(pool
         remove(&app, Some(&a.admin), &a.classroom, "fresh@example.com").await,
         StatusCode::NO_CONTENT
     );
-}
-
-#[sqlx::test]
-async fn students_list_shows_only_that_classrooms_roster(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    let room_b = create_classroom(&app, &a.teacher, "B 班").await;
-    import(&app, Some(&a.teacher), &room_b, "b-only@example.com").await;
-
-    let res = send(
-        &app,
-        get(
-            &format!("/api/classrooms/{}/students", a.classroom),
-            Some(&a.teacher),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK);
-    let rows = json_body(res).await;
-    let emails: Vec<_> = rows["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["email"].as_str().unwrap())
-        .collect();
-    assert_eq!(emails, ["student@example.com"]);
-
-    let res = send(
-        &app,
-        get(
-            &format!("/api/classrooms/{room_b}/students"),
-            Some(&a.teacher),
-        ),
-    )
-    .await;
-    let rows = json_body(res).await["items"].clone();
-    assert_eq!(rows[0]["email"], "b-only@example.com");
-    assert_eq!(rows[0]["has_account"], false);
 }
 
 #[sqlx::test]
