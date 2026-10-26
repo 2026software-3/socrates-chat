@@ -691,3 +691,98 @@ async fn the_conversation_list_can_be_narrowed_to_one_activity(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_activity_id");
 }
+
+#[sqlx::test]
+async fn an_archived_classroom_must_be_restored_before_it_can_be_edited(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let path = format!("/api/classrooms/{}", a.classroom);
+    status_of(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.teacher),
+        json!({"is_archived": true}),
+    )
+    .await;
+
+    // 還原與編輯不能在同一個請求（S-14 決定）
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            &path,
+            Some(&a.teacher),
+            Some(json!({"is_archived": false, "name": "改名"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"]["code"], "classroom_archived");
+    let (name, archived): (String, bool) =
+        sqlx::query_as("SELECT name, is_archived FROM classrooms")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((name.as_str(), archived), ("測試教室", true));
+
+    // 先還原，再編輯
+    assert_eq!(
+        status_of(
+            &app,
+            "PATCH",
+            &path,
+            Some(&a.teacher),
+            json!({"is_archived": false})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(
+            &app,
+            "PATCH",
+            &path,
+            Some(&a.teacher),
+            json!({"name": "改名"})
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn deleting_a_student_account_ignores_classroom_archiving(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let activity = published_activity_with_topic(&app, &a, "題").await;
+    start_from_activity(&app, &a.student, &activity).await;
+    status_of(
+        &app,
+        "PATCH",
+        &format!("/api/classrooms/{}", a.classroom),
+        Some(&a.teacher),
+        json!({"is_archived": true}),
+    )
+    .await;
+
+    assert_eq!(
+        status_of(
+            &app,
+            "DELETE",
+            "/api/students/student@example.com",
+            Some(&a.teacher),
+            json!({"confirm_email": "student@example.com"})
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(count(&pool, "conversations").await, 0);
+    assert_eq!(count(&pool, "enrollments").await, 0);
+    // 教室本身仍是封存狀態
+    let archived: bool = sqlx::query_scalar("SELECT is_archived FROM classrooms")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(archived);
+}
