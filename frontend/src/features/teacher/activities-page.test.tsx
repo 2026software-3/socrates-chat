@@ -526,6 +526,46 @@ describe('activity schedules', () => {
     expect(posted).toBe(false)
   })
 
+  it('rejects newly picked schedule times in the past and sets min to now', async () => {
+    mockList([])
+    let posted = false
+    server.use(http.post('/api/classrooms/:id/activities', () => { posted = true; return HttpResponse.json(act()) }))
+    setup()
+    await screen.findByLabelText('活動標題')
+    const opens = screen.getByLabelText('開始時間（選填）') as HTMLInputElement
+    const closes = screen.getByLabelText('結束時間（選填）') as HTMLInputElement
+    expect(opens.min).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+    expect(new Date(opens.min).getTime()).toBeGreaterThan(Date.now() - 2 * 60000)
+    expect(new Date(opens.min).getTime()).toBeLessThanOrEqual(Date.now())
+    await userEvent.type(screen.getByLabelText('活動標題'), 'past')
+    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    fireEvent.change(opens, { target: { value: '2020-01-01T10:00' } })
+    fireEvent.change(closes, { target: { value: '2030-01-01T10:00' } })
+    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    expect(await screen.findByText('開始與結束時間不可早於現在。')).toBeInTheDocument()
+    expect(posted).toBe(false)
+    fireEvent.change(opens, { target: { value: '' } })
+    fireEvent.change(closes, { target: { value: '2020-01-01T10:00' } })
+    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    expect(await screen.findByText('開始與結束時間不可早於現在。')).toBeInTheDocument()
+    expect(posted).toBe(false)
+  })
+
+  it('keeps unchanged past times saveable when editing', async () => {
+    mockList([act({ opens_at: '2020-01-01T00:00:00Z', closes_at: '2020-02-01T00:00:00Z' })])
+    let body: unknown
+    server.use(http.patch('/api/activities/a1', async ({ request }) => {
+      body = await request.json()
+      return HttpResponse.json(act())
+    }))
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '編輯' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(body).toBeDefined())
+  })
+
   it('loads browser-local times and clears a schedule with null', async () => {
     const opens = '2030-01-01T00:00:00Z'
     mockList([act({ opens_at: opens, closes_at: null })])

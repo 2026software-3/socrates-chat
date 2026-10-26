@@ -33,6 +33,11 @@ function localTime(iso: string | null): string {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
 
+/** 目前時間（到分鐘）；新選的開放時間不可早於它，沿用 datetime-local 的格式當 min。 */
+function nowLocal(): string {
+  return localTime(new Date().toISOString())
+}
+
 function utcTime(local: string): string | null {
   return local ? new Date(local).toISOString() : null
 }
@@ -78,6 +83,13 @@ function ActivityForm({
     setTitleError(titleMissing)
     setTopicError(topicMissing)
     if (titleMissing || topicMissing) return
+    // 只擋「這次改動」的欄位：既有的過去時間（例如已結束的活動）不改就仍可儲存
+    const now = nowLocal()
+    if ((values.opensAt !== initial.opensAt && values.opensAt && values.opensAt < now) ||
+        (values.closesAt !== initial.closesAt && values.closesAt && values.closesAt < now)) {
+      setServerError(t('teacher.activities.schedulePast'))
+      return
+    }
     if ((values.opensAt && !Number.isFinite(new Date(values.opensAt).getTime())) ||
         (values.closesAt && !Number.isFinite(new Date(values.closesAt).getTime())) ||
         (values.opensAt && values.closesAt && new Date(values.closesAt) <= new Date(values.opensAt))) {
@@ -153,13 +165,18 @@ function ActivityForm({
         ) : null}
         {topicsFailed ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicsFailed')}</p> : null}
       </div>
-      {(['opensAt', 'closesAt'] as const).map((field) => (
+      {(['opensAt', 'closesAt'] as const).map((field) => {
+        // 已存在且未改動的過去時間要能顯示，所以 min 取「現在」與原值中較早者
+        const floor = [nowLocal(), initial[field]].filter(Boolean).sort()[0]
+        const min = field === 'closesAt' && values.opensAt > floor ? values.opensAt : floor
+        return (
         <div key={field} className="space-y-1.5">
           <Label htmlFor={`${idPrefix}-${field}`}>{t(field === 'opensAt' ? 'teacher.activities.opensAt' : 'teacher.activities.closesAt')}</Label>
-          <Input id={`${idPrefix}-${field}`} type="datetime-local" step="60" value={values[field]}
+          <Input id={`${idPrefix}-${field}`} type="datetime-local" step="60" min={min} value={values[field]}
             onChange={(e) => setValues({ ...values, [field]: e.target.value })} />
         </div>
-      ))}
+        )
+      })}
       {serverError ? (
         <Alert variant="destructive" role="alert">
           <AlertDescription>{serverError}</AlertDescription>
