@@ -458,12 +458,6 @@ async fn archived_rooms_are_read_only_but_personal_practice_remains_available(po
             &a.student,
             json!({}),
         ),
-        (
-            "DELETE",
-            format!("/api/conversations/{conv}"),
-            &a.student,
-            json!({}),
-        ),
     ] {
         let res = send(&app, json_req(method, &path, Some(cookie), Some(body))).await;
         assert_eq!(res.status(), StatusCode::CONFLICT, "{method} {path}");

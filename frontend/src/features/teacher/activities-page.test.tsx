@@ -36,6 +36,7 @@ function act(over: Partial<Activity> = {}): Activity {
     opens_at: null,
     closes_at: null,
     status: 'draft',
+    is_archived: false,
     created_at: '2026-03-01T08:00:00Z',
     ...over,
   }
@@ -199,6 +200,43 @@ describe('ActivitiesPage', () => {
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
     await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
     expect(await screen.findByText('題目不存在。')).toBeInTheDocument()
+  })
+
+  it('archives an activity out of the default list and deletes it after typing the title', async () => {
+    let list = [act()]
+    const calls: string[] = []
+    let deleteBody: unknown
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics)),
+      http.get('/api/activities', ({ request }) => {
+        calls.push(`list:${new URL(request.url).searchParams.get('archived') ?? ''}`)
+        return pageOf(list)
+      }),
+      http.post('/api/activities/a1/archive', () => {
+        list = []
+        return HttpResponse.json(act({ is_archived: true }))
+      }),
+      http.delete('/api/activities/a1', async ({ request }) => {
+        deleteBody = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '封存' }))
+    expect(await screen.findByText('還沒有任何討論活動，請先建立一個。')).toBeInTheDocument()
+    // 已封存檢視向後端要已封存的活動，並可直接刪除
+    list = [act({ is_archived: true })]
+    await userEvent.click(screen.getByRole('button', { name: '已封存' }))
+    await screen.findByText('第一週討論')
+    expect(calls.at(-1)).toBe('list:true')
+    await userEvent.click(screen.getByRole('button', { name: '刪除' }))
+    const confirm = screen.getByRole('button', { name: '永久刪除' })
+    expect(confirm).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('請輸入「第一週討論」以確認'), '第一週討論')
+    await userEvent.click(confirm)
+    await waitFor(() => expect(deleteBody).toEqual({ confirm_title: '第一週討論' }))
+    expect(await screen.findByText('活動已刪除。')).toBeInTheDocument()
   })
 
   it('edits an activity in a dialog and sends the changed fields', async () => {

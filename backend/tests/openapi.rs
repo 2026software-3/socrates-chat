@@ -86,7 +86,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
         (
             "/api/conversations",
             "ConversationPage",
-            vec!["limit", "cursor"],
+            vec!["limit", "cursor", "archived"],
         ),
         (
             "/api/classrooms/{id}/students",
@@ -101,7 +101,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
         (
             "/api/activities",
             "ActivityPage",
-            vec!["limit", "cursor", "classroom_id"],
+            vec!["limit", "cursor", "classroom_id", "archived"],
         ),
     ] {
         let op = &doc["paths"][path]["get"];

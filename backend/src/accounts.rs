@@ -122,7 +122,7 @@ pub(crate) async fn audit(
 }
 
 /// 原因為選填；去空白後為空視為沒有，並限制長度。
-fn clean_reason(reason: Option<String>) -> Option<String> {
+pub(crate) fn clean_reason(reason: Option<String>) -> Option<String> {
     reason
         .map(|r| r.trim().chars().take(500).collect::<String>())
         .filter(|r| !r.is_empty())

@@ -19,6 +19,7 @@ const AVAILABLE: Available = {
       closes_at: null,
       classroom_id: 'room-a',
       status: 'published',
+      is_archived: false,
       created_at: '2026-01-01T00:00:00Z',
     },
   ],

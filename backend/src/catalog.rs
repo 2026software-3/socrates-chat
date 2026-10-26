@@ -15,7 +15,9 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::{
-    AppState, activity_store,
+    AppState,
+    accounts::{audit, clean_reason},
+    activity_store,
     auth::{RequireStudent, RequireTeacher},
     classrooms::{ClassroomFilter, filtered_classroom, visible_classroom},
     error::ApiError,
@@ -46,8 +48,12 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/activities/{id}",
-            get(get_activity).patch(update_activity),
+            get(get_activity)
+                .patch(update_activity)
+                .delete(delete_activity),
         )
+        .route("/api/activities/{id}/archive", post(archive_activity))
+        .route("/api/activities/{id}/unarchive", post(unarchive_activity))
         .route("/api/activities/{id}/publish", post(publish_activity))
         .route("/api/activities/{id}/close", post(close_activity))
         .route("/api/catalog", get(available))
@@ -270,6 +276,8 @@ pub(crate) struct ActivityQuery {
     page: Pagination,
     #[serde(flatten)]
     classroom: ClassroomFilter,
+    /// true 只列已封存的活動；預設只列未封存的
+    archived: Option<String>,
 }
 
 #[utoipa::path(
@@ -281,6 +289,7 @@ pub(crate) struct ActivityQuery {
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
         ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
+        ("archived" = Option<bool>, Query, description = "true 只列已封存的活動；預設只列未封存的"),
     ),
     responses((status = 200, description = "活動分頁，依 created_at DESC, id ASC", body = ActivityPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
@@ -297,6 +306,7 @@ pub(crate) async fn list_activities(
         cu.user.id,
         cu.roles.admin,
         classroom,
+        query.archived.as_deref() == Some("true"),
         after,
         (limit + 1) as i64,
     )
@@ -437,7 +447,7 @@ pub(crate) async fn update_activity(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
                 topic_id = COALESCE($4, topic_id), opens_at = $5, closes_at = $6, updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, topic_id, classroom_id, status, opens_at, closes_at, created_at",
+         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
@@ -497,6 +507,131 @@ pub(crate) async fn close_activity(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Activity>, ApiError> {
     set_status(&state, &cu, id, "closed").await
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ReasonQuery {
+    reason: Option<String>,
+}
+
+async fn set_archived(
+    state: &AppState,
+    cu: &crate::auth::CurrentUser,
+    id: Uuid,
+    archived: bool,
+    reason: Option<String>,
+) -> Result<Json<Activity>, ApiError> {
+    let activity = activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
+    let updated =
+        activity_store::set_archived_visible(&state.pool, id, cu.user.id, cu.roles.admin, archived)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+    let action = if archived {
+        "activity_archived"
+    } else {
+        "activity_restored"
+    };
+    audit(
+        &state.pool,
+        cu.user.id,
+        action,
+        &updated.title,
+        clean_reason(reason).as_deref(),
+    )
+    .await?;
+    Ok(Json(updated))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/activities/{id}/archive",
+    tag = "activities",
+    summary = "封存活動（學生看不到、不能開新對話，既有對話照舊；可復原）",
+    params(("id" = Uuid, Path, description = "活動 ID"), ("reason" = Option<String>, Query, description = "選填原因，寫入稽核日誌")),
+    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn archive_activity(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ReasonQuery>,
+) -> Result<Json<Activity>, ApiError> {
+    set_archived(&state, &cu, id, true, q.reason).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/activities/{id}/unarchive",
+    tag = "activities",
+    summary = "復原已封存的活動",
+    params(("id" = Uuid, Path, description = "活動 ID"), ("reason" = Option<String>, Query, description = "選填原因，寫入稽核日誌")),
+    responses((status = 200, description = "活動", body = Activity), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn unarchive_activity(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ReasonQuery>,
+) -> Result<Json<Activity>, ApiError> {
+    set_archived(&state, &cu, id, false, q.reason).await
+}
+
+/// 刪除活動的確認：必須與活動標題相同（S-14）。
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct DeleteActivityBody {
+    confirm_title: String,
+    /// 選填原因，寫入稽核日誌
+    #[schema(max_length = 500)]
+    reason: Option<String>,
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/activities/{id}",
+    tag = "activities",
+    summary = "永久刪除活動，連同該活動的所有對話與總結（不可復原）",
+    params(("id" = Uuid, Path, description = "活動 ID")),
+    request_body = DeleteActivityBody,
+    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn delete_activity(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<DeleteActivityBody>,
+) -> Result<StatusCode, ApiError> {
+    let activity = activity_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if body.confirm_title.trim() != activity.title.trim() {
+        return Err(ApiError::bad_request(
+            "confirmation_mismatch",
+            "確認的名稱與要刪除的活動不符",
+        ));
+    }
+    // 對話、訊息、總結與主張分組由外鍵連動刪除；封存的教室也可以刪除其中的活動
+    let mut tx = state.pool.begin().await?;
+    let deleted = sqlx::query("DELETE FROM activities WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if deleted == 0 {
+        return Err(ApiError::not_found());
+    }
+    audit(
+        &mut *tx,
+        cu.user.id,
+        "activity_deleted",
+        &activity.title,
+        clean_reason(body.reason).as_deref(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---- 學生可選項目 ----

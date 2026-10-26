@@ -4,13 +4,13 @@
 CREATE TABLE conversations (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    -- 來源：教師活動或題目庫題目；來源之後被刪除或停用不影響既有對話
-    activity_id  uuid REFERENCES activities (id) ON DELETE SET NULL,
+    -- 來源：教師活動或題目庫題目；刪除活動時一併刪除其對話（S-14），題目停用不影響既有對話
+    activity_id  uuid REFERENCES activities (id) ON DELETE CASCADE,
     topic_id     uuid REFERENCES topics (id) ON DELETE SET NULL,
     -- 教室歸屬（S-14）：活動對話在開始時取自活動所在的教室，建立後不再更改，
-    -- 活動之後被刪除或停用也不影響；從題目庫直接開始的個人練習為空，教師看不到、不納入任何教室的統計。
-    -- 教室不能刪除，RESTRICT 讓資料庫也擋下。
-    classroom_id uuid REFERENCES classrooms (id) ON DELETE RESTRICT,
+    -- 從題目庫直接開始的個人練習為空，教師看不到、不納入任何教室的統計。
+    -- 刪除教室時一併刪除其中的對話（S-14）。
+    classroom_id uuid REFERENCES classrooms (id) ON DELETE CASCADE,
     -- 開始時複製的題目內容，之後來源異動不會改變這場對話
     title        text NOT NULL,
     description  text NOT NULL DEFAULT '',
@@ -27,7 +27,9 @@ CREATE TABLE conversations (
     -- 超過逾時上限仍未清除（例如服務重啟）視為過期，可重新產生。
     generating_since timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),
-    ended_at     timestamptz
+    ended_at     timestamptz,
+    -- 學生封存：只從自己的清單隱藏，不影響教師端總結、彙整與點數；可復原（S-14）
+    archived_at  timestamptz
 );
 
 CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);

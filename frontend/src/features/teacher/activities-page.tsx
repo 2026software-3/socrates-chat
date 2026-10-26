@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
+import { ArchiveViewToggle } from '@/components/archive-view-toggle'
+import { NameConfirmDialog } from '@/components/name-confirm-dialog'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -177,6 +179,8 @@ function ActivityRow({
   archived,
   onEdit,
   onToggle,
+  onArchive,
+  onDelete,
 }: {
   activity: Activity
   topic: Topic | undefined
@@ -185,6 +189,8 @@ function ActivityRow({
   error: string | undefined
   onEdit: () => void
   onToggle: () => void
+  onArchive: () => void
+  onDelete: () => void
 }) {
   const t = useT()
   const { lang } = useI18n()
@@ -197,7 +203,7 @@ function ActivityRow({
     const timer = window.setTimeout(() => setNow(Date.now()), Math.min(next - now, 2147483647))
     return () => window.clearTimeout(timer)
   }, [activity.opens_at, activity.closes_at, now])
-  const isOpen = !archived && activity.status === 'published' &&
+  const isOpen = !archived && !activity.is_archived && activity.status === 'published' &&
     (!activity.opens_at || now >= new Date(activity.opens_at).getTime()) &&
     (!activity.closes_at || now < new Date(activity.closes_at).getTime())
   const dateTime = (iso: string) => new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso))
@@ -243,8 +249,16 @@ function ActivityRow({
             <Button variant="outline" size="sm" onClick={onEdit} disabled={busy}>
               {t('teacher.activities.edit')}
             </Button>
-            <Button size="sm" onClick={onToggle} disabled={busy}>
-              {t(toggleKey[activity.status])}
+            {activity.is_archived ? null : (
+              <Button size="sm" onClick={onToggle} disabled={busy}>
+                {t(toggleKey[activity.status])}
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={onArchive} disabled={busy}>
+              {t(activity.is_archived ? 'teacher.activities.restore' : 'teacher.activities.archive')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={onDelete}>
+              {t('teacher.activities.delete')}
             </Button>
           </div>
           {error ? (
@@ -265,7 +279,9 @@ export function ActivitiesPage() {
   const [roomId, setRoomId] = useState('')
   const writableRooms = (classrooms.data ?? []).filter((r) => !r.is_archived)
   const selectedRoom = writableRooms.some((r) => r.id === roomId) ? roomId : writableRooms[0]?.id
-  const list = usePagedFetch<Activity>('/api/activities')
+  const [showArchived, setShowArchived] = useState(false)
+  const [deleting, setDeleting] = useState<Activity>()
+  const list = usePagedFetch<Activity>(showArchived ? '/api/activities?archived=true' : '/api/activities')
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
   const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
@@ -325,6 +341,30 @@ export function ActivitiesPage() {
     }
   }
 
+  async function archive(a: Activity) {
+    if (busyRef.current.has(a.id)) return
+    busyRef.current.add(a.id)
+    setBusyIds(new Set(busyRef.current))
+    setRowError(undefined)
+    try {
+      await api.post<Activity>(`/api/activities/${a.id}/${a.is_archived ? 'unarchive' : 'archive'}`)
+      toast.success(t(a.is_archived ? 'teacher.activities.restoredToast' : 'teacher.activities.archivedToast'))
+      list.reload()
+    } catch (err) {
+      setRowError({ id: a.id, message: errorText(t, err) })
+    } finally {
+      busyRef.current.delete(a.id)
+      setBusyIds(new Set(busyRef.current))
+    }
+  }
+
+  async function remove(a: Activity) {
+    await api.delete(`/api/activities/${a.id}`, { confirm_title: a.title })
+    setDeleting(undefined)
+    toast.success(t('teacher.activities.deleted'))
+    list.reload()
+  }
+
   return (
     <Page title={t('teacher.activities.title')}>
       <Card>
@@ -348,9 +388,10 @@ export function ActivitiesPage() {
       </Card>
 
       <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+      <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {list.loading && !list.items ? <LoadingBlock /> : null}
       {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
-      {list.items && list.items.length === 0 ? <EmptyBlock>{t('teacher.activities.empty')}</EmptyBlock> : null}
+      {list.items && list.items.length === 0 ? <EmptyBlock>{t(showArchived ? 'teacher.activities.emptyArchived' : 'teacher.activities.empty')}</EmptyBlock> : null}
       {list.items && list.items.length > 0 ? (
         <ul className="space-y-3">
           {list.items.map((a) => (
@@ -363,11 +404,23 @@ export function ActivitiesPage() {
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}
               onToggle={() => void toggle(a)}
+              onArchive={() => void archive(a)}
+              onDelete={() => setDeleting(a)}
             />
           ))}
         </ul>
       ) : null}
       <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
+
+      {deleting ? (
+        <NameConfirmDialog
+          title={t('teacher.activities.deleteTitle')}
+          description={t('teacher.activities.deleteBody')}
+          name={deleting.title}
+          onConfirm={() => remove(deleting)}
+          onCancel={() => setDeleting(undefined)}
+        />
+      ) : null}
 
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>

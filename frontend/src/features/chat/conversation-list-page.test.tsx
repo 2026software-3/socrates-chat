@@ -53,6 +53,32 @@ describe('ConversationListPage', () => {
     expect(await screen.findByRole('link', { name: /開啟對話/ })).toBeInTheDocument()
   })
 
+  it('archives a conversation out of the list and restores it from the archived view', async () => {
+    setup([makeConversation()])
+    const calls: string[] = []
+    server.use(
+      http.post('/api/conversations/:id/:action', ({ params }) => {
+        calls.push(`${String(params.action)}:${String(params.id)}`)
+        return new HttpResponse(null, { status: 204 })
+      }),
+      http.get('/api/conversations', ({ request }) =>
+        HttpResponse.json({
+          items: new URL(request.url).searchParams.get('archived') === 'true'
+            ? [makeConversation({ id: 'c9', title: '合成題目：舊對話', is_archived: true })]
+            : [makeConversation()],
+          next_cursor: null,
+        }),
+      ),
+    )
+    renderApp(null, { route: '/conversations' })
+    await userEvent.click(await screen.findByRole('button', { name: '封存 合成題目：電車難題' }))
+    await waitFor(() => expect(screen.queryByRole('link', { name: /電車難題/ })).not.toBeInTheDocument())
+    expect(calls).toEqual(['archive:c1'])
+    await userEvent.click(screen.getByRole('button', { name: '已封存' }))
+    await userEvent.click(await screen.findByRole('button', { name: '復原 合成題目：舊對話' }))
+    await waitFor(() => expect(calls).toEqual(['archive:c1', 'unarchive:c9']))
+  })
+
   it('deletes only after confirmation and removes the row', async () => {
     setup([makeConversation(), makeConversation({ id: 'c2', title: '合成題目：功利主義' })])
     const deleted: string[] = []

@@ -30,6 +30,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/conversations", get(list).post(create))
         .route("/api/conversations/{id}", get(detail).delete(remove))
+        .route("/api/conversations/{id}/archive", post(archive))
+        .route("/api/conversations/{id}/unarchive", post(unarchive))
         .route("/api/conversations/{id}/messages", post(send_message))
 }
 
@@ -49,13 +51,16 @@ pub struct Conversation {
     pub converge_ready: bool,
     pub created_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
+    /// 學生已封存：只從自己的清單隱藏（S-14）
+    pub is_archived: bool,
 }
 
 macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
             "SELECT id, activity_id, topic_id, classroom_id, title, description, language, status, stage,
-                    turn_count, converge_ready, created_at, ended_at FROM conversations ",
+                    turn_count, converge_ready, created_at, ended_at,
+                    archived_at IS NOT NULL AS is_archived FROM conversations ",
             $tail
         )
     };
@@ -77,6 +82,14 @@ pub struct Message {
 pub(crate) struct ConversationPage {
     items: Vec<Conversation>,
     next_cursor: Option<String>,
+}
+
+/// 分頁參數加上封存篩選。
+#[derive(Deserialize)]
+pub(crate) struct ConversationQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    archived: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -152,7 +165,7 @@ pub(crate) async fn create(
         "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description)
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id, activity_id, topic_id, classroom_id, title, description, language, status,
-                   stage, turn_count, converge_ready, created_at, ended_at",
+                   stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived",
     )
     .bind(cu.user.id)
     .bind(activity_id)
@@ -183,28 +196,31 @@ pub(crate) async fn create(
     path = "/api/conversations",
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
-    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor")),
+    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的")),
     responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
-    Query(query): Query<Pagination>,
+    Query(query): Query<ConversationQuery>,
 ) -> Result<Json<Page<Conversation>>, ApiError> {
+    let archived = query.archived.as_deref() == Some("true");
+    let query = query.page;
     let limit = query.limit()?;
     let cursor: Option<(DateTime<Utc>, Uuid)> = query.cursor("conversations")?;
     let rows = if let Some((time, id)) = cursor {
         sqlx::query_as(conversation_select!(
-            "WHERE user_id = $1 AND created_at <= $2 AND (created_at < $2 OR id > $3) ORDER BY created_at DESC, id ASC LIMIT $4"
+            "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $5 AND created_at <= $2 AND (created_at < $2 OR id > $3) ORDER BY created_at DESC, id ASC LIMIT $4"
         ))
-        .bind(cu.user.id).bind(time).bind(id).bind((limit + 1) as i64)
+        .bind(cu.user.id).bind(time).bind(id).bind((limit + 1) as i64).bind(archived)
         .fetch_all(&state.pool).await?
     } else {
         sqlx::query_as(conversation_select!(
-            "WHERE user_id = $1 ORDER BY created_at DESC, id ASC LIMIT $2"
+            "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $3 ORDER BY created_at DESC, id ASC LIMIT $2"
         ))
         .bind(cu.user.id)
         .bind((limit + 1) as i64)
+        .bind(archived)
         .fetch_all(&state.pool)
         .await?
     };
@@ -377,7 +393,7 @@ pub(crate) async fn remove(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    crate::classrooms::ensure_conversation_writable(&state, cu.user.id, id).await?;
+    // 刪除自己的對話不受教室封存限制（S-14）
     // 該場的訊息（以及之後的總結與分析）一併刪除
     let r = sqlx::query("DELETE FROM conversations WHERE id = $1 AND user_id = $2")
         .bind(id)
@@ -388,4 +404,58 @@ pub(crate) async fn remove(
         return Err(ApiError::not_found());
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_archived(
+    state: &AppState,
+    user: Uuid,
+    id: Uuid,
+    archived: bool,
+) -> Result<StatusCode, ApiError> {
+    // 封存只是自己清單的顯示狀態，不受教室封存限制，也不影響教師端與點數
+    let r = sqlx::query(
+        "UPDATE conversations SET archived_at = CASE WHEN $3 THEN COALESCE(archived_at, now()) END
+         WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user)
+    .bind(archived)
+    .execute(&state.pool)
+    .await?;
+    if r.rows_affected() == 0 {
+        return Err(ApiError::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/conversations/{id}/archive",
+    tag = "conversations",
+    summary = "封存我的對話（只從我的清單隱藏，可復原）",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 204, description = "已封存"), (status = 404, description = "not_found", body = crate::error::ErrorBody))
+)]
+pub(crate) async fn archive(
+    RequireStudent(cu): RequireStudent,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    set_archived(&state, cu.user.id, id, true).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/conversations/{id}/unarchive",
+    tag = "conversations",
+    summary = "復原已封存的對話",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 204, description = "已復原"), (status = 404, description = "not_found", body = crate::error::ErrorBody))
+)]
+pub(crate) async fn unarchive(
+    RequireStudent(cu): RequireStudent,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    set_archived(&state, cu.user.id, id, false).await
 }

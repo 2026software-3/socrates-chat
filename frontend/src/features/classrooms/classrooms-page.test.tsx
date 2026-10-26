@@ -131,7 +131,7 @@ describe('classroom management', () => {
   })
 })
 
-it('archives a classroom, keeps it visible and restores it', async () => {
+it('archives a classroom, moves it to the archived view and restores it', async () => {
   let row = { ...existing, is_archived: false }
   server.use(
     http.get('/api/classrooms', () => HttpResponse.json([row])),
@@ -143,9 +143,35 @@ it('archives a classroom, keeps it visible and restores it', async () => {
   renderTeacher()
   await screen.findByText(existing.name)
   await userEvent.click(screen.getByRole('button', { name: '封存教室' }))
+  // 封存後從預設清單隱藏，改在「已封存」檢視
+  await waitFor(() => expect(screen.queryByText(existing.name)).not.toBeInTheDocument())
+  await userEvent.click(screen.getByRole('button', { name: '已封存' }))
   expect(await screen.findByText('已封存（唯讀）')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: `編輯 ${existing.name}` })).toBeDisabled()
   await userEvent.click(screen.getByRole('button', { name: '復原教室' }))
   await waitFor(() => expect(screen.queryByText('已封存（唯讀）')).not.toBeInTheDocument())
   expect(row.is_archived).toBe(false)
+})
+
+it('deletes a classroom only after its name is typed, even when archived', async () => {
+  let rows = [{ ...existing, is_archived: true }]
+  let body: unknown
+  server.use(
+    http.get('/api/classrooms', () => HttpResponse.json(rows)),
+    http.delete('/api/classrooms/:id', async ({ request }) => {
+      body = await request.json()
+      rows = []
+      return new HttpResponse(null, { status: 204 })
+    }),
+  )
+  renderTeacher()
+  await screen.findByText('你還沒有教室，先建立一間吧。')
+  await userEvent.click(screen.getByRole('button', { name: '已封存' }))
+  await userEvent.click(await screen.findByRole('button', { name: '刪除教室' }))
+  const confirm = screen.getByRole('button', { name: '永久刪除' })
+  expect(confirm).toBeDisabled()
+  await userEvent.type(screen.getByLabelText(`請輸入「${existing.name}」以確認`), existing.name)
+  await userEvent.click(confirm)
+  await waitFor(() => expect(body).toEqual({ confirm_name: existing.name }))
+  expect(await screen.findByText('教室已刪除。')).toBeInTheDocument()
 })

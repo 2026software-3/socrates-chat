@@ -32,6 +32,8 @@ export type Activity = {
   closes_at: string | null
   classroom_id: string
   status: ActivityStatus
+  /** 已封存：學生看不到、不能開新對話，可復原 */
+  is_archived: boolean
   created_at: string
 }
 
@@ -53,6 +55,8 @@ export type Conversation = {
   converge_ready: boolean
   created_at: string
   ended_at: string | null
+  /** 學生已封存：只從自己的清單隱藏，可復原 */
+  is_archived: boolean
 }
 
 export type MessageRole = 'student' | 'ai'
