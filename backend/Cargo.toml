@@ -34,3 +34,9 @@ tower_governor = { version = "0.8.0", default-features = false, features = ["axu
 dotenvy = "0.15.7"
 http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }
+
+# 測試（繼承 dev profile）裡每次 Argon2 雜湊在未最佳化下要數秒，拖慢所有登入相關測試
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

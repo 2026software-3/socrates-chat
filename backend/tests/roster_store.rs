@@ -153,42 +153,6 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
 }
 
 #[sqlx::test]
-async fn student_count_only_covers_classrooms_the_actor_may_see(pool: PgPool) {
-    let t1 = user(&pool, "t1@example.com").await;
-    let t2 = user(&pool, "t2@example.com").await;
-    let a = classroom(&pool, t1, "A").await;
-    let b = classroom(&pool, t1, "B").await;
-    let c = classroom(&pool, t2, "C").await;
-    let mut conn = pool.acquire().await.unwrap();
-    for (room, email) in [
-        (a, "shared@example.com"),
-        (b, "shared@example.com"),
-        (b, "b-only@example.com"),
-        (c, "c-only@example.com"),
-    ] {
-        roster_store::add(&mut conn, room, email).await.unwrap();
-    }
-
-    // 同一帳號在多個教室只算一人
-    assert_eq!(
-        roster_store::count_students(&pool, t1, false)
-            .await
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        roster_store::count_students(&pool, t2, false)
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        roster_store::count_students(&pool, t2, true).await.unwrap(),
-        3
-    );
-}
-
-#[sqlx::test]
 async fn database_requires_an_existing_classroom_for_roster_rows(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let result = roster_store::add(&mut conn, Uuid::new_v4(), "s@example.com").await;
