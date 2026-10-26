@@ -14,6 +14,8 @@ CREATE TABLE audit_logs (
     -- 對象的電子郵件（帳號類動作）或名稱（教室、活動）：對象被刪除後仍需留下是誰
     target_email text NOT NULL,
     reason       text,
+    -- 刪除教室或活動時一併刪除的對話數量（S-14）；其他動作為空
+    item_count   integer CHECK (item_count >= 0),
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 

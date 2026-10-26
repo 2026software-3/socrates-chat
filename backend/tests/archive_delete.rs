@@ -29,6 +29,14 @@ async fn count(pool: &PgPool, table: &'static str) -> i64 {
     sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
 }
 
+async fn deleted_count(pool: &PgPool, action: &'static str) -> Option<i32> {
+    sqlx::query_scalar("SELECT item_count FROM audit_logs WHERE action = $1")
+        .bind(action)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 async fn audit_actions(pool: &PgPool) -> Vec<(String, String)> {
     sqlx::query_as(
         "SELECT action, target_email FROM audit_logs WHERE action LIKE 'classroom_%' OR action LIKE 'activity_%' ORDER BY created_at, id",
@@ -113,6 +121,7 @@ async fn deleting_a_classroom_needs_the_name_and_removes_everything_inside(pool:
         audit_actions(&pool).await,
         [("classroom_deleted".to_string(), "測試教室".to_string())]
     );
+    assert_eq!(deleted_count(&pool, "classroom_deleted").await, Some(1));
     // 名稱釋出
     create_classroom(&app, &a.teacher, "測試教室").await;
 }
@@ -153,6 +162,8 @@ async fn an_archived_classroom_can_be_deleted_and_archiving_is_audited(pool: PgP
     .await
     .unwrap();
     assert_eq!(reason.as_deref(), Some("學期結束"));
+    // 空教室刪除時對話數量為 0
+    assert_eq!(deleted_count(&pool, "classroom_deleted").await, Some(0));
     let actions: Vec<String> = audit_actions(&pool)
         .await
         .into_iter()
@@ -290,6 +301,7 @@ async fn deleting_an_activity_removes_its_conversations_even_when_archived(pool:
             .iter()
             .any(|x| x.0 == "activity_deleted" && x.1 == "題")
     );
+    assert_eq!(deleted_count(&pool, "activity_deleted").await, Some(1));
 }
 
 #[sqlx::test]

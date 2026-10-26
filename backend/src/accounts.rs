@@ -121,6 +121,28 @@ pub(crate) async fn audit(
     Ok(())
 }
 
+/// 刪除教室或活動的稽核紀錄，另記一併刪除的對話數量（S-14）。
+pub(crate) async fn audit_deletion(
+    conn: impl sqlx::PgExecutor<'_>,
+    actor: Uuid,
+    action: &str,
+    target: &str,
+    reason: Option<&str>,
+    deleted_conversations: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO audit_logs (actor_id, action, target_email, reason, item_count) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(actor)
+    .bind(action)
+    .bind(target)
+    .bind(reason)
+    .bind(deleted_conversations as i32)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// 原因為選填；去空白後為空視為沒有，並限制長度。
 pub(crate) fn clean_reason(reason: Option<String>) -> Option<String> {
     reason

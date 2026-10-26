@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    accounts::{audit, clean_reason},
+    accounts::{audit, audit_deletion, clean_reason},
     auth::{CurrentUser, RequireTeacher},
     catalog::nullable,
     classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
@@ -321,6 +321,11 @@ pub(crate) async fn delete_classroom(
     }
     // 名單、活動與其中的對話、總結由外鍵連動刪除；個人練習、點數與成就不受影響
     let mut tx = state.pool.begin().await?;
+    let conversations: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversations WHERE classroom_id = $1")
+            .bind(classroom.id)
+            .fetch_one(&mut *tx)
+            .await?;
     let deleted = sqlx::query("DELETE FROM classrooms WHERE id = $1")
         .bind(classroom.id)
         .execute(&mut *tx)
@@ -329,12 +334,13 @@ pub(crate) async fn delete_classroom(
     if deleted == 0 {
         return Err(ApiError::not_found());
     }
-    audit(
+    audit_deletion(
         &mut *tx,
         cu.user.id,
         "classroom_deleted",
         &classroom.name,
         clean_reason(body.reason).as_deref(),
+        conversations,
     )
     .await?;
     tx.commit().await?;
