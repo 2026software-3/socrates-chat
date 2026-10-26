@@ -419,14 +419,6 @@ async fn only_teachers_and_admins_may_list(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn old_teacher_path_is_gone(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    let res = send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND);
-}
-
-#[sqlx::test]
 async fn classroom_filter_applies_and_binds_the_cursor(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;

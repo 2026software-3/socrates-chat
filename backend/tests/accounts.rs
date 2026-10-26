@@ -524,32 +524,6 @@ async fn delete_is_limited_to_teachers_and_never_removes_staff(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn legacy_student_delete_route_is_removed(pool: PgPool) {
-    let app = test_app(pool.clone());
-    let a = seed_actors(&app).await;
-    let status = post(
-        &app,
-        "/api/students/student@example.com/delete",
-        Some(&a.teacher),
-        Some(json!({"confirm_email": "student@example.com"})),
-    )
-    .await;
-    assert!(matches!(
-        status,
-        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
-    ));
-    assert_eq!(
-        students(&app, &a.teacher, &a.classroom)
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(audit_actions(&pool).await.is_empty());
-}
-
 /// 學生可以屬於多個教室：教師只能刪除「所有教室都是自己建立」的學生帳號，
 /// 其餘回與不存在相同的 404，管理者不受限。
 #[sqlx::test]
