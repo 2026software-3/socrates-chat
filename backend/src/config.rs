@@ -36,6 +36,8 @@ pub struct Config {
     pub openai_model: String,
     pub openai_base_url: String,
     /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
+    /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
+    pub openai_stt_base_url: Option<String>,
     pub openai_stt_model: Option<String>,
     pub openai_tts_model: Option<String>,
     /// 語音合成的聲音名稱。
@@ -202,6 +204,9 @@ impl Config {
             openai_model: required("OPENAI_MODEL")?,
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+            openai_stt_base_url: env::var("OPENAI_STT_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")
