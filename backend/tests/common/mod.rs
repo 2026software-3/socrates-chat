@@ -106,8 +106,6 @@ pub enum Script {
     FailAfter(Vec<&'static str>),
     /// 永遠不回應
     Hang,
-    /// 等一段時間後才給出這段文字並正常結束（慢速的 AI）
-    Delayed(Duration, &'static str),
     /// 每個片段前都先等一段時間，模擬回覆產生到一半
     Paced(Vec<&'static str>, std::time::Duration),
 }
@@ -149,11 +147,6 @@ impl AiProvider for FakeAi {
             )
             .boxed()),
             Some(Script::Hang) => std::future::pending().await,
-            Some(Script::Delayed(wait, text)) => Ok(stream::once(async move {
-                tokio::time::sleep(wait).await;
-                Ok(text.to_string())
-            })
-            .boxed()),
             Some(Script::Paced(chunks, delay)) => Ok(stream::iter(chunks)
                 .then(move |c| async move {
                     tokio::time::sleep(delay).await;
@@ -207,6 +200,31 @@ pub async fn send(app: &Router, req: Request<Body>) -> Response<Body> {
 pub async fn json_body(res: Response<Body>) -> Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
+pub async fn assert_json_error(res: Response<Body>, status: StatusCode, code: &str) {
+    assert_eq!(res.status(), status);
+    let rid = res.headers()["x-request-id"].to_str().unwrap().to_string();
+    assert!(
+        res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    let body = json_body(res).await;
+    assert_eq!(body["error"]["code"], code);
+    assert_eq!(body["error"]["request_id"], rid);
+}
+
+/// 一般請求逾時很短的設定。登入等前置步驟要用一般設定的 app 先做好，再換成這個。
+pub fn short_timeout() -> Config {
+    Config {
+        request_timeout: Duration::from_millis(300),
+        ai_first_token_timeout: Duration::from_secs(3),
+        ai_total_timeout: Duration::from_secs(5),
+        ..test_config()
+    }
 }
 
 pub fn location(res: &Response<Body>) -> String {

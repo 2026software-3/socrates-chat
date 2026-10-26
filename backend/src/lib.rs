@@ -72,9 +72,8 @@ pub mod voice;
 /// 語音辨識上傳音訊，另有自己的上限（`voice::MAX_AUDIO_BYTES`）。
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// 不套用一般請求逾時、改用 `Config::long_request_timeout` 的路由（#325）。
-/// 逾時只計到送出回應標頭為止。SSE 路由（送出訊息、重試串流）不在此列：AI 回覆在背景工作產生，
-/// 標頭送出後串流本身不受逾時影響（長度由 AI 逾時限制，S-03.5），標頭之前只有讀取 JSON body 與資料庫查詢。
+/// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
+/// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
 pub const LONG_RUNNING_ROUTES: [&str; 4] = [
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
@@ -158,7 +157,7 @@ pub fn app(state: AppState) -> Router {
         .fallback(fallback)
         .layer(middleware::from_fn(api_rejections))
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
-        // 明確設定全域 body 上限；個別路由（語音辨識）可在自己的 router 內放寬。超過時的 413 由 `api_rejections` 轉成 JSON 錯誤
+        // 明確設定全域 body 上限；語音辨識在自己的 router 內放寬。超過時的 413 由 `api_rejections` 轉成 JSON
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -309,11 +308,11 @@ async fn api_rejections(req: Request, next: Next) -> Response {
 /// 避免慢速送出 body 的連線（slow-loris）長時間占用。逾時時中止 handler（交易未提交即回滾），
 /// 回 `408 request_timeout`。
 async fn request_timeout(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let long = req
+    let limit = if req
         .extensions()
         .get::<MatchedPath>()
-        .is_some_and(|p| LONG_RUNNING_ROUTES.contains(&p.as_str()));
-    let limit = if long {
+        .is_some_and(|p| LONG_RUNNING_ROUTES.contains(&p.as_str()))
+    {
         state.config.long_request_timeout()
     } else {
         state.config.request_timeout

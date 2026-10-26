@@ -315,10 +315,9 @@ async fn regroup_may_wait_for_the_ai_longer_than_the_general_timeout(pool: PgPoo
     finish(&seed, &a.student, &act, &ai, &pool, 2).await;
 
     let config = Config {
-        request_timeout: Duration::from_millis(300),
-        ai_first_token_timeout: Duration::from_millis(1000),
-        ai_total_timeout: Duration::from_secs(2),
-        ..test_config()
+        ai_first_token_timeout: Duration::from_millis(300),
+        ai_total_timeout: Duration::from_millis(600),
+        ..short_timeout()
     };
     let app = test_app_with_config(pool, ai, config);
     let (status, body) = regroup(&app, Some(&a.teacher), &act).await;

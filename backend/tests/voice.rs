@@ -167,12 +167,8 @@ async fn transcribe_validates_input(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
     // 與其他端點相同的 JSON 錯誤格式（#324）
-    let rid = res.headers()["x-request-id"].to_str().unwrap().to_string();
-    let body = json_body(res).await;
-    assert_eq!(body["error"]["code"], "payload_too_large");
-    assert_eq!(body["error"]["request_id"], rid);
+    assert_json_error(res, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
 }
 
 #[sqlx::test]
