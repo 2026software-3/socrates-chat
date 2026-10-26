@@ -382,3 +382,47 @@ async fn a_student_archives_only_their_own_view_of_a_conversation(pool: PgPool) 
         StatusCode::NO_CONTENT
     );
 }
+
+#[sqlx::test]
+async fn the_deleted_conversation_count_ignores_personal_practice(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let other = add_student(&app, &a, "sub-other", "other@example.com").await;
+    let topic = create_topic(&app, &a, "題").await;
+    let first = publish_activity(&app, &a, "活動一", &topic).await;
+    let second = publish_activity(&app, &a, "活動二", &topic).await;
+    // 教室內三場對話：兩位學生在活動一、其中一位另在活動二
+    start_from_activity(&app, &a.student, &first).await;
+    start_from_activity(&app, &a.student, &second).await;
+    start_from_activity(&app, &other, &first).await;
+    // 兩場個人練習（沒有教室）
+    for cookie in [&a.student, &other] {
+        assert_eq!(
+            status_of(
+                &app,
+                "POST",
+                "/api/conversations",
+                Some(cookie),
+                json!({"topic_id": topic})
+            )
+            .await,
+            StatusCode::CREATED
+        );
+    }
+    assert_eq!(count(&pool, "conversations").await, 5);
+
+    assert_eq!(
+        status_of(
+            &app,
+            "DELETE",
+            &format!("/api/classrooms/{}", a.classroom),
+            Some(&a.teacher),
+            json!({"confirm_name": "測試教室"})
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(deleted_count(&pool, "classroom_deleted").await, Some(3));
+    // 個人練習不受影響
+    assert_eq!(count(&pool, "conversations").await, 2);
+}
