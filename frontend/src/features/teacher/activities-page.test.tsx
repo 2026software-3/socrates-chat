@@ -545,6 +545,17 @@ describe('activity schedules', () => {
     await waitFor(() => expect(body).toMatchObject({ opens_at: null }))
   })
 
+  it('edits schedules at minute precision and drops stored seconds', async () => {
+    mockList([act({ opens_at: '2030-01-01T00:00:45Z', closes_at: null })])
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '編輯' }))
+    const input = within(await screen.findByRole('dialog')).getByLabelText('開始時間（選填）') as HTMLInputElement
+    expect(input).toHaveAttribute('step', '60')
+    expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+    expect(new Date(input.value).toISOString()).toBe('2030-01-01T00:00:00.000Z')
+  })
+
   it('shows scheduled times, closed availability, and translated schedule errors', async () => {
     mockList([act({ status: 'published', opens_at: '2100-01-01T00:00:00Z', closes_at: null })])
     server.use(http.patch('/api/activities/a1', () => apiError(400, 'invalid_schedule')))

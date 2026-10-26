@@ -26,11 +26,11 @@ const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'
 
 type Values = { title: string; description: string; topicId: string; opensAt: string; closesAt: string }
 
-/** datetime-local uses the browser's time zone; retain seconds and milliseconds on edit. */
+/** datetime-local uses the browser's time zone; schedules are minute-precision, so seconds and milliseconds are dropped. */
 function localTime(iso: string | null): string {
   if (!iso) return ''
   const d = new Date(iso)
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, -1)
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
 
 function utcTime(local: string): string | null {
@@ -156,7 +156,7 @@ function ActivityForm({
       {(['opensAt', 'closesAt'] as const).map((field) => (
         <div key={field} className="space-y-1.5">
           <Label htmlFor={`${idPrefix}-${field}`}>{t(field === 'opensAt' ? 'teacher.activities.opensAt' : 'teacher.activities.closesAt')}</Label>
-          <Input id={`${idPrefix}-${field}`} type="datetime-local" step="0.001" value={values[field]}
+          <Input id={`${idPrefix}-${field}`} type="datetime-local" step="60" value={values[field]}
             onChange={(e) => setValues({ ...values, [field]: e.target.value })} />
         </div>
       ))}
