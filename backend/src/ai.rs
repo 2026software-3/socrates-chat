@@ -953,16 +953,22 @@ const MAX_CLAIM_HARD_CHARS: usize = 10 * MAX_CLAIM_CHARS;
 const MAX_GROUP_NAME_HARD_CHARS: usize = 10 * MAX_GROUP_NAME_CHARS;
 
 /// 先依單位（字／詞）截斷，再套硬性字元上限。
-fn clip_with_cap(s: &str, units: usize, hard_chars: usize) -> Option<String> {
-    clip(&clip_units(s, units)?, hard_chars)
-}
-
 fn clip_claim(s: &str) -> Option<String> {
-    clip_with_cap(s, MAX_CLAIM_CHARS, MAX_CLAIM_HARD_CHARS)
+    clip(&clip_units(s, MAX_CLAIM_CHARS)?, MAX_CLAIM_HARD_CHARS)
 }
 
 fn clip_group_name(s: &str) -> Option<String> {
-    clip_with_cap(s, MAX_GROUP_NAME_CHARS, MAX_GROUP_NAME_HARD_CHARS)
+    clip(
+        &clip_units(s, MAX_GROUP_NAME_CHARS)?,
+        MAX_GROUP_NAME_HARD_CHARS,
+    )
+}
+
+/// 譯成另一種語言的總結欄位（不含主張，主張不翻譯）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslatedSummary {
+    pub stance: String,
+    pub reasons: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1037,7 +1043,7 @@ pub fn format_transcript(turns: &[ChatTurn], language: &str) -> String {
 
 /// 解析翻譯結果 `(立場, 核心理由)`：缺欄位、空白或格式錯誤回傳 `None`；
 /// 任一欄位超過 `MAX_TRANSLATED_FIELD_CHARS` 也回傳 `None`，不截斷。
-pub fn parse_summary_translation(raw: &str) -> Option<(String, String)> {
+pub fn parse_summary_translation(raw: &str) -> Option<TranslatedSummary> {
     #[derive(Deserialize)]
     struct Raw {
         stance: String,
@@ -1046,8 +1052,10 @@ pub fn parse_summary_translation(raw: &str) -> Option<(String, String)> {
     let r: Raw = extract_json(raw)?;
     let fits =
         |s: &str| !s.trim().is_empty() && s.trim().chars().count() <= MAX_TRANSLATED_FIELD_CHARS;
-    (fits(&r.stance) && fits(&r.reasons))
-        .then(|| (r.stance.trim().to_string(), r.reasons.trim().to_string()))
+    (fits(&r.stance) && fits(&r.reasons)).then(|| TranslatedSummary {
+        stance: r.stance.trim().to_string(),
+        reasons: r.reasons.trim().to_string(),
+    })
 }
 
 /// 解析總結；缺欄位、空白或格式錯誤都回傳 `None`（視為結果不完整，F-08.4）。

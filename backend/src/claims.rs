@@ -57,23 +57,23 @@ async fn try_assign(
     topic: &str,
     claim: &str,
 ) -> Result<(), sqlx::Error> {
-    let language: Option<String> = sqlx::query_scalar(
-        "SELECT u.language
-         FROM activities a
-         JOIN classrooms cl ON cl.id = a.classroom_id
-         JOIN users u ON u.id = cl.created_by
-         WHERE a.id = $1",
-    )
-    .bind(activity)
-    .fetch_optional(&state.pool)
-    .await?;
+    let (language, existing): (Option<String>, Vec<(String,)>) = tokio::try_join!(
+        sqlx::query_scalar(
+            "SELECT u.language
+             FROM activities a
+             JOIN classrooms cl ON cl.id = a.classroom_id
+             JOIN users u ON u.id = cl.created_by
+             WHERE a.id = $1",
+        )
+        .bind(activity)
+        .fetch_optional(&state.pool),
+        sqlx::query_as(
+            "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
+        )
+        .bind(activity)
+        .fetch_all(&state.pool),
+    )?;
     let language = language.as_deref().unwrap_or("zh-TW");
-    let existing: Vec<(String,)> = sqlx::query_as(
-        "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
-    )
-    .bind(activity)
-    .fetch_all(&state.pool)
-    .await?;
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
     let req = AiRequest {
         system: build_group_assign_prompt(topic, &existing, language),

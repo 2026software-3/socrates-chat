@@ -409,8 +409,8 @@ pub(crate) async fn translate(
     };
     Ok(Json(SummaryTranslation {
         language,
-        stance: translated.0,
-        reasons: translated.1,
+        stance: translated.stance,
+        reasons: translated.reasons,
     }))
 }
 
