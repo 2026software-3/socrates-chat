@@ -480,33 +480,35 @@ pub(crate) async fn update_me(
     {
         return Err(ApiError::bad_request("invalid_language", "不支援的語言"));
     }
-    if let Some(name) = p.display_name {
-        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-        if name.as_deref().is_some_and(|n| !valid_display_name(n)) {
-            return Err(ApiError::bad_request(
-                "invalid_display_name",
-                "顯示名稱最多 20 個字元，且不可包含控制字元",
-            ));
-        }
-        cu.user.display_name = sqlx::query_scalar(
-            "UPDATE users SET display_name = $2, updated_at = now()
-             WHERE id = $1 RETURNING display_name",
-        )
-        .bind(cu.user.id)
-        .bind(name)
-        .fetch_one(&state.pool)
-        .await?;
+    let name = p
+        .display_name
+        .map(|n| n.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()));
+    if name.iter().flatten().any(|n| !valid_display_name(n)) {
+        return Err(ApiError::bad_request(
+            "invalid_display_name",
+            "顯示名稱最多 20 個字元，且不可包含控制字元",
+        ));
     }
-    if let Some(language) = p.language {
-        cu.user.language = sqlx::query_scalar(
-            "UPDATE users SET language = $2, language_initialized = true, updated_at = now()
-             WHERE id = $1 RETURNING language",
-        )
-        .bind(cu.user.id)
-        .bind(language)
-        .fetch_one(&state.pool)
-        .await?;
+    if name.is_none() && p.language.is_none() {
+        return Ok(Json(cu.into()));
     }
+    // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
+    let (display_name, language): (Option<String>, String) = sqlx::query_as(
+        "UPDATE users SET
+             display_name = CASE WHEN $2 THEN $3 ELSE display_name END,
+             language = COALESCE($4::text, language),
+             language_initialized = language_initialized OR $4::text IS NOT NULL,
+             updated_at = now()
+         WHERE id = $1 RETURNING display_name, language",
+    )
+    .bind(cu.user.id)
+    .bind(name.is_some())
+    .bind(name.flatten())
+    .bind(p.language)
+    .fetch_one(&state.pool)
+    .await?;
+    cu.user.display_name = display_name;
+    cu.user.language = language;
     Ok(Json(cu.into()))
 }
 
