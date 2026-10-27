@@ -849,3 +849,27 @@ async fn translation_requests_are_rate_limited_per_teacher(pool: PgPool) {
     assert_eq!(body["error"]["code"], "too_many_translations");
     assert_eq!(ai.request_count(), 3, "超過額度的請求不得呼叫 AI");
 }
+
+#[sqlx::test]
+async fn a_failed_translation_does_not_use_up_the_teachers_quota(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,                                 // AI 逾時
+        Reply(vec!["{\"stance\":\"x\"}"]),    // 格式不完整
+        Reply(vec![translation_reply(9000)]), // 譯文過長
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let (app, a, conv) = translation_fixture(pool, ai, Some((1, Duration::from_secs(600)))).await;
+    set_teacher_language(&app, &a, "en").await;
+
+    // 額度只有 1：三次失敗都不能吃掉它，之後的成功請求仍然可以通過
+    for _ in 0..3 {
+        assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
+    }
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    // 成功的那次才算數
+    assert_eq!(
+        translate(&app, &a, &conv).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}

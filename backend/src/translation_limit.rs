@@ -1,7 +1,8 @@
 //! 教師「翻譯總結」每人的頻率限制。
 //!
 //! 翻譯結果不保存，每次按下都會呼叫一次 AI；沒有限制的話，重複點擊或腳本會讓 AI 費用無上限。
-//! 只計入真的呼叫 AI 的請求（語言相同直接回傳的不算）。計數放在記憶體，重啟後歸零。
+//! 只計入真的呼叫 AI 且得到譯文的請求（語言相同直接回傳的不算，失敗的會退回額度）。
+//! 計數放在記憶體：重啟後歸零，多個實例各自計算（部署方式尚未決定，S-09），所以實際上限是每個實例各自的額度。
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -46,6 +47,13 @@ impl TranslationLimiter {
         self.try_acquire_at(user, Instant::now())
     }
 
+    /// 退回該使用者最近一次的額度（翻譯失敗時：沒有得到譯文，不該讓重試把額度燒光）。
+    pub fn refund(&self, user: Uuid) {
+        if let Some(queue) = lock(&self.hits).get_mut(&user) {
+            queue.pop_back();
+        }
+    }
+
     fn try_acquire_at(&self, user: Uuid, now: Instant) -> bool {
         let expired = |t: &Instant| now.saturating_duration_since(*t) >= self.window;
         let mut hits = lock(&self.hits);
@@ -83,6 +91,19 @@ mod tests {
         // 只有最早那一次過期時，只回復一個額度
         assert!(limiter.try_acquire_at(user, t0 + Duration::from_secs(121)));
         assert!(!limiter.try_acquire_at(user, t0 + Duration::from_secs(121)));
+    }
+
+    #[test]
+    fn refund_gives_back_the_latest_slot_only_for_that_user() {
+        let limiter = TranslationLimiter::new(1, Duration::from_secs(60));
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let now = Instant::now();
+        assert!(limiter.try_acquire_at(a, now));
+        assert!(limiter.try_acquire_at(b, now));
+        limiter.refund(a);
+        assert!(limiter.try_acquire_at(a, now));
+        assert!(!limiter.try_acquire_at(b, now), "b was not refunded");
+        limiter.refund(Uuid::new_v4()); // 沒有記錄的人：什麼都不發生
     }
 
     #[test]

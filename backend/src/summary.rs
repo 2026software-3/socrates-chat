@@ -397,10 +397,16 @@ pub(crate) async fn translate(
     let translated = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
         .await
         .ok()
-        .and_then(|raw| parse_summary_translation(&raw))
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
-        })?;
+        .and_then(|raw| parse_summary_translation(&raw));
+    let Some(translated) = translated else {
+        // 沒有得到譯文就不扣額度：AI 當機時的重試不該把教師鎖在外面
+        state.translation_limit.refund(cu.user.id);
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "ai_unavailable",
+            "AI 暫時無法回覆",
+        ));
+    };
     Ok(Json(SummaryTranslation {
         language,
         stance: translated.0,
