@@ -117,11 +117,9 @@ async fn spanish_conversation_uses_spanish_summary_prompt_transcript_and_version
                 .content
                 .contains("Estudiante: Accionaría la palanca.")
         );
-        assert!(
-            requests[1]
-                .system
-                .contains("Agrupa la afirmación únicamente en español")
-        );
+        // 群組名稱給教室擁有者（這裡是預設的繁體中文教師）看，不跟著學生的對話語言
+        assert!(requests[1].system.contains("只使用繁體中文"));
+        assert!(!requests[1].system.contains("Agrupa la afirmación"));
     }
     let version: String =
         sqlx::query_scalar("SELECT rules_version FROM summaries WHERE conversation_id = $1")

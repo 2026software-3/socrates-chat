@@ -30,15 +30,18 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// 把一場對話的主張歸入群組（背景呼叫，盡力而為）。
+///
+/// 群組名稱是給教師看的，而且同一活動的學生可能各用不同語言，所以名稱一律用教室擁有者
+/// （建立教室的教師）的語言，不用學生自己的對話語言；重新分組用的是按下按鈕的教師的語言，
+/// 兩者在同一間教室內是同一個人。
 pub async fn assign_group(
     state: &AppState,
     conversation: Uuid,
     activity: Uuid,
     topic: &str,
     claim: &str,
-    language: &str,
 ) {
-    if let Err(e) = try_assign(state, conversation, activity, topic, claim, language).await {
+    if let Err(e) = try_assign(state, conversation, activity, topic, claim).await {
         tracing::warn!(class = %db_error_class(&e), "claim grouping bookkeeping failed");
     }
 }
@@ -49,8 +52,18 @@ async fn try_assign(
     activity: Uuid,
     topic: &str,
     claim: &str,
-    language: &str,
 ) -> Result<(), sqlx::Error> {
+    let language: Option<String> = sqlx::query_scalar(
+        "SELECT u.language
+         FROM activities a
+         JOIN classrooms cl ON cl.id = a.classroom_id
+         JOIN users u ON u.id = cl.created_by
+         WHERE a.id = $1",
+    )
+    .bind(activity)
+    .fetch_optional(&state.pool)
+    .await?;
+    let language = language.as_deref().unwrap_or("zh-TW");
     let existing: Vec<(String,)> = sqlx::query_as(
         "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
     )
