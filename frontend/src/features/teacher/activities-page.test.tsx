@@ -59,6 +59,12 @@ function setup() {
   return renderTeacherPage(<ActivitiesPanel />)
 }
 
+/** 列上的操作都要在確認對話框裡再按一次。 */
+async function confirmAs(name: string) {
+  const dialog = await screen.findByRole('alertdialog')
+  await userEvent.click(within(dialog).getByRole('button', { name }))
+}
+
 describe('ActivitiesPanel', () => {
   it('lists activities with status badge and topic title', async () => {
     mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2' })])
@@ -224,6 +230,7 @@ describe('ActivitiesPanel', () => {
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '封存' }))
+    await confirmAs('封存活動')
     expect(await screen.findByText('還沒有任何討論活動，請先建立一個。')).toBeInTheDocument()
     // 已封存檢視向後端要已封存的活動，並可直接刪除
     list = [act({ is_archived: true })]
@@ -393,6 +400,7 @@ describe('ActivitiesPanel', () => {
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '發布' }))
+    await confirmAs('確認發布')
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
     expect(screen.getByText('第一週討論')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
@@ -430,10 +438,13 @@ describe('ActivitiesPanel', () => {
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '發布' }))
+    await confirmAs('確認發布')
     expect(await screen.findByText('活動已發布。')).toBeInTheDocument()
     await userEvent.click(await screen.findByRole('button', { name: '停止開放' }))
+    await confirmAs('確認停止開放')
     expect(await screen.findByText('活動已停止開放。')).toBeInTheDocument()
     await userEvent.click(await screen.findByRole('button', { name: '重新開放' }))
+    await confirmAs('確認重新開放')
     await waitFor(() => expect(calls).toEqual(['publish', 'close', 'publish']))
     expect(await screen.findByText('已發布')).toBeInTheDocument()
   })
@@ -452,7 +463,9 @@ describe('ActivitiesPanel', () => {
     setup()
     await screen.findByText('第一週討論')
     const btn = screen.getByRole('button', { name: '發布' })
-    await userEvent.dblClick(btn)
+    await userEvent.click(btn)
+    const dialog = await screen.findByRole('alertdialog')
+    await userEvent.dblClick(within(dialog).getByRole('button', { name: '確認發布' }))
     await waitFor(() => expect(btn).toBeDisabled())
     const row = btn.closest('tr')
     if (!row) throw new Error('row not found')

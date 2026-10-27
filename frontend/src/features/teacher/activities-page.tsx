@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadMore } from '@/components/load-more'
+import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
@@ -318,6 +319,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
       : writableRooms[0]?.id
   const [showArchived, setShowArchived] = useState(false)
   const [deleting, setDeleting] = useState<Activity>()
+  const [confirming, setConfirming] = useState<{ activity: Activity; kind: 'publish' | 'close' | 'reopen' | 'archive' }>()
   const listParams = new URLSearchParams()
   if (classroomId) listParams.set('classroom_id', classroomId)
   if (showArchived) listParams.set('archived', 'true')
@@ -459,8 +461,8 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
               busy={busyIds.has(a.id) || !writableRoomIds.has(a.classroom_id)}
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}
-              onToggle={() => void toggle(a)}
-              onArchive={() => void archive(a)}
+              onToggle={() => setConfirming({ activity: a, kind: a.status === 'draft' ? 'publish' : a.status === 'published' ? 'close' : 'reopen' })}
+              onArchive={() => (a.is_archived ? void archive(a) : setConfirming({ activity: a, kind: 'archive' }))}
               onDelete={() => setDeleting(a)}
             />
           ))}
@@ -469,6 +471,39 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
         </div>
       ) : null}
       <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
+
+      {confirming ? (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => !o && setConfirming(undefined)}
+          title={
+            confirming.kind === 'archive'
+              ? t('teacher.activities.confirm.archive.title', { title: confirming.activity.title })
+              : t(`teacher.activities.confirm.${confirming.kind}.title`)
+          }
+          description={t(`teacher.activities.confirm.${confirming.kind}.body`)}
+          confirmLabel={t(`teacher.activities.confirm.${confirming.kind}.action`)}
+          destructive={confirming.kind === 'archive'}
+          onConfirm={() => {
+            const { activity, kind } = confirming
+            setConfirming(undefined)
+            void (kind === 'archive' ? archive(activity) : toggle(activity))
+          }}
+        >
+          {confirming.kind === 'publish' ? (
+            <>
+              <ConfirmFact label={t('teacher.activities.fact.title')}>{confirming.activity.title}</ConfirmFact>
+              <ConfirmFact label={t('teacher.activities.fact.classroom')}>
+                {classrooms.data?.find((r) => r.id === confirming.activity.classroom_id)?.name ?? '—'}
+              </ConfirmFact>
+            </>
+          ) : confirming.kind === 'archive' ? null : (
+            <ConfirmFact label={t('teacher.activities.fact.state')}>
+              {t(confirming.kind === 'close' ? 'teacher.activities.fact.open' : 'teacher.activities.fact.stopped', { title: confirming.activity.title })}
+            </ConfirmFact>
+          )}
+        </ConfirmDialog>
+      ) : null}
 
       {deleting ? (
         <NameConfirmDialog
