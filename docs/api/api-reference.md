@@ -51,16 +51,16 @@
 
 修課名單屬於教室（S-14、S-01.4）；名單端點的路徑都帶教室 ID，由教室的建立者或管理者操作。其他教師存取他人的教室，與教室不存在、ID 格式不正確一律回相同的 `404 not_found`；學生、名單外帳號回 `403`，未登入回 `401`。
 
-- `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依 email 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；無電子郵件的學生以學號作排序鍵。
+- `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依帳號 UUID 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；排序鍵不因補上電子郵件而改變；原本以電子郵件為鍵的游標失效，請重新從第一頁開始。
 - `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, email_updated, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；`email_updated` 是補上電子郵件的筆數，`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields`、`invalid_format`、`student_id_conflict` 或 `email_conflict`，不回顯姓名、學號。`credentials` 包含 `{ student_id, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
 - `DELETE /api/classrooms/{id}/roster/{email}`：路徑參數可用學生信箱或帳號 UUID，只移出這間教室；原本就不在這間教室名單內回 `404`。學生仍在其他教室的名單時保有學生權限；不在任何教室名單內時，登入後看到 `403 not_enrolled`（尚未開通）。
-- `GET /api/classrooms/{id}/students?limit=&cursor=&q=`（#333）：該教室名單上的學生與帳號狀態，依 email 排序分頁，回 `{ items, next_cursor, total }`。`q` 搜尋電子郵件與顯示名稱（不分大小寫的子字串，前後空白忽略，最多 100 字元；`%`、`_` 當一般字元），由後端對所有頁搜尋，不比對對話內容或其他欄位；空白或過長回 `400 invalid_filter`。`total` 是符合同一個 `q` 的學生總數，每一頁都帶，不受游標影響。游標綁定產生它時的 `q`（正規化後的雜湊，不含姓名或電子郵件）：換了 `q` 還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
+- `GET /api/classrooms/{id}/students?limit=&cursor=&q=`（#333）：該教室名單上的學生與帳號狀態（包含 `student_id` 學號，僅該教室的教師與管理者可存取），依帳號 UUID 排序分頁，回 `{ items, next_cursor, total }`。`q` 搜尋電子郵件與顯示名稱（不分大小寫的子字串，前後空白忽略，最多 100 字元；`%`、`_` 當一般字元），由後端對所有頁搜尋，不比對對話內容或其他欄位；空白或過長回 `400 invalid_filter`。`total` 是符合同一個 `q` 的學生總數，每一頁都帶，不受游標影響。舊版以電子郵件為鍵的游標失效，請從第一頁開始。游標綁定產生它時的 `q`（正規化後的雜湊，不含姓名或電子郵件）：換了 `q` 還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
 - `GET /api/dashboard/class` 的 `students_total`：教師為自己建立的所有教室內不重複的學生數，管理者為全部教室。
-- 舊的 `/api/roster*` 與 `/api/students`（列表）已移除；`DELETE /api/students/{email}` 仍是全域的帳號刪除，會一併移除該帳號在所有教室的名單項目。教師只能刪除完全屬於自己建立的教室的學生，其餘（含他人教室的學生、同時在他人教室的學生）回與不存在相同的 `404`；管理者不受限。此範圍是暫定的保守做法，**待需求方確認**（S-02.5，見 `decisions.md`「尚未決定」）。
-- 匯入只新增、不移除；每行依序為姓名、學號、電子郵件，沒有標題列。姓名與學號必填，姓名去前後空白後最多 30 個 Unicode 字元；學號為八位數字加一個英文字母並轉大寫；電子郵件選填，有值時轉小寫。支援 CSV 引號與跳脫。
+- 舊的 `/api/roster*` 與 `/api/students`（列表）已移除；`DELETE /api/students/{email}` 仍是全域的帳號刪除，路徑可用帳號 UUID 或電子郵件，會一併移除該帳號在所有教室的名單項目。教師只能刪除完全屬於自己建立的教室的學生，其餘（含他人教室的學生、同時在他人教室的學生）回與不存在相同的 `404`；管理者不受限。此範圍是暫定的保守做法，**待需求方確認**（S-02.5，見 `decisions.md`「尚未決定」）。
+- 匯入只新增、不移除；每行依序為姓名、學號、電子郵件，沒有標題列。姓名與學號必填，姓名去前後空白後最多 30 個 Unicode 字元；學號為八位數字加一個英文字母並轉大寫；電子郵件選填，有值時轉小寫。支援 CSV 引號與跳脫；每筆資料必須在同一行，不支援引號內跨行欄位。
 - 匯入結果的 `credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次）。**教師與管理者匯入都會建立帳號並回臨時密碼**（2026-10 修訂，規格見 `S-08.2-auth-verification.md`；原為只有管理者匯入才建立、教師匯入時為空陣列，實作隨 #393）；已有帳號（例如其他教室已匯入過的學號）與教師／管理者的信箱不在其中。
 - 移出名單不刪資料（重新加回後照舊）。
-- 刪除學生帳號：使用 DELETE，JSON body 的 `confirm_email` 必須與路徑的電子郵件相同（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
+- 刪除學生帳號：使用 DELETE，JSON body 的 `confirm_student_id` 必須與學生學號相同（去前後空白、不分大小寫），不接受電子郵件確認（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
 - DELETE 刻意保留 JSON body，以沿用確認欄位與驗證規則；前端 fetch 與後端 Axum 均支援。部署的 proxy／client 必須保留 DELETE body。
 - 學生列表只有完成對話的**數量**，沒有內容。
 

@@ -102,6 +102,36 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     let roster_result = json_body(roster_response).await;
     assert!(!roster_result.to_string().contains("隱私錯誤姓名"));
     assert!(!roster_result.to_string().contains("98765433"));
+    let roster = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/classrooms/{}/students", a.classroom),
+                Some(&a.teacher),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let student = roster["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["student_id"] == "98765432A")
+        .unwrap();
+    let id = student["id"].as_str().unwrap();
+    let rejected = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/students/{id}"),
+            Some(&a.teacher),
+            Some(json!({"confirm_student_id":"98765432B"})),
+        ),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert!(!json_body(rejected).await.to_string().contains("98765432"));
     // 名單外與錯誤密碼的登入嘗試
     let login_res = send(
         &app,

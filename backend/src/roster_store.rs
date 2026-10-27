@@ -68,9 +68,7 @@ pub async fn create_student(
 pub struct StudentRow {
     pub id: Uuid,
     pub email: Option<String>,
-    #[serde(skip)]
-    #[schema(ignore)]
-    pub sort_key: String,
+    pub student_id: String,
     pub display_name: Option<String>,
     /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
     pub has_account: bool,
@@ -79,26 +77,23 @@ pub struct StudentRow {
     pub completed_conversations: i64,
 }
 
-/// 依 email 排序的名單，從 `after`（不含）之後取 `limit` 筆。
+/// 依帳號 UUID 排序的名單；UUID 不會因補上電子郵件而改變。
 #[derive(Serialize, FromRow, utoipa::ToSchema)]
 pub struct RosterEntry {
     pub id: Uuid,
     pub email: Option<String>,
-    #[serde(skip)]
-    #[schema(ignore)]
-    pub sort_key: String,
 }
 
 pub async fn list_roster(
     pool: &PgPool,
     classroom_id: Uuid,
-    after: Option<&str>,
+    after: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<RosterEntry>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT u.id, u.email, COALESCE(u.email, u.student_id) AS sort_key FROM enrollments e JOIN users u ON u.id = e.user_id
-         WHERE e.classroom_id = $1 AND ($2::text IS NULL OR COALESCE(u.email, u.student_id) > $2)
-         ORDER BY COALESCE(u.email, u.student_id) LIMIT $3",
+        "SELECT u.id, u.email FROM enrollments e JOIN users u ON u.id = e.user_id
+         WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
+         ORDER BY u.id LIMIT $3",
     )
     .bind(classroom_id)
     .bind(after)
@@ -166,47 +161,47 @@ pub async fn is_enrolled_anywhere(pool: &PgPool, email: &str) -> Result<bool, sq
 
 /// 這個帳號是否至少在 `owner_id` 建立的一間教室內，且所有教室都是 `owner_id` 建立的。
 /// 刪除帳號會連同所有教室的資料一併刪除，所以教師只能刪除完全屬於自己教室的學生。
-pub async fn belongs_only_to_owner(
+pub async fn user_belongs_only_to_owner(
     conn: &mut PgConnection,
-    email: &str,
+    user_id: Uuid,
     owner_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT bool_or(c.created_by = $2) AND bool_and(c.created_by = $2)
-         FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id JOIN users u ON u.id = e.user_id
-         WHERE u.email = lower($1)",
+         FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id
+         WHERE e.user_id = $1",
     )
-    .bind(email)
+    .bind(user_id)
     .bind(owner_id)
     .fetch_one(conn)
     .await
     .map(|owned: Option<bool>| owned.unwrap_or(false))
 }
 
-/// 教室名單上的學生與帳號狀態，依 email 排序，從 `after`（不含）之後取 `limit` 筆；
+/// 教室名單上的學生與帳號狀態，依帳號 UUID 排序，從 `after`（不含）之後取 `limit` 筆；
 /// `search` 為 `ILIKE` 樣式（見 `pagination::like_pattern`），只比對電子郵件與顯示名稱。
 pub async fn list_students(
     pool: &PgPool,
     classroom_id: Uuid,
-    after: Option<&str>,
+    after: Option<Uuid>,
     limit: i64,
     search: Option<&str>,
 ) -> Result<Vec<StudentRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT u.id, u.email, COALESCE(u.email, u.student_id) AS sort_key, u.display_name,
-                (u.id IS NOT NULL) AS has_account,
-                COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
-                COALESCE((SELECT count(*) FROM summaries s
+        "SELECT u.id, u.email, u.student_id, u.display_name,
+                true AS has_account,
+                (u.disabled_at IS NOT NULL) AS disabled,
+                (SELECT count(*) FROM summaries s
                           JOIN conversations c ON c.id = s.conversation_id
                           WHERE c.user_id = u.id AND c.classroom_id = e.classroom_id
-                            AND s.status = 'ready'), 0)
+                            AND s.status = 'ready')
                     AS completed_conversations
          FROM enrollments e JOIN users u ON u.id = e.user_id
-         WHERE e.classroom_id = $1 AND ($2::text IS NULL OR COALESCE(u.email, u.student_id) > $2)
+         WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
            AND ($4::text IS NULL
                 OR u.email ILIKE $4 ESCAPE '\\'
                 OR u.display_name ILIKE $4 ESCAPE '\\')
-         ORDER BY COALESCE(u.email, u.student_id) LIMIT $3",
+         ORDER BY u.id LIMIT $3",
     )
     .bind(classroom_id)
     .bind(after)

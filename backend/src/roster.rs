@@ -168,7 +168,7 @@ pub(crate) struct RosterPage {
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
     ),
-    responses((status = 200, description = "名單分頁，依 email 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "名單分頁，依帳號 UUID 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -177,18 +177,11 @@ pub(crate) async fn list_roster(
     Query(query): Query<Pagination>,
 ) -> Result<Json<Page<roster_store::RosterEntry>>, ApiError> {
     let limit = query.limit()?;
-    let after: Option<String> = query.cursor("roster")?;
+    let after: Option<uuid::Uuid> = query.cursor("roster")?;
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    let rows = roster_store::list_roster(
-        &state.pool,
-        classroom.id,
-        after.as_deref(),
-        (limit + 1) as i64,
-    )
-    .await?;
-    Ok(Json(pagination::page(rows, limit, "roster", |row| {
-        row.sort_key.clone()
-    })?))
+    let rows =
+        roster_store::list_roster(&state.pool, classroom.id, after, (limit + 1) as i64).await?;
+    Ok(Json(pagination::page(rows, limit, "roster", |row| row.id)?))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]

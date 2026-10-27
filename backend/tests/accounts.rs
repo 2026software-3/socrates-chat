@@ -398,14 +398,14 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
         .await
         .unwrap();
 
-    // 沒有再次確認（電子郵件不符）不能刪
+    // 沒有再次確認（學號不符）不能刪
     let res = send(
         &app,
         json_req(
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            Some(json!({"confirm_email": "other@example.com"})),
+            Some(json!({"confirm_student_id": "99999999A"})),
         ),
     )
     .await;
@@ -429,7 +429,7 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            Some(json!({"confirm_email": " Student@Example.com "})),
+            Some(json!({"confirm_student_id": " 10000000a "})),
         ),
     )
     .await;
@@ -471,7 +471,7 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.admin),
-            Some(json!({"confirm_email": "student@example.com"})),
+            Some(json!({"confirm_student_id": "10000000A"})),
         ),
     )
     .await;
@@ -482,7 +482,7 @@ async fn deleting_a_student_removes_account_data_and_roster_entry(pool: PgPool) 
 async fn delete_is_limited_to_teachers_and_never_removes_staff(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let body = |e: &str| Some(json!({"confirm_email": e}));
+    let body = |_e: &str| Some(json!({"confirm_student_id": "10000000A"}));
     for (cookie, status) in [
         (Some(a.student.as_str()), StatusCode::FORBIDDEN),
         (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
@@ -547,7 +547,9 @@ async fn teachers_cannot_delete_students_outside_their_own_classrooms(pool: PgPo
                 "DELETE",
                 &format!("/api/students/{email}"),
                 Some(cookie),
-                Some(json!({"confirm_email": email})),
+                Some(
+                    json!({"confirm_student_id": fixture_roster(email).split(',').nth(1).unwrap()}),
+                ),
             ),
         )
     };
@@ -585,4 +587,120 @@ async fn teachers_cannot_delete_students_outside_their_own_classrooms(pool: PgPo
         StatusCode::NO_CONTENT
     );
     assert_eq!(count("student@example.com").await, 0);
+}
+
+#[sqlx::test]
+async fn deleting_a_student_without_email_requires_student_id_confirmation(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let response = import_roster(&app, &a.teacher, &a.classroom, "無信箱學生,87654321a,").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE student_id = '87654321A'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let path = format!("/api/students/{id}");
+    let request = |cookie: Option<&str>, confirmation: &str| {
+        json_req(
+            "DELETE",
+            &path,
+            cookie,
+            Some(json!({"confirm_student_id": confirmation})),
+        )
+    };
+    assert_eq!(
+        send(&app, request(None, "87654321A")).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(&app, request(Some(&a.student), "87654321A"))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let other = add_teacher(&app, &a.admin, "other-teacher", "other-teacher@example.com").await;
+    assert_eq!(
+        send(&app, request(Some(&other), "87654321A"))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let wrong = send(&app, request(Some(&a.teacher), "87654321B")).await;
+    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(wrong).await["error"]["code"],
+        "confirmation_mismatch"
+    );
+    let archive = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{}", a.classroom),
+            Some(&a.teacher),
+            Some(json!({"is_archived": true})),
+        ),
+    )
+    .await;
+    assert_eq!(archive.status(), StatusCode::OK);
+    assert_eq!(
+        send(&app, request(Some(&a.teacher), " 87654321a "))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let remains: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!remains);
+    let audit = audit_actions(&pool).await;
+    assert!(
+        audit
+            .iter()
+            .any(|(action, target, _)| action == "student_deleted" && target == &id.to_string())
+    );
+    assert!(!format!("{audit:?}").contains("87654321"));
+}
+
+#[sqlx::test]
+async fn deleting_a_student_with_email_also_requires_student_id_confirmation(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let path = "/api/students/student@example.com";
+    let email_only = send(
+        &app,
+        json_req(
+            "DELETE",
+            path,
+            Some(&a.teacher),
+            Some(json!({"confirm_email": "student@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(email_only.status(), StatusCode::BAD_REQUEST);
+    let wrong = send(
+        &app,
+        json_req(
+            "DELETE",
+            path,
+            Some(&a.teacher),
+            Some(
+                json!({"confirm_student_id": "99999999A", "confirm_email": "student@example.com"}),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+    let valid = send(
+        &app,
+        json_req(
+            "DELETE",
+            path,
+            Some(&a.teacher),
+            Some(json!({"confirm_student_id": "10000000a"})),
+        ),
+    )
+    .await;
+    assert_eq!(valid.status(), StatusCode::NO_CONTENT);
 }

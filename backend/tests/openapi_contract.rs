@@ -231,6 +231,7 @@ mod roster {
         for field in [
             "id",
             "email",
+            "student_id",
             "display_name",
             "has_account",
             "disabled",

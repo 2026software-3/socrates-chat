@@ -95,8 +95,16 @@ async fn roster_import_belongs_to_one_classroom_and_never_removes(pool: PgPool) 
     let (_, other) = roster(&app, Some(&a.teacher), &room_b).await;
     assert_eq!(other["items"], json!([]));
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
-    assert_eq!(mine["items"][0]["email"], "new@example.com");
-    assert_eq!(mine["items"][1]["email"], "student@example.com");
+    let emails = mine["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["email"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        emails,
+        std::collections::BTreeSet::from(["new@example.com", "student@example.com"])
+    );
 
     // 只新增：再匯入一份不含舊人的名單，舊的仍在
     let (_, body) = import(&app, Some(&a.teacher), &a.classroom, "third@example.com").await;
@@ -319,7 +327,7 @@ async fn deleting_a_student_account_removes_every_classroom_membership(pool: PgP
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            Some(json!({"confirm_email": "student@example.com"})),
+            Some(json!({"confirm_student_id": "10000000A"})),
         ),
     )
     .await;

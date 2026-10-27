@@ -73,8 +73,8 @@ async fn roster_is_isolated_per_classroom_and_one_email_can_join_several(pool: P
             .unwrap()
             .iter()
             .map(|r| r.email.as_deref().unwrap())
-            .collect::<Vec<_>>(),
-        ["only-b@example.com", "s@example.com"]
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["only-b@example.com", "s@example.com"])
     );
 }
 
@@ -152,9 +152,10 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
         .await
         .unwrap();
 
-    let in_a = roster_store::list_students(&pool, a, None, 200, None)
+    let mut in_a = roster_store::list_students(&pool, a, None, 200, None)
         .await
         .unwrap();
+    in_a.sort_by(|a, b| a.email.cmp(&b.email));
     assert_eq!(
         in_a.iter()
             .map(|s| s.email.as_deref().unwrap())
