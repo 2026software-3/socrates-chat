@@ -1210,6 +1210,27 @@ mod tests {
         assert!(p.contains("開始引導學生整理"));
     }
 
+    #[test]
+    fn prompt_reads_typos_and_speech_transcripts_by_meaning() {
+        let p = build_system_prompt(&PromptContext {
+            title: "T",
+            description: "D",
+            stage: 1,
+            turn: 1,
+            wrap_up_turn: 15,
+        });
+        // F-10.1：語音辨識逐字稿與打字一律當作文字處理，不另加標記；規則對所有學生訊息生效。
+        // 只檢查規則存在；模型實際行為由 eval/f10_1_cases.json 評估。
+        for rule in [
+            "可能來自打字或語音辨識",
+            "依最合理的原意理解",
+            "不指出、糾正或評論錯字、贅詞與標點",
+            "才用一個簡短問題請學生確認原意",
+        ] {
+            assert!(p.contains(rule), "缺少輸入理解規則：{rule}");
+        }
+    }
+
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
     struct SlowStart(std::time::Duration);
 
