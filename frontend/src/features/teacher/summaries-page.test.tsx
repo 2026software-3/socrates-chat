@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SummariesPage } from '@/features/teacher/summaries-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Page, TeacherSummary } from '@/lib/types'
@@ -16,6 +16,7 @@ function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
     student_id: 's1',
     student_name: '王小明',
     student_email: 'ming@example.com',
+    language: 'zh-TW',
     stance: '應該拉桿',
     reasons: '拯救較多人',
     ...over,
@@ -41,6 +42,7 @@ const rows = [
 
 afterEach(() => {
   server.events.removeAllListeners()
+  delete (globalThis as Record<string, unknown>).Translator
 })
 
 function cardOf(el: HTMLElement): HTMLElement {
@@ -81,6 +83,101 @@ describe('SummariesPage classification', () => {
 })
 
 describe('SummariesPage', () => {
+  it('uses the browser translator before the backend AI fallback', async () => {
+    const backend = vi.fn(() => HttpResponse.json({
+      language: 'en',
+      stance: 'Server stance',
+      reasons: 'Server reasons',
+    }))
+    const translate = vi.fn(async (text: string) => ({
+      應該拉桿: 'Browser stance',
+      拯救較多人: 'Browser reasons',
+    })[text] ?? text)
+    const create = vi.fn(async () => ({ translate, destroy: vi.fn() }))
+    const availability = vi.fn(async () => 'available')
+    Object.assign(globalThis, { Translator: { availability, create } })
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([row()]))),
+      http.post('/api/summaries/c1/translation', backend),
+    )
+    renderTeacherPage(<SummariesPage />, 'en')
+    const card = cardOf(await screen.findByText('應該拉桿'))
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Translate to English' }))
+    expect(await within(card).findByText('Browser stance')).toBeInTheDocument()
+    expect(within(card).getByText('Browser reasons')).toBeInTheDocument()
+    expect(availability).toHaveBeenCalledWith({ sourceLanguage: 'zh-TW', targetLanguage: 'en' })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ sourceLanguage: 'zh-TW', targetLanguage: 'en' }))
+    expect(translate).toHaveBeenCalledTimes(2)
+    expect(backend).not.toHaveBeenCalled()
+  })
+
+  it('translates a foreign-language summary on demand and can return to the original', async () => {
+    let calls = 0
+    const create = vi.fn()
+    Object.assign(globalThis, {
+      Translator: {
+        availability: vi.fn(async () => 'unavailable'),
+        create,
+      },
+    })
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([row()]))),
+      http.post('/api/summaries/c1/translation', () => {
+        calls += 1
+        return HttpResponse.json({
+          language: 'en',
+          stance: 'Would pull the lever',
+          reasons: 'Save more people',
+        })
+      }),
+    )
+    renderTeacherPage(<SummariesPage />, 'en')
+    const card = cardOf(await screen.findByText('應該拉桿'))
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Translate to English' }))
+    expect(await within(card).findByText('Would pull the lever')).toBeInTheDocument()
+    expect(within(card).getByText('Save more people')).toBeInTheDocument()
+    expect(within(card).queryByText('應該拉桿')).not.toBeInTheDocument()
+    expect(calls).toBe(1)
+    expect(create).not.toHaveBeenCalled()
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Show original' }))
+    expect(within(card).getByText('應該拉桿')).toBeInTheDocument()
+    expect(within(card).getByText('拯救較多人')).toBeInTheDocument()
+  })
+
+  it('keeps the original visible when translation fails and allows retrying', async () => {
+    let calls = 0
+    Object.assign(globalThis, {
+      Translator: {
+        availability: vi.fn(async () => 'available'),
+        create: vi.fn(async () => {
+          throw new Error('language pack download failed')
+        }),
+      },
+    })
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([row()]))),
+      http.post('/api/summaries/c1/translation', () => {
+        calls += 1
+        return calls === 1
+          ? apiError(502, 'ai_unavailable')
+          : HttpResponse.json({ language: 'en', stance: 'Would pull the lever', reasons: 'Save more people' })
+      }),
+    )
+    renderTeacherPage(<SummariesPage />, 'en')
+    const card = cardOf(await screen.findByText('應該拉桿'))
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Translate to English' }))
+    expect(await within(card).findByRole('alert')).toHaveTextContent('The AI is temporarily unavailable.')
+    expect(within(card).getByText('應該拉桿')).toBeInTheDocument()
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Translate to English' }))
+    expect(await within(card).findByText('Would pull the lever')).toBeInTheDocument()
+    expect(within(card).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('lists student, topic, localized date and the stance and reasons', async () => {
     setup()
     const card = cardOf(await screen.findByText('王小明'))

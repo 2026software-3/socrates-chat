@@ -168,6 +168,78 @@ async fn student_starts_conversation_from_active_topic(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn conversation_snapshots_the_account_language_when_it_starts(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let first_topic = create_topic(&app, &a, "First topic").await;
+    let second_topic = create_topic(&app, &a, "Segundo tema").await;
+
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.student),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let first = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/conversations",
+            Some(&a.student),
+            Some(json!({"topic_id": first_topic})),
+        ),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first = json_body(first).await;
+    assert_eq!(first["language"], "en");
+
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.student),
+            Some(json!({"language": "es"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let old = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/conversations/{}", first["id"].as_str().unwrap()),
+                Some(&a.student),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(old["language"], "en");
+
+    let second = json_body(
+        send(
+            &app,
+            json_req(
+                "POST",
+                "/api/conversations",
+                Some(&a.student),
+                Some(json!({"topic_id": second_topic})),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(second["language"], "es");
+}
+
+#[sqlx::test]
 async fn unavailable_sources_are_rejected(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;

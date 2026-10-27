@@ -11,6 +11,10 @@ CREATE TABLE users (
     -- 臨時密碼登入後必須先更改
     must_change_password boolean NOT NULL DEFAULT false,
     display_name text,
+    -- 介面與新對話使用的語言。帳號可能在本人首次登入前由管理者建立；
+    -- language_initialized 用來區分「尚待 Accept-Language 初始化」與使用者已確認的 zh-TW。
+    language     text NOT NULL DEFAULT 'zh-TW' CHECK (language IN ('zh-TW', 'en', 'es')),
+    language_initialized boolean NOT NULL DEFAULT false,
     -- 首次登入時依 ADMIN_EMAILS 授予，之後以資料庫為準
     is_admin     boolean NOT NULL DEFAULT false,
     -- 帳號停用（F-01.4，S-01.3）：只有管理者可操作；停用時清除所有 session，資料全部保留，復原後照舊

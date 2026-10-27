@@ -1,0 +1,207 @@
+[
+  {
+    "id": "C01",
+    "stage": 1,
+    "title": "Resource allocation",
+    "description": "How should the school distribute a limited scholarship fund?",
+    "conversation": [
+      { "role": "user", "content": "I think the school should distribute the scholarships in a fair way." }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "The student has not said what “fair” means; it could be equal shares, by need, or by grades, so the key concept should be clarified first.",
+    "acceptable_types": ["clarify"],
+    "learning_goal": "Clarify which distribution standard the student means by “fair”."
+  },
+  {
+    "id": "C02",
+    "stage": 1,
+    "title": "Phones at school",
+    "description": "Should the school ban students from using phones during class?",
+    "conversation": [
+      { "role": "user", "content": "I agree with some limits, but I don't think we should be controlled too much." }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "The student has not said which limits they accept, so the exact scope of their position is unclear and they should be asked to define it.",
+    "acceptable_types": ["clarify"],
+    "learning_goal": "Clarify which phone-use limits the student supports and which they oppose."
+  },
+  {
+    "id": "C03",
+    "stage": 1,
+    "title": "Privacy and safety",
+    "description": "For campus safety, should the school install more security cameras?",
+    "conversation": [
+      { "role": "assistant", "content": "Some people value the safety cameras bring, while others worry about their privacy. What do you think?" },
+      { "role": "user", "content": "I think that one matters more." }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "It is unclear what “that one” refers to, so first confirm whether the student means safety or privacy.",
+    "acceptable_types": ["clarify"],
+    "learning_goal": "Clarify whether “that one” means safety or privacy."
+  },
+  {
+    "id": "R01",
+    "stage": 2,
+    "title": "The trolley problem",
+    "description": "Should you switch the track to save five people?",
+    "conversation": [
+      { "role": "user", "content": "I think you should switch the track to save the five people." }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "The student has stated a clear position but given no supporting reason, so ask for the reason.",
+    "acceptable_types": ["reason"],
+    "learning_goal": "Guide the student to give a reason for switching the track."
+  },
+  {
+    "id": "R02",
+    "stage": 2,
+    "title": "Phones at school",
+    "description": "Should the school ban students from using phones during class?",
+    "conversation": [
+      { "role": "user", "content": "I support banning phones during class, because phones just shouldn't be used in class." }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "The student says “because”, but the second half only restates the position and gives no substantive supporting reason.",
+    "acceptable_types": ["reason"],
+    "learning_goal": "Guide the student to give a substantive reason that does not simply repeat the original position."
+  },
+  {
+    "id": "R03",
+    "stage": 2,
+    "title": "Volunteer service",
+    "description": "Should the school make volunteer service a graduation requirement?",
+    "conversation": [
+      { "role": "assistant", "content": "Do you support or oppose making volunteer service a graduation requirement?" },
+      { "role": "user", "content": "I oppose it." },
+      { "role": "assistant", "content": "What is your main reason for opposing it?" },
+      { "role": "user", "content": "I just feel it shouldn't be required, and I haven't figured out why yet." }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "The student still has not given a reason, so a more concrete way of asking can help them form one, without assuming they already have a full argument.",
+    "acceptable_types": ["reason"],
+    "learning_goal": "Help the student turn a vague intuition into a reason for opposing a volunteer-service requirement."
+  },
+  {
+    "id": "A01",
+    "stage": 2,
+    "title": "Majority rule",
+    "description": "Should a class use majority vote to decide shared activities?",
+    "conversation": [
+      { "role": "user", "content": "We should use majority vote, because everyone has just one vote, and the option with more votes represents the interests of everyone in the class." }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "The student has given a reason, but the step from majority support to representing everyone's interests rests on a premise worth examining.",
+    "acceptable_types": ["assumption", "counterexample"],
+    "learning_goal": "Examine whether majority support means everyone's interests are represented."
+  },
+  {
+    "id": "A02",
+    "stage": 2,
+    "title": "Voluntary risk",
+    "description": "Should people who voluntarily take part in a high-risk activity bear all the consequences themselves?",
+    "conversation": [
+      { "role": "user", "content": "Yes, because they signed a consent form when they registered, which means they fully understood all the risks and voluntarily accepted every possible outcome." }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "The student treats signing a consent form as full understanding and acceptance of every risk, so the premise behind that inference should be examined.",
+    "acceptable_types": ["assumption", "clarify"],
+    "learning_goal": "Examine whether signing a consent form shows full understanding and acceptance of all risks."
+  },
+  {
+    "id": "A03",
+    "stage": 2,
+    "title": "Exams and effort",
+    "description": "Are exam scores enough to judge how hard a student has worked?",
+    "conversation": [
+      { "role": "user", "content": "Yes, because everyone takes the same paper, so any difference in scores can only come from how much effort they put in." }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "The student assumes the same paper rules out other factors such as background, resources and health, so this premise is worth examining.",
+    "acceptable_types": ["assumption", "clarify"],
+    "learning_goal": "Examine whether taking the same paper shows that score differences can only come from effort; if needed, first clarify what “effort” means."
+  },
+  {
+    "id": "X01",
+    "stage": 3,
+    "title": "Sacrificing the few",
+    "description": "To save more people, is it acceptable to sacrifice a few?",
+    "conversation": [
+      { "role": "user", "content": "As long as more people are saved, sacrificing a few is justified, because more people surviving is the only standard that matters." },
+      { "role": "assistant", "content": "Even if the few have not agreed to it, do you still think the number of people is the only standard?" },
+      { "role": "user", "content": "Yes. In any situation, if more people are saved, it is justified." }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "The student has confirmed a universal principle, so a concrete boundary case can test whether they still accept it.",
+    "acceptable_types": ["counterexample", "assumption"],
+    "learning_goal": "Prompt the student to test how far, and where the limits of, using the number of lives saved as the only standard hold."
+  },
+  {
+    "id": "X02",
+    "stage": 3,
+    "title": "The duty to be honest",
+    "description": "Is lying wrong in every situation?",
+    "conversation": [
+      { "role": "user", "content": "Lying is always wrong, because lying destroys trust between people." },
+      { "role": "assistant", "content": "Do you think the duty to be honest should come first in every situation?" },
+      { "role": "user", "content": "Yes. Even if telling the truth leads to bad results, there can be no exceptions." }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "The student explicitly rules out all exceptions, so the principle can be tested with a concrete situation where telling the truth could harm someone.",
+    "acceptable_types": ["counterexample", "assumption"],
+    "learning_goal": "Prompt the student to test whether an absolute ban on lying holds in a concrete conflict."
+  },
+  {
+    "id": "X03",
+    "stage": 3,
+    "title": "Keeping promises",
+    "description": "Should people keep their promises in every situation?",
+    "conversation": [
+      { "role": "user", "content": "You must keep a promise, because other people plan things around what you promised." },
+      { "role": "assistant", "content": "If circumstances change after the promise is made, do you think the obligation is still exactly the same?" },
+      { "role": "user", "content": "Yes, whatever happens, you should do what you originally promised." }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "The student holds that even changed circumstances allow no exception, so a concrete case where keeping the promise conflicts with an emergency can test it.",
+    "acceptable_types": ["counterexample", "assumption"],
+    "learning_goal": "Prompt the student to test whether the absolute duty to keep promises holds in an emergency."
+  },
+  {
+    "id": "V01",
+    "stage": 3,
+    "title": "Outcomes and rules",
+    "description": "When judging right and wrong, how should outcomes and rules be weighed?",
+    "conversation": [
+      { "role": "user", "content": "I care more about outcomes, because the real effects of an action matter a lot. But I also understand that some people value rules, because everyone needs a stable standard of behavior. I'm not sure how to weigh the two when they conflict." }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "The student has offered two criteria with a reason for each and is explicitly unsure how to weigh them, so guide them to compare the perspectives.",
+    "acceptable_types": ["perspective", "counterexample"],
+    "learning_goal": "Help the student compare the outcome-based and rule-based criteria and think about how to weigh them when they conflict."
+  },
+  {
+    "id": "V02",
+    "stage": 3,
+    "title": "Freedom and the public good",
+    "description": "How should noise limits in public places balance freedom with the rights of others?",
+    "conversation": [
+      { "role": "user", "content": "I value the freedom of street performers, because public space should allow different kinds of expression. Nearby residents value their rest and think they shouldn't be forced to put up with noise. I think both sides have a point, but I don't know where the limit should be drawn." }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "The student understands both sides' interests and reasons, so ask them to compare the two sets of criteria rather than ask again for the reason behind a single position.",
+    "acceptable_types": ["perspective", "counterexample"],
+    "learning_goal": "Help the student weigh street performers' freedom against residents' right to rest and find a reasonable limit."
+  },
+  {
+    "id": "V03",
+    "stage": 3,
+    "title": "Family and fairness",
+    "description": "When resources are short, how should the duty to care for family be weighed against fair distribution?",
+    "conversation": [
+      { "role": "user", "content": "I lean toward looking after my family first, because we have special obligations to each other. But I also think strangers' needs shouldn't be ignored because of that. I want to work out how much weight closeness and level of need should each get." }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "The student has clearly named two criteria, obligations of relationship and fairness by need, so it fits to compare how much weight each should carry in allocation decisions.",
+    "acceptable_types": ["perspective", "counterexample"],
+    "learning_goal": "Help the student compare the special duty to family with fairness by need and form a standard for weighing them when allocating resources."
+  }
+]

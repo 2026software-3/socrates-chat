@@ -164,8 +164,8 @@ pub(crate) async fn create(
     };
     // 每位學生在每個活動至多一場對話（S-04.7）：靠唯一索引，同時送出的兩個請求也只會成功一個
     let created = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, activity_id, topic_id, classroom_id, title, description, language, status,
                    stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived",
     )
@@ -175,6 +175,7 @@ pub(crate) async fn create(
     .bind(classroom_id)
     .bind(title)
     .bind(description)
+    .bind(&cu.user.language)
     .fetch_one(&mut *tx)
     .await;
     let c: Conversation = match created {
