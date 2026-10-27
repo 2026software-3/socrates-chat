@@ -1000,15 +1000,15 @@ pub fn format_transcript(turns: &[ChatTurn], language: &str) -> String {
     turns
         .iter()
         .map(|t| {
-            let who = match (language, t.role) {
-                ("en", ChatRole::User) => "Student",
-                ("en", ChatRole::Assistant) => "Facilitator",
-                ("es", ChatRole::User) => "Estudiante",
-                ("es", ChatRole::Assistant) => "Facilitador",
-                (_, ChatRole::User) => "學生",
-                (_, ChatRole::Assistant) => "引導者",
+            // 標籤與分隔符一起依語言決定；未知語言一律退回繁體中文
+            let (who, separator) = match (language, t.role) {
+                ("en", ChatRole::User) => ("Student", ": "),
+                ("en", ChatRole::Assistant) => ("Facilitator", ": "),
+                ("es", ChatRole::User) => ("Estudiante", ": "),
+                ("es", ChatRole::Assistant) => ("Facilitador", ": "),
+                (_, ChatRole::User) => ("學生", "："),
+                (_, ChatRole::Assistant) => ("引導者", "："),
             };
-            let separator = if language == "zh-TW" { "：" } else { ": " };
             format!("{who}{separator}{}", t.content)
         })
         .collect::<Vec<_>>()
@@ -1337,6 +1337,34 @@ mod tests {
             "zh-TW",
         );
         assert_eq!(t, "學生：我拉桿\n\n引導者：為什麼？");
+    }
+
+    #[test]
+    fn transcript_separator_follows_the_same_fallback_as_the_labels() {
+        let turns = [
+            ChatTurn {
+                role: ChatRole::User,
+                content: "x".into(),
+            },
+            ChatTurn {
+                role: ChatRole::Assistant,
+                content: "y".into(),
+            },
+        ];
+        assert_eq!(
+            format_transcript(&turns, "en"),
+            "Student: x\n\nFacilitator: y"
+        );
+        assert_eq!(
+            format_transcript(&turns, "es"),
+            "Estudiante: x\n\nFacilitador: y"
+        );
+        // 未知語言和標籤一樣退回繁體中文，分隔符也要是全形冒號
+        assert_eq!(
+            format_transcript(&turns, "fr"),
+            format_transcript(&turns, "zh-TW")
+        );
+        assert_eq!(format_transcript(&turns, "fr"), "學生：x\n\n引導者：y");
     }
 
     fn run(chunks: &[&str]) -> (String, String) {
