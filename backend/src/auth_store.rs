@@ -160,24 +160,25 @@ pub async fn initialize_language(
     user_id: Uuid,
     preferred: &str,
 ) -> Result<String, sqlx::Error> {
-    let initialized: Option<String> = sqlx::query_scalar(
-        "UPDATE users SET language = $2, language_initialized = true, updated_at = now()
-         WHERE id = $1 AND NOT language_initialized
-         RETURNING language",
+    // 一次往返：還沒初始化就更新並回傳新值，否則回傳目前的值。
+    // 同一語句內的 SELECT 看不到 CTE 的更新，所以兩邊用 COALESCE 接起來。
+    let language: Option<String> = sqlx::query_scalar(
+        "WITH initialized AS (
+             UPDATE users SET language = $2, language_initialized = true, updated_at = now()
+             WHERE id = $1 AND NOT language_initialized
+             RETURNING language
+         )
+         SELECT COALESCE(
+             (SELECT language FROM initialized),
+             (SELECT language FROM users WHERE id = $1)
+         )",
     )
     .bind(user_id)
     .bind(preferred)
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await?;
-    match initialized {
-        Some(language) => Ok(language),
-        None => {
-            sqlx::query_scalar("SELECT language FROM users WHERE id = $1")
-                .bind(user_id)
-                .fetch_one(pool)
-                .await
-        }
-    }
+    // 帳號不存在時 COALESCE 為 NULL
+    language.ok_or(sqlx::Error::RowNotFound)
 }
 
 /// `find_active_session` 一次查回的 session、使用者與角色。
@@ -540,4 +541,81 @@ pub async fn create_password_session(
     .bind(token_hash)
     .fetch_one(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use tracing_subscriber::{Layer, layer::SubscriberExt};
+
+    use super::*;
+
+    /// 數 sqlx 送出幾條語句（每條 SQL 一個 `sqlx::query` 事件），用來守住登入熱路徑的往返次數。
+    struct QueryCounter(Arc<AtomicUsize>);
+
+    impl<S: tracing::Subscriber> Layer<S> for QueryCounter {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() == "sqlx::query" {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    async fn counted<T>(pool: &PgPool, fut: impl Future<Output = T>) -> (T, usize) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(QueryCounter(count.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        // tracing 會全域快取 callsite 的興趣；平行的測試可能搶先註冊，先暖機到看得到事件為止
+        for _ in 0..100 {
+            sqlx::query("SELECT 1").execute(pool).await.unwrap();
+            if count.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            count.load(Ordering::SeqCst) > 0,
+            "sqlx query events not observed"
+        );
+        count.store(0, Ordering::SeqCst);
+        let out = fut.await;
+        (out, count.load(Ordering::SeqCst))
+    }
+
+    async fn seed_user(pool: &PgPool) -> Uuid {
+        sqlx::query_scalar("INSERT INTO users (email) VALUES ('lang@example.com') RETURNING id")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn initialize_language_sets_it_once_in_a_single_query(pool: PgPool) {
+        let user = seed_user(&pool).await;
+
+        let (first, queries) = counted(&pool, initialize_language(&pool, user, "es")).await;
+        assert_eq!(first.unwrap(), "es");
+        assert_eq!(queries, 1, "first login");
+
+        // 之後的登入不覆蓋已初始化的語言，而且仍然只花一次往返
+        let (later, queries) = counted(&pool, initialize_language(&pool, user, "en")).await;
+        assert_eq!(later.unwrap(), "es");
+        assert_eq!(queries, 1, "later logins");
+    }
+
+    #[sqlx::test]
+    async fn initialize_language_for_a_missing_user_is_row_not_found(pool: PgPool) {
+        let err = initialize_language(&pool, Uuid::new_v4(), "es")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, sqlx::Error::RowNotFound));
+    }
 }
