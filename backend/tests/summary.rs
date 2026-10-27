@@ -304,9 +304,9 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let res = send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await;
+    let res = send(&app, get("/api/summaries", Some(&a.teacher))).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let list = json_body(res).await;
+    let list = json_body(res).await["items"].clone();
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["conversation_id"], conv);
@@ -320,13 +320,14 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
         &app,
         json_req(
             "DELETE",
-            "/api/roster/student@example.com",
+            &format!("/api/classrooms/{}/roster/student@example.com", a.classroom),
             Some(&a.admin),
             None,
         ),
     )
     .await;
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1);
 }
 
@@ -340,7 +341,8 @@ async fn admin_view_of_summaries_is_masked(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     let row = &list[0];
     for f in ["stance", "reasons"] {
         assert_eq!(row[f], "message");
@@ -358,9 +360,7 @@ async fn teacher_summary_list_denies_everyone_else(pool: PgPool) {
         (None, StatusCode::UNAUTHORIZED),
     ] {
         assert_eq!(
-            send(&app, get("/api/teacher/summaries", cookie))
-                .await
-                .status(),
+            send(&app, get("/api/summaries", cookie)).await.status(),
             expected
         );
     }
@@ -386,7 +386,8 @@ async fn deleting_conversation_removes_summary_from_teacher_view(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert!(list.as_array().unwrap().is_empty());
 }
 
@@ -411,7 +412,8 @@ async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     assert_eq!(list[0]["stance"], "message");
     assert!(!list.to_string().contains("會拉桿"));
 }
@@ -422,27 +424,7 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
     let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
     // 教師不參與討論：不能開對話
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "試用"})),
-        ),
-    )
-    .await;
-    let act = json_body(res).await["id"].as_str().unwrap().to_string();
-    send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/activities/{act}/publish"),
-            Some(&a.teacher),
-            None,
-        ),
-    )
-    .await;
+    let act = published_activity_with_topic(&app, &a, "試用").await;
     let res = send(
         &app,
         json_req(
@@ -461,7 +443,8 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     let ids: Vec<&str> = list
         .as_array()
         .unwrap()
@@ -508,10 +491,9 @@ async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
 async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     // 第一代卡住（Hang）；在它逾時前手動重試，第二代很快成功。
     // 第一代之後失敗收尾時，不能把已完成的結果改成 failed。
-    // 第一代的首字逾時要遠大於手動重試的等待，否則它自己的自動重試會先拿走第二個腳本
+    // 總結只受完整回覆上限限制；這個上限要遠大於手動重試的等待，否則第一代的自動重試會先拿走第二個腳本
     let config = Config {
-        ai_first_token_timeout: Duration::from_millis(1500),
-        ai_total_timeout: Duration::from_millis(4000),
+        ai_total_timeout: Duration::from_millis(1500),
         ..test_config()
     };
     let ai = FakeAi::with(vec![Hang, Reply(vec![GOOD])]);

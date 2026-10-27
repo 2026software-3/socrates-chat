@@ -44,7 +44,7 @@ async fn null_clears_topic_category_and_absent_keeps_it(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn null_unlinks_activity_topic_and_absent_keeps_it(pool: PgPool) {
+async fn activity_topic_cannot_be_cleared_and_absent_keeps_it(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let topic = create(&app, &a.admin, "/api/topics", json!({"title": "T"})).await;
@@ -52,7 +52,7 @@ async fn null_unlinks_activity_topic_and_absent_keeps_it(pool: PgPool) {
         &app,
         &a.teacher,
         "/api/activities",
-        json!({"title": "A", "topic_id": topic}),
+        json!({"title": "A", "topic_id": topic, "classroom_id": a.classroom}),
     )
     .await;
     let path = format!("/api/activities/{id}");
@@ -60,7 +60,19 @@ async fn null_unlinks_activity_topic_and_absent_keeps_it(pool: PgPool) {
     let body = patch(&app, &a.teacher, &path, json!({"title": "A2"})).await;
     assert_eq!(body["topic_id"], topic.as_str());
 
-    let body = patch(&app, &a.teacher, &path, json!({"topic_id": null})).await;
-    assert_eq!(body["topic_id"], Value::Null);
-    assert_eq!(body["title"], "A2");
+    // 活動必須有題目（S-04.7）：不能清除
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            &path,
+            Some(&a.teacher),
+            Some(json!({"topic_id": null})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
+    let got = json_body(send(&app, get(&path, Some(&a.teacher))).await).await;
+    assert_eq!(got["topic_id"], topic.as_str());
 }

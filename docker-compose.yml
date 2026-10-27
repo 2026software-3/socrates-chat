@@ -23,17 +23,31 @@ services:
   app:
     profiles: ["app"]
     build: .
+    # 避免 Docker 預設日誌無限制占用主機磁碟；舊檔由 local driver 壓縮與輪替。
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "5"
     env_file:
       - path: .env
         required: true
     environment:
       DATABASE_URL: postgres://socrates:socrates@db:5432/socrates
       RUN_MIGRATIONS: "true"
+      OPENAI_API_KEYS_FILE: /run/secrets/apikeylist
+    # .apikeylist 以 secret 掛入；容器內是非 root 使用者，主機上的檔案要 chmod 644，且必須存在
+    secrets:
+      - apikeylist
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "127.0.0.1:3000:3000"
+
+secrets:
+  apikeylist:
+    file: ./.apikeylist
 
 volumes:
   pgdata:

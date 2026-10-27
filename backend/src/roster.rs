@@ -1,8 +1,8 @@
-//! 教師清單與修課名單（F-01.2、F-25；規格見 S-01.3、S-01.4）。
+//! 教師清單與教室的修課名單（F-01.2、F-25、F-28.2；規格見 S-01.3、S-01.4、S-14）。
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post},
 };
@@ -14,17 +14,22 @@ use crate::{
     accounts::audit,
     auth::{RequireAdmin, RequireTeacher, hash_blocking},
     auth_store,
+    classrooms::visible_classroom,
     error::ApiError,
-    password,
+    pagination::{self, Page, Pagination},
+    password, roster_store,
 };
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/admin/teachers", get(list_teachers).post(add_teacher))
         .route("/api/admin/teachers/{email}", delete(remove_teacher))
-        .route("/api/roster", get(list_roster))
-        .route("/api/roster/import", post(import_roster))
-        .route("/api/roster/{email}", delete(remove_from_roster))
+        .route("/api/classrooms/{id}/roster", get(list_roster))
+        .route("/api/classrooms/{id}/roster/import", post(import_roster))
+        .route(
+            "/api/classrooms/{id}/roster/{email}",
+            delete(remove_from_roster),
+        )
 }
 
 /// 去空白並轉小寫；格式不合回傳 `None`。只做基本檢查，真正的驗證由 Google 登入完成。
@@ -53,9 +58,7 @@ pub(crate) struct EmailList {
 }
 
 const LIST_TEACHERS: &str = "SELECT email FROM teachers ORDER BY email";
-const LIST_ROSTER: &str = "SELECT email FROM enrollments ORDER BY email";
 const DELETE_TEACHER: &str = "DELETE FROM teachers WHERE email = lower($1)";
-const DELETE_ROSTER: &str = "DELETE FROM enrollments WHERE email = lower($1)";
 
 async fn list_emails(pool: &PgPool, sql: &'static str) -> Result<Vec<String>, ApiError> {
     let rows: Vec<(String,)> = sqlx::query_as(sql).fetch_all(pool).await?;
@@ -146,22 +149,57 @@ async fn delete_email(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---- 修課名單（教師或管理者操作）----
+// ---- 教室的修課名單（教室的建立者或管理者操作；他人的教室與不存在的教室一律 404）----
+
+/// 名單上的一筆；以物件包裝，之後要加欄位不必再改契約。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct RosterEntry {
+    email: String,
+}
+
+/// 名單分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct RosterPage {
+    items: Vec<RosterEntry>,
+    next_cursor: Option<String>,
+}
 
 #[utoipa::path(
     get,
-    path = "/api/roster",
+    path = "/api/classrooms/{id}/roster",
     tag = "roster",
-    summary = "修課名單",
-    responses((status = 200, description = "名單信箱", body = EmailList))
+    summary = "教室的修課名單",
+    params(
+        ("id" = Uuid, Path, description = "教室 ID"),
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
+    ),
+    responses((status = 200, description = "名單分頁，依 email 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_roster(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<EmailList>, ApiError> {
-    Ok(Json(EmailList {
-        emails: list_emails(&state.pool, LIST_ROSTER).await?,
-    }))
+    Path(raw_id): Path<String>,
+    Query(query): Query<Pagination>,
+) -> Result<Json<Page<RosterEntry>>, ApiError> {
+    let limit = query.limit()?;
+    let after: Option<String> = query.cursor("roster")?;
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    let rows = roster_store::list_emails(
+        &state.pool,
+        classroom.id,
+        after.as_deref(),
+        (limit + 1) as i64,
+    )
+    .await?;
+    let rows = rows
+        .into_iter()
+        .map(|email| RosterEntry { email })
+        .collect();
+    Ok(Json(pagination::page(rows, limit, "roster", |row| {
+        row.email.clone()
+    })?))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -223,7 +261,7 @@ pub(crate) struct Credential {
 }
 
 /// 信箱是否屬於教師或管理者（教師清單、`ADMIN_EMAILS` 或已是管理者的使用者）。
-async fn is_staff_email(
+pub(crate) async fn is_staff_email(
     state: &AppState,
     conn: &mut sqlx::PgConnection,
     email: &str,
@@ -243,29 +281,30 @@ async fn is_staff_email(
 
 #[utoipa::path(
     post,
-    path = "/api/roster/import",
+    path = "/api/classrooms/{id}/roster/import",
     tag = "roster",
-    summary = "匯入修課名單（只新增）",
+    summary = "匯入教室的修課名單（只新增）",
+    params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ImportBody,
-    responses((status = 200, description = "匯入結果", body = ImportResult))
+    responses((status = 200, description = "匯入結果", body = ImportResult), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn import_roster(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
+    Path(raw_id): Path<String>,
     Json(body): Json<ImportBody>,
 ) -> Result<Json<ImportResult>, ApiError> {
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
     let parsed = parse_roster(&body.text);
     let mut added = 0;
     let mut credentials = Vec::new();
     let mut tx = state.pool.begin().await?;
+    // 封存檢查與寫入同一個交易：教室列的共享鎖持續到提交，封存不會插在中間
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     // 整批名單、帳號與稽核一起提交，避免失敗時遺失一次性的臨時密碼。
     // 匯入只新增，不移除名單上原有的人
     for email in &parsed.emails {
-        let r = sqlx::query("INSERT INTO enrollments (email) VALUES ($1) ON CONFLICT DO NOTHING")
-            .bind(email)
-            .execute(&mut *tx)
-            .await?;
-        if r.rows_affected() == 0 {
+        if !roster_store::add(&mut tx, classroom.id, email).await? {
             continue;
         }
         added += 1;
@@ -296,23 +335,34 @@ pub(crate) async fn import_roster(
 
 #[utoipa::path(
     delete,
-    path = "/api/roster/{email}",
+    path = "/api/classrooms/{id}/roster/{email}",
     tag = "roster",
-    summary = "移出名單（資料保留）",
-    params(("email" = String, Path, description = "電子郵件")),
-    responses((status = 204, description = "已移出"), (status = 404, description = "not_found", body = crate::error::ErrorBody))
+    summary = "移出教室名單（資料保留；只影響這間教室）",
+    params(
+        ("id" = Uuid, Path, description = "教室 ID"),
+        ("email" = String, Path, description = "電子郵件")
+    ),
+    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn remove_from_roster(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-    Path(email): Path<String>,
+    Path((raw_id, email)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    delete_email(
-        &state.pool,
-        DELETE_ROSTER,
-        &email,
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    let mut tx = state.pool.begin().await?;
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
+    if !roster_store::remove(&mut tx, classroom.id, &email).await? {
+        return Err(ApiError::not_found());
+    }
+    audit(
+        &mut *tx,
         cu.user.id,
         "roster_removed",
+        &email.to_lowercase(),
+        None,
     )
-    .await
+    .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }

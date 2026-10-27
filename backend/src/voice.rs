@@ -7,11 +7,13 @@
 //! 具體的語音模型尚未決定（S-03.4 之後），所以沒有預設值：`OPENAI_STT_MODEL`、`OPENAI_TTS_MODEL`
 //! 沒設定時兩個端點都回 `503 voice_unavailable`，前端改提示用文字輸入。
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{DefaultBodyLimit, FromRequest, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -20,7 +22,7 @@ use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{AppState, auth::RequireStudent, config::Config, error::ApiError};
+use crate::{AppState, auth::RequireStudent, config::Config, error::ApiError, key_pool::KeyPool};
 
 /// 一次辨識可上傳的音訊上限；單次發言上限 60 秒（S-05.2），這個大小綽綽有餘。
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
@@ -60,7 +62,8 @@ pub trait VoiceProvider: Send + Sync {
 pub struct OpenAiVoice {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
+    stt_base_url: String,
+    keys: Arc<KeyPool>,
     stt_model: Option<String>,
     tts_model: Option<String>,
     tts_voice: String,
@@ -74,7 +77,13 @@ impl OpenAiVoice {
                 .build()
                 .unwrap_or_default(),
             base_url: c.openai_base_url.trim_end_matches('/').to_string(),
-            api_key: c.openai_api_key.clone(),
+            stt_base_url: c
+                .openai_stt_base_url
+                .as_deref()
+                .unwrap_or(&c.openai_base_url)
+                .trim_end_matches('/')
+                .to_string(),
+            keys: c.openai_keys.clone(),
             stt_model: c.openai_stt_model.clone(),
             tts_model: c.openai_tts_model.clone(),
             tts_voice: c.openai_tts_voice.clone(),
@@ -103,6 +112,8 @@ impl VoiceProvider for OpenAiVoice {
         language: &str,
     ) -> Result<String, VoiceError> {
         let model = self.stt_model.as_deref().ok_or(VoiceError::Unavailable)?;
+        // 語音端點的錯誤（例如模型沒開放給這把 key）不回報給 pool，免得連累對話用的 key
+        let lease = self.keys.acquire().ok_or(VoiceError::Failed)?;
         let part = multipart::Part::bytes(audio)
             .file_name(format!("speech.{}", extension_for(mime)))
             .mime_str(mime.split(';').next().unwrap_or("audio/webm"))
@@ -113,14 +124,14 @@ impl VoiceProvider for OpenAiVoice {
             .text("language", language.to_string());
         let res = self
             .http
-            .post(format!("{}/audio/transcriptions", self.base_url))
-            .bearer_auth(&self.api_key)
+            .post(format!("{}/audio/transcriptions", self.stt_base_url))
+            .bearer_auth(&lease.key)
             .multipart(form)
             .send()
             .await
             .map_err(|_| VoiceError::Failed)?;
         if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "speech-to-text returned an error status");
+            tracing::warn!(status = %res.status(), key = lease.index + 1, "speech-to-text returned an error status");
             return Err(VoiceError::Failed);
         }
         let v: serde_json::Value = res.json().await.map_err(|_| VoiceError::Failed)?;
@@ -133,10 +144,11 @@ impl VoiceProvider for OpenAiVoice {
     async fn speak(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
         // 語言由輸入文字本身決定，OpenAI 的語音合成沒有語言參數
         let model = self.tts_model.as_deref().ok_or(VoiceError::Unavailable)?;
+        let lease = self.keys.acquire().ok_or(VoiceError::Failed)?;
         let res = self
             .http
             .post(format!("{}/audio/speech", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&lease.key)
             .json(&json!({
                 "model": model,
                 "voice": self.tts_voice,
@@ -147,12 +159,12 @@ impl VoiceProvider for OpenAiVoice {
             .await
             .map_err(|_| VoiceError::Failed)?;
         if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "text-to-speech returned an error status");
+            tracing::warn!(status = %res.status(), key = lease.index + 1, "text-to-speech returned an error status");
             return Err(VoiceError::Failed);
         }
         res.bytes()
             .await
-            .map(|b| b.to_vec())
+            .map(Vec::from)
             .map_err(|_| VoiceError::Failed)
     }
 }
@@ -199,6 +211,31 @@ pub(crate) struct Transcript {
     text: String,
 }
 
+/// Translate Axum's body-size rejection into the API's standard JSON error format.
+pub(crate) struct AudioBody(Bytes);
+
+impl FromRequest<AppState> for AudioBody {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        Bytes::from_request(req, state)
+            .await
+            .map(Self)
+            .map_err(|rejection| {
+                let status = rejection.into_response().status();
+                if status == StatusCode::PAYLOAD_TOO_LARGE {
+                    ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "payload_too_large",
+                        "音訊大小不可超過 10 MB",
+                    )
+                } else {
+                    ApiError::bad_request("invalid_audio", "無法讀取音訊內容")
+                }
+            })
+    }
+}
+
 /// 辨識上傳的音訊（請求本文就是音訊位元組）；回傳文字，音訊不保存。
 #[utoipa::path(
     post,
@@ -206,15 +243,22 @@ pub(crate) struct Transcript {
     tag = "voice",
     summary = "語音轉文字（請求本文是音訊，上限 10 MB）",
     params(TranscribeQuery),
-    request_body(content = AudioBytes, content_type = "audio/*", description = "音訊位元組；Content-Type 須為 audio/*"),
-    responses((status = 200, description = "辨識文字", body = Transcript), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody))
+    request_body(content = AudioBytes, content_type = "audio/*", description = "原始音訊位元組；Content-Type 須為 audio/*；辨識完成或失敗後立即丟棄，不會保存"),
+    responses(
+        (status = 200, description = "辨識文字", body = Transcript),
+        (status = 400, description = "invalid_language：不支援的語言；invalid_audio：Content-Type 不是 audio/* 或音訊本文為空", body = crate::error::ErrorBody),
+        (status = 413, description = "payload_too_large：音訊本文超過 10 MB", body = crate::error::ErrorBody),
+        (status = 502, description = "voice_failed", body = crate::error::ErrorBody),
+        (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody),
+        crate::error::CommonErrors
+    )
 )]
 pub(crate) async fn transcribe(
     _: RequireStudent,
     State(state): State<AppState>,
     Query(q): Query<TranscribeQuery>,
     headers: HeaderMap,
-    body: Bytes,
+    body: AudioBody,
 ) -> Result<Json<Transcript>, ApiError> {
     let language = iso_language(&q.language)
         .ok_or(ApiError::bad_request("invalid_language", "不支援的語言"))?;
@@ -223,12 +267,13 @@ pub(crate) async fn transcribe(
         .and_then(|v| v.to_str().ok())
         .filter(|m| m.starts_with("audio/"))
         .ok_or(ApiError::bad_request("invalid_audio", "需要音訊內容"))?;
-    if body.is_empty() {
+    if body.0.is_empty() {
         return Err(ApiError::bad_request("invalid_audio", "需要音訊內容"));
     }
     let text = state
         .voice
-        .transcribe(body.to_vec(), mime, language)
+        // 請求本體獨占時直接取得緩衝，不複製（最多 10 MB）
+        .transcribe(Vec::from(body.0), mime, language)
         .await
         .map_err(voice_error)?;
     Ok(Json(Transcript { text }))

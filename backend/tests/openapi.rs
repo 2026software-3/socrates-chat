@@ -76,3 +76,108 @@ async fn student_deletion_documents_delete_with_confirmation_body(pool: PgPool) 
     assert!(operation["responses"]["204"].is_object());
     assert!(doc["paths"].get("/api/students/{email}/delete").is_none());
 }
+
+/// 分頁列表都要記載 limit／cursor、400，並以 `$ref` 指向具名的分頁 schema。
+#[sqlx::test]
+async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    for (path, schema, expected) in [
+        (
+            "/api/conversations",
+            "ConversationPage",
+            vec!["limit", "cursor", "archived", "activity_id"],
+        ),
+        (
+            "/api/classrooms/{id}/students",
+            "StudentPage",
+            vec!["id", "limit", "cursor", "q"],
+        ),
+        (
+            "/api/classrooms/{id}/roster",
+            "RosterPage",
+            vec!["id", "limit", "cursor"],
+        ),
+        (
+            "/api/activities",
+            "ActivityPage",
+            vec!["limit", "cursor", "classroom_id", "archived"],
+        ),
+    ] {
+        let op = &doc["paths"][path]["get"];
+        let params: Vec<&str> = op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(params, expected, "{path}");
+        assert_eq!(
+            op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "{path}"
+        );
+        assert!(op["responses"]["400"].is_object(), "{path}");
+        assert!(
+            doc["components"]["schemas"][schema]["properties"]["next_cursor"].is_object(),
+            "{path}"
+        );
+    }
+}
+
+/// 學生列表的每一頁都帶符合 `q` 的 `total`，且 `q` 有 `invalid_filter` 錯誤說明。
+#[sqlx::test]
+async fn student_page_documents_total_and_invalid_filter(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let page = &doc["components"]["schemas"]["StudentPage"];
+    assert!(page["properties"]["total"].is_object());
+    assert!(
+        page["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("total"))
+    );
+    let op = &doc["paths"]["/api/classrooms/{id}/students"]["get"];
+    assert!(
+        op["responses"]["400"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_filter")
+    );
+}
+
+/// 文件列出的 409 錯誤碼必須是端點實際可能回的：新建教室不可能已封存；
+/// 開始對話遇到封存的活動或教室回 400 `invalid_conversation_source`，不是 409。
+#[sqlx::test]
+async fn documented_conflicts_are_ones_the_endpoint_can_return(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let conflict = |path: &str, method: &str| -> String {
+        doc["paths"][path][method]["responses"]["409"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(conflict("/api/classrooms", "post"), "classroom_name_taken");
+    assert_eq!(
+        conflict("/api/conversations", "post"),
+        "activity_already_started"
+    );
+    let start = doc["paths"]["/api/conversations"]["post"]["responses"]["400"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(start.contains("invalid_conversation_source") && start.contains("已封存"));
+    // 真正會被封存擋下的寫入端點仍要標示 classroom_archived
+    for (path, method) in [
+        ("/api/activities", "post"),
+        ("/api/classrooms/{id}", "patch"),
+        ("/api/classrooms/{id}/roster/import", "post"),
+        ("/api/conversations/{id}/end", "post"),
+    ] {
+        assert!(
+            conflict(path, method).contains("classroom_archived"),
+            "{method} {path}"
+        );
+    }
+}

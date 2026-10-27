@@ -7,67 +7,95 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, put},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     auth::{RequireAdmin, RequireTeacher},
+    classrooms::visible_classroom,
     error::ApiError,
-    roster::normalize_email,
+    pagination::{self, Page, Pagination},
+    roster::{is_staff_email, normalize_email},
+    roster_store::{self, StudentRow},
 };
+
+/// 學生分頁；`total` 是符合條件（同一個 `q`）的學生總數，每一頁都帶，不受游標影響。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct StudentPage {
+    items: Vec<StudentRow>,
+    next_cursor: Option<String>,
+    total: i64,
+}
+
+/// 分頁參數加上搜尋。
+#[derive(Deserialize)]
+pub(crate) struct StudentQuery {
+    #[serde(flatten)]
+    page: Pagination,
+    /// 搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元）
+    q: Option<String>,
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/students", get(list_students))
+        .route("/api/classrooms/{id}/students", get(list_students))
         .route("/api/students/{email}", delete(delete_student))
         .route("/api/admin/users/{id}/status", put(set_status))
 }
 
-#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
-pub(crate) struct StudentRow {
-    /// 使用者 UUID；尚未建立帳號時為 null。
-    id: Option<Uuid>,
-    email: String,
-    display_name: Option<String>,
-    /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
-    has_account: bool,
-    disabled: bool,
-    /// 已完成（總結已產生）的對話數；教師只看得到數量，看不到內容
-    completed_conversations: i64,
-}
-
-/// 修課名單上的學生與帳號狀態。
+/// 教室修課名單上的學生與帳號狀態。
 #[utoipa::path(
     get,
-    path = "/api/students",
+    path = "/api/classrooms/{id}/students",
     tag = "roster",
-    summary = "名單上的學生與帳號狀態",
-    responses((status = 200, description = "學生列表", body = Vec<StudentRow>))
+    summary = "教室名單上的學生與帳號狀態",
+    params(
+        ("id" = Uuid, Path, description = "教室 ID"),
+        ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 q 有效，換搜尋條件要從第一頁開始"),
+        ("q" = Option<String>, Query, description = "搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+    ),
+    responses((status = 200, description = "學生分頁，依 email 排序，帶符合條件的 total", body = StudentPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_students(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<Vec<StudentRow>>, ApiError> {
-    let rows = sqlx::query_as(
-        "SELECT u.id, e.email, u.display_name,
-                (u.id IS NOT NULL) AS has_account,
-                COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
-                COALESCE((SELECT count(*) FROM summaries s
-                          JOIN conversations c ON c.id = s.conversation_id
-                          WHERE c.user_id = u.id AND s.status = 'ready'), 0)
-                    AS completed_conversations
-         FROM enrollments e LEFT JOIN users u ON u.email = e.email
-         ORDER BY e.email",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(rows))
+    Path(raw_id): Path<String>,
+    Query(query): Query<StudentQuery>,
+) -> Result<Json<StudentPage>, ApiError> {
+    let limit = query.page.limit()?;
+    let q = pagination::search_term(query.q.as_deref())?;
+    let fingerprint = pagination::fingerprint(&q.map(str::to_lowercase));
+    let cursor: Option<(String, String)> = query.page.cursor("students")?;
+    // 游標只對產生它時的搜尋條件有效；換條件要從第一頁開始
+    if cursor.as_ref().is_some_and(|c| c.1 != fingerprint) {
+        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+    }
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    let search = q.map(pagination::like_pattern);
+    let (rows, total) = tokio::try_join!(
+        roster_store::list_students(
+            &state.pool,
+            classroom.id,
+            cursor.as_ref().map(|c| c.0.as_str()),
+            (limit + 1) as i64,
+            search.as_deref(),
+        ),
+        roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()),
+    )?;
+    let Page { items, next_cursor } = pagination::page(rows, limit, "students", |row| {
+        (row.email.clone(), fingerprint.clone())
+    })?;
+    Ok(Json(StudentPage {
+        items,
+        next_cursor,
+        total,
+    }))
 }
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
@@ -78,23 +106,100 @@ pub(crate) async fn audit(
     conn: impl sqlx::PgExecutor<'_>,
     actor: Uuid,
     action: &str,
-    target_email: &str,
+    target: &str,
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    audit_counted(conn, actor, action, target, reason, None).await
+}
+
+/// 稽核紀錄另帶數量；刪除教室或活動時記錄一併刪除的對話數（S-14）。
+pub(crate) async fn audit_counted(
+    conn: impl sqlx::PgExecutor<'_>,
+    actor: Uuid,
+    action: &str,
+    target: &str,
+    reason: Option<&str>,
+    item_count: Option<i64>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO audit_logs (actor_id, action, target_email, reason) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO audit_logs (actor_id, action, target_email, reason, item_count) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(actor)
     .bind(action)
-    .bind(target_email)
+    .bind(target)
     .bind(reason)
+    .bind(item_count.map(|n| n as i32))
     .execute(conn)
     .await?;
     Ok(())
 }
 
+/// 刪除請求的 JSON body 缺少、格式錯誤或不是 JSON 時，與名稱不符同樣回 400，維持專案的錯誤格式。
+pub(crate) fn confirmation<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ApiError> {
+    body.map(|Json(value)| value)
+        .map_err(|_| ApiError::bad_request("confirmation_mismatch", "請提供要刪除對象的名稱以確認"))
+}
+
+/// 輸入的名稱必須與對象名稱相同（比對時去除前後空白）。
+pub(crate) fn ensure_confirmed(given: &str, expected: &str) -> Result<(), ApiError> {
+    if given.trim() == expected.trim() {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "confirmation_mismatch",
+            "確認的名稱與要刪除的對象不符",
+        ))
+    }
+}
+
+/// 教室與活動刪除共用的 SQL 與稽核動作。
+pub(crate) struct DeleteSpec {
+    /// 鎖住要刪的列；開始對話會對同一列取 `FOR SHARE`，所以鎖住後再計數不會漏掉新對話
+    pub lock: &'static str,
+    pub count_conversations: &'static str,
+    pub delete: &'static str,
+    pub action: &'static str,
+}
+
+/// 在同一個交易中鎖列、計算一併刪除的對話數、刪除並寫入稽核日誌（S-14）。
+pub(crate) async fn delete_with_audit(
+    pool: &sqlx::PgPool,
+    spec: &DeleteSpec,
+    id: Uuid,
+    actor: Uuid,
+    target: &str,
+    reason: Option<String>,
+) -> Result<(), ApiError> {
+    let mut tx = pool.begin().await?;
+    let locked: Option<Uuid> = sqlx::query_scalar(spec.lock)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if locked.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let conversations: i64 = sqlx::query_scalar(spec.count_conversations)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query(spec.delete).bind(id).execute(&mut *tx).await?;
+    audit_counted(
+        &mut *tx,
+        actor,
+        spec.action,
+        target,
+        clean_reason(reason).as_deref(),
+        Some(conversations),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 原因為選填；去空白後為空視為沒有，並限制長度。
-fn clean_reason(reason: Option<String>) -> Option<String> {
+pub(crate) fn clean_reason(reason: Option<String>) -> Option<String> {
     reason
         .map(|r| r.trim().chars().take(500).collect::<String>())
         .filter(|r| !r.is_empty())
@@ -189,7 +294,8 @@ pub(crate) struct DeleteBody {
     confirm_email: String,
 }
 
-/// 刪除學生帳號：一併刪除對話、總結與修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除。
+/// 刪除學生帳號：一併刪除對話、總結與所有教室的修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除；
+/// 教師只能刪除完全屬於自己教室的學生，管理者不受限。
 #[utoipa::path(
     delete,
     path = "/api/students/{email}",
@@ -197,7 +303,7 @@ pub(crate) struct DeleteBody {
     summary = "刪除學生帳號與其資料",
     params(("email" = String, Path, description = "電子郵件")),
     request_body = DeleteBody,
-    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody))
+    responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 404, description = "not_found：帳號不存在，或教師要刪除的學生不完全屬於自己建立的教室", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn delete_student(
     RequireTeacher(cu): RequireTeacher,
@@ -213,16 +319,15 @@ pub(crate) async fn delete_student(
         ));
     }
     let mut tx = state.pool.begin().await?;
-    let (staff,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM teachers WHERE email = $1)
-             OR EXISTS (SELECT 1 FROM users WHERE email = $1 AND is_admin)",
-    )
-    .bind(&email)
-    .fetch_one(&mut *tx)
-    .await?;
-    if staff || state.config.admin_emails.contains(&email) {
+    if is_staff_email(&state, &mut tx, &email).await? {
         return Err(ApiError::conflict("not_a_student", "只能刪除學生帳號"));
     }
+    // 刪除會連同所有教室的資料一併刪除：教師只能刪除完全屬於自己教室的學生（範圍待確認，S-02.5）；
+    // 其他情況與不存在的帳號同樣回 404，不外露資源是否存在。
+    if !cu.roles.admin && !roster_store::belongs_only_to_owner(&mut tx, &email, cu.user.id).await? {
+        return Err(ApiError::not_found());
+    }
+    // 所有教室的名單項目一併移除（學生可屬於多個教室）
     let on_roster = sqlx::query("DELETE FROM enrollments WHERE email = $1")
         .bind(&email)
         .execute(&mut *tx)

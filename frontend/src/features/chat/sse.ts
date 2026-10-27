@@ -1,4 +1,4 @@
-import { ApiError } from '@/lib/api'
+import { ApiError, apiErrorFrom, isAbortError } from '@/lib/api'
 import type { SentMessage, StreamDone } from '@/lib/types'
 
 /** 一個完整的 SSE 事件框。 */
@@ -90,20 +90,7 @@ export type ReplyEvent = { type: 'delta'; text: string } | { type: 'done'; done:
 export type SendEvent = { type: 'sent'; sent: SentMessage } | ReplyEvent
 
 function isAbort(e: unknown, signal?: AbortSignal): boolean {
-  return signal?.aborted === true || (e instanceof DOMException && e.name === 'AbortError')
-}
-
-async function openError(res: Response): Promise<ApiError> {
-  let code = 'internal'
-  let requestId = res.headers.get('x-request-id') ?? ''
-  try {
-    const data = await res.json()
-    code = data?.error?.code ?? code
-    requestId = data?.error?.request_id ?? requestId
-  } catch {
-    // 非 JSON 錯誤（例如反向代理的 502）
-  }
-  return new ApiError(res.status, code, requestId)
+  return signal?.aborted === true || isAbortError(e)
 }
 
 function parseJson(data: string): unknown {
@@ -145,7 +132,7 @@ async function* openStream(url: string, init: RequestInit, signal?: AbortSignal)
     if (isAbort(e, signal)) throw e
     throw new ApiError(0, 'network', '')
   }
-  if (!res.ok) throw await openError(res)
+  if (!res.ok) throw await apiErrorFrom(res)
   if (!res.body) throw new ApiError(0, 'network', '')
 
   try {

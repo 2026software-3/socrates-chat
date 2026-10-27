@@ -1,7 +1,5 @@
 # F-07.1-AI 追問行為評估
 
-> F-10.1-AI（語音逐字稿處理）的評估另見 [`f10_1_README.md`](f10_1_README.md)。
-
 對應 [Issue #183：追問類型選擇：AI 提示與行為評估](https://github.com/2026software-3/socrates-chat/issues/183)。專案規則以 `docs/specs/` 的 S-03.2、S-03.4 為準；本文記錄目前評估實作，不新增或取代產品規格。
 
 ## 評估目的
@@ -23,7 +21,7 @@
 | 項目 | 位置／目前版本 |
 | --- | --- |
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
-| 提示詞版本 | `RULES_VERSION`：`v1.11/zh-TW`（v1.11 只新增 F-10.1 語音逐字稿規則，追問分類規則與 v1.10 相同；下方紀錄皆為 v1.10 的結果） |
+| 提示詞版本 | `RULES_VERSION`：`v1.11/zh-TW`（v1.11 加入送出前的個資遮蔽與佔位詞說明，S-02.6；下方紀錄為 v1.10 的結果，v1.11 尚未重新評估） |
 | 評估 runner | `backend/examples/try_f07.rs` |
 | 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v4` |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT` |
@@ -37,10 +35,9 @@
 
 ### 1. 設定環境
 
-在專案根目錄建立 `.env`（runner 讀取 `backend/../.env`）。以下為已使用的測試設定，金鑰須自行填入：
+在專案根目錄建立 `.env`（runner 讀取 `backend/../.env`）。以下為已使用的測試設定。金鑰不寫在 `.env`，改放專案根目錄的 `.apikeylist`（一行一把，格式見 `.apikeylist.example`；請求會輪流使用多把 key）：
 
 ```dotenv
-OPENAI_API_KEY=填入自己的金鑰
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
 # 選填；未設定時使用 https://api.openai.com/v1
@@ -67,7 +64,25 @@ cargo run --example try_f07
 
 runner 先驗證整份情境資料，再逐題執行受測模型；只有格式合格的回答才呼叫評審。15 題皆格式合格時，共呼叫受測模型 15 次、評審 15 次，會使用 API 額度。
 
-每次呼叫設定首個 token 15 秒、完整回覆 60 秒的逾時。runner 不自動重試失敗案例。每次執行建立新的結果目錄，不覆寫舊輪次。
+每次呼叫預設首個 token 15 秒、完整回覆 60 秒的逾時。runner 不自動重試失敗案例。每次執行建立新的結果目錄，不覆寫舊輪次。
+
+#### 調整逾時與題間間隔（選填）
+
+下列環境變數可直接放在指令前，不必寫進 `.env`；未設定時行為與以前相同。
+
+| 變數 | 預設 | 說明 |
+| --- | --- | --- |
+| `EVAL_FIRST_TOKEN_SECS` | 15 | 首個 content token 逾時（受測與評審共用）。推理型模型先輸出思考過程，`content` 長時間為空，實測可能要 7～13 秒以上，預設值會把整題判成 `API_ERROR` |
+| `EVAL_TOTAL_SECS` | 60 | 完整回覆逾時（受測與評審共用） |
+| `EVAL_DELAY_SECS` | 0 | 每題之間等待的秒數，用來避開免費供應商的限流 |
+
+```bash
+EVAL_FIRST_TOKEN_SECS=90 EVAL_TOTAL_SECS=240 EVAL_DELAY_SECS=20 cargo run --example try_f07
+```
+
+每題結果檔的 `timeouts_seconds` 會記錄該輪實際使用的值。比較不同模型時，請讓它們使用相同的逾時設定，否則比到的是速度而不是追問行為。
+
+注意免費額度：OpenRouter 免費帳號所有免費模型合計每天只有 50 次請求（儲值 10 美元後為 1000 次），一輪完整評估約 30 次（受測 15、評審 15）。額度用完後每題都會是 `API_ERROR`，並且會**同時用掉使用同一把金鑰的其他服務的額度**。跑評估前先確認額度。
 
 ## 固定情境集
 

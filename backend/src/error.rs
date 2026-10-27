@@ -13,6 +13,10 @@ tokio::task_local! {
     pub static REQUEST_ID: String;
 }
 
+/// 供 request logging 使用的安全錯誤分類；只含固定的 API error code。
+#[derive(Clone, Copy)]
+pub(crate) struct ErrorCode(pub &'static str);
+
 #[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
@@ -77,7 +81,7 @@ impl From<sqlx::Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let request_id = REQUEST_ID.try_with(|id| id.clone()).unwrap_or_default();
-        (
+        let mut response = (
             self.status,
             Json(json!({
                 "error": {
@@ -87,7 +91,9 @@ impl IntoResponse for ApiError {
                 }
             })),
         )
-            .into_response()
+            .into_response();
+        response.extensions_mut().insert(ErrorCode(self.code));
+        response
     }
 }
 
