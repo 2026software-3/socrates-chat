@@ -912,12 +912,64 @@ pub async fn collect_background(
     collect(ai, req, total, total).await
 }
 
+/// 中日韓文字與全形符號：每個字算一個單位。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+}
+
+/// 去掉前後空白並截到 `max` 個單位；結果為空時回傳 `None`。
+/// 中文每字算一個單位，其他文字以空白分隔的詞為單位，所以英文、西班牙文的
+/// 「N 字內」限制（提示中以單字計）不會把句子切在單字中間。
+fn clip_units(s: &str, max: usize) -> Option<String> {
+    let s = s.trim();
+    let mut units = 0;
+    let mut in_word = false;
+    for (i, c) in s.char_indices() {
+        if c.is_whitespace() {
+            in_word = false;
+        } else if is_cjk(c) || !in_word {
+            in_word = !is_cjk(c);
+            units += 1;
+            if units > max {
+                return clip(&s[..i], usize::MAX);
+            }
+        }
+    }
+    clip(s, usize::MAX)
+}
+
 /// 單一總結欄位的長度上限（字元）。
 const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
-/// 一句主張的長度上限（字元）。
+/// 翻譯後單一欄位的長度上限（字元）：中文翻成拉丁字母常變長數倍，所以是原上限的 4 倍。
+/// 超過就視為失敗，而不是悄悄截斷。
+const MAX_TRANSLATED_FIELD_CHARS: usize = 4 * MAX_SUMMARY_FIELD_CHARS;
+/// 一句主張的長度上限（單位：中文字或詞，見 `clip_units`）。
 const MAX_CLAIM_CHARS: usize = 60;
-/// 主張群組名稱的長度上限（字元）。
+/// 主張群組名稱的長度上限（單位同上）。
 const MAX_GROUP_NAME_CHARS: usize = 24;
+/// 一句主張的硬性字元上限：詞數上限擋不住沒有空白的超長字串（網址、亂碼）。
+const MAX_CLAIM_HARD_CHARS: usize = 10 * MAX_CLAIM_CHARS;
+/// 群組名稱的硬性字元上限；名稱有唯一索引，過長會讓寫入失敗。
+const MAX_GROUP_NAME_HARD_CHARS: usize = 10 * MAX_GROUP_NAME_CHARS;
+
+/// 先依單位（字／詞）截斷，再套硬性字元上限。
+fn clip_claim(s: &str) -> Option<String> {
+    clip(&clip_units(s, MAX_CLAIM_CHARS)?, MAX_CLAIM_HARD_CHARS)
+}
+
+fn clip_group_name(s: &str) -> Option<String> {
+    clip(
+        &clip_units(s, MAX_GROUP_NAME_CHARS)?,
+        MAX_GROUP_NAME_HARD_CHARS,
+    )
+}
+
+/// 譯成另一種語言的總結欄位（不含主張，主張不翻譯）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslatedSummary {
+    pub stance: String,
+    pub reasons: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
@@ -974,19 +1026,36 @@ pub fn format_transcript(turns: &[ChatTurn], language: &str) -> String {
     turns
         .iter()
         .map(|t| {
-            let who = match (language, t.role) {
-                ("en", ChatRole::User) => "Student",
-                ("en", ChatRole::Assistant) => "Facilitator",
-                ("es", ChatRole::User) => "Estudiante",
-                ("es", ChatRole::Assistant) => "Facilitador",
-                (_, ChatRole::User) => "學生",
-                (_, ChatRole::Assistant) => "引導者",
+            // 標籤與分隔符一起依語言決定；未知語言一律退回繁體中文
+            let (who, separator) = match (language, t.role) {
+                ("en", ChatRole::User) => ("Student", ": "),
+                ("en", ChatRole::Assistant) => ("Facilitator", ": "),
+                ("es", ChatRole::User) => ("Estudiante", ": "),
+                ("es", ChatRole::Assistant) => ("Facilitador", ": "),
+                (_, ChatRole::User) => ("學生", "："),
+                (_, ChatRole::Assistant) => ("引導者", "："),
             };
-            let separator = if language == "zh-TW" { "：" } else { ": " };
             format!("{who}{separator}{}", t.content)
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// 解析翻譯結果 `(立場, 核心理由)`：缺欄位、空白或格式錯誤回傳 `None`；
+/// 任一欄位超過 `MAX_TRANSLATED_FIELD_CHARS` 也回傳 `None`，不截斷。
+pub fn parse_summary_translation(raw: &str) -> Option<TranslatedSummary> {
+    #[derive(Deserialize)]
+    struct Raw {
+        stance: String,
+        reasons: String,
+    }
+    let r: Raw = extract_json(raw)?;
+    let fits =
+        |s: &str| !s.trim().is_empty() && s.trim().chars().count() <= MAX_TRANSLATED_FIELD_CHARS;
+    (fits(&r.stance) && fits(&r.reasons)).then(|| TranslatedSummary {
+        stance: r.stance.trim().to_string(),
+        reasons: r.reasons.trim().to_string(),
+    })
 }
 
 /// 解析總結；缺欄位、空白或格式錯誤都回傳 `None`（視為結果不完整，F-08.4）。
@@ -1001,7 +1070,7 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
     Some(Summary {
         stance: clip(&r.stance, MAX_SUMMARY_FIELD_CHARS)?,
         reasons: clip(&r.reasons, MAX_SUMMARY_FIELD_CHARS)?,
-        claim: r.claim.and_then(|c| clip(&c, MAX_CLAIM_CHARS)),
+        claim: r.claim.and_then(|c| clip_claim(&c)),
     })
 }
 
@@ -1053,7 +1122,7 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
         group: String,
     }
     let r: Raw = extract_json(raw)?;
-    let name = clip(&r.group, MAX_GROUP_NAME_CHARS)?;
+    let name = clip_group_name(&r.group)?;
     let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
     Some(
         existing
@@ -1096,6 +1165,15 @@ pub fn build_regroup_prompt(topic: &str, claims: &[String], language: &str) -> S
     }
 }
 
+/// 重新分組時送給 AI 的使用者訊息（提示本身在系統訊息裡）。
+pub fn regroup_user_message(language: &str) -> &'static str {
+    match language {
+        "en" => "Please group the claims.",
+        "es" => "Agrupa las afirmaciones.",
+        _ => "請分組。",
+    }
+}
+
 /// 解析重新分組結果：回傳 `(群組名稱, 成員的 0 起算索引)`。名稱重複的群組合併，
 /// 超出範圍或重複出現的編號忽略，沒有成員的群組丟棄；整體格式不符回傳 `None`。
 pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<usize>)>> {
@@ -1112,7 +1190,7 @@ pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<u
     let mut seen = vec![false; claim_count];
     let mut out: Vec<(String, Vec<usize>)> = Vec::new();
     for g in r.groups {
-        let Some(name) = clip(&g.name, MAX_GROUP_NAME_CHARS) else {
+        let Some(name) = clip_group_name(&g.name) else {
             continue;
         };
         let members: Vec<usize> = g
@@ -1158,6 +1236,86 @@ mod tests {
         ] {
             assert!(parse_summary(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn claim_limit_counts_words_for_space_separated_text() {
+        // en/es 提示要求 30 字內：一句 40 個英文單字（約 200 字元）不能被切在單字中間
+        let claim = ["wording"; 40].join(" ");
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{claim}\"}}");
+        let got = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(
+            got.split(' ').all(|w| w == "wording"),
+            "cut mid-word: {got}"
+        );
+        assert_eq!(got.split(' ').count(), 40);
+        // 超過上限時以整個單字為單位截斷
+        let long = ["wording"; 100].join(" ");
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{long}\"}}");
+        let got = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(
+            got.split(' ').all(|w| w == "wording"),
+            "cut mid-word: {got}"
+        );
+        assert_eq!(got.split(' ').count(), MAX_CLAIM_CHARS);
+    }
+
+    #[test]
+    fn unspaced_or_huge_words_cannot_get_past_the_character_caps() {
+        // 一個沒有空白的超長字串在詞數上只算 1 個單位，仍要受字元上限約束
+        let blob = "x".repeat(5000);
+        let claim = clip_claim(&blob).unwrap();
+        assert_eq!(claim.chars().count(), MAX_CLAIM_HARD_CHARS);
+        let name = clip_group_name(&blob).unwrap();
+        assert_eq!(name.chars().count(), MAX_GROUP_NAME_HARD_CHARS);
+        // 24 個各 100 字元的詞：詞數剛好沒超過，字元數超過
+        let words = vec!["y".repeat(100); 24].join(" ");
+        assert!(clip_group_name(&words).unwrap().chars().count() <= MAX_GROUP_NAME_HARD_CHARS);
+        // 經過解析函式也一樣，而且截斷後不會留下結尾空白
+        let raw = format!("{{\"group\":\"{words}\"}}");
+        let parsed = parse_group_name(&raw, &[]).unwrap();
+        assert!(parsed.chars().count() <= MAX_GROUP_NAME_HARD_CHARS);
+        assert_eq!(parsed, parsed.trim());
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{blob}\"}}");
+        let claim = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(claim.chars().count() <= MAX_CLAIM_HARD_CHARS);
+    }
+
+    #[test]
+    fn normal_length_text_is_not_touched_by_the_character_caps() {
+        let claim = ["wording"; 30].join(" "); // 30 個詞約 239 字元
+        assert_eq!(clip_claim(&claim).as_deref(), Some(claim.as_str()));
+        let name = ["moral"; 12].join(" ");
+        assert_eq!(clip_group_name(&name).as_deref(), Some(name.as_str()));
+    }
+
+    #[test]
+    fn group_name_limit_counts_words_for_space_separated_text() {
+        let name = ["moral"; 12].join(" ");
+        let raw = format!("{{\"group\":\"{name}\"}}");
+        assert_eq!(parse_group_name(&raw, &[]).as_deref(), Some(name.as_str()));
+        let raw = format!(
+            "{{\"groups\":[{{\"name\":\"{name}\",\"members\":[1]}},{{\"name\":\"{name} x\",\"members\":[2]}}]}}"
+        );
+        let got = parse_regroup(&raw, 2).unwrap();
+        assert_eq!(
+            got.len(),
+            2,
+            "names must not be cut to the same prefix and merged"
+        );
+        assert_eq!(got[0].0, name);
+    }
+
+    #[test]
+    fn cjk_limits_still_count_characters() {
+        assert_eq!(
+            clip_units("長".repeat(200).as_str(), 60)
+                .unwrap()
+                .chars()
+                .count(),
+            60
+        );
+        assert_eq!(clip_units("該 拉桿", 3).as_deref(), Some("該 拉桿"));
     }
 
     #[test]
@@ -1251,6 +1409,34 @@ mod tests {
             "zh-TW",
         );
         assert_eq!(t, "學生：我拉桿\n\n引導者：為什麼？");
+    }
+
+    #[test]
+    fn transcript_separator_follows_the_same_fallback_as_the_labels() {
+        let turns = [
+            ChatTurn {
+                role: ChatRole::User,
+                content: "x".into(),
+            },
+            ChatTurn {
+                role: ChatRole::Assistant,
+                content: "y".into(),
+            },
+        ];
+        assert_eq!(
+            format_transcript(&turns, "en"),
+            "Student: x\n\nFacilitator: y"
+        );
+        assert_eq!(
+            format_transcript(&turns, "es"),
+            "Estudiante: x\n\nFacilitador: y"
+        );
+        // 未知語言和標籤一樣退回繁體中文，分隔符也要是全形冒號
+        assert_eq!(
+            format_transcript(&turns, "fr"),
+            format_transcript(&turns, "zh-TW")
+        );
+        assert_eq!(format_transcript(&turns, "fr"), "學生：x\n\n引導者：y");
     }
 
     fn run(chunks: &[&str]) -> (String, String) {

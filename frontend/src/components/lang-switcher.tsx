@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { useAuth } from '@/auth/auth-context'
+import { rememberLoginPick, useAuth } from '@/auth/auth-context'
 import { LANGS, LANG_LABELS, type Lang } from '@/i18n/define'
 import { errorText, useI18n } from '@/i18n'
 import { api } from '@/lib/api'
@@ -14,7 +14,10 @@ export function LangSwitcher() {
   async function change(next: Lang) {
     const previous = lang
     setLang(next)
-    if (auth.status !== 'authed') return
+    if (auth.status !== 'authed') {
+      rememberLoginPick(next)
+      return
+    }
     setSaving(true)
     try {
       const me = await api.patch<Me>('/api/me', { language: next })

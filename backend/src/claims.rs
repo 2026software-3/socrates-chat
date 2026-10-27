@@ -19,7 +19,7 @@ use crate::{
     AppState, activity_store,
     ai::{
         AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
-        collect_background, parse_group_name, parse_regroup,
+        collect_background, parse_group_name, parse_regroup, regroup_user_message,
     },
     auth::RequireTeacher,
     error::{ApiError, db_error_class},
@@ -30,15 +30,22 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// 把一場對話的主張歸入群組（背景呼叫，盡力而為）。
+///
+/// 群組名稱是給教師看的，而且同一活動的學生可能各用不同語言，所以名稱一律用教室擁有者
+/// （建立教室的教師）的語言，不用學生自己的對話語言；重新分組用的是按下按鈕的教師的語言，
+/// 兩者在同一間教室內是同一個人。
+///
+/// 已知限制：教師中途換了介面語言時，新主張會以新語言命名，既有群組的名稱不會跟著改，
+/// 同一活動可能暫時有兩種語言的近似群組，直到教師按「重新分組」。名稱存的是文字而不是
+/// 翻譯鍵，要自動改名得再呼叫一次 AI，所以這裡不做。
 pub async fn assign_group(
     state: &AppState,
     conversation: Uuid,
     activity: Uuid,
     topic: &str,
     claim: &str,
-    language: &str,
 ) {
-    if let Err(e) = try_assign(state, conversation, activity, topic, claim, language).await {
+    if let Err(e) = try_assign(state, conversation, activity, topic, claim).await {
         tracing::warn!(class = %db_error_class(&e), "claim grouping bookkeeping failed");
     }
 }
@@ -49,14 +56,24 @@ async fn try_assign(
     activity: Uuid,
     topic: &str,
     claim: &str,
-    language: &str,
 ) -> Result<(), sqlx::Error> {
-    let existing: Vec<(String,)> = sqlx::query_as(
-        "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
-    )
-    .bind(activity)
-    .fetch_all(&state.pool)
-    .await?;
+    let (language, existing): (Option<String>, Vec<(String,)>) = tokio::try_join!(
+        sqlx::query_scalar(
+            "SELECT u.language
+             FROM activities a
+             JOIN classrooms cl ON cl.id = a.classroom_id
+             JOIN users u ON u.id = cl.created_by
+             WHERE a.id = $1",
+        )
+        .bind(activity)
+        .fetch_optional(&state.pool),
+        sqlx::query_as(
+            "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
+        )
+        .bind(activity)
+        .fetch_all(&state.pool),
+    )?;
+    let language = language.as_deref().unwrap_or("zh-TW");
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
     let req = AiRequest {
         system: build_group_assign_prompt(topic, &existing, language),
@@ -124,8 +141,8 @@ pub(crate) async fn regroup(
         .await?
         .ok_or_else(ApiError::not_found)?;
     crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
-    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
-        "SELECT s.conversation_id, s.claim, a.title, c.language
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT s.conversation_id, s.claim, a.title
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN activities a ON a.id = c.activity_id
@@ -135,20 +152,21 @@ pub(crate) async fn regroup(
     .bind(body.activity_id)
     .fetch_all(&state.pool)
     .await?;
-    let Some((_, _, title, language)) = rows.first() else {
+    let Some((_, _, title)) = rows.first() else {
         return Err(ApiError::conflict(
             "no_claims",
             "這個活動還沒有可分組的主張",
         ));
     };
     let title = title.clone();
-    let language = language.clone();
-    let claims: Vec<String> = rows.iter().map(|(_, c, _, _)| c.clone()).collect();
+    // 群組名稱是給教師看的，用教師的語言；學生各自的對話語言不同，不能拿來決定
+    let language = cu.user.language.as_str();
+    let claims: Vec<String> = rows.iter().map(|(_, c, _)| c.clone()).collect();
     let req = AiRequest {
-        system: build_regroup_prompt(&title, &claims, &language),
+        system: build_regroup_prompt(&title, &claims, language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
-            content: "請分組。".into(),
+            content: regroup_user_message(language).into(),
         }],
     };
     let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;

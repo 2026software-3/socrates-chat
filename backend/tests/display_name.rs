@@ -227,3 +227,59 @@ async fn google_login_fills_the_name_when_it_was_cleared(pool: PgPool) {
         .unwrap();
     assert_eq!(again.display_name.as_deref(), Some("New"));
 }
+
+#[sqlx::test]
+async fn patch_with_name_and_language_is_all_or_nothing(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    // 讓任何把語言改成 es 的寫入失敗，模擬第二個欄位寫入時資料庫出錯
+    sqlx::query(
+        "CREATE FUNCTION reject_es() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'es rejected'; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_es BEFORE UPDATE ON users
+         FOR EACH ROW WHEN (NEW.language = 'es' AND OLD.language <> 'es')
+         EXECUTE FUNCTION reject_es()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let before = me_name(&app, &a.student).await;
+    let (status, _) = rename(
+        &app,
+        Some(&a.student),
+        json!({"display_name": "小明", "language": "es"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        me_name(&app, &a.student).await,
+        before,
+        "the name must not be saved when the same PATCH fails"
+    );
+}
+
+#[sqlx::test]
+async fn patch_with_name_and_language_applies_both(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let (status, body) = rename(
+        &app,
+        Some(&a.student),
+        json!({"display_name": "小明", "language": "es"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "小明");
+    assert_eq!(body["language"], "es");
+    // 兩個欄位都沒帶時不改任何東西
+    let (status, body) = rename(&app, Some(&a.student), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "小明");
+    assert_eq!(body["language"], "es");
+}
