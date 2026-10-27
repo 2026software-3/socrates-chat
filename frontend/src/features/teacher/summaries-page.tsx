@@ -29,7 +29,8 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
   const [showTranslation, setShowTranslation] = useState(false)
   const [translating, setTranslating] = useState(false)
   const [translationError, setTranslationError] = useState<unknown>(null)
-  const visible = showTranslation && translation?.language === lang ? translation : row
+  const shown = showTranslation && translation?.language === lang ? translation : null
+  const visible = shown ?? row
 
   async function translate() {
     setTranslating(true)
@@ -78,7 +79,7 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
               {errorText(t, translationError)}
             </p>
           ) : null}
-          {showTranslation && translation?.language === lang ? (
+          {shown ? (
             <Button type="button" variant="outline" size="sm" onClick={() => setShowTranslation(false)}>
               {t('teacher.summaries.showOriginal')}
             </Button>

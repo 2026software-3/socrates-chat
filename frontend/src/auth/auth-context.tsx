@@ -30,19 +30,24 @@ export function rememberLoginPick(lang: Lang) {
   }
 }
 
-/** 清除登入前的選擇；帶 `before` 時只清掉在那個時間點之前留下的（之後才選的還在等登入結果）。 */
-function clearLoginPick(before = Infinity, current = readLoginPick()) {
+function clearLoginPick() {
   try {
-    if (!current || current.at < before) sessionStorage.removeItem(LOGIN_PICK_KEY)
+    sessionStorage.removeItem(LOGIN_PICK_KEY)
   } catch {
     // 忽略
   }
 }
 
+/** 只清掉在 `before` 之前留下的選擇（之後才選的還在等登入結果）。 */
+function clearStaleLoginPick(before: number) {
+  const current = readLoginPick()
+  if (!current || current.at < before) clearLoginPick()
+}
+
 /** 取出並清掉登入前的選擇；過期的當作沒有。 */
 function takeLoginPick(): Lang | null {
   const pick = readLoginPick()
-  clearLoginPick(Infinity, pick)
+  clearLoginPick()
   return pick && Date.now() - pick.at <= LOGIN_PICK_TTL_MS ? pick.lang : null
 }
 
@@ -87,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 401 = 沒登入；其他（網路、500）顯示錯誤而不是假裝沒登入
       if (isApiError(e) && e.status === 401) {
         // 沒有人登入：這次載入之前留下的選擇不屬於任何人，別留給下一個登入的人
-        clearLoginPick(started)
+        clearStaleLoginPick(started)
         setState({ status: 'anon' })
       }
       else if (isApiError(e) && e.code === 'account_disabled') setState({ status: 'disabled' })
