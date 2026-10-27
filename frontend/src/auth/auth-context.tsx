@@ -1,7 +1,29 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, isApiError } from '@/lib/api'
 import { useI18n } from '@/i18n'
+import { LANGS, type Lang } from '@/i18n/define'
 import type { Me, Roles } from '@/lib/types'
+
+const LOGIN_PICK_KEY = 'lang-picked-before-login'
+
+/** 登入前（登入頁）使用者明確選的語言；登入完成後要以它為準，不能被伺服器的初始值蓋掉。 */
+export function rememberLoginPick(lang: Lang) {
+  try {
+    sessionStorage.setItem(LOGIN_PICK_KEY, lang)
+  } catch {
+    // sessionStorage 不可用（隱私模式等）：退回以帳號語言為準
+  }
+}
+
+function takeLoginPick(): Lang | null {
+  try {
+    const pick = sessionStorage.getItem(LOGIN_PICK_KEY)
+    sessionStorage.removeItem(LOGIN_PICK_KEY)
+    return pick && (LANGS as readonly string[]).includes(pick) ? (pick as Lang) : null
+  } catch {
+    return null
+  }
+}
 
 type AuthState =
   | { status: 'loading' }
@@ -27,7 +49,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const me = await api.get<Me>('/api/me')
+      let me = await api.get<Me>('/api/me')
+      const pick = takeLoginPick()
+      if (pick && pick !== me.language) {
+        // 帳號第一次登入時語言由伺服器依 Accept-Language 初始化；使用者在登入頁的選擇優先
+        try {
+          me = await api.patch<Me>('/api/me', { language: pick })
+        } catch {
+          // 存不進去就維持帳號原本的語言
+        }
+      }
       setLang(me.language)
       setState({ status: 'authed', me })
     } catch (e) {
