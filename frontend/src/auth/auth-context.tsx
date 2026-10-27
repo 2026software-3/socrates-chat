@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, isApiError } from '@/lib/api'
 import { useI18n } from '@/i18n'
-import { LANGS, type Lang } from '@/i18n/define'
+import { isLang, type Lang } from '@/i18n/define'
 import type { Me, Roles } from '@/lib/types'
 
 const LOGIN_PICK_KEY = 'lang-picked-before-login'
@@ -14,8 +14,8 @@ function readLoginPick(): LoginPick | null {
   try {
     const raw = sessionStorage.getItem(LOGIN_PICK_KEY)
     const pick = raw ? (JSON.parse(raw) as Partial<LoginPick>) : null
-    if (!pick || typeof pick.at !== 'number' || !(LANGS as readonly string[]).includes(pick.lang as string)) return null
-    return { lang: pick.lang as Lang, at: pick.at }
+    if (!pick || typeof pick.at !== 'number' || !isLang(pick.lang)) return null
+    return { lang: pick.lang, at: pick.at }
   } catch {
     return null
   }
@@ -31,10 +31,9 @@ export function rememberLoginPick(lang: Lang) {
 }
 
 /** 清除登入前的選擇；帶 `before` 時只清掉在那個時間點之前留下的（之後才選的還在等登入結果）。 */
-function clearLoginPick(before = Infinity) {
+function clearLoginPick(before = Infinity, current = readLoginPick()) {
   try {
-    const pick = readLoginPick()
-    if (!pick || pick.at < before) sessionStorage.removeItem(LOGIN_PICK_KEY)
+    if (!current || current.at < before) sessionStorage.removeItem(LOGIN_PICK_KEY)
   } catch {
     // 忽略
   }
@@ -43,7 +42,7 @@ function clearLoginPick(before = Infinity) {
 /** 取出並清掉登入前的選擇；過期的當作沒有。 */
 function takeLoginPick(): Lang | null {
   const pick = readLoginPick()
-  clearLoginPick()
+  clearLoginPick(Infinity, pick)
   return pick && Date.now() - pick.at <= LOGIN_PICK_TTL_MS ? pick.lang : null
 }
 

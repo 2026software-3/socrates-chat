@@ -948,9 +948,9 @@ const MAX_CLAIM_CHARS: usize = 60;
 /// 主張群組名稱的長度上限（單位同上）。
 const MAX_GROUP_NAME_CHARS: usize = 24;
 /// 一句主張的硬性字元上限：詞數上限擋不住沒有空白的超長字串（網址、亂碼）。
-const MAX_CLAIM_HARD_CHARS: usize = 600;
+const MAX_CLAIM_HARD_CHARS: usize = 10 * MAX_CLAIM_CHARS;
 /// 群組名稱的硬性字元上限；名稱有唯一索引，過長會讓寫入失敗。
-const MAX_GROUP_NAME_HARD_CHARS: usize = 240;
+const MAX_GROUP_NAME_HARD_CHARS: usize = 10 * MAX_GROUP_NAME_CHARS;
 
 /// 先依單位（字／詞）截斷，再套硬性字元上限。
 fn clip_with_cap(s: &str, units: usize, hard_chars: usize) -> Option<String> {
