@@ -689,7 +689,7 @@ pub(crate) async fn available(
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {
     let (activities, topics) = tokio::try_join!(
-        activity_store::list_published_for_student(&state.pool, &cu.user.email),
+        activity_store::list_published_for_student(&state.pool, cu.user.id),
         sqlx::query_as(
             "SELECT id, title, description, category, is_active FROM topics
              WHERE is_active ORDER BY created_at, id",

@@ -5,7 +5,6 @@ mod common;
 use axum::{Router, http::StatusCode};
 use common::*;
 use serde_json::json;
-use socrates_chat_backend::roster::parse_roster;
 use sqlx::PgPool;
 
 async fn roles_of(app: &Router, cookie: &str) -> serde_json::Value {
@@ -147,12 +146,4 @@ async fn invalid_teacher_email_is_rejected(pool: PgPool) {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_email");
-}
-
-#[test]
-fn parse_roster_handles_header_csv_columns_and_duplicates() {
-    let p = parse_roster("Email,name\r\n A@x.com ,Alice\n\"b@x.com\"\nA@X.COM\nbroken@\n");
-    assert_eq!(p.emails, vec!["a@x.com", "b@x.com"]);
-    assert_eq!(p.invalid.len(), 1);
-    assert_eq!(p.invalid[0].line, 5);
 }

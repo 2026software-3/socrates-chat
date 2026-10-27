@@ -128,8 +128,8 @@ async fn null_and_blank_clear_the_name(pool: PgPool) {
         rename(&app, Some(&a.student), json!({"display_name": "小明"})).await;
         let (status, body) = rename(&app, Some(&a.student), json!({"display_name": cleared})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["display_name"], Value::Null);
-        assert_eq!(me_name(&app, &a.student).await, Value::Null);
+        assert_eq!(body["display_name"], "學生");
+        assert_eq!(me_name(&app, &a.student).await, "學生");
     }
 }
 
@@ -139,27 +139,27 @@ async fn absent_field_keeps_the_name(pool: PgPool) {
     let a = seed_actors(&app).await;
     let (status, body) = rename(&app, Some(&a.student), json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["display_name"], "User sub-student");
+    assert_eq!(body["display_name"], "學生");
 }
 
 #[sqlx::test]
-async fn length_limit_is_20_characters_not_bytes(pool: PgPool) {
+async fn length_limit_is_30_characters_not_bytes(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let exactly_20 = "字".repeat(20);
-    let (status, body) = rename(&app, Some(&a.student), json!({"display_name": exactly_20})).await;
+    let exactly_30 = "字".repeat(30);
+    let (status, body) = rename(&app, Some(&a.student), json!({"display_name": exactly_30})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["display_name"], exactly_20);
+    assert_eq!(body["display_name"], exactly_30);
 
     let (status, body) = rename(
         &app,
         Some(&a.student),
-        json!({"display_name": "字".repeat(21)}),
+        json!({"display_name": "字".repeat(31)}),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "invalid_display_name");
-    assert_eq!(me_name(&app, &a.student).await, exactly_20);
+    assert_eq!(me_name(&app, &a.student).await, exactly_30);
 }
 
 #[sqlx::test]
@@ -181,7 +181,7 @@ async fn control_characters_inside_the_name_are_rejected(pool: PgPool) {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name:?}");
         assert_eq!(body["error"]["code"], "invalid_display_name");
     }
-    assert_eq!(me_name(&app, &a.student).await, "User sub-student");
+    assert_eq!(me_name(&app, &a.student).await, "學生");
 }
 
 #[sqlx::test]
@@ -198,7 +198,7 @@ async fn other_unusual_characters_are_still_allowed(pool: PgPool) {
 async fn length_is_counted_after_trimming(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let padded = format!("  {}  ", "字".repeat(20));
+    let padded = format!("  {}  ", "字".repeat(30));
     let (status, _) = rename(&app, Some(&a.student), json!({"display_name": padded})).await;
     assert_eq!(status, StatusCode::OK);
 }

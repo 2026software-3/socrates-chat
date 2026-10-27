@@ -5,8 +5,15 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn user(pool: &PgPool, email: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
+    let student_id = match email {
+        "s@example.com" => Some("14000001A"),
+        "only-b@example.com" => Some("14000002A"),
+        "pending@example.com" => Some("14000003A"),
+        _ => None,
+    };
+    sqlx::query_scalar("INSERT INTO users (email, student_id, imported_name) VALUES ($1, $2, CASE WHEN $2::text IS NULL THEN NULL ELSE '合成姓名' END) RETURNING id")
         .bind(email)
+        .bind(student_id)
         .fetch_one(pool)
         .await
         .unwrap()
@@ -82,6 +89,7 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool: PgPool) {
+    let student = user(&pool, "s@example.com").await;
     let owner = user(&pool, "t@example.com").await;
     let (a, b) = (room(&pool, owner, "A").await, room(&pool, owner, "B").await);
     let topic = topic(&pool).await;
@@ -100,17 +108,17 @@ async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool
         .await
         .unwrap();
 
-    let seen = activity_store::list_published_for_student(&pool, "s@example.com")
+    let seen = activity_store::list_published_for_student(&pool, student)
         .await
         .unwrap();
     assert_eq!(seen.iter().map(|x| x.id).collect::<Vec<_>>(), [in_a.id]);
     assert!(
-        activity_store::find_startable(&mut conn, in_b.id, "s@example.com")
+        activity_store::find_startable(&mut conn, in_b.id, student)
             .await
             .unwrap()
             .is_none()
     );
-    let ok = activity_store::find_startable(&mut conn, in_a.id, "s@example.com")
+    let ok = activity_store::find_startable(&mut conn, in_a.id, student)
         .await
         .unwrap()
         .unwrap();
@@ -120,7 +128,7 @@ async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool
         .await
         .unwrap();
     assert_eq!(
-        activity_store::list_published_for_student(&pool, "s@example.com")
+        activity_store::list_published_for_student(&pool, student)
             .await
             .unwrap()
             .len(),

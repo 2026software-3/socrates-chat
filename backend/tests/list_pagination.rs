@@ -55,7 +55,7 @@ async fn error_code(app: &Router, path: &str, cookie: &str) -> (StatusCode, Stri
 // ---- GET /api/classrooms/{id}/students ----
 
 #[sqlx::test]
-async fn students_paginate_by_email_with_total_on_every_page(pool: PgPool) {
+async fn students_paginate_by_id_with_total_on_every_page(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let mut want = enroll(&app, &a, 5).await;
@@ -65,7 +65,11 @@ async fn students_paginate_by_email_with_total_on_every_page(pool: PgPool) {
     let base = format!("/api/classrooms/{}/students?limit=2", a.classroom);
     let pages = all_pages(&app, &base, &a.teacher).await;
     assert_eq!(pages.len(), 3);
-    assert_eq!(field(&pages, "email"), want);
+    let mut emails = field(&pages, "email");
+    emails.sort();
+    assert_eq!(emails, want);
+    let ids = field(&pages, "id");
+    assert!(ids.windows(2).all(|w| w[0] < w[1]));
     for p in &pages {
         assert_eq!(p["total"], 6);
     }
@@ -100,7 +104,8 @@ async fn students_items_only_carry_allowed_fields(pool: PgPool) {
             "display_name",
             "email",
             "has_account",
-            "id"
+            "id",
+            "student_id"
         ]
     );
     let mut top: Vec<&str> = page
@@ -144,7 +149,9 @@ async fn students_q_matches_email_or_display_name_across_all_pages(pool: PgPool)
         ("%20alice%20", vec!["s03@example.com", "s11@example.com"]),
     ] {
         let pages = all_pages(&app, &format!("{base}?limit=1&q={q}"), &a.teacher).await;
-        assert_eq!(field(&pages, "email"), want, "{q}");
+        let mut emails = field(&pages, "email");
+        emails.sort();
+        assert_eq!(emails, want, "{q}");
         for p in &pages {
             assert_eq!(p["total"], want.len(), "{q}");
         }
@@ -325,7 +332,7 @@ async fn students_authorization_is_preserved(pool: PgPool) {
 // ---- GET /api/classrooms/{id}/roster ----
 
 #[sqlx::test]
-async fn roster_paginates_by_email_as_objects(pool: PgPool) {
+async fn roster_paginates_by_id_as_objects(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let mut want = enroll(&app, &a, 4).await;
@@ -334,8 +341,12 @@ async fn roster_paginates_by_email_as_objects(pool: PgPool) {
     let base = format!("/api/classrooms/{}/roster?limit=2", a.classroom);
     let pages = all_pages(&app, &base, &a.teacher).await;
     assert_eq!(pages.len(), 3);
-    assert_eq!(field(&pages, "email"), want);
-    assert_eq!(pages[0]["items"][0], json!({"email": "s01@example.com"}));
+    let mut emails = field(&pages, "email");
+    emails.sort();
+    assert_eq!(emails, want);
+    let ids = field(&pages, "id");
+    assert!(ids.windows(2).all(|w| w[0] < w[1]));
+    assert!(pages[0]["items"][0]["id"].is_string());
     assert_eq!(pages[2]["next_cursor"], Value::Null);
 }
 
@@ -559,5 +570,70 @@ async fn activities_validate_input_default_and_authorization(pool: PgPool) {
                 .status(),
             status
         );
+    }
+}
+
+#[sqlx::test]
+async fn roster_and_student_pages_are_stable_when_an_email_is_added(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let room = create_classroom(&app, &actors.teacher, "分頁測試教室").await;
+    let response = import_roster(
+        &app,
+        &actors.teacher,
+        &room,
+        "甲,11111111A,\n乙,22222222B,\n丙,33333333C,",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    for endpoint in ["roster", "students"] {
+        let base = format!("/api/classrooms/{room}/{endpoint}?limit=1");
+        let first = json_body(send(&app, get(&base, Some(&actors.teacher))).await).await;
+        let first_id = first["items"][0]["id"].as_str().unwrap();
+        let cursor = first["next_cursor"].as_str().unwrap();
+        sqlx::query("UPDATE users SET email = 'zzz@example.com' WHERE id = $1::uuid")
+            .bind(first_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let unseen: Uuid = sqlx::query_scalar("SELECT user_id FROM enrollments WHERE classroom_id = $1::uuid AND user_id <> $2::uuid ORDER BY user_id LIMIT 1")
+            .bind(&room)
+            .bind(first_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET email = '000@example.com' WHERE id = $1")
+            .bind(unseen)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut next = Some(cursor.to_owned());
+        let mut rest = Vec::new();
+        while let Some(cursor) = next {
+            let page = json_body(
+                send(
+                    &app,
+                    get(&format!("{base}&cursor={cursor}"), Some(&actors.teacher)),
+                )
+                .await,
+            )
+            .await;
+            rest.extend(field(std::slice::from_ref(&page), "id"));
+            next = page["next_cursor"].as_str().map(str::to_owned);
+            assert!(rest.len() <= 3);
+        }
+        assert_eq!(rest.len(), 2);
+        assert!(!rest.iter().any(|id| id == first_id));
+        assert!(rest.contains(&unseen.to_string()));
+        sqlx::query("UPDATE users SET email = NULL WHERE id = $1::uuid")
+            .bind(first_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET email = NULL WHERE id = $1")
+            .bind(unseen)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }
