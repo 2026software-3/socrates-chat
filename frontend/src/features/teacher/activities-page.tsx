@@ -7,7 +7,6 @@ import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -55,7 +54,7 @@ function ActivityForm({
   topics,
   topicsFailed,
   submitLabel,
-  resetOnSuccess = false,
+  publishLabel,
   onSubmit,
 }: {
   idPrefix: string
@@ -63,10 +62,10 @@ function ActivityForm({
   topics: Topic[]
   topicsFailed: boolean
   submitLabel: string
-  /** 成功後是否清空表單（建立表單用）。 */
-  resetOnSuccess?: boolean
+  /** 有值時多一顆「儲存並發布」按鈕（建立表單用）。 */
+  publishLabel?: string
   /** 失敗時 throw。 */
-  onSubmit: (v: Values) => Promise<void>
+  onSubmit: (v: Values, publish: boolean) => Promise<void>
 }) {
   const t = useT()
   const [values, setValues] = useState<Values>(initial)
@@ -77,8 +76,8 @@ function ActivityForm({
   const busy = useRef(false)
   const hasInitialTopic = initial.topicId !== ''
 
-  async function submit(e: FormEvent) {
-    e.preventDefault()
+  async function submit(e: FormEvent | undefined, publish = false) {
+    e?.preventDefault()
     if (busy.current) return
     // 活動必須選題庫題目（S-04.7）；標題與題目都缺時一起提示
     const titleMissing = !values.title.trim()
@@ -103,8 +102,7 @@ function ActivityForm({
     busy.current = true
     setPending(true)
     try {
-      await onSubmit({ ...values, title: values.title.trim() })
-      if (resetOnSuccess) setValues(initial)
+      await onSubmit({ ...values, title: values.title.trim() }, publish)
     } catch (err) {
       // 前端自己丟的一般 Error（例如尚無可用教室）直接顯示其訊息
       setServerError(err instanceof Error && err.name !== 'ApiError' ? err.message : errorText(t, err))
@@ -185,9 +183,17 @@ function ActivityForm({
           <AlertDescription>{serverError}</AlertDescription>
         </Alert>
       ) : null}
-      <Button type="submit" disabled={pending}>
-        {pending ? t('teacher.working') : submitLabel}
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" variant={publishLabel ? 'outline' : 'default'} disabled={pending}>
+          {pending ? t('teacher.working') : submitLabel}
+        </Button>
+        {publishLabel ? (
+          <Button type="button" disabled={pending} onClick={() => void submit(undefined, true)}>
+            {publishLabel}
+          </Button>
+        ) : null}
+      </div>
+      {publishLabel ? <p className="text-muted-foreground text-xs">{t('teacher.activities.publishHint')}</p> : null}
     </form>
   )
 }
@@ -319,6 +325,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
       : writableRooms[0]?.id
   const [showArchived, setShowArchived] = useState(false)
   const [deleting, setDeleting] = useState<Activity>()
+  const [creating, setCreating] = useState(false)
   const [confirming, setConfirming] = useState<{ activity: Activity; kind: 'publish' | 'close' | 'reopen' | 'archive' }>()
   const listParams = new URLSearchParams()
   if (classroomId) listParams.set('classroom_id', classroomId)
@@ -334,9 +341,9 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
   // 以活動 id 記錄列內錯誤，顯示在失敗的那一列
   const [rowError, setRowError] = useState<{ id: string; message: string }>()
 
-  async function create(v: Values) {
+  async function create(v: Values, publish: boolean) {
     if (!selectedRoom) throw new Error(t('teacher.activities.roomRequired'))
-    await api.post<Activity>('/api/activities', {
+    const created = await api.post<Activity>('/api/activities', {
       title: v.title,
       ...(v.description.trim() ? { description: v.description.trim() } : {}),
       topic_id: v.topicId,
@@ -344,7 +351,19 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
       ...(v.opensAt ? { opens_at: utcTime(v.opensAt) } : {}),
       ...(v.closesAt ? { closes_at: utcTime(v.closesAt) } : {}),
     })
-    toast.success(t('teacher.activities.created'))
+    if (publish) {
+      try {
+        await api.post<Activity>(`/api/activities/${created.id}/publish`)
+      } catch (err) {
+        // 草稿已建立，只是沒發布成功：關掉表單，讓教師從列表重試發布
+        setCreating(false)
+        list.reload()
+        setRowError({ id: created.id, message: errorText(t, err) })
+        return
+      }
+    }
+    toast.success(t(publish ? 'teacher.activities.published' : 'teacher.activities.created'))
+    setCreating(false)
     setRowError(undefined)
     list.reload()
   }
@@ -409,31 +428,12 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardContent className="space-y-3">
-          <h2 className="text-lg font-medium">{t('teacher.activities.createHeading')}</h2>
-          {classroomId ? null : (
-            <>
-              <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
-              <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
-                {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
-              </select>
-            </>
-          )}
-          {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
-          <ActivityForm
-            idPrefix="create"
-            initial={{ title: '', description: '', topicId: '', opensAt: '', closesAt: '' }}
-            topics={topics}
-            topicsFailed={!!available.error}
-            submitLabel={t('teacher.activities.createButton')}
-            resetOnSuccess
-            onSubmit={create}
-          />
-        </CardContent>
-      </Card>
-
-      <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+        <Button type="button" onClick={() => setCreating(true)}>
+          {t('teacher.activities.new')}
+        </Button>
+      </div>
       <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {list.loading && !list.items ? <LoadingBlock /> : null}
       {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
@@ -514,6 +514,33 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
           onCancel={() => setDeleting(undefined)}
         />
       ) : null}
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('teacher.activities.createHeading')}</DialogTitle>
+            <DialogDescription>{t('teacher.activities.createDescription')}</DialogDescription>
+          </DialogHeader>
+          {classroomId ? null : (
+            <div className="space-y-1.5">
+              <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
+              <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+                {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+              </select>
+            </div>
+          )}
+          {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
+          <ActivityForm
+            idPrefix="create"
+            initial={{ title: '', description: '', topicId: '', opensAt: '', closesAt: '' }}
+            topics={topics}
+            topicsFailed={!!available.error}
+            submitLabel={t('teacher.activities.saveDraft')}
+            publishLabel={t('teacher.activities.publishNow')}
+            onSubmit={create}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>

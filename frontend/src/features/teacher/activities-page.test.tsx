@@ -65,6 +65,12 @@ async function confirmAs(name: string) {
   await userEvent.click(within(dialog).getByRole('button', { name }))
 }
 
+/** 開啟「建立討論活動」對話框。 */
+async function openCreate() {
+  await userEvent.click(screen.getByRole('button', { name: '+ 建立活動' }))
+  await screen.findByRole('dialog', { name: '建立討論活動' })
+}
+
 describe('ActivitiesPanel', () => {
   it('lists activities with status badge and topic title', async () => {
     mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2' })])
@@ -129,8 +135,9 @@ describe('ActivitiesPanel', () => {
     )
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
     expect(screen.getByLabelText('題目')).toHaveAttribute('aria-invalid', 'true')
     expect(posted).toBe(false)
@@ -147,8 +154,9 @@ describe('ActivitiesPanel', () => {
     )
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '   ')
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('請輸入活動標題。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
@@ -167,13 +175,14 @@ describe('ActivitiesPanel', () => {
     )
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
     await userEvent.selectOptions(await screen.findByLabelText('題目'), 't2')
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('活動已建立（草稿）。')).toBeInTheDocument()
     expect(body).toEqual({ title: '新活動', topic_id: 't2', classroom_id: ROOM_A })
     expect(await screen.findByText('草稿')).toBeInTheDocument()
-    expect(screen.getByLabelText('活動標題')).toHaveValue('')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('does not double submit while creating', async () => {
@@ -188,9 +197,10 @@ describe('ActivitiesPanel', () => {
     )
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
-    const btn = screen.getByRole('button', { name: '建立活動' })
+    const btn = screen.getByRole('button', { name: '儲存草稿' })
     await userEvent.dblClick(btn)
     await waitFor(() => expect(btn).toBeDisabled())
     await waitFor(() => expect(btn).toBeEnabled())
@@ -202,9 +212,10 @@ describe('ActivitiesPanel', () => {
     server.use(http.post('/api/activities', () => apiError(400, 'invalid_topic')))
     setup()
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('題目不存在。')).toBeInTheDocument()
   })
 
@@ -366,10 +377,11 @@ describe('ActivitiesPanel', () => {
       ),
     )
     setup()
+    expect(await within(await screen.findByRole('table')).findByText('（已停用或無法載入的題目）')).toBeInTheDocument()
+    await openCreate()
     const select = await screen.findByLabelText('題目')
     await waitFor(() => expect(within(select).getByRole('option', { name: '電車難題' })).toBeInTheDocument())
     expect(within(select).queryByRole('option', { name: '已停用題目' })).not.toBeInTheDocument()
-    expect(await within(await screen.findByRole('table')).findByText('（已停用或無法載入的題目）')).toBeInTheDocument()
   })
 
   it('keeps the dialog open and shows the error when saving fails', async () => {
@@ -485,9 +497,10 @@ describe('ActivitiesPanel', () => {
     )
     renderTeacherPage(<ActivitiesPanel />)
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('請先建立或選擇未封存的教室。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
@@ -515,9 +528,11 @@ describe('ActivitiesPanel', () => {
       }),
     )
     setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
     expect(await screen.findByText('無法載入題目清單，請重新整理頁面後再試。')).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
@@ -529,12 +544,13 @@ describe('activity schedules', () => {
     let posted = false
     server.use(http.post('/api/activities', () => { posted = true; return HttpResponse.json(act()) }))
     setup()
+    await openCreate()
     await screen.findByLabelText('題目')
     await userEvent.type(screen.getByLabelText('活動標題'), 'scheduled')
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
     fireEvent.change(screen.getByLabelText('開始時間（選填）'), { target: { value: '2030-01-01T10:00' } })
     fireEvent.change(screen.getByLabelText('結束時間（選填）'), { target: { value: '2030-01-01T10:00' } })
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('結束時間必須晚於開始時間。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
@@ -544,6 +560,7 @@ describe('activity schedules', () => {
     let posted = false
     server.use(http.post('/api/classrooms/:id/activities', () => { posted = true; return HttpResponse.json(act()) }))
     setup()
+    await openCreate()
     await screen.findByLabelText('活動標題')
     const opens = screen.getByLabelText('開始時間（選填）') as HTMLInputElement
     const closes = screen.getByLabelText('結束時間（選填）') as HTMLInputElement
@@ -554,12 +571,12 @@ describe('activity schedules', () => {
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
     fireEvent.change(opens, { target: { value: '2020-01-01T10:00' } })
     fireEvent.change(closes, { target: { value: '2030-01-01T10:00' } })
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('開始與結束時間不可早於現在。')).toBeInTheDocument()
     expect(posted).toBe(false)
     fireEvent.change(opens, { target: { value: '' } })
     fireEvent.change(closes, { target: { value: '2020-01-01T10:00' } })
-    await userEvent.click(screen.getByRole('button', { name: '建立活動' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('開始與結束時間不可早於現在。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
@@ -618,5 +635,32 @@ describe('activity schedules', () => {
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '儲存' }))
     expect(await screen.findByText('結束時間必須晚於開始時間。')).toBeInTheDocument()
+  })
+})
+
+describe('publishing while creating', () => {
+  it('creates the activity and then publishes it with 發布活動', async () => {
+    const calls: string[] = []
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics)),
+      http.get('/api/activities', () => pageOf([])),
+      http.post('/api/activities', () => {
+        calls.push('create')
+        return HttpResponse.json(act({ id: 'new1', title: '新活動' }), { status: 201 })
+      }),
+      http.post('/api/activities/:id/publish', ({ params }) => {
+        calls.push(`publish:${String(params.id)}`)
+        return HttpResponse.json(act({ id: 'new1', status: 'published' }))
+      }),
+    )
+    setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
+    await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
+    await userEvent.selectOptions(await screen.findByLabelText('題目'), 't1')
+    await userEvent.click(screen.getByRole('button', { name: '發布活動' }))
+    expect(await screen.findByText('活動已發布。')).toBeInTheDocument()
+    expect(calls).toEqual(['create', 'publish:new1'])
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
