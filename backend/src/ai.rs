@@ -15,7 +15,8 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
 /// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
 /// v1.11：加入個資遮蔽與系統提示的佔位詞說明。
-pub const RULES_VERSION: &str = "v1.11/zh-TW";
+/// v1.12：學生訊息可能來自語音辨識逐字稿或打字，一律依原意理解、不糾正錯字（F-10.1）。
+pub const RULES_VERSION: &str = "v1.12/zh-TW";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
@@ -260,6 +261,13 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         → assumption：抽象檢查概括是否成立，未要求找出情境。\n\
         \n\
         上述 assumption 或 perspective 問題即使附加「為什麼」，分類也不會變成 reason。\n\
+        \n\
+        理解學生的訊息（F-10.1）：\n\
+        學生訊息可能來自打字或語音辨識（學生確認後送出），可能有同音錯字、贅詞（例如「嗯」「那個」「就是」）、重複、自我修正或缺少標點。\n\
+        - 依最合理的原意理解，直接承接學生的論點追問。\n\
+        - 不指出、糾正或評論錯字、贅詞與標點，也不要求學生改用其他方式輸入。\n\
+        - 只有在錯字讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
+        - 判斷 advance 時，依學生實際表達的思考，不因口語化、錯字或贅詞而降低或提高。\n\
         \n\
         目前階段（階段只進不退）：{stage}{wrap}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
