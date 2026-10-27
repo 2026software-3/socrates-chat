@@ -52,24 +52,16 @@ function Shell() {
   if (auth.status === 'disabled') return <DisabledPage />
   const { me } = auth
   // 臨時密碼：改密碼前其他 API 都會回 password_change_required，所以只放行改密碼頁
-  if (me.must_change_password) {
-    return (
-      <Layout me={me} nav={[]}>
-        <ChangePasswordPage />
-      </Layout>
-    )
-  }
+  if (me.must_change_password) return <ChangePasswordPage />
+  // 名單外的帳號：獨立的「尚未開通」頁，只有重新檢查與換帳號
+  if (!hasAnyRole(me.roles)) return <PendingPage />
   return (
-    <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : hasAnyRole(me.roles) ? (participates(me.roles) ? allNav : staffNav) : []}>
-      {hasAnyRole(me.roles) ? (
-        <RouteErrorBoundary pathname={pathname}>
-          <Suspense fallback={<LoadingBlock />}>
-            <Outlet />
-          </Suspense>
-        </RouteErrorBoundary>
-      ) : (
-        <PendingPage />
-      )}
+    <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : participates(me.roles) ? allNav : staffNav}>
+      <RouteErrorBoundary pathname={pathname}>
+        <Suspense fallback={<LoadingBlock />}>
+          <Outlet />
+        </Suspense>
+      </RouteErrorBoundary>
     </Layout>
   )
 }

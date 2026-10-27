@@ -138,11 +138,11 @@ export function AvailablePage() {
 
   return (
     <div className="space-y-6">
-      <div className="from-primary/10 to-background flex flex-wrap items-end justify-between gap-4 rounded-xl border bg-gradient-to-br p-6">
-        <div className="space-y-1">
-          <p className="text-muted-foreground text-sm">{t('home.welcome', { name: welcomeName })}</p>
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{t('home.studentHeadline')}</h1>
-          <p className="text-muted-foreground max-w-prose text-sm">{t('home.studentTagline')}</p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <p className="text-muted-foreground text-xs">{t('home.welcome', { name: welcomeName })}</p>
+          <h1 className="text-2xl leading-8 font-medium">{t('home.studentHeadline')}</h1>
+          <p className="text-muted-foreground max-w-prose text-xs">{t('home.studentTagline')}</p>
         </div>
         {myConversations}
       </div>
@@ -167,7 +167,7 @@ function Section({ title, hint, emptyText, badge, items, startingKey, onStart }:
   return (
     <section aria-labelledby={headingId} className="space-y-3">
       <div>
-        <h2 id={headingId} className="text-lg font-semibold">
+        <h2 id={headingId} className="text-lg leading-7 font-medium">
           {title}
         </h2>
         <p className="text-muted-foreground text-sm">{hint}</p>
@@ -187,7 +187,7 @@ function Section({ title, hint, emptyText, badge, items, startingKey, onStart }:
                   <CardTitle>{item.title}</CardTitle>
                   <CardDescription className="whitespace-pre-line">{item.description}</CardDescription>
                 </CardHeader>
-                <CardFooter>
+                <CardFooter className="justify-end">
                   <Button
                     onClick={() => onStart(item)}
                     disabled={startingKey !== undefined}

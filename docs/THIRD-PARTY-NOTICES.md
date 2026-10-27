@@ -41,11 +41,12 @@ SOFTWARE.
 
 ## 打包進建置產物的字型
 
-Geist 字型（`@fontsource-variable/geist`）會被打包進前端建置產物。
+Inter 字型（`@fontsource-variable/inter`）與 Noto Sans TC 字型（`@fontsource-variable/noto-sans-tc`）會被打包進前端建置產物。
 
-Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)。
+- Inter：Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)。
+- Noto Sans TC：Google Inc.（授權檔載明的著作權人）。
 
-This Font Software is licensed under the SIL Open Font License, Version 1.1. 授權全文與 FAQ：https://openfontlicense.org 。完整文字也隨套件放在 `node_modules/@fontsource-variable/geist/LICENSE`。
+兩者皆以 SIL Open Font License, Version 1.1 授權。授權全文與 FAQ：https://openfontlicense.org 。完整文字也隨套件放在 `node_modules/@fontsource-variable/inter/LICENSE` 與 `node_modules/@fontsource-variable/noto-sans-tc/LICENSE`。
 
 ## 由後端提供的 Redoc
 

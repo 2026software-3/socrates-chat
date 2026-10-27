@@ -32,6 +32,51 @@ describe('app shell', () => {
     expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
   })
 
+  it('lets a roleless account re-check its enrolment or switch account from the pending page', async () => {
+    mockMe(makeMe({}, { email: 'outsider@example.com' }))
+    server.use(http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })))
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '尚未開通' })
+
+    // 被加入名單後，重新檢查會重讀登入者並放行
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
+    await userEvent.click(screen.getByRole('button', { name: '我已被加入，重新檢查' }))
+    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
+  })
+
+  it('offers a way to switch account from the pending page', async () => {
+    mockMe(makeMe({}, { email: 'outsider@example.com' }))
+    server.use(http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })))
+    renderApp(null, { route: '/' })
+    await userEvent.click(await screen.findByRole('button', { name: '改用其他帳號登入' }))
+    expect(await screen.findByRole('button', { name: '使用 Google 登入' })).toBeInTheDocument()
+  })
+
+  it('labels the workspace for teachers and for admin-only accounts', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    const first = renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '班上論點分布' })
+    expect(screen.getByText('教師工作區', { selector: 'span' })).toBeInTheDocument()
+    expect(screen.getByText('教師工作區／班上論點分布')).toBeInTheDocument()
+    first.unmount()
+
+    mockMe(makeMe({ admin: true }))
+    mockOpsData()
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '系統維運' })
+    expect(screen.getByText('管理者工作區', { selector: 'span' })).toBeInTheDocument()
+  })
+
+  it('does not show a workspace label to students', async () => {
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
+    expect(screen.queryByText(/工作區/)).not.toBeInTheDocument()
+  })
+
   it('does not let a roleless account reach feature pages by URL', async () => {
     mockMe(makeMe())
     renderApp(null, { route: '/teacher/roster' })
@@ -179,7 +224,7 @@ describe('app shell', () => {
     server.use(http.get('/api/me', () => apiError(403, 'account_disabled')))
     renderApp(null, { route: '/' })
     expect(await screen.findByText('帳號已停用')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '登出' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '返回登入' })).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
   })
 

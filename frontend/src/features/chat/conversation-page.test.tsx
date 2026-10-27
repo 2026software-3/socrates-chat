@@ -82,6 +82,8 @@ describe('ConversationPage: loading', () => {
     expect(screen.getByText('我認為應該扳動拉桿。')).toBeInTheDocument()
     expect(screen.getByText('你說的「應該」是依據什麼原則呢？')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '訊息輸入' })).toBeInTheDocument()
+    expect(screen.getByText('回合：1')).toBeInTheDocument()
+    expect(screen.getByText('教師只會看到學習總結，看不到對話原文。')).toBeInTheDocument()
   })
 
   it('never shows question_type or other metadata', async () => {

@@ -38,23 +38,28 @@ export function ChatThread({
 }) {
   const t = useT()
   return (
-    <ThreadPrimitive.Root className="flex min-h-0 flex-col gap-3">
+    <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ThreadPrimitive.Viewport
         role="log"
         aria-live="polite"
         aria-relevant="additions text"
         aria-label={t('chat.thread.label')}
-        className="flex max-h-[55vh] min-h-40 flex-col overflow-y-auto rounded-lg border p-3 sm:p-4"
+        className="flex min-h-40 flex-1 flex-col overflow-y-auto px-4 py-6 md:px-8"
       >
         <AuiIf condition={(s) => s.thread.messages.length === 0}>
           <p className="text-muted-foreground m-auto py-8 text-center text-sm">{t('chat.thread.start')}</p>
         </AuiIf>
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
           <ThreadPrimitive.Messages>{() => <ChatMessage />}</ThreadPrimitive.Messages>
         </div>
       </ThreadPrimitive.Viewport>
-      {showComposer ? <PendingReply /> : null}
-      {showComposer ? <ChatComposer disabled={composerDisabled} language={language} onVoiceSource={onVoiceSource} /> : null}
+      {showComposer ? (
+        <div className="flex flex-col gap-2 border-t px-4 pt-4 pb-6 md:px-8">
+          <PendingReply />
+          <p className="text-muted-foreground text-xs">{t('chat.privacy')}</p>
+          <ChatComposer disabled={composerDisabled} language={language} onVoiceSource={onVoiceSource} />
+        </div>
+      ) : null}
     </ThreadPrimitive.Root>
   )
 }
@@ -70,8 +75,8 @@ function StudentMessage() {
   const t = useT()
   return (
     <MessagePrimitive.Root data-role="student" className="flex flex-col items-end gap-1">
-      <span className="text-muted-foreground text-xs">{t('chat.thread.you')}</span>
-      <div className="bg-primary text-primary-foreground max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2 text-sm">
+      <span className="sr-only">{t('chat.thread.you')}</span>
+      <div className="bg-surface max-w-[85%] rounded-2xl border px-5 py-3 text-sm md:max-w-[560px]">
         <MessagePrimitive.Parts components={{ Text: PlainText }} />
       </div>
     </MessagePrimitive.Root>
@@ -101,7 +106,7 @@ function AiMessage() {
     <MessagePrimitive.Root data-role="ai" className="flex flex-col items-start gap-1">
       <span className="text-muted-foreground text-xs">{t('chat.thread.ai')}</span>
       {hasText && failure === undefined ? (
-        <div className="bg-muted max-w-[85%] rounded-2xl rounded-tl-sm px-4 py-2 text-sm">
+        <div className="bg-background max-w-[85%] rounded-2xl border px-5 py-3 text-sm md:max-w-[640px]">
           <MessagePrimitive.Parts components={{ Text: PlainText }} />
         </div>
       ) : null}
@@ -111,7 +116,7 @@ function AiMessage() {
         </p>
       ) : null}
       {failure !== undefined ? (
-        <Alert variant="destructive" role="alert" className="max-w-[85%]">
+        <Alert variant="destructive" role="alert" className="max-w-[85%] md:max-w-[560px]">
           <AlertTitle>{failure}</AlertTitle>
           <ActionBarPrimitive.Root className="mt-2">
             <ActionBarPrimitive.Reload asChild>
@@ -181,7 +186,7 @@ function ChatComposer({
             maxLength={MAX_LENGTH}
             rows={1}
             disabled={disabled}
-            className="max-h-40 min-h-9 min-w-0 flex-1 resize-none self-center bg-transparent py-1.5 text-base outline-none disabled:opacity-50 md:text-sm"
+            className="max-h-40 min-h-10 min-w-0 flex-1 resize-none self-center bg-transparent py-1.5 text-base outline-none disabled:opacity-50 md:text-sm"
           />
         }
         sendButton={
