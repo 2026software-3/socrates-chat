@@ -74,12 +74,22 @@ fn parse_language(args: impl IntoIterator<Item = String>) -> Result<&'static str
 }
 
 /// Scenario file (relative to `backend/`) for an evaluation language.
-fn cases_file(language: &str) -> &'static str {
+fn cases_file(language: &str) -> Result<&'static str, String> {
     match language {
-        "en" => "eval/f07_1_cases_en.json",
-        "es" => "eval/f07_1_cases_es.json",
-        _ => "eval/f07_1_cases_reviewed.json",
+        "zh-TW" => Ok("eval/f07_1_cases_reviewed.json"),
+        "en" => Ok("eval/f07_1_cases_en.json"),
+        "es" => Ok("eval/f07_1_cases_es.json"),
+        other => Err(format!("no scenario file for language {other:?}")),
     }
+}
+
+/// Language of `JUDGE_PROMPT`; every evaluation language is judged with this one rubric.
+const JUDGE_PROMPT_LANGUAGE: &str = "zh-TW";
+
+/// Whether the judge rubric is written in the evaluation language. Results for other
+/// languages are judged across languages and may not be comparable with zh-TW runs.
+fn judge_prompt_matches(language: &str) -> bool {
+    language == JUDGE_PROMPT_LANGUAGE
 }
 
 fn parse_cases(source: &str) -> Result<Vec<Case>, serde_json::Error> {
@@ -347,7 +357,7 @@ fn apply_judgment(parsed: &mut Value, judgment: &Value) -> String {
 async fn run() -> Result<(), Box<dyn Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let language = parse_language(env::args().skip(1))?;
-    let cases_path = root.join(cases_file(language));
+    let cases_path = root.join(cases_file(language)?);
     let source = fs::read_to_string(&cases_path)?;
     let cases = parse_cases(&source)?;
     validate_cases(&cases)?;
@@ -395,6 +405,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "模型：{model}；語言：{language}；提示詞版本：{}；評審：{judge_model}；準則：{JUDGE_VERSION}",
         rules_version(language)
     );
+    if !judge_prompt_matches(language) {
+        println!(
+            "注意：評審準則是 {JUDGE_PROMPT_LANGUAGE} 版，這次評估語言是 {language}；結果是跨語言評審，不一定能和 {JUDGE_PROMPT_LANGUAGE} 的結果直接比較。"
+        );
+    }
     println!("共 {} 題；結果資料夾：{}", cases.len(), output.display());
 
     let mut rows = Vec::new();
@@ -540,6 +555,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "status": status,
             "judge_model": judge_model,
             "judge_version": JUDGE_VERSION,
+            "judge_prompt_language": JUDGE_PROMPT_LANGUAGE,
+            "judge_prompt_matches_language": judge_prompt_matches(language),
             "judge": judge_record,
             "conversation": transcript,
             "raw_output": raw_output,
@@ -575,7 +592,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "run_id": run_id,
         "model_requested": model,
         "rules_version": rules_version(language),
-            "language": language,
+        "language": language,
         "total": cases.len(),
         "schema_version": 5,
         "evaluator_version": EVALUATOR_VERSION,
@@ -583,6 +600,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "review_required": review_required,
         "judge_model": judge_model,
         "judge_version": JUDGE_VERSION,
+        "judge_prompt_language": JUDGE_PROMPT_LANGUAGE,
+        "judge_prompt_matches_language": judge_prompt_matches(language),
         "judge_passes": judge_passes,
         "judge_failures": judge_failures,
         "judge_errors": judge_errors,
@@ -763,8 +782,8 @@ mod tests {
     }
 
     fn load(language: &str) -> Vec<super::Case> {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(super::cases_file(language));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(super::cases_file(language).unwrap());
         let source =
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         super::parse_cases(&source).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
@@ -776,10 +795,25 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_language_has_no_scenario_file_instead_of_falling_back() {
+        for language in ["fr", "", "zh", "EN"] {
+            assert!(super::cases_file(language).is_err(), "{language:?}");
+        }
+    }
+
+    #[test]
+    fn results_say_when_the_judge_rubric_is_in_another_language() {
+        assert!(super::judge_prompt_matches("zh-TW"));
+        assert!(!super::judge_prompt_matches("en"));
+        assert!(!super::judge_prompt_matches("es"));
+        assert_eq!(super::JUDGE_PROMPT_LANGUAGE, "zh-TW");
+    }
+
+    #[test]
     fn each_language_has_its_own_valid_scenario_file() {
         let files: std::collections::HashSet<_> = super::LANGUAGES
             .iter()
-            .map(|l| super::cases_file(l))
+            .map(|l| super::cases_file(l).unwrap())
             .collect();
         assert_eq!(files.len(), super::LANGUAGES.len(), "one file per language");
         for language in super::LANGUAGES {

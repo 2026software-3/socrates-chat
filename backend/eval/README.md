@@ -26,7 +26,7 @@
 | 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v5`（v5 加入評估語言） |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT`（只有繁體中文版；三種語言共用，見下方限制） |
 | 評審準則版本 | `JUDGE_VERSION`：`f07-rubric-v1/zh-TW` |
-| 結果格式版本 | `schema_version: 5`（新增 `language` 欄位） |
+| 結果格式版本 | `schema_version: 5`（新增 `language`、`judge_prompt_language`、`judge_prompt_matches_language` 欄位；後者在評估語言不是評審準則的語言時為 `false`，並在執行時印出警告） |
 | 固定情境 | `backend/eval/f07_1_cases_reviewed.json`（zh-TW）、`f07_1_cases_en.json`、`f07_1_cases_es.json` |
 
 修改受測提示詞時更新 `RULES_VERSION`；修改評審準則時更新 `JUDGE_VERSION`；修改評估邏輯時更新 `EVALUATOR_VERSION`。結果欄位有不相容變更時更新 `schema_version`。
