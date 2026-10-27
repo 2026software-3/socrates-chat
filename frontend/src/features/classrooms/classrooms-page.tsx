@@ -4,6 +4,7 @@ import { Link } from 'react-router'
 import { useAuth } from '@/auth/auth-context'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
+import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { NameConfirmDialog } from '@/components/name-confirm-dialog'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
@@ -35,6 +36,8 @@ function ClassroomForm({
   pendingLabel,
   onSubmit,
   onCancel,
+  nameOnly = false,
+  placeholder,
 }: {
   idPrefix: string
   initial: ClassroomValues
@@ -42,6 +45,9 @@ function ClassroomForm({
   pendingLabel: string
   onSubmit: (values: ClassroomValues) => Promise<void>
   onCancel?: () => void
+  /** 建立教室只需名稱（設計稿）；年度與說明可於編輯時補上。 */
+  nameOnly?: boolean
+  placeholder?: string
 }) {
   const t = useT()
   const [values, setValues] = useState(initial)
@@ -79,11 +85,14 @@ function ClassroomForm({
           required
           maxLength={255}
           autoComplete="off"
+          placeholder={placeholder}
           value={values.name}
           aria-invalid={error ? true : undefined}
           onChange={(event) => setValues({ ...values, name: event.target.value })}
         />
       </div>
+      {nameOnly ? null : (
+      <>
       <div className="space-y-1.5">
         <Label htmlFor={`${idPrefix}-year`}>{t('classrooms.year')}</Label>
         <Input
@@ -103,6 +112,8 @@ function ClassroomForm({
           onChange={(event) => setValues({ ...values, description: event.target.value })}
         />
       </div>
+      </>
+      )}
       {error ? (
         <Alert variant="destructive" role="alert">
           <AlertTitle>{error instanceof Error && error.name !== 'ApiError' ? error.message : errorText(t, error)}</AlertTitle>
@@ -134,7 +145,8 @@ export function ClassroomsPage() {
   const [archiving, setArchiving] = useState<string>()
   const [archiveError, setArchiveError] = useState<unknown>()
   const [notice, setNotice] = useState('')
-  const [createFormVersion, setCreateFormVersion] = useState(0)
+  const [creating, setCreating] = useState(false)
+  const [confirmArchive, setConfirmArchive] = useState<Classroom>()
 
   async function create(values: ClassroomValues) {
     setNotice('')
@@ -143,8 +155,8 @@ export function ClassroomsPage() {
       year_label: values.year_label || null,
       description: values.description || null,
     })
+    setCreating(false)
     setNotice(t('classrooms.created'))
-    setCreateFormVersion((version) => version + 1)
     reload()
   }
 
@@ -166,6 +178,7 @@ export function ClassroomsPage() {
     setArchiveError(undefined)
     try {
       await api.patch<Classroom>(`/api/classrooms/${room.id}`, { is_archived: !room.is_archived })
+      setConfirmArchive(undefined)
       reload()
     } catch (err) { setArchiveError(err) }
     finally { setArchiving(undefined) }
@@ -182,23 +195,19 @@ export function ClassroomsPage() {
   const title = canCreate ? t('classrooms.title.teacher') : t('classrooms.title.admin')
 
   return (
-    <Page title={title}>
+    <Page
+      title={title}
+      actions={
+        canCreate ? (
+          <Button type="button" onClick={() => { setNotice(''); setCreating(true) }}>
+            {t('classrooms.new')}
+          </Button>
+        ) : undefined
+      }
+    >
       <p className="text-muted-foreground text-sm">{t('classrooms.intro')}</p>
       {archiveError ? <ErrorBlock error={archiveError} /> : null}
       {notice ? <p role="status" className="text-sm text-green-700 dark:text-green-400">{notice}</p> : null}
-      {canCreate ? (
-        <section aria-label={t('classrooms.create')} className="rounded-md border p-4">
-          <ClassroomForm
-            idPrefix="create-classroom"
-            key={createFormVersion}
-            initial={classroomValues()}
-            submitLabel={t('classrooms.create')}
-            pendingLabel={t('classrooms.creating')}
-            onSubmit={create}
-          />
-        </section>
-      ) : null}
-
       <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {loading && !data ? <LoadingBlock /> : null}
       {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
@@ -247,7 +256,11 @@ export function ClassroomsPage() {
                       >
                         <Pencil aria-hidden />
                       </Button>
-                      <Button variant="ghost" disabled={!!archiving} onClick={() => void toggleArchive(classroom)}>
+                      <Button
+                        variant="ghost"
+                        disabled={!!archiving}
+                        onClick={() => (classroom.is_archived ? void toggleArchive(classroom) : setConfirmArchive(classroom))}
+                      >
                         {t(classroom.is_archived ? 'classrooms.restore' : 'classrooms.archive')}
                       </Button>
                       <Button variant="ghost" disabled={!!archiving} onClick={() => setDeleting(classroom)}>
@@ -271,6 +284,35 @@ export function ClassroomsPage() {
           onCancel={() => setDeleting(undefined)}
         />
       ) : null}
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('classrooms.createTitle')}</DialogTitle>
+            <DialogDescription>{t('classrooms.createBody')}</DialogDescription>
+          </DialogHeader>
+          <ClassroomForm
+            idPrefix="create-classroom"
+            initial={classroomValues()}
+            nameOnly
+            placeholder={t('classrooms.namePlaceholder')}
+            submitLabel={t('classrooms.create')}
+            pendingLabel={t('classrooms.creating')}
+            onSubmit={create}
+            onCancel={() => setCreating(false)}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmArchive !== undefined}
+        onOpenChange={(open) => !open && setConfirmArchive(undefined)}
+        title={t('classrooms.archiveTitle', { name: confirmArchive?.name ?? '' })}
+        description={t('classrooms.archiveBody')}
+        confirmLabel={t('classrooms.archiveConfirm')}
+        pending={!!archiving}
+        onConfirm={() => confirmArchive && void toggleArchive(confirmArchive)}
+      />
 
       <Dialog open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)}>
         <DialogContent>

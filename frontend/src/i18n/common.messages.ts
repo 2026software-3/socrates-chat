@@ -58,7 +58,7 @@ export const common = defineMessages({
     'error.invalid_classroom_name': '教室名稱不可為空，且不可超過 255 個字元。',
     'error.invalid_classroom_year_label': '年度標籤不可超過 100 個字元。',
     'error.invalid_classroom_description': '說明不可超過 2,000 個字元。',
-    'error.classroom_name_taken': '這個教室名稱已被使用，請換一個名稱。',
+    'error.classroom_name_taken': '已有同名教室，請使用其他名稱。',
     'error.invalid_schedule': '結束時間必須晚於開始時間。',
     'error.schedule_in_past': '開始與結束時間不可早於現在。',
     'error.classroom_archived': '教室已封存，僅供檢視。',
