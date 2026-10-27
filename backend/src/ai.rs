@@ -1239,6 +1239,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prompt_makes_replies_listenable_and_handles_cut_off_speech() {
+        let p = build_system_prompt(&PromptContext {
+            title: "T",
+            description: "D",
+            stage: 2,
+            turn: 2,
+            wrap_up_turn: 15,
+        });
+        // F-10.2：輪流語音對話的回覆會被朗讀，學生也可能話沒說完就被自動送出。
+        // 規則對所有訊息生效（不區分語音或打字）；模型實際行為由 eval/f10_2_cases.json 評估。
+        for rule in [
+            "回覆可能會以語音朗讀給學生聽",
+            "不使用 Markdown、條列、編號、表格、表情符號、網址",
+            "學生還沒說完時就送出",
+            "簡短請學生把剛才的想法說完",
+            "停頓、贅詞或句子簡短不代表沒說完",
+        ] {
+            assert!(p.contains(rule), "缺少語音對話規則：{rule}");
+        }
+    }
+
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
     struct SlowStart(std::time::Duration);
 
