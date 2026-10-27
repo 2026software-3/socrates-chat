@@ -13,6 +13,8 @@ type AuthState =
 type AuthValue = AuthState & {
   /** 重新讀取目前登入者（例如名單異動後） */
   refresh: () => Promise<void>
+  /** 用後端剛回傳的使用者直接更新（例如改名後），不必再打一次 /api/me */
+  update: (me: Me) => void
   logout: () => Promise<void>
 }
 
@@ -45,7 +47,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const value = useMemo<AuthValue>(() => ({ ...state, refresh, logout }), [state, refresh, logout])
+  const update = useCallback((me: Me) => setState({ status: 'authed', me }), [])
+
+  const value = useMemo<AuthValue>(() => ({ ...state, refresh, update, logout }), [state, refresh, update, logout])
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 

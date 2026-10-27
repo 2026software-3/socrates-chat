@@ -2,33 +2,52 @@
 //!
 //! 本檔另含蘇格拉底式追問的提示（S-03.2）與每回合結構化結果的解析。
 
+use std::{sync::Arc, time::Duration};
+
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream::BoxStream};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::key_pool::{KeyPool, parse_retry_after};
+
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
+/// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
+/// v1.11：加入個資遮蔽與系統提示的佔位詞說明。
+/// v1.12：學生訊息可能來自語音辨識逐字稿或打字，一律依原意理解、不糾正錯字（F-10.1）。
 pub const RULES_VERSION: &str = "v1.12/zh-TW";
-
-/// 語音逐字稿送給 AI 時加在學生訊息前的標記（F-10.1、S-05.4）。只出現在送往 AI 的請求裡，
-/// 資料庫與學生看到的內容維持原文。
-pub const SPEECH_MARK: &str = "【語音輸入】";
-
-/// 學生訊息送給 AI 時的內容：語音來源（`speech-browser`、`speech-openai`）加上 [`SPEECH_MARK`]，
-/// 讓模型以口語逐字稿的方式理解；文字輸入維持原文。
-pub fn student_turn_content(content: &str, source: &str) -> String {
-    match source {
-        "speech-browser" | "speech-openai" => format!("{SPEECH_MARK}{content}"),
-        _ => content.to_string(),
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
     User,
     Assistant,
+}
+
+impl ChatRole {
+    /// 資料庫 `messages.role`（`student`／`ai`）對應的角色。
+    pub fn from_db_role(role: &str) -> Self {
+        if role == "student" {
+            Self::User
+        } else {
+            Self::Assistant
+        }
+    }
+}
+
+/// 取出模型輸出中第一個 `{` 到最後一個 `}` 之間的 JSON；找不到或格式不符回傳 `None`。
+fn extract_json<T: DeserializeOwned>(raw: &str) -> Option<T> {
+    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
+    if end < start {
+        return None;
+    }
+    serde_json::from_str(&raw[start..=end]).ok()
+}
+
+/// 去掉前後空白並截到 `max` 個字元；結果為空時回傳 `None`。
+fn clip(s: &str, max: usize) -> Option<String> {
+    let s: String = s.trim().chars().take(max).collect();
+    (!s.is_empty()).then_some(s)
 }
 
 #[derive(Debug, Clone)]
@@ -47,11 +66,12 @@ pub struct AiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiError;
 
+/// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
-    /// 開始串流回覆；回傳的串流依序給出文字片段。
+    /// 開始串流回覆；回傳的串流依序給出文字片段（見 `AiStream`）。
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError>;
 }
 
@@ -93,10 +113,9 @@ impl MetaSplitter {
                     && META_DELIM.starts_with(&self.held[self.held.len() - n..])
             })
             .unwrap_or(0);
-        let cut = self.held.len() - keep;
-        let text = self.held[..cut].to_string();
-        self.held.drain(..cut);
-        text
+        // 送出前段、留下後段：沿用原本的配置，不另外複製
+        let rest = self.held.split_off(self.held.len() - keep);
+        std::mem::replace(&mut self.held, rest)
     }
 
     /// 串流結束：回傳尚未送出的文字與結構化段落。
@@ -138,21 +157,13 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
         advance: bool,
         reason: Option<String>,
     }
-    let parsed = raw
-        .find('{')
-        .zip(raw.rfind('}'))
-        .filter(|(a, b)| a <= b)
-        .and_then(|(a, b)| serde_json::from_str::<Raw>(&raw[a..=b]).ok());
-    match parsed {
+    match extract_json::<Raw>(raw) {
         Some(r) => TurnMeta {
             question_type: r
                 .question_type
                 .filter(|q| QUESTION_TYPES.contains(&q.as_str())),
             advance: r.advance,
-            reason: r
-                .reason
-                .map(|s| s.trim().chars().take(MAX_REASON_CHARS).collect::<String>())
-                .filter(|s| !s.is_empty()),
+            reason: r.reason.and_then(|s| clip(&s, MAX_REASON_CHARS)),
         },
         None => TurnMeta {
             question_type: None,
@@ -195,7 +206,8 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         規則：\n\
         - 每次回覆只問一個問題，以追問引導學生思考。\n\
         - 不替學生下結論，不表達自己的立場。\n\
-        - 語氣中立、尊重，回覆簡短；離題時引導回主題。\n\n\
+        - 語氣中立、尊重，回覆簡短；離題時引導回主題。\n\
+        - 方括號大寫詞（[EMAIL]、[PHONE]、[NATIONAL_ID]、[STUDENT_ID]）是系統遮蔽掉的個人資料：不要追問或猜測內容，也不要照抄，繼續以題目為主討論。\n\n\
         追問與分類：\n\
         先依對話提出一個有幫助的追問，再根據實際追問標記 question_type。\n\
         每次只要求一個主要思考操作，避免先問詞義又問理由等混合問題。\n\
@@ -250,22 +262,12 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         \n\
         上述 assumption 或 perspective 問題即使附加「為什麼」，分類也不會變成 reason。\n\
         \n\
-        語音輸入（F-10.1）：\n\
-        以「{speech_mark}」開頭的學生訊息是語音辨識的逐字稿，學生已確認後送出；標記由系統加上，不是學生說的話。\n\
-        逐字稿可能有同音錯字、贅詞（例如「嗯」「那個」「就是」）、重複、自我修正或缺少標點。\n\
+        理解學生的訊息（F-10.1）：\n\
+        學生訊息可能來自打字或語音辨識（學生確認後送出），可能有同音錯字、贅詞（例如「嗯」「那個」「就是」）、重複、自我修正或缺少標點。\n\
         - 依最合理的原意理解，直接承接學生的論點追問。\n\
-        - 不指出、糾正或評論錯字、贅詞與標點，也不要求學生改用文字輸入。\n\
-        - 只有在辨識錯誤讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
-        - 不在回覆中提到或照抄「{speech_mark}」。\n\
-        - 判斷 advance 時，依學生實際表達的思考，不因口語化或贅詞而降低或提高。\n\
-        \n\
-        語音對話（F-10.2）：\n\
-        若最新一則學生訊息以「{speech_mark}」開頭，你的回覆會以語音朗讀給學生聽：\n\
-        - 用口語、完整的短句，整體控制在兩三句內，把問題放在最後。\n\
-        - 不使用 Markdown、條列、編號、表格、表情符號、網址或括號補充，也不用只適合閱讀的符號（例如 →、/、*）。\n\
-        語音可能在學生還沒說完時就送出（學生停頓幾秒就會自動送出）。\n\
-        - 若最新訊息明顯中斷（例如停在「因為」「所以」「但是」「如果……的話」，或句子沒有完成），不要依半句話推論或提出新的追問；簡短請學生把剛才的想法說完，可以提到他說到哪裡，此時標記 clarify。\n\
-        - 停頓、贅詞或句子簡短不代表沒說完；意思已經完整時照常追問。\n\
+        - 不指出、糾正或評論錯字、贅詞與標點，也不要求學生改用其他方式輸入。\n\
+        - 只有在錯字讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
+        - 判斷 advance 時，依學生實際表達的思考，不因口語化、錯字或贅詞而降低或提高。\n\
         \n\
         目前階段（階段只進不退）：{stage}{wrap}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
@@ -294,35 +296,178 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         stage = stage,
         wrap = wrap,
         delim = META_DELIM,
-        speech_mark = SPEECH_MARK,
     )
 }
 
 // ---- OpenAI 實作 ----
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
+    /// 第一個是主模型，其後是備援模型（依序）；每個模型各有自己的 key 池冷卻狀態
+    targets: Vec<ModelTarget>,
+}
+
+#[derive(Clone)]
+struct ModelTarget {
     model: String,
+    keys: Arc<KeyPool>,
+}
+
+/// 開始串流前遇到限流或伺服器錯誤時，最多換幾把 key 重試。
+const MAX_KEY_RETRIES: usize = 3;
+/// 所有 key 都在冷卻時，最多願意等多久讓最快恢復的那把回來；更久就直接失敗，
+/// 不要讓學生的請求卡在一個遠遠等不到的冷卻上（呼叫端另有首 token 逾時）。
+const MAX_KEY_WAIT: Duration = Duration::from_secs(30);
+
+/// 對單一模型送出請求失敗的原因，用來決定要不要換備援模型。
+enum SendFailure {
+    /// 這個模型被限流：每次失敗都是 429，或它的 key 在先前的 429 之後還在冷卻中。可以換備援模型。
+    RateLimited,
+    /// 其他原因（連線失敗、5xx、key 被拒絕、請求本身有誤）。換模型無濟於事，不換。
+    Failed,
+}
+
+impl SendFailure {
+    /// 到目前為止的失敗全是 429 就算限流。
+    fn from_only_rate_limited(only_rate_limited: bool) -> Self {
+        if only_rate_limited {
+            Self::RateLimited
+        } else {
+            Self::Failed
+        }
+    }
 }
 
 impl OpenAiProvider {
-    pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
+    pub fn new(base_url: &str, keys: Arc<KeyPool>, model: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
-            model: model.to_string(),
+            targets: vec![ModelTarget {
+                model: model.to_string(),
+                keys,
+            }],
         }
+    }
+
+    /// 主模型被限流（429）時依序改用的備援模型。與主模型相同或重複的會略過。
+    /// 每個備援模型有獨立的 key 冷卻狀態：主模型的 429 是整個模型的問題，不能讓 key 因此冷卻。
+    pub fn with_fallbacks(mut self, models: Vec<String>) -> Self {
+        for model in models {
+            if self.targets.iter().any(|t| t.model == model) {
+                continue;
+            }
+            let keys = Arc::new(self.targets[0].keys.fork());
+            self.targets.push(ModelTarget { model, keys });
+        }
+        self
+    }
+
+    /// 取一把可用的 key；全部冷卻時等最快恢復的那把（不超過 `MAX_KEY_WAIT`）。
+    /// `may_wait` 為 false（後面還有備援模型可換）時不等，直接放棄。
+    async fn acquire_key(
+        keys: &KeyPool,
+        may_wait: bool,
+    ) -> Result<crate::key_pool::Lease, AiError> {
+        for _ in 0..=MAX_KEY_RETRIES {
+            if let Some(lease) = keys.acquire() {
+                return Ok(lease);
+            }
+            match keys.next_available_in() {
+                Some(wait) if may_wait && wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
+                _ => break,
+            }
+        }
+        Err(AiError)
+    }
+
+    /// 對一個模型送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
+    /// （但每把 key 在一次請求中最多試一次，避免對故障的供應商連續猛打）。
+    /// 只在尚未開始串流時重試，串流開始後的失敗不會重送（已有部分文字給了學生）。
+    async fn send_with_failover(
+        &self,
+        keys: &KeyPool,
+        body: &(impl Serialize + Sync),
+        may_wait: bool,
+    ) -> Result<reqwest::Response, SendFailure> {
+        let mut server_errored: Vec<usize> = Vec::new();
+        // 到目前為止的失敗是否全是 429。還沒送出請求就沒有 key 可用時，要看冷卻的原因：
+        // 是先前的 429 才算限流；key 被拒絕（401/402/403）換模型也沒用
+        let mut only_rate_limited = keys.usable_count() > 0 || keys.has_rate_limited_key();
+        for _ in 0..=MAX_KEY_RETRIES {
+            let Ok(lease) = Self::acquire_key(keys, may_wait).await else {
+                // 後面還有備援模型時，這只是要換模型的訊號，不是錯誤
+                if may_wait {
+                    tracing::error!("no usable AI key");
+                } else {
+                    tracing::warn!("no usable AI key for this model");
+                }
+                return Err(SendFailure::from_only_rate_limited(only_rate_limited));
+            };
+            if server_errored.contains(&lease.index) {
+                return Err(SendFailure::Failed);
+            }
+            tracing::debug!(key = lease.index + 1, "sending AI request");
+            let res = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&lease.key)
+                .json(body)
+                .send()
+                .await
+                .map_err(|_| SendFailure::Failed)?;
+            let status = res.status();
+            if status.is_success() {
+                return Ok(res);
+            }
+            tracing::warn!(status = %status, key = lease.index + 1, "AI provider returned an error status");
+            only_rate_limited &= status.as_u16() == 429;
+            if status.is_server_error() {
+                server_errored.push(lease.index);
+            }
+            if !keys.report_failure(
+                lease.index,
+                status.as_u16(),
+                parse_retry_after(res.headers()),
+            ) {
+                return Err(SendFailure::Failed);
+            }
+        }
+        Err(SendFailure::from_only_rate_limited(only_rate_limited))
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SseItem {
     Delta(String),
+    /// 推理模型的推理內容；文字不保留，只用來表示模型已開始回應
+    Reasoning,
     Done,
     Ignore,
+    /// 串流內的錯誤區塊（HTTP 已回 200，內容卻是 `error`）。`capacity` 表示容量或限流類的錯誤
+    /// （429、gRPC 的 ResourceExhausted），換一個模型有機會成功；其他錯誤換模型沒有幫助。
+    /// 供應商的錯誤文字不保留，也不寫入日誌。
+    Error {
+        capacity: bool,
+    },
+}
+
+/// 錯誤區塊是不是容量或限流類：code 為 429，或訊息含 ResourceExhausted（大小寫、底線、空白不拘）。
+fn is_capacity_error(err: &serde_json::Map<String, serde_json::Value>) -> bool {
+    if err.get("code").and_then(|c| c.as_u64()) == Some(429) {
+        return true;
+    }
+    err.get("message")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| {
+            m.chars()
+                .filter(|c| !matches!(c, '_' | ' ' | '-'))
+                .collect::<String>()
+                .to_ascii_lowercase()
+                .contains("resourceexhausted")
+        })
 }
 
 /// 解析 OpenAI 串流的一行（`data: {...}`）。格式錯誤回傳 `Err`，不會當作正常結束。
@@ -340,6 +485,19 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
     {
         return Ok(SseItem::Delta(text.to_string()));
     }
+    if let Some(err) = v["error"].as_object() {
+        return Ok(SseItem::Error {
+            capacity: is_capacity_error(err),
+        });
+    }
+    // OpenRouter 用 `reasoning`，DeepSeek／vLLM 用 `reasoning_content`
+    let delta = &v["choices"][0]["delta"];
+    if ["reasoning", "reasoning_content"]
+        .iter()
+        .any(|k| delta[*k].as_str().is_some_and(|t| !t.is_empty()))
+    {
+        return Ok(SseItem::Reasoning);
+    }
     if v["choices"][0]["finish_reason"].is_string() {
         return Ok(SseItem::Done);
     }
@@ -356,66 +514,187 @@ impl SseDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<SseItem>, AiError> {
         self.buf.extend_from_slice(bytes);
         let mut items = Vec::new();
-        while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = self.buf.drain(..=i).collect();
-            let line = std::str::from_utf8(&line).map_err(|_| AiError)?;
+        // 逐行就地解碼，最後一次丟掉已處理的部分，不為每一行配置新的緩衝
+        let mut start = 0;
+        while let Some(i) = self.buf[start..].iter().position(|&b| b == b'\n') {
+            let line = std::str::from_utf8(&self.buf[start..start + i]).map_err(|_| AiError)?;
             items.push(parse_sse_line(line.trim_end())?);
+            start += i + 1;
         }
+        self.buf.drain(..start);
         Ok(items)
     }
+}
+
+/// 送給供應商的請求本文。直接借用請求的文字序列化，不先複製成 `serde_json::Value`；
+/// 欄位依字母排列，與先前 `json!`（BTreeMap）輸出的位元組相同。
+#[derive(Serialize)]
+struct ChatBody<'a> {
+    messages: &'a [ChatMsg<'a>],
+    model: &'a str,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct ChatMsg<'a> {
+    content: &'a str,
+    role: &'static str,
+}
+
+impl OpenAiProvider {
+    /// 對第 `index` 個模型送出請求（含該模型自己的 key 重試）。
+    async fn send_to(
+        &self,
+        index: usize,
+        req: &AiRequest,
+    ) -> Result<reqwest::Response, SendFailure> {
+        let target = &self.targets[index];
+        let system = ChatMsg {
+            content: &req.system,
+            role: "system",
+        };
+        let turns = req.messages.iter().map(|m| ChatMsg {
+            content: &m.content,
+            role: if m.role == ChatRole::User {
+                "user"
+            } else {
+                "assistant"
+            },
+        });
+        let messages: Vec<ChatMsg> = std::iter::once(system).chain(turns).collect();
+        let body = ChatBody {
+            messages: &messages,
+            model: &target.model,
+            stream: true,
+        };
+        // 後面還有備援模型時不等 key 冷卻，直接換
+        self.send_with_failover(&target.keys, &body, index + 1 == self.targets.len())
+            .await
+    }
+
+    /// 從第 `start` 個模型起，找第一個能送出請求的；只在限流（429）時往下一個找，
+    /// 其他失敗直接放棄。換過模型的會留下日誌。
+    async fn first_available(
+        &self,
+        start: usize,
+        req: &AiRequest,
+    ) -> Option<(usize, reqwest::Response)> {
+        let last = self.targets.len() - 1;
+        for i in start..=last {
+            match self.send_to(i, req).await {
+                Ok(res) => {
+                    if i > 0 {
+                        tracing::warn!(model = %self.targets[i].model, "AI request served by a fallback model");
+                    }
+                    return Some((i, res));
+                }
+                Err(SendFailure::RateLimited) if i < last => {
+                    tracing::warn!(
+                        model = %self.targets[i].model,
+                        next = %self.targets[i + 1].model,
+                        "AI model rate limited, trying the next model"
+                    );
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// 把成功的串流回應轉成逐段文字的串流。回應是第 `index` 個模型的；
+    /// 還沒送出任何內容就收到容量錯誤時，在串流內部改用下一個備援模型。
+    fn into_stream(self, res: reqwest::Response, mut index: usize, req: AiRequest) -> AiStream {
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut current = res;
+            loop {
+                match pump(current, &tx).await {
+                    Pump::Finished => return,
+                    Pump::Failed => {
+                        let _ = tx.send(Err(AiError)).await;
+                        return;
+                    }
+                    Pump::CapacityBeforeContent => {
+                        // 呼叫端已經放棄（例如首字逾時後重試）：不要再替沒人讀的回覆消耗備援額度
+                        if tx.is_closed() {
+                            return;
+                        }
+                        tracing::warn!(
+                            model = %self.targets[index].model,
+                            "AI model reported a capacity error before any content, trying the next model"
+                        );
+                        match self.first_available(index + 1, &req).await {
+                            Some((next, res)) => {
+                                current = res;
+                                index = next;
+                            }
+                            None => {
+                                let _ = tx.send(Err(AiError)).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        ReceiverStream::new(rx).boxed()
+    }
+}
+
+/// 一個串流回應讀完的結果。
+enum Pump {
+    /// 看到結束標記，正常完成
+    Finished,
+    /// 失敗（連線中斷、格式錯誤、串流內的其他錯誤、已開始輸出後的任何錯誤）；呼叫端要送出錯誤
+    Failed,
+    /// 還沒送出任何內容（正文或推理）就收到容量錯誤；可以換備援模型
+    CapacityBeforeContent,
+}
+
+async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>) -> Pump {
+    let mut bytes = res.bytes_stream();
+    let mut decoder = SseDecoder::default();
+    let mut started = false;
+    while let Some(chunk) = bytes.next().await {
+        let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+            Ok(items) => items,
+            Err(_) => return Pump::Failed,
+        };
+        for item in items {
+            match item {
+                SseItem::Delta(t) => {
+                    started = true;
+                    if tx.send(Ok(t)).await.is_err() {
+                        return Pump::Finished;
+                    }
+                }
+                // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
+                // 讓呼叫端知道模型已在回應，不套用首字逾時
+                SseItem::Reasoning if !started => {
+                    started = true;
+                    if tx.send(Ok(String::new())).await.is_err() {
+                        return Pump::Finished;
+                    }
+                }
+                SseItem::Error { capacity: true } if !started => {
+                    return Pump::CapacityBeforeContent;
+                }
+                SseItem::Error { .. } => return Pump::Failed,
+                // 看到結束標記才算正常完成
+                SseItem::Done => return Pump::Finished,
+                SseItem::Reasoning | SseItem::Ignore => {}
+            }
+        }
+    }
+    // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
+    Pump::Failed
 }
 
 #[async_trait]
 impl AiProvider for OpenAiProvider {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        let mut messages = vec![json!({"role": "system", "content": req.system})];
-        messages.extend(req.messages.iter().map(|m| {
-            json!({
-                "role": if m.role == ChatRole::User { "user" } else { "assistant" },
-                "content": m.content,
-            })
-        }));
-        let res = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&json!({"model": self.model, "stream": true, "messages": messages}))
-            .send()
-            .await
-            .map_err(|_| AiError)?;
-        if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), "AI provider returned an error status");
-            return Err(AiError);
-        }
-        let (tx, rx) = mpsc::channel(32);
-        tokio::spawn(async move {
-            let mut bytes = res.bytes_stream();
-            let mut decoder = SseDecoder::default();
-            while let Some(chunk) = bytes.next().await {
-                let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
-                    Ok(items) => items,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                        return;
-                    }
-                };
-                for item in items {
-                    match item {
-                        SseItem::Delta(t) => {
-                            if tx.send(Ok(t)).await.is_err() {
-                                return;
-                            }
-                        }
-                        // 看到結束標記才算正常完成
-                        SseItem::Done => return,
-                        SseItem::Ignore => {}
-                    }
-                }
-            }
-            // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
-            let _ = tx.send(Err(AiError)).await;
-        });
-        Ok(ReceiverStream::new(rx).boxed())
+        let (index, res) = self.first_available(0, &req).await.ok_or(AiError)?;
+        Ok(self.clone().into_stream(res, index, req))
     }
 }
 
@@ -454,6 +733,17 @@ pub async fn collect(
     }
 }
 
+/// 背景用途（總結、主張分組）的 `collect`：只套用完整回覆上限，不套用首個 token 逾時。
+/// 推理模型常先推理數十秒才輸出正文，背景工作沒有人在畫面前等第一個字，
+/// 套用首字逾時只會讓它無故失敗。
+pub async fn collect_background(
+    ai: &dyn AiProvider,
+    req: AiRequest,
+    total: std::time::Duration,
+) -> Result<String, AiError> {
+    collect(ai, req, total, total).await
+}
+
 /// 單一總結欄位的長度上限（字元）。
 const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
 /// 一句主張的長度上限（字元）。
@@ -465,48 +755,9 @@ const MAX_GROUP_NAME_CHARS: usize = 24;
 pub struct Summary {
     pub stance: String,
     pub reasons: String,
-    /// 論點分布用的分類（暫定）：模型沒給或給了不認得的值時為 `None`，不影響總結本身。
-    /// 學生最終主張的一句短句（分組用）；沒給時為 `None`。
+    /// 學生最終主張的一句短句（分組用）；沒給時為 `None`，不影響總結本身。
     pub claim: Option<String>,
-    pub framework: Option<String>,
-    /// 6 個學派維度的分數（順序同 `SCHOOLS`，各 0–5）；沒給完整分數時為 `None`。
-    pub scores: Option<[u8; 6]>,
 }
-
-/// 雷達圖的 6 個維度（S-04.2 暫定）：效益主義、義務論、德行倫理、契約論、關懷倫理、存在主義。
-pub const SCHOOLS: [&str; 6] = [
-    "utilitarianism",
-    "deontology",
-    "virtue",
-    "contractarianism",
-    "care",
-    "existentialism",
-];
-
-/// 每個維度分數的上限。
-pub const MAX_SCORE: u8 = 5;
-
-/// 解析 6 維分數：必須是含 6 個學派的物件、值都是數字；超出範圍的值夾到 0–5。任何一項缺漏就整組不用。
-fn parse_scores(v: &serde_json::Value) -> Option<[u8; 6]> {
-    let obj = v.as_object()?;
-    let mut out = [0u8; 6];
-    for (slot, key) in out.iter_mut().zip(SCHOOLS) {
-        let n = obj.get(key)?.as_f64()?;
-        *slot = n.round().clamp(0.0, f64::from(MAX_SCORE)) as u8;
-    }
-    Some(out)
-}
-
-/// 論證主要依循的倫理學派（S-04.2 的 6 個維度），其他或無法歸類為 `other`。
-pub const FRAMEWORKS: [&str; 7] = [
-    "utilitarianism",
-    "deontology",
-    "virtue",
-    "contractarianism",
-    "care",
-    "existentialism",
-    "other",
-];
 
 pub fn build_summary_prompt(title: &str, description: &str) -> String {
     format!(
@@ -514,14 +765,8 @@ pub fn build_summary_prompt(title: &str, description: &str) -> String {
          的完整對話。請只依對話內容整理學生的論點，不加入你自己的看法，也不評論論點的對錯。\n\
          輸出一個 JSON 物件，stance、reasons 為不可為空的字串：\n\
          {{\"stance\":\"學生的主要立場\",\"reasons\":\"學生提出的核心理由\",\
-         \"claim\":\"學生最終主張的一句短句\",\
-         \"framework\":\"utilitarianism|deontology|virtue|contractarianism|care|existentialism|other\",\
-         \"scores\":{{\"utilitarianism\":0,\"deontology\":0,\"virtue\":0,\"contractarianism\":0,\"care\":0,\"existentialism\":0}}}}\n\
+         \"claim\":\"學生最終主張的一句短句\"}}\n\
          claim：學生最終主張的一句短句（30 字內，不含理由，例如「該拉桿」「不拉桿」「視情況而定」）。\n\
-         framework：學生論證主要依循的倫理學派——效益主義 utilitarianism、義務論 deontology、德行倫理 virtue、\
-         契約論 contractarianism、關懷倫理 care、存在主義 existentialism；無法歸類時用 other。\n\
-         scores：替你整理出的這份論點總結（stance 與 reasons）在 6 個學派上各打 0 到 5 的整數分——0 表示論點完全沒用到該學派的思路，5 表示是論點的核心；\
-         依學生「實際提出」的立場與理由評分，不是你認為正確的答案；6 個學派都要給分。\n\
          只輸出 JSON。"
     )
 }
@@ -549,27 +794,12 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
         stance: String,
         reasons: String,
         claim: Option<String>,
-        framework: Option<String>,
-        scores: Option<serde_json::Value>,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
-    let clean = |s: String| -> Option<String> {
-        let s: String = s.trim().chars().take(MAX_SUMMARY_FIELD_CHARS).collect();
-        (!s.is_empty()).then_some(s)
-    };
+    let r: Raw = extract_json(raw)?;
     Some(Summary {
-        stance: clean(r.stance)?,
-        reasons: clean(r.reasons)?,
-        claim: r
-            .claim
-            .map(|c| c.trim().chars().take(MAX_CLAIM_CHARS).collect::<String>())
-            .filter(|c| !c.is_empty()),
-        framework: r.framework.filter(|f| FRAMEWORKS.contains(&f.as_str())),
-        scores: r.scores.as_ref().and_then(parse_scores),
+        stance: clip(&r.stance, MAX_SUMMARY_FIELD_CHARS)?,
+        reasons: clip(&r.reasons, MAX_SUMMARY_FIELD_CHARS)?,
+        claim: r.claim.and_then(|c| clip(&c, MAX_CLAIM_CHARS)),
     })
 }
 
@@ -601,15 +831,8 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
     struct Raw {
         group: String,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
-    let name: String = r.group.trim().chars().take(MAX_GROUP_NAME_CHARS).collect();
-    if name.is_empty() {
-        return None;
-    }
+    let r: Raw = extract_json(raw)?;
+    let name = clip(&r.group, MAX_GROUP_NAME_CHARS)?;
     let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
     Some(
         existing
@@ -650,18 +873,13 @@ pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<u
     struct Raw {
         groups: Vec<Group>,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
+    let r: Raw = extract_json(raw)?;
     let mut seen = vec![false; claim_count];
     let mut out: Vec<(String, Vec<usize>)> = Vec::new();
     for g in r.groups {
-        let name: String = g.name.trim().chars().take(MAX_GROUP_NAME_CHARS).collect();
-        if name.is_empty() {
+        let Some(name) = clip(&g.name, MAX_GROUP_NAME_CHARS) else {
             continue;
-        }
+        };
         let members: Vec<usize> = g
             .members
             .into_iter()
@@ -688,37 +906,13 @@ mod tests {
         let ok = parse_summary("```json\n{\"stance\":\"拉桿\",\"reasons\":\"功利\"}\n```").unwrap();
         assert_eq!(ok.stance, "拉桿");
         assert_eq!(ok.reasons, "功利");
-        // 沒給分類不算結果不完整
-        assert_eq!((ok.claim, ok.framework), (None, None));
-        let classified =
-            parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"framework\":\"deontology\"}")
-                .unwrap();
-        assert_eq!(classified.framework.as_deref(), Some("deontology"));
-        assert_eq!(classified.framework.as_deref(), Some("deontology"));
-        // 6 維分數：四捨五入並夾在 0–5；缺一個學派就整組不用
-        let scored = parse_summary(
-            "{\"stance\":\"a\",\"reasons\":\"b\",\"scores\":{\"utilitarianism\":5,\"deontology\":2.6,\"virtue\":-3,\"contractarianism\":9,\"care\":0,\"existentialism\":1}}",
+        // 沒給主張不算結果不完整；舊格式多給的欄位（學派、分數）直接忽略
+        assert_eq!(ok.claim, None);
+        let extra = parse_summary(
+            "{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"該拉桿\",\"framework\":\"deontology\",\"scores\":{\"care\":1}}",
         )
         .unwrap();
-        assert_eq!(scored.scores, Some([5, 3, 0, 5, 0, 1]));
-        let partial =
-            parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"scores\":{\"utilitarianism\":5}}")
-                .unwrap();
-        assert_eq!(partial.scores, None, "分數不完整不影響總結本身");
-        let text = parse_summary(
-            "{\"stance\":\"a\",\"reasons\":\"b\",\"scores\":{\"utilitarianism\":\"high\",\"deontology\":1,\"virtue\":1,\"contractarianism\":1,\"care\":1,\"existentialism\":1}}",
-        )
-        .unwrap();
-        assert_eq!(text.scores, None);
-        // 不認得的分類值直接丟棄
-        let odd = parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"framework\":7}");
-        assert!(
-            odd.is_none(),
-            "wrong-typed framework makes the JSON invalid"
-        );
-        let odd =
-            parse_summary("{\"stance\":\"a\",\"reasons\":\"b\",\"framework\":\"zen\"}").unwrap();
-        assert_eq!((odd.claim, odd.framework), (None, None));
+        assert_eq!(extra.claim.as_deref(), Some("該拉桿"));
         for bad in [
             "",
             "no json",
@@ -892,6 +1086,58 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_deltas_parse_as_reasoning_without_their_text() {
+        // OpenRouter 用 `reasoning`（正文是空字串），DeepSeek／vLLM 用 `reasoning_content`
+        assert_eq!(
+            parse_sse_line(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"想一下\"}}]}"
+            ),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想一下\"}}]}"),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning\":\"\"}}]}"),
+            Ok(SseItem::Ignore)
+        );
+    }
+
+    #[test]
+    fn error_chunks_are_classified_as_capacity_errors_or_other_errors() {
+        let err = |code: u32, msg: &str| {
+            format!("data: {{\"choices\":[],\"error\":{{\"code\":{code},\"message\":\"{msg}\"}}}}")
+        };
+        let capacity = Ok(SseItem::Error { capacity: true });
+        let other = Ok(SseItem::Error { capacity: false });
+        // 實測：NVIDIA 的並發上限用 HTTP 200 加 502 ResourceExhausted 的區塊送出
+        assert_eq!(
+            parse_sse_line(&err(
+                502,
+                "Upstream error from Nvidia: ResourceExhausted: Worker local total request limit reached (16/16)"
+            )),
+            capacity
+        );
+        // 寫法不同的 gRPC 狀態名稱
+        assert_eq!(parse_sse_line(&err(503, "RESOURCE_EXHAUSTED")), capacity);
+        assert_eq!(parse_sse_line(&err(500, "resource exhausted")), capacity);
+        assert_eq!(parse_sse_line(&err(429, "slow down")), capacity);
+        assert_eq!(parse_sse_line(&err(502, "Upstream error: Internal")), other);
+        assert_eq!(parse_sse_line(&err(400, "bad request")), other);
+        // 有 error 但沒有 code 也是錯誤，只是不算容量錯誤
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[],\"error\":{\"message\":\"boom\"}}"),
+            other
+        );
+        // 帶有正文的區塊仍以正文為準，不因為多了 error 欄位而被丟掉
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"content\":\"嗨\"}}],\"error\":null}"),
+            Ok(SseItem::Delta("嗨".to_string()))
+        );
+    }
+
+    #[test]
     fn decoder_handles_multibyte_char_split_across_chunks() {
         let line = "data: {\"choices\":[{\"delta\":{\"content\":\"正義\"}}]}\n";
         let bytes = line.as_bytes();
@@ -973,20 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn speech_transcripts_get_the_mark_and_text_stays_verbatim() {
-        assert_eq!(
-            student_turn_content("嗯 應該拉感", "speech-browser"),
-            "【語音輸入】嗯 應該拉感"
-        );
-        assert_eq!(
-            student_turn_content("嗯 應該拉感", "speech-openai"),
-            "【語音輸入】嗯 應該拉感"
-        );
-        assert_eq!(student_turn_content("應該拉桿", "text"), "應該拉桿");
-    }
-
-    #[test]
-    fn prompt_explains_how_to_read_speech_transcripts() {
+    fn prompt_reads_typos_and_speech_transcripts_by_meaning() {
         let p = build_system_prompt(&PromptContext {
             title: "T",
             description: "D",
@@ -994,37 +1227,52 @@ mod tests {
             turn: 1,
             wrap_up_turn: 15,
         });
-        // 規則存在即可；模型實際行為由 eval/f10_1_cases.json 評估。
+        // F-10.1：語音辨識逐字稿與打字一律當作文字處理，不另加標記；規則對所有學生訊息生效。
+        // 只檢查規則存在；模型實際行為由 eval/f10_1_cases.json 評估。
         for rule in [
-            SPEECH_MARK,
-            "語音辨識的逐字稿",
+            "可能來自打字或語音辨識",
+            "依最合理的原意理解",
             "不指出、糾正或評論錯字、贅詞與標點",
             "才用一個簡短問題請學生確認原意",
-            "不在回覆中提到或照抄",
         ] {
-            assert!(p.contains(rule), "缺少語音規則：{rule}");
+            assert!(p.contains(rule), "缺少輸入理解規則：{rule}");
         }
     }
 
-    #[test]
-    fn prompt_makes_spoken_replies_listenable_and_handles_cut_off_speech() {
-        let p = build_system_prompt(&PromptContext {
-            title: "T",
-            description: "D",
-            stage: 2,
-            turn: 2,
-            wrap_up_turn: 15,
-        });
-        // F-10.2：輪流語音對話的回覆會被朗讀，學生也可能話沒說完就被自動送出。
-        // 只檢查規則存在；模型實際行為由 eval/f10_2_cases.json 評估。
-        for rule in [
-            "回覆會以語音朗讀給學生聽",
-            "不使用 Markdown、條列、編號、表格、表情符號、網址",
-            "學生還沒說完時就送出",
-            "簡短請學生把剛才的想法說完",
-            "停頓、贅詞或句子簡短不代表沒說完",
-        ] {
-            assert!(p.contains(rule), "缺少語音對話規則：{rule}");
+    /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
+    struct SlowStart(std::time::Duration);
+
+    #[async_trait]
+    impl AiProvider for SlowStart {
+        async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+            let delay = self.0;
+            Ok(futures_util::stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok("{}".to_string())
+            })
+            .boxed())
         }
+    }
+
+    fn any_request() -> AiRequest {
+        AiRequest {
+            system: String::new(),
+            messages: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_waits_for_a_slow_first_chunk_within_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_millis(300));
+        let text = collect_background(&ai, any_request(), std::time::Duration::from_secs(2)).await;
+        assert_eq!(text.unwrap(), "{}");
+    }
+
+    #[tokio::test]
+    async fn collect_fails_past_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_secs(2));
+        let text =
+            collect_background(&ai, any_request(), std::time::Duration::from_millis(200)).await;
+        assert!(text.is_err());
     }
 }

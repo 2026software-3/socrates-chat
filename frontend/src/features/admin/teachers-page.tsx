@@ -43,7 +43,7 @@ export function TeachersPage() {
   )
   const q = query.trim().toLowerCase()
   const shown = q ? emails.filter((e) => e.toLowerCase().includes(q)) : emails
-  const num = new Intl.NumberFormat(lang)
+  const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
 
   async function onAdd(e: FormEvent) {
     e.preventDefault()

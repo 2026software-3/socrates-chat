@@ -146,13 +146,16 @@ async fn deactivated_topic_disappears_for_students(pool: PgPool) {
 async fn activity_visibility_follows_publish_and_close(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
+    let topic = create_topic(&app, &a, "電車難題").await;
     let res = send(
         &app,
         json_req(
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(json!({"title": "第一週討論", "description": "請討論電車難題"})),
+            Some(
+                json!({"title": "第一週討論", "description": "請討論電車難題", "topic_id": topic, "classroom_id": a.classroom}),
+            ),
         ),
     )
     .await;
@@ -213,10 +216,10 @@ async fn activity_visibility_follows_publish_and_close(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn any_teacher_can_edit_any_activity(pool: PgPool) {
+async fn a_second_teacher_cannot_edit_the_activity_but_an_admin_can(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    // 第二位教師（助教，權限相同）
+    // 第二位教師（助教，權限相同）只能管理自己的教室（S-14）：改不了別人教室的活動
     send(
         &app,
         json_req(
@@ -228,37 +231,42 @@ async fn any_teacher_can_edit_any_activity(pool: PgPool) {
     )
     .await;
     let ta = login_as(&app, "sub-ta", "ta@example.com").await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "A"})),
-        ),
-    )
-    .await;
-    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let topic = create_topic(&app, &a, "T").await;
+    let id = create_activity(&app, &a, "A", &topic).await;
 
-    let res = send(
-        &app,
-        json_req(
-            "PATCH",
-            &format!("/api/activities/{id}"),
-            Some(&ta),
-            Some(json!({"title": "A2", "description": "新說明"})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK);
-    let got = json_body(
-        send(
-            &app,
-            get(&format!("/api/activities/{id}"), Some(&a.teacher)),
+    let edit = |cookie: String| {
+        let app = app.clone();
+        let path = format!("/api/activities/{id}");
+        async move {
+            send(
+                &app,
+                json_req(
+                    "PATCH",
+                    &path,
+                    Some(&cookie),
+                    Some(json!({"title": "A2", "description": "新說明"})),
+                ),
+            )
+            .await
+            .status()
+        }
+    };
+    assert_eq!(edit(ta).await, StatusCode::NOT_FOUND);
+    let read = || async {
+        json_body(
+            send(
+                &app,
+                get(&format!("/api/activities/{id}"), Some(&a.teacher)),
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
+        .await
+    };
+    assert_eq!(read().await["title"], "A");
+
+    // 管理者可管理所有教室
+    assert_eq!(edit(a.admin.clone()).await, StatusCode::OK);
+    let got = read().await;
     assert_eq!(got["title"], "A2");
     assert_eq!(got["description"], "新說明");
 }
@@ -284,12 +292,27 @@ async fn activity_validation_and_topic_link(pool: PgPool) {
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(json!({"title": "X", "topic_id": uuid::Uuid::new_v4()})),
+            Some(
+                json!({"title": "X", "topic_id": uuid::Uuid::new_v4(), "classroom_id": a.classroom}),
+            ),
         ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
+    // 活動必須有題目（S-04.7）：沒帶、帶 null 都不行
+    for body in [
+        json!({"title": "X"}),
+        json!({"title": "X", "topic_id": null}),
+    ] {
+        let res = send(
+            &app,
+            json_req("POST", "/api/activities", Some(&a.teacher), Some(body)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
+    }
 
     let topic = json_body(
         send(
@@ -310,7 +333,7 @@ async fn activity_validation_and_topic_link(pool: PgPool) {
             "POST",
             "/api/activities",
             Some(&a.teacher),
-            Some(json!({"title": "X", "topic_id": topic["id"]})),
+            Some(json!({"title": "X", "topic_id": topic["id"], "classroom_id": a.classroom})),
         ),
     )
     .await;
@@ -341,17 +364,8 @@ async fn activity_validation_and_topic_link(pool: PgPool) {
 async fn activity_management_is_teacher_only(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/activities",
-            Some(&a.teacher),
-            Some(json!({"title": "A"})),
-        ),
-    )
-    .await;
-    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let topic = create_topic(&app, &a, "T").await;
+    let id = create_activity(&app, &a, "A", &topic).await;
 
     for (cookie, expected) in [
         (Some(a.student.as_str()), StatusCode::FORBIDDEN),
@@ -402,7 +416,7 @@ async fn available_list_requires_enrollment(pool: PgPool) {
         &app,
         json_req(
             "DELETE",
-            "/api/roster/student@example.com",
+            &format!("/api/classrooms/{}/roster/student@example.com", a.classroom),
             Some(&a.admin),
             None,
         ),
@@ -413,13 +427,57 @@ async fn available_list_requires_enrollment(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn legacy_available_route_is_removed(pool: PgPool) {
+async fn activity_topic_is_locked_once_students_have_conversations(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
+    let t1 = create_topic(&app, &a, "電車難題").await;
+    let t2 = create_topic(&app, &a, "說謊可以嗎").await;
+    let act = publish_activity(&app, &a, "第一週", &t1).await;
+    let path = format!("/api/activities/{act}");
+    let patch = |body: Value| {
+        let app = app.clone();
+        let path = path.clone();
+        let cookie = a.teacher.clone();
+        async move { send(&app, json_req("PATCH", &path, Some(&cookie), Some(body))).await }
+    };
+
+    // 還沒有人開始對話：可以換題目
+    let res = patch(json!({"topic_id": t2})).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["topic_id"], t2.as_str());
+    patch(json!({"topic_id": t1})).await;
+
+    let conv = start_from_activity(&app, &a.student, &act).await;
+
+    // 已有對話：不能換成不同題目，題目不變
+    let res = patch(json!({"topic_id": t2})).await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
     assert_eq!(
-        send(&app, get("/api/available", Some(&a.student)))
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
+        json_body(res).await["error"]["code"],
+        "activity_topic_locked"
+    );
+    let got = json_body(send(&app, get(&path, Some(&a.teacher))).await).await;
+    assert_eq!(got["topic_id"], t1.as_str());
+
+    // 其他欄位與帶同一個題目仍可修改
+    let res = patch(json!({"title": "改名", "topic_id": t1})).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["title"], "改名");
+
+    // 該場對話被刪除後，題目又可以更換
+    let res = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/conversations/{conv}"),
+            Some(&a.student),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        patch(json!({"topic_id": t2})).await.status(),
+        StatusCode::OK
     );
 }

@@ -198,6 +198,21 @@
       }
     ],
     "ambiguity": "none",
-    "annotation_reason": "語音與文字混合；最後一則為文字，應自然承接，不提到語音輸入或系統標記。"
+    "annotation_reason": "語音與文字混合；最後一則為文字，應自然承接，不提到語音輸入。"
+  },
+  {
+    "id": "T03",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我覺得應該要拉感，因為可以救比較多人。"
+      }
+    ],
+    "ambiguity": "none",
+    "annotation_reason": "打字時的同音錯字（拉感＝拉桿）；規則對打字同樣生效，應依原意承接，不糾正錯字。"
   }
 ]

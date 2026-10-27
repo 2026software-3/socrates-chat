@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { AvailablePage } from '@/features/student/available-page'
+import { makeConversation } from '@/features/chat/test-data'
 import type { Available } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -14,8 +15,12 @@ const AVAILABLE: Available = {
       id: 'act-1',
       title: 'Activity One',
       description: 'Activity desc',
-      topic_id: null,
+      topic_id: 'top-1',
+      opens_at: null,
+      closes_at: null,
+      classroom_id: 'room-a',
       status: 'published',
+      is_archived: false,
       created_at: '2026-01-01T00:00:00Z',
     },
   ],
@@ -135,6 +140,46 @@ describe('student available page', () => {
     mockAvailable()
     renderPage()
     expect(await screen.findByRole('button', { name: '開始討論：Topic One' })).toBeInTheDocument()
+  })
+
+  it('shows activity_already_started in words, not as a code', async () => {
+    mockAvailable()
+    server.use(http.post('/api/conversations', () => apiError(409, 'activity_already_started')))
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '你已經開始過這個活動，請從你的對話紀錄繼續，或刪除該場對話後重新開始。',
+    )
+    expect(screen.queryByText('activity_already_started')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Activity One/ })).toBeEnabled()
+  })
+
+  it('sends the student to the archived view when their only conversation for the activity is archived', async () => {
+    mockAvailable()
+    const queries: string[] = []
+    server.use(
+      http.post('/api/conversations', () => apiError(409, 'activity_already_started')),
+      http.get('/api/conversations', ({ request }) => {
+        queries.push(new URL(request.url).search)
+        return HttpResponse.json({ items: [makeConversation({ activity_id: 'act-1', is_archived: true })], next_cursor: null })
+      }),
+    )
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    expect(await screen.findByText('list page')).toBeInTheDocument()
+    expect(queries).toEqual(['?archived=true&activity_id=act-1&limit=1'])
+  })
+
+  it('keeps the message when the existing conversation is not archived', async () => {
+    mockAvailable()
+    server.use(
+      http.post('/api/conversations', () => apiError(409, 'activity_already_started')),
+      http.get('/api/conversations', () => HttpResponse.json({ items: [], next_cursor: null })),
+    )
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('你已經開始過這個活動')
+    expect(screen.queryByText('list page')).not.toBeInTheDocument()
   })
 
   it('shows the fetch error when the reload after a failed start also fails', async () => {

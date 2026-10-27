@@ -7,8 +7,8 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, auth, catalog, chat, claims, dashboard, error::ErrorBody, reply, roster, summary,
-    voice,
+    accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard,
+    error::ErrorBody, points, reply, request_logs, roster, roster_store, summary, voice,
 };
 
 struct SessionCookie;
@@ -112,7 +112,9 @@ impl Modify for SessionCookie {
     ),
     paths(
         auth::login, auth::callback, auth::password_login, auth::change_password, auth::logout,
-        auth::me, auth::reset_password,
+        auth::me, auth::update_me, auth::reset_password,
+        classrooms::list_classrooms, classrooms::create_classroom,
+        classrooms::get_classroom, classrooms::update_classroom, classrooms::delete_classroom,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
@@ -121,14 +123,17 @@ impl Modify for SessionCookie {
         catalog::create_topic_for_teacher,
         catalog::update_topic_for_teacher, catalog::list_activities, catalog::create_activity,
         catalog::get_activity, catalog::update_activity, catalog::publish_activity,
-        catalog::close_activity, catalog::available,
-        chat::create, chat::list, chat::detail, chat::remove, chat::send_message,
+        catalog::close_activity, catalog::archive_activity, catalog::unarchive_activity,
+        catalog::delete_activity, catalog::available,
+        chat::create, chat::list, chat::detail, chat::remove, chat::archive, chat::unarchive, chat::send_message,
         reply::stream,
-        summary::end, summary::get_summary, summary::retry, summary::teacher_list,
+        request_logs::list,
+        summary::end, summary::get_summary, summary::retry, summary::list,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech,
+        points::mine,
     ),
-    components(schemas(ErrorBody)),
+    components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
     modifiers(&SessionCookie, &CommonErrorResponses),
     security(("session" = []))
 )]

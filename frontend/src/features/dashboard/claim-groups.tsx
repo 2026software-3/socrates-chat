@@ -1,29 +1,28 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { RadarChart } from '@/features/dashboard/radar-chart'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
-import type { TopicDistribution } from '@/lib/types'
+import type { ActivityDistribution } from '@/lib/types'
 
 /**
- * 一個題目的「主張分布」：每列是一種主張（AI 把意思相近的歸成一群並命名），
- * 顯示人數與比例；展開可看這群人的核心理由（AI 總結的文字，沒有姓名與原文）與論證傾向。
+ * 一個活動的「主張分布」：每列是一種主張（AI 把意思相近的歸成一群並命名），
+ * 顯示人數與比例；展開可看這群人的核心理由（AI 總結的文字，沒有姓名與原文）。
  * 分組由 AI 完成，可能不夠穩定，所以教師可以按「重新分組」。
  */
-export function ClaimGroups({ topic, onChanged, canRegroup }: { topic: TopicDistribution; onChanged: () => void; canRegroup: boolean }) {
+export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: ActivityDistribution; onChanged: () => void; canRegroup: boolean }) {
   const t = useT()
   const { lang } = useI18n()
-  const pct = new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 })
+  const pct = useMemo(() => new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 }), [lang])
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
-  const total = topic.claims.reduce((n, g) => n + g.count, 0)
+  const total = activity.claims.reduce((n, g) => n + g.count, 0)
 
   async function regroup() {
     setPending(true)
     setError(undefined)
     try {
-      await api.post('/api/dashboard/class/regroup', { title: topic.title })
+      await api.post('/api/dashboard/class/regroup', { activity_id: activity.activity_id })
       onChanged()
     } catch (e) {
       setError(e)
@@ -35,11 +34,11 @@ export function ClaimGroups({ topic, onChanged, canRegroup }: { topic: TopicDist
   return (
     <section className="space-y-3">
       <h4 className="text-sm font-medium">{t('dashboard.claims')}</h4>
-      {topic.claims.length === 0 ? (
+      {activity.claims.length === 0 ? (
         <p className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">{t('dashboard.claims.empty')}</p>
       ) : (
         <ul aria-label={t('dashboard.claims')} className="space-y-2">
-          {topic.claims.map((g) => {
+          {activity.claims.map((g) => {
             const share = total > 0 ? g.count / total : 0
             const name = g.other ? t('dashboard.claims.other') : (g.name ?? '')
             return (
@@ -68,12 +67,6 @@ export function ClaimGroups({ topic, onChanged, canRegroup }: { topic: TopicDist
                         </ul>
                       </div>
                     ) : null}
-                    {g.radar.scored > 0 ? (
-                      <div className="space-y-1">
-                        <p className="text-muted-foreground text-xs font-medium">{t('dashboard.claims.radar')}</p>
-                        <RadarChart scores={g.radar.average} max={g.radar.max} label={`${name}：${t('dashboard.claims.radar')}`} />
-                      </div>
-                    ) : null}
                   </div>
                 </details>
               </li>
@@ -81,12 +74,12 @@ export function ClaimGroups({ topic, onChanged, canRegroup }: { topic: TopicDist
           })}
         </ul>
       )}
-      {topic.ungrouped > 0 ? (
+      {activity.ungrouped > 0 ? (
         <p role="status" className="text-muted-foreground text-xs">
-          {t('dashboard.claims.ungrouped', { count: topic.ungrouped })}
+          {t('dashboard.claims.ungrouped', { count: activity.ungrouped })}
         </p>
       ) : null}
-      {canRegroup && (topic.claims.length > 0 || topic.ungrouped > 0) ? (
+      {canRegroup && (activity.claims.length > 0 || activity.ungrouped > 0) ? (
         <div className="space-y-2">
           <p className="text-muted-foreground text-xs">{t('dashboard.claims.regroupHelp')}</p>
           <Button variant="outline" size="sm" disabled={pending} onClick={() => void regroup()}>
