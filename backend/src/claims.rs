@@ -19,7 +19,7 @@ use crate::{
     AppState, activity_store,
     ai::{
         AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
-        collect_background, parse_group_name, parse_regroup,
+        collect_background, parse_group_name, parse_regroup, regroup_user_message,
     },
     auth::RequireTeacher,
     error::{ApiError, db_error_class},
@@ -124,8 +124,8 @@ pub(crate) async fn regroup(
         .await?
         .ok_or_else(ApiError::not_found)?;
     crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
-    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
-        "SELECT s.conversation_id, s.claim, a.title, c.language
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT s.conversation_id, s.claim, a.title
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN activities a ON a.id = c.activity_id
@@ -135,20 +135,21 @@ pub(crate) async fn regroup(
     .bind(body.activity_id)
     .fetch_all(&state.pool)
     .await?;
-    let Some((_, _, title, language)) = rows.first() else {
+    let Some((_, _, title)) = rows.first() else {
         return Err(ApiError::conflict(
             "no_claims",
             "這個活動還沒有可分組的主張",
         ));
     };
     let title = title.clone();
-    let language = language.clone();
-    let claims: Vec<String> = rows.iter().map(|(_, c, _, _)| c.clone()).collect();
+    // 群組名稱是給教師看的，用教師的語言；學生各自的對話語言不同，不能拿來決定
+    let language = cu.user.language.as_str();
+    let claims: Vec<String> = rows.iter().map(|(_, c, _)| c.clone()).collect();
     let req = AiRequest {
-        system: build_regroup_prompt(&title, &claims, &language),
+        system: build_regroup_prompt(&title, &claims, language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
-            content: "請分組。".into(),
+            content: regroup_user_message(language).into(),
         }],
     };
     let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;

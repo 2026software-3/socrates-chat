@@ -1122,6 +1122,15 @@ pub fn build_regroup_prompt(topic: &str, claims: &[String], language: &str) -> S
     }
 }
 
+/// 重新分組時送給 AI 的使用者訊息（提示本身在系統訊息裡）。
+pub fn regroup_user_message(language: &str) -> &'static str {
+    match language {
+        "en" => "Please group the claims.",
+        "es" => "Agrupa las afirmaciones.",
+        _ => "請分組。",
+    }
+}
+
 /// 解析重新分組結果：回傳 `(群組名稱, 成員的 0 起算索引)`。名稱重複的群組合併，
 /// 超出範圍或重複出現的編號忽略，沒有成員的群組丟棄；整體格式不符回傳 `None`。
 pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<usize>)>> {
