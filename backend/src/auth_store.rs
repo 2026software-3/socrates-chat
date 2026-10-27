@@ -550,44 +550,26 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use tracing_subscriber::{Layer, layer::SubscriberExt};
+    use sqlx::postgres::PgPoolOptions;
 
     use super::*;
 
-    /// 數 sqlx 送出幾條語句（每條 SQL 一個 `sqlx::query` 事件），用來守住登入熱路徑的往返次數。
-    struct QueryCounter(Arc<AtomicUsize>);
-
-    impl<S: tracing::Subscriber> Layer<S> for QueryCounter {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if event.metadata().target() == "sqlx::query" {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-    }
-
-    async fn counted<T>(pool: &PgPool, fut: impl Future<Output = T>) -> (T, usize) {
-        let count = Arc::new(AtomicUsize::new(0));
-        let subscriber = tracing_subscriber::registry().with(QueryCounter(count.clone()));
-        let _guard = tracing::subscriber::set_default(subscriber);
-        // tracing 會全域快取 callsite 的興趣；平行的測試可能搶先註冊，先暖機到看得到事件為止
-        for _ in 0..100 {
-            sqlx::query("SELECT 1").execute(pool).await.unwrap();
-            if count.load(Ordering::SeqCst) > 0 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            count.load(Ordering::SeqCst) > 0,
-            "sqlx query events not observed"
-        );
-        count.store(0, Ordering::SeqCst);
-        let out = fut.await;
-        (out, count.load(Ordering::SeqCst))
+    /// 只有一條連線的連線池，每次從池裡取連線就記一次。直接用 `&PgPool` 執行的每條語句
+    /// 取一次連線，所以次數就是登入熱路徑的資料庫往返次數。
+    async fn counting_pool(pool: &PgPool) -> (PgPool, Arc<AtomicUsize>) {
+        let acquires = Arc::new(AtomicUsize::new(0));
+        let counter = acquires.clone();
+        let counting = PgPoolOptions::new()
+            .max_connections(1)
+            .before_acquire(move |_, _| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(true) })
+            })
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .unwrap();
+        acquires.store(0, Ordering::SeqCst);
+        (counting, acquires)
     }
 
     async fn seed_user(pool: &PgPool) -> Uuid {
@@ -600,15 +582,16 @@ mod tests {
     #[sqlx::test]
     async fn initialize_language_sets_it_once_in_a_single_query(pool: PgPool) {
         let user = seed_user(&pool).await;
+        let (counting, acquires) = counting_pool(&pool).await;
 
-        let (first, queries) = counted(&pool, initialize_language(&pool, user, "es")).await;
-        assert_eq!(first.unwrap(), "es");
-        assert_eq!(queries, 1, "first login");
+        let first = initialize_language(&counting, user, "es").await.unwrap();
+        assert_eq!(first, "es");
+        assert_eq!(acquires.swap(0, Ordering::SeqCst), 1, "first login");
 
         // 之後的登入不覆蓋已初始化的語言，而且仍然只花一次往返
-        let (later, queries) = counted(&pool, initialize_language(&pool, user, "en")).await;
-        assert_eq!(later.unwrap(), "es");
-        assert_eq!(queries, 1, "later logins");
+        let later = initialize_language(&counting, user, "en").await.unwrap();
+        assert_eq!(later, "es");
+        assert_eq!(acquires.swap(0, Ordering::SeqCst), 1, "later logins");
     }
 
     #[sqlx::test]
