@@ -2,6 +2,11 @@ import { defineMessages } from '@/i18n/define'
 
 export const teacherMessages = defineMessages({
   'zh-TW': {
+    'teacher.activities.col.title': '活動名稱',
+    'teacher.activities.col.topic': '題目',
+    'teacher.activities.col.created': '建立日期',
+    'teacher.activities.col.status': '狀態',
+    'teacher.activities.col.actions': '操作',
     'teacher.activities.viewResults': '查看論點與總結',
     'teacher.nav.roster': '學生帳號',
     'teacher.nav.summaries': '學生總結',
@@ -134,6 +139,11 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.showOriginal': '顯示原文',
   },
   en: {
+    'teacher.activities.col.title': 'Activity',
+    'teacher.activities.col.topic': 'Topic',
+    'teacher.activities.col.created': 'Created',
+    'teacher.activities.col.status': 'Status',
+    'teacher.activities.col.actions': 'Actions',
     'teacher.activities.viewResults': 'View results',
     'teacher.nav.roster': 'Students',
     'teacher.nav.summaries': 'Student summaries',
@@ -266,6 +276,11 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.showOriginal': 'Show original',
   },
   es: {
+    'teacher.activities.col.title': 'Actividad',
+    'teacher.activities.col.topic': 'Tema',
+    'teacher.activities.col.created': 'Creada',
+    'teacher.activities.col.status': 'Estado',
+    'teacher.activities.col.actions': 'Acciones',
     'teacher.activities.viewResults': 'Ver resultados',
     'teacher.nav.roster': 'Estudiantes',
     'teacher.nav.summaries': 'Resúmenes',

@@ -104,7 +104,7 @@ describe('classroom management', () => {
       }),
     )
     renderTeacher()
-    const row = await screen.findByRole('listitem', { name: /2026 春季班/ })
+    const row = await screen.findByRole('row', { name: /2026 春季班/ })
     await userEvent.click(within(row).getByRole('button', { name: '編輯 2026 春季班' }))
     const dialog = await screen.findByRole('dialog')
     await userEvent.clear(within(dialog).getByLabelText('教室名稱'))

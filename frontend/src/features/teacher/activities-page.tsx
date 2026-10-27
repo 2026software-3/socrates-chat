@@ -11,6 +11,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadMore } from '@/components/load-more'
 import { formatDate } from '@/lib/format'
@@ -234,75 +235,66 @@ function ActivityRow({
     closed: 'teacher.activities.reopen',
   } as const
   return (
-    <li>
-      <Card>
-        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-medium break-words">
-                {href ? (
-                  <Link to={href} className="underline-offset-4 hover:underline">
-                    {activity.title}
-                  </Link>
-                ) : (
-                  activity.title
-                )}
-              </h3>
-              <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
-            </div>
-            <p className="text-sm">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</p>
-            <p className="text-muted-foreground text-sm">
-              {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
-              {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
-            </p>
-            {activity.description ? (
-              <p className="text-muted-foreground text-sm break-words whitespace-pre-line">{activity.description}</p>
-            ) : null}
-            <p className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
-              {topic ? <span>{t('teacher.activities.topicOf', { title: topic.title })}</span> : null}
-              {!topic && activity.topic_id ? (
-                <span>
-                  {t('teacher.activities.topicOf', {
-                    title: t('teacher.activities.topicUnavailable'),
-                  })}
-                </span>
-              ) : null}
-              <span>
-                {t('teacher.activities.createdAt', {
-                  date: formatDate(activity.created_at, lang),
-                })}
-              </span>
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-wrap gap-2">
+    <TableRow>
+      <TableCell className="max-w-72 align-top whitespace-normal">
+        <div className="space-y-1">
+          <p className="font-medium break-words">
             {href ? (
-              <Button asChild size="sm">
-                <Link to={href}>{t('teacher.activities.viewResults')}</Link>
-              </Button>
-            ) : null}
-            <Button variant="outline" size="sm" onClick={onEdit} disabled={busy}>
-              {t('teacher.activities.edit')}
-            </Button>
-            {activity.is_archived ? null : (
-              <Button size="sm" onClick={onToggle} disabled={busy}>
-                {t(toggleKey[activity.status])}
-              </Button>
+              <Link to={href} className="underline underline-offset-2">
+                {activity.title}
+              </Link>
+            ) : (
+              activity.title
             )}
-            <Button variant="outline" size="sm" onClick={onArchive} disabled={busy}>
-              {t(activity.is_archived ? 'teacher.activities.restore' : 'teacher.activities.archive')}
-            </Button>
-            <Button variant="outline" size="sm" onClick={onDelete}>
-              {t('teacher.activities.delete')}
-            </Button>
-          </div>
-          {error ? (
-            <Alert variant="destructive" role="alert" className="sm:basis-full">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+          </p>
+          <p className="text-muted-foreground text-xs">
+            {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
+            {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
+          </p>
+          {activity.description ? (
+            <p className="text-muted-foreground text-xs break-words whitespace-pre-line">{activity.description}</p>
           ) : null}
-        </CardContent>
-      </Card>
-    </li>
+        </div>
+      </TableCell>
+      <TableCell className="align-top whitespace-normal">
+        {topic ? topic.title : activity.topic_id ? t('teacher.activities.topicUnavailable') : '—'}
+      </TableCell>
+      <TableCell className="align-top">{formatDate(activity.created_at, lang)}</TableCell>
+      <TableCell className="align-top">
+        <div className="flex flex-col items-start gap-1">
+          <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
+          <span className="text-muted-foreground text-xs">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</span>
+        </div>
+      </TableCell>
+      <TableCell className="align-top whitespace-normal">
+        <div className="flex flex-wrap gap-1">
+          {href ? (
+            <Button asChild variant="ghost" size="sm">
+              <Link to={href}>{t('teacher.activities.viewResults')}</Link>
+            </Button>
+          ) : null}
+          <Button variant="ghost" size="sm" onClick={onEdit} disabled={busy}>
+            {t('teacher.activities.edit')}
+          </Button>
+          {activity.is_archived ? null : (
+            <Button variant="ghost" size="sm" onClick={onToggle} disabled={busy}>
+              {t(toggleKey[activity.status])}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onArchive} disabled={busy}>
+            {t(activity.is_archived ? 'teacher.activities.restore' : 'teacher.activities.archive')}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onDelete}>
+            {t('teacher.activities.delete')}
+          </Button>
+        </div>
+        {error ? (
+          <Alert variant="destructive" role="alert" className="mt-2">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -445,7 +437,18 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
       {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
       {list.items && list.items.length === 0 ? <EmptyBlock>{t(showArchived ? 'teacher.activities.emptyArchived' : 'teacher.activities.empty')}</EmptyBlock> : null}
       {list.items && list.items.length > 0 ? (
-        <ul className="space-y-3">
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('teacher.activities.col.title')}</TableHead>
+                <TableHead>{t('teacher.activities.col.topic')}</TableHead>
+                <TableHead>{t('teacher.activities.col.created')}</TableHead>
+                <TableHead>{t('teacher.activities.col.status')}</TableHead>
+                <TableHead>{t('teacher.activities.col.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
           {list.items.map((a) => (
             <ActivityRow
               key={a.id}
@@ -461,7 +464,9 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
               onDelete={() => setDeleting(a)}
             />
           ))}
-        </ul>
+            </TableBody>
+          </Table>
+        </div>
       ) : null}
       <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
 

@@ -2,6 +2,13 @@ import { defineMessages } from '@/i18n/define'
 
 export const classroomsMessages = defineMessages({
   'zh-TW': {
+    'classrooms.col.name': '教室名稱',
+    'classrooms.col.detail': '年度與說明',
+    'classrooms.col.status': '狀態',
+    'classrooms.col.actions': '操作',
+    'classrooms.active': '使用中',
+    'classrooms.open': '進入',
+    'classrooms.view': '查看',
     'classrooms.backToList': '回到教室列表',
     'classrooms.students': '學生名單',
     'classrooms.student': '學生',
@@ -37,6 +44,13 @@ export const classroomsMessages = defineMessages({
     'classrooms.required': '請輸入教室名稱。',
   },
   en: {
+    'classrooms.col.name': 'Classroom',
+    'classrooms.col.detail': 'Year and description',
+    'classrooms.col.status': 'Status',
+    'classrooms.col.actions': 'Actions',
+    'classrooms.active': 'Active',
+    'classrooms.open': 'Open',
+    'classrooms.view': 'View',
     'classrooms.backToList': 'Back to classrooms',
     'classrooms.students': 'Students',
     'classrooms.student': 'Student',
@@ -72,6 +86,13 @@ export const classroomsMessages = defineMessages({
     'classrooms.required': 'Enter a classroom name.',
   },
   es: {
+    'classrooms.col.name': 'Aula',
+    'classrooms.col.detail': 'Año y descripción',
+    'classrooms.col.status': 'Estado',
+    'classrooms.col.actions': 'Acciones',
+    'classrooms.active': 'En uso',
+    'classrooms.open': 'Abrir',
+    'classrooms.view': 'Ver',
     'classrooms.backToList': 'Volver a las aulas',
     'classrooms.students': 'Estudiantes',
     'classrooms.student': 'Estudiante',

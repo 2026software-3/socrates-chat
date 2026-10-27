@@ -66,8 +66,8 @@ describe('ActivitiesPanel', () => {
     expect(await screen.findByText('第一週討論')).toBeInTheDocument()
     expect(screen.getByText('草稿')).toBeInTheDocument()
     expect(screen.getByText('已發布')).toBeInTheDocument()
-    expect(screen.getByText('題目：電車難題')).toBeInTheDocument()
-    expect(screen.getByText('題目：自由意志')).toBeInTheDocument()
+    expect(within(screen.getByRole('table')).getByText('電車難題')).toBeInTheDocument()
+    expect(within(screen.getByRole('table')).getByText('自由意志')).toBeInTheDocument()
   })
 
   it('loads the next page of activities on demand', async () => {
@@ -345,7 +345,7 @@ describe('ActivitiesPanel', () => {
   it('keeps an inactive topic selected and labelled instead of showing none', async () => {
     mockList([act({ topic_id: 'gone' })])
     setup()
-    expect(await screen.findByText('題目：（已停用或無法載入的題目）')).toBeInTheDocument()
+    expect(await within(await screen.findByRole('table')).findByText('（已停用或無法載入的題目）')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
     expect(within(dialog).getByLabelText('題目')).toHaveValue('gone')
@@ -362,7 +362,7 @@ describe('ActivitiesPanel', () => {
     const select = await screen.findByLabelText('題目')
     await waitFor(() => expect(within(select).getByRole('option', { name: '電車難題' })).toBeInTheDocument())
     expect(within(select).queryByRole('option', { name: '已停用題目' })).not.toBeInTheDocument()
-    expect(await screen.findByText('題目：（已停用或無法載入的題目）')).toBeInTheDocument()
+    expect(await within(await screen.findByRole('table')).findByText('（已停用或無法載入的題目）')).toBeInTheDocument()
   })
 
   it('keeps the dialog open and shows the error when saving fails', async () => {
@@ -454,7 +454,7 @@ describe('ActivitiesPanel', () => {
     const btn = screen.getByRole('button', { name: '發布' })
     await userEvent.dblClick(btn)
     await waitFor(() => expect(btn).toBeDisabled())
-    const row = btn.closest('li')
+    const row = btn.closest('tr')
     if (!row) throw new Error('row not found')
     expect(await within(row).findByRole('alert')).toBeInTheDocument()
     expect(count).toBe(1)

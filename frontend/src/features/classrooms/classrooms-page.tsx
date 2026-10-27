@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useT, errorText } from '@/i18n'
 import { api } from '@/lib/api'
@@ -207,47 +208,58 @@ export function ClassroomsPage() {
         </EmptyBlock>
       ) : null}
       {visible && visible.length > 0 ? (
-        <ul aria-label={title} className="divide-y rounded-md border">
-          {visible.map((classroom) => (
-            <li key={classroom.id} aria-label={classroom.name} className="flex items-start justify-between gap-3 px-4 py-3">
-              <div className="min-w-0 space-y-1">
-                <h2 className="font-medium">
-                  <Link to={`${base}/${classroom.id}`} className="underline-offset-4 hover:underline">
-                    {classroom.name}
-                  </Link>
-                </h2>
-                {classroom.is_archived ? <p>{t('classrooms.archived')}</p> : null}
-                {classroom.year_label ? <p className="text-muted-foreground text-sm">{classroom.year_label}</p> : null}
-                {classroom.description ? <p className="text-sm">{classroom.description}</p> : null}
-              </div>
-              <div className="flex gap-2">
-              <Button variant="outline" disabled={!!archiving} onClick={() => void toggleArchive(classroom)}>
-                {t(classroom.is_archived ? 'classrooms.restore' : 'classrooms.archive')}
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!!archiving}
-                onClick={() => setDeleting(classroom)}
-              >
-                {t('classrooms.delete')}
-              </Button>
-              <Button
-                disabled={classroom.is_archived || !!archiving}
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={t('classrooms.edit', { name: classroom.name })}
-                onClick={() => {
-                  setNotice('')
-                  setEditing(classroom)
-                }}
-              >
-                <Pencil aria-hidden />
-              </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className="rounded-md border">
+          <Table aria-label={title}>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('classrooms.col.name')}</TableHead>
+                <TableHead>{t('classrooms.col.detail')}</TableHead>
+                <TableHead>{t('classrooms.col.status')}</TableHead>
+                <TableHead>{t('classrooms.col.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visible.map((classroom) => (
+                <TableRow key={classroom.id}>
+                  <TableCell className="font-medium">
+                    <Link to={`${base}/${classroom.id}`} className="underline underline-offset-2">
+                      {classroom.name}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground max-w-80 whitespace-normal">
+                    {[classroom.year_label, classroom.description].filter(Boolean).join(' · ') || '—'}
+                  </TableCell>
+                  <TableCell>{classroom.is_archived ? t('classrooms.archived') : t('classrooms.active')}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-1">
+                      <Button asChild variant="ghost">
+                        <Link to={`${base}/${classroom.id}`}>{t(classroom.is_archived ? 'classrooms.view' : 'classrooms.open')}</Link>
+                      </Button>
+                      <Button
+                        disabled={classroom.is_archived || !!archiving}
+                        type="button"
+                        variant="ghost"
+                        aria-label={t('classrooms.edit', { name: classroom.name })}
+                        onClick={() => {
+                          setNotice('')
+                          setEditing(classroom)
+                        }}
+                      >
+                        <Pencil aria-hidden />
+                      </Button>
+                      <Button variant="ghost" disabled={!!archiving} onClick={() => void toggleArchive(classroom)}>
+                        {t(classroom.is_archived ? 'classrooms.restore' : 'classrooms.archive')}
+                      </Button>
+                      <Button variant="ghost" disabled={!!archiving} onClick={() => setDeleting(classroom)}>
+                        {t('classrooms.delete')}
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       ) : null}
 
       {deleting ? (
