@@ -79,27 +79,43 @@ fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
         .filter(|v| !v.is_empty())
 }
 
-/// `Accept-Language` 中第一個支援的語言；沒有支援項目時使用繁體中文。
+/// `Accept-Language` 中權重（q）最高的支援語言，同分取先出現的；`q=0` 代表瀏覽器不接受，
+/// 一律略過。沒有可接受的支援語言時使用繁體中文。
 fn preferred_language(headers: &HeaderMap) -> &'static str {
-    headers
+    let mut best: Option<(&'static str, f32)> = None;
+    let value = headers
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|value| value.to_str().ok())
-        .into_iter()
-        .flat_map(|value| value.split(','))
-        .filter_map(|part| part.split(';').next())
-        .find_map(|tag| {
-            let tag = tag.trim().to_ascii_lowercase();
-            if tag.starts_with("zh") {
-                Some("zh-TW")
-            } else if tag.starts_with("en") {
-                Some("en")
-            } else if tag.starts_with("es") {
-                Some("es")
-            } else {
-                None
-            }
-        })
-        .unwrap_or("zh-TW")
+        .unwrap_or_default();
+    for part in value.split(',') {
+        let mut fields = part.split(';');
+        let tag = fields
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let language = if tag.starts_with("zh") {
+            "zh-TW"
+        } else if tag.starts_with("en") {
+            "en"
+        } else if tag.starts_with("es") {
+            "es"
+        } else {
+            continue;
+        };
+        // 沒有 q（或 q 無法解析）視為 1
+        let q = fields
+            .find_map(|f| {
+                let (name, v) = f.split_once('=')?;
+                name.trim().eq_ignore_ascii_case("q").then(|| v.trim())
+            })
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        if q > 0.0 && best.is_none_or(|(_, b)| q > b) {
+            best = Some((language, q));
+        }
+    }
+    best.map_or("zh-TW", |(language, _)| language)
 }
 
 /// 使用者的角色；每次請求由資料庫載入，不存在 cookie 裡（S-08.2）。
@@ -679,4 +695,35 @@ pub(crate) async fn reset_password(
         email,
         temporary_password,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pick(value: &str) -> &'static str {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_LANGUAGE, value.parse().unwrap());
+        preferred_language(&headers)
+    }
+
+    #[test]
+    fn accept_language_picks_the_highest_q_supported_language() {
+        // 沒有 q 視為 1，同分取先出現的
+        assert_eq!(pick("en, es"), "en");
+        assert_eq!(pick("fr-FR, es-MX;q=0.9, en;q=0.8"), "es");
+        assert_eq!(pick("en;q=0.1, es;q=0.9"), "es");
+        assert_eq!(pick("en; q=0.2, zh-TW; q=0.7"), "zh-TW");
+        assert_eq!(pick("zh-TW"), "zh-TW");
+    }
+
+    #[test]
+    fn accept_language_ignores_languages_the_browser_refuses() {
+        // q=0 代表「不接受」，即使排在前面也不能選
+        assert_eq!(pick("es;q=0, en"), "en");
+        assert_eq!(pick("en;q=0.000, es;q=0.1"), "es");
+        // 沒有可接受的支援語言時回到繁體中文
+        assert_eq!(pick("es;q=0"), "zh-TW");
+        assert_eq!(pick("fr, *;q=0.5"), "zh-TW");
+    }
 }
