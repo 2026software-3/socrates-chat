@@ -463,3 +463,48 @@ async fn classroom_filter_applies_and_binds_the_cursor(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_cursor");
 }
+
+#[sqlx::test]
+async fn activity_filter_limits_to_one_activity(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    seed_many(&pool, &a.classroom).await;
+    let topic = create_topic(&app, &a, "Filter topic").await;
+    let activity = create_activity(&app, &a, "Activity one", &topic).await;
+    sqlx::query("UPDATE conversations SET activity_id = $1 WHERE id = ANY($2)")
+        .bind(activity.parse::<Uuid>().unwrap())
+        .bind(vec![Uuid::from_u128(1), Uuid::from_u128(2)])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let pages = all_pages(
+        &app,
+        &format!("/api/summaries?limit=1&activity={activity}"),
+        &a.teacher,
+    )
+    .await;
+    assert_eq!(
+        ids(&pages),
+        vec![
+            Uuid::from_u128(1).to_string(),
+            Uuid::from_u128(2).to_string()
+        ]
+    );
+
+    for bad in ["not-a-uuid".to_string(), Uuid::from_u128(777).to_string()] {
+        let res = send(
+            &app,
+            get(&format!("/api/summaries?activity={bad}"), Some(&a.teacher)),
+        )
+        .await;
+        if bad == "not-a-uuid" {
+            assert_json_error(res, StatusCode::BAD_REQUEST, "invalid_filter").await;
+        } else {
+            assert_eq!(
+                json_body(res).await,
+                json!({"items": [], "next_cursor": null})
+            );
+        }
+    }
+}
