@@ -256,6 +256,13 @@ fn csv_fields(line: &str) -> Option<Vec<String>> {
     Some(fields)
 }
 
+/// 學號為 8 位數字加 1 個英文字母（與資料庫 CHECK 一致，大小寫皆收）。
+fn is_valid_student_id(id: &str) -> bool {
+    id.len() == 9
+        && id.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        && id.as_bytes()[8].is_ascii_alphabetic()
+}
+
 /// 每行依序為姓名、學號及選填信箱；錯誤不回顯個資。
 pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
     let mut result = ParsedStudentRoster::default();
@@ -267,34 +274,33 @@ pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
             });
             continue;
         };
-        let valid = fields.len() == 3
-            && !fields[0].is_empty()
-            && fields[0].chars().count() <= 30
-            && !fields[0].contains('\0')
-            && fields[1].len() == 9
-            && fields[1].as_bytes()[..8].iter().all(u8::is_ascii_digit)
-            && fields[1].as_bytes()[8].is_ascii_alphabetic();
-        let email = fields
-            .get(2)
-            .filter(|s| !s.is_empty())
-            .map(|s| normalize_email(s));
-        if !valid || matches!(email, Some(None)) {
+        if fields.len() != 3 || fields[0].is_empty() || fields[1].is_empty() {
             result.invalid.push(StudentImportError {
                 line: index + 1,
-                reason: if fields.len() != 3 || fields[0].is_empty() || fields[1].is_empty() {
-                    "missing_fields"
-                } else {
-                    "invalid_format"
-                }
-                .to_string(),
+                reason: "missing_fields".to_string(),
             });
             continue;
         }
+        let email = if fields[2].is_empty() {
+            Some(None)
+        } else {
+            normalize_email(&fields[2]).map(Some)
+        };
+        let valid = fields[0].chars().count() <= 30
+            && !fields[0].contains('\0')
+            && is_valid_student_id(&fields[1]);
+        let (true, Some(email)) = (valid, email) else {
+            result.invalid.push(StudentImportError {
+                line: index + 1,
+                reason: "invalid_format".to_string(),
+            });
+            continue;
+        };
         result.students.push(StudentImportRow {
             line: index + 1,
             name: fields[0].to_owned(),
             student_id: fields[1].to_ascii_uppercase(),
-            email: email.flatten(),
+            email,
         });
     }
     result
@@ -336,6 +342,9 @@ pub(crate) async fn is_staff_email(
     Ok(staff)
 }
 
+/// 匯入交易共用的 advisory lock 鍵。
+const IMPORT_LOCK_KEY: i64 = 393;
+
 #[utoipa::path(
     post,
     path = "/api/classrooms/{id}/roster/import",
@@ -364,7 +373,8 @@ pub(crate) async fn import_roster(
     // 整批名單、帳號與稽核一起提交，避免失敗時遺失一次性的臨時密碼。
     // 匯入只新增，不移除名單上原有的人
     // 匯入交易序列化，避免兩個教室同時替相同學號或信箱建立帳號。
-    sqlx::query("SELECT pg_advisory_xact_lock(393)")
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(IMPORT_LOCK_KEY)
         .execute(&mut *tx)
         .await?;
     for row in &parsed.students {
@@ -396,32 +406,36 @@ pub(crate) async fn import_roster(
                     .is_some_and(|id| id != row.student_id)
             });
         if id_conflict || email_conflict {
+            let reason = if id_conflict {
+                "student_id_conflict"
+            } else {
+                "email_conflict"
+            };
             invalid.push(StudentImportError {
                 line: row.line,
-                reason: if id_conflict {
-                    "student_id_conflict"
-                } else {
-                    "email_conflict"
-                }
-                .into(),
+                reason: reason.into(),
             });
             continue;
         }
         let user_id = if let Some(account) = accounts.first() {
-            if account.student_id.is_none() {
-                sqlx::query("UPDATE users SET student_id = $1, imported_name = $2, display_name = $2 WHERE id = $3")
-                    .bind(&row.student_id)
-                    .bind(&row.name)
-                    .bind(account.id)
-                    .execute(&mut *tx)
-                    .await?;
+            let fill_email = account.email.is_none() && row.email.is_some();
+            if account.student_id.is_none() || fill_email {
+                sqlx::query(
+                    "UPDATE users SET
+                         student_id = COALESCE(student_id, $1),
+                         imported_name = COALESCE(imported_name, $2),
+                         display_name = CASE WHEN student_id IS NULL THEN $2 ELSE display_name END,
+                         email = COALESCE(email, $3)
+                     WHERE id = $4",
+                )
+                .bind(&row.student_id)
+                .bind(&row.name)
+                .bind(&row.email)
+                .bind(account.id)
+                .execute(&mut *tx)
+                .await?;
             }
-            if account.email.is_none() && row.email.is_some() {
-                sqlx::query("UPDATE users SET email = $1 WHERE id = $2")
-                    .bind(&row.email)
-                    .bind(account.id)
-                    .execute(&mut *tx)
-                    .await?;
+            if fill_email {
                 email_updated += 1;
             }
             account.id
