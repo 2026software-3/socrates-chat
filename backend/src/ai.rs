@@ -912,11 +912,37 @@ pub async fn collect_background(
     collect(ai, req, total, total).await
 }
 
+/// 中日韓文字與全形符號：每個字算一個單位。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+}
+
+/// 去掉前後空白並截到 `max` 個單位；結果為空時回傳 `None`。
+/// 中文每字算一個單位，其他文字以空白分隔的詞為單位，所以英文、西班牙文的
+/// 「N 字內」限制（提示中以單字計）不會把句子切在單字中間。
+fn clip_units(s: &str, max: usize) -> Option<String> {
+    let s = s.trim();
+    let mut units = 0;
+    let mut in_word = false;
+    for (i, c) in s.char_indices() {
+        if c.is_whitespace() {
+            in_word = false;
+        } else if is_cjk(c) || !in_word {
+            in_word = !is_cjk(c);
+            units += 1;
+            if units > max {
+                return clip(&s[..i], usize::MAX);
+            }
+        }
+    }
+    clip(s, usize::MAX)
+}
+
 /// 單一總結欄位的長度上限（字元）。
 const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
-/// 一句主張的長度上限（字元）。
+/// 一句主張的長度上限（單位：中文字或詞，見 `clip_units`）。
 const MAX_CLAIM_CHARS: usize = 60;
-/// 主張群組名稱的長度上限（字元）。
+/// 主張群組名稱的長度上限（單位同上）。
 const MAX_GROUP_NAME_CHARS: usize = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1001,7 +1027,7 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
     Some(Summary {
         stance: clip(&r.stance, MAX_SUMMARY_FIELD_CHARS)?,
         reasons: clip(&r.reasons, MAX_SUMMARY_FIELD_CHARS)?,
-        claim: r.claim.and_then(|c| clip(&c, MAX_CLAIM_CHARS)),
+        claim: r.claim.and_then(|c| clip_units(&c, MAX_CLAIM_CHARS)),
     })
 }
 
@@ -1053,7 +1079,7 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
         group: String,
     }
     let r: Raw = extract_json(raw)?;
-    let name = clip(&r.group, MAX_GROUP_NAME_CHARS)?;
+    let name = clip_units(&r.group, MAX_GROUP_NAME_CHARS)?;
     let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
     Some(
         existing
@@ -1112,7 +1138,7 @@ pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<u
     let mut seen = vec![false; claim_count];
     let mut out: Vec<(String, Vec<usize>)> = Vec::new();
     for g in r.groups {
-        let Some(name) = clip(&g.name, MAX_GROUP_NAME_CHARS) else {
+        let Some(name) = clip_units(&g.name, MAX_GROUP_NAME_CHARS) else {
             continue;
         };
         let members: Vec<usize> = g
@@ -1158,6 +1184,57 @@ mod tests {
         ] {
             assert!(parse_summary(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn claim_limit_counts_words_for_space_separated_text() {
+        // en/es 提示要求 30 字內：一句 40 個英文單字（約 200 字元）不能被切在單字中間
+        let claim = ["wording"; 40].join(" ");
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{claim}\"}}");
+        let got = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(
+            got.split(' ').all(|w| w == "wording"),
+            "cut mid-word: {got}"
+        );
+        assert_eq!(got.split(' ').count(), 40);
+        // 超過上限時以整個單字為單位截斷
+        let long = ["wording"; 100].join(" ");
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{long}\"}}");
+        let got = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(
+            got.split(' ').all(|w| w == "wording"),
+            "cut mid-word: {got}"
+        );
+        assert_eq!(got.split(' ').count(), MAX_CLAIM_CHARS);
+    }
+
+    #[test]
+    fn group_name_limit_counts_words_for_space_separated_text() {
+        let name = ["moral"; 12].join(" ");
+        let raw = format!("{{\"group\":\"{name}\"}}");
+        assert_eq!(parse_group_name(&raw, &[]).as_deref(), Some(name.as_str()));
+        let raw = format!(
+            "{{\"groups\":[{{\"name\":\"{name}\",\"members\":[1]}},{{\"name\":\"{name} x\",\"members\":[2]}}]}}"
+        );
+        let got = parse_regroup(&raw, 2).unwrap();
+        assert_eq!(
+            got.len(),
+            2,
+            "names must not be cut to the same prefix and merged"
+        );
+        assert_eq!(got[0].0, name);
+    }
+
+    #[test]
+    fn cjk_limits_still_count_characters() {
+        assert_eq!(
+            clip_units("長".repeat(200).as_str(), 60)
+                .unwrap()
+                .chars()
+                .count(),
+            60
+        );
+        assert_eq!(clip_units("該 拉桿", 3).as_deref(), Some("該 拉桿"));
     }
 
     #[test]
