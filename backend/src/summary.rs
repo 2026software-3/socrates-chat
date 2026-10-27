@@ -22,7 +22,8 @@ use crate::{
     AppState,
     ai::{
         AiRequest, ChatRole, ChatTurn, build_summary_prompt, build_summary_translation_prompt,
-        collect_background, format_transcript, parse_summary, rules_version,
+        collect_background, format_transcript, parse_summary, parse_summary_translation,
+        rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
@@ -343,7 +344,8 @@ pub(crate) struct SummaryTranslation {
     params(("id" = Uuid, Path, description = "對話 ID")),
     responses(
         (status = 200, description = "未保存的翻譯結果", body = SummaryTranslation),
-        (status = 502, description = "AI 無法翻譯（ai_unavailable）", body = crate::error::ErrorBody),
+        (status = 429, description = "翻譯太頻繁（too_many_translations）", body = crate::error::ErrorBody),
+        (status = 502, description = "AI 無法翻譯，或譯文過長（ai_unavailable）", body = crate::error::ErrorBody),
         crate::error::CommonErrors
     )
 )]
@@ -377,6 +379,14 @@ pub(crate) async fn translate(
             reasons,
         }));
     }
+    // 翻譯不保存也不快取，每次都是一次 AI 呼叫：每位教師限量
+    if !state.translation_limit.try_acquire(cu.user.id) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_translations",
+            "翻譯太頻繁，請稍後再試",
+        ));
+    }
     let req = AiRequest {
         system: build_summary_translation_prompt(&language),
         messages: vec![ChatTurn {
@@ -387,14 +397,14 @@ pub(crate) async fn translate(
     let translated = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
         .await
         .ok()
-        .and_then(|raw| parse_summary(&raw))
+        .and_then(|raw| parse_summary_translation(&raw))
         .ok_or_else(|| {
             ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
         })?;
     Ok(Json(SummaryTranslation {
         language,
-        stance: translated.stance,
-        reasons: translated.reasons,
+        stance: translated.0,
+        reasons: translated.1,
     }))
 }
 

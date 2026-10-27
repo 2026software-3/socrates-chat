@@ -940,6 +940,9 @@ fn clip_units(s: &str, max: usize) -> Option<String> {
 
 /// 單一總結欄位的長度上限（字元）。
 const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
+/// 翻譯後單一欄位的長度上限（字元）：中文翻成拉丁字母常變長數倍，所以是原上限的 4 倍。
+/// 超過就視為失敗，而不是悄悄截斷。
+const MAX_TRANSLATED_FIELD_CHARS: usize = 4 * MAX_SUMMARY_FIELD_CHARS;
 /// 一句主張的長度上限（單位：中文字或詞，見 `clip_units`）。
 const MAX_CLAIM_CHARS: usize = 60;
 /// 主張群組名稱的長度上限（單位同上）。
@@ -1013,6 +1016,21 @@ pub fn format_transcript(turns: &[ChatTurn], language: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// 解析翻譯結果 `(立場, 核心理由)`：缺欄位、空白或格式錯誤回傳 `None`；
+/// 任一欄位超過 `MAX_TRANSLATED_FIELD_CHARS` 也回傳 `None`，不截斷。
+pub fn parse_summary_translation(raw: &str) -> Option<(String, String)> {
+    #[derive(Deserialize)]
+    struct Raw {
+        stance: String,
+        reasons: String,
+    }
+    let r: Raw = extract_json(raw)?;
+    let fits =
+        |s: &str| !s.trim().is_empty() && s.trim().chars().count() <= MAX_TRANSLATED_FIELD_CHARS;
+    (fits(&r.stance) && fits(&r.reasons))
+        .then(|| (r.stance.trim().to_string(), r.reasons.trim().to_string()))
 }
 
 /// 解析總結；缺欄位、空白或格式錯誤都回傳 `None`（視為結果不完整，F-08.4）。
