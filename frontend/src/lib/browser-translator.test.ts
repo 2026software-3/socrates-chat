@@ -33,14 +33,39 @@ describe('translateInBrowser', () => {
     expect(stub.create).not.toHaveBeenCalled()
   })
 
-  it.each<Availability>(['downloadable', 'downloading', 'unavailable'])(
-    'falls back to the server at once when the pack is %s instead of waiting on create()',
+  it.each<Availability>(['downloading', 'unavailable'])(
+    'falls back to the server at once when the pack is %s without touching create()',
     async (availability) => {
       const stub = stubTranslator(availability)
       expect(await translateInBrowser('zh-TW', 'en', ['立場', '理由'])).toBeNull()
       expect(stub.create).not.toHaveBeenCalled()
     },
   )
+
+  it('starts the pack download in the background when it is downloadable, but does not wait for it', async () => {
+    const stub = stubTranslator('downloadable')
+    // 下載要很久：create() 在這個測試裡永遠不會結束
+    stub.create.mockImplementation(() => new Promise(() => {}))
+    expect(await translateInBrowser('zh-TW', 'en', ['立場', '理由'])).toBeNull()
+    expect(stub.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the translator once a background download finishes, and ignores a failed one', async () => {
+    const stub = stubTranslator('downloadable')
+    expect(await translateInBrowser('zh-TW', 'en', ['立場'])).toBeNull()
+    await vi.waitFor(() => expect(stub.destroy).toHaveBeenCalled())
+
+    const failing = stubTranslator('downloadable')
+    failing.create.mockRejectedValue(new DOMException('no activation', 'NotAllowedError'))
+    expect(await translateInBrowser('zh-TW', 'en', ['立場'])).toBeNull()
+    await vi.waitFor(() => expect(failing.create).toHaveBeenCalled())
+  })
+
+  it('does not start a download when there is nothing to translate', async () => {
+    const stub = stubTranslator('downloadable')
+    expect(await translateInBrowser('zh-TW', 'en', ['', ' '])).toEqual(['', ''])
+    expect(stub.create).not.toHaveBeenCalled()
+  })
 
   it('returns null when the browser has no Translator API', async () => {
     expect(await translateInBrowser('zh-TW', 'en', ['立場'])).toBeNull()
