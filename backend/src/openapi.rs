@@ -128,7 +128,7 @@ impl Modify for SessionCookie {
         chat::create, chat::list, chat::detail, chat::remove, chat::archive, chat::unarchive, chat::send_message,
         reply::stream,
         request_logs::list,
-        summary::end, summary::get_summary, summary::retry, summary::list,
+        summary::end, summary::get_summary, summary::retry, summary::list, summary::translate,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech,
         points::mine,

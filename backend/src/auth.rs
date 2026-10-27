@@ -79,6 +79,45 @@ fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
         .filter(|v| !v.is_empty())
 }
 
+/// `Accept-Language` 中權重（q）最高的支援語言，同分取先出現的；`q=0` 代表瀏覽器不接受，
+/// 一律略過。沒有可接受的支援語言時使用繁體中文。
+fn preferred_language(headers: &HeaderMap) -> &'static str {
+    let mut best: Option<(&'static str, f32)> = None;
+    let value = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    for part in value.split(',') {
+        let mut fields = part.split(';');
+        let tag = fields
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let language = if tag.starts_with("zh") {
+            "zh-TW"
+        } else if tag.starts_with("en") {
+            "en"
+        } else if tag.starts_with("es") {
+            "es"
+        } else {
+            continue;
+        };
+        // 沒有 q（或 q 無法解析）視為 1
+        let q = fields
+            .find_map(|f| {
+                let (name, v) = f.split_once('=')?;
+                name.trim().eq_ignore_ascii_case("q").then(|| v.trim())
+            })
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        if q > 0.0 && best.is_none_or(|(_, b)| q > b) {
+            best = Some((language, q));
+        }
+    }
+    best.map_or("zh-TW", |(language, _)| language)
+}
+
 /// 使用者的角色；每次請求由資料庫載入，不存在 cookie 裡（S-08.2）。
 #[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema)]
 pub struct Roles {
@@ -260,9 +299,10 @@ fn login_error(state: &AppState, code: &str) -> Response {
 )]
 pub(crate) async fn callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(p): Query<CallbackParams>,
 ) -> Response {
-    match finish_login(&state, p).await {
+    match finish_login(&state, p, preferred_language(&headers)).await {
         Ok(token) => (
             [(
                 header::SET_COOKIE,
@@ -276,7 +316,11 @@ pub(crate) async fn callback(
 }
 
 /// 成功時回傳新 session 的 token；失敗時回傳導回前端的錯誤代碼。
-async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'static str> {
+async fn finish_login(
+    state: &AppState,
+    p: CallbackParams,
+    preferred_language: &str,
+) -> Result<String, &'static str> {
     // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
     let stored = match p.state.as_deref() {
         Some(s) => auth_store::take_login_state(&state.pool, s, Utc::now())
@@ -306,7 +350,7 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
         .config
         .admin_emails
         .contains(&identity.email.to_lowercase());
-    let user = auth_store::upsert_user(
+    let mut user = auth_store::upsert_user(
         &state.pool,
         &identity.sub,
         &identity.email,
@@ -318,6 +362,9 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     if user.disabled {
         return Err("account_disabled");
     }
+    user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
+        .await
+        .map_err(|_| "login_failed")?;
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     auth_store::create_session(&state.pool, user.id, &hash_token(&token))
@@ -356,6 +403,7 @@ pub(crate) struct MeResponse {
     id: Uuid,
     email: String,
     display_name: Option<String>,
+    language: String,
     is_admin: bool,
     must_change_password: bool,
     roles: Roles,
@@ -368,6 +416,7 @@ impl From<CurrentUser> for MeResponse {
             id: u.id,
             email: u.email,
             display_name: u.display_name,
+            language: u.language,
             is_admin: u.is_admin,
             must_change_password: cu.must_change_password,
             roles: cu.roles,
@@ -401,42 +450,65 @@ pub(crate) struct MePatch {
     /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，不可含控制字元，其他字元不限制。
     #[serde(default, deserialize_with = "nullable")]
     display_name: Option<Option<String>>,
+    /// 介面與之後建立之對話的語言；僅接受 `zh-TW`、`en`、`es`。
+    language: Option<String>,
 }
 
 #[utoipa::path(
     patch,
     path = "/api/me",
     tag = "auth",
-    summary = "修改自己的顯示名稱（學生）",
+    summary = "修改自己的語言與顯示名稱",
     request_body = MePatch,
     responses(
         (status = 200, description = "更新後的使用者", body = MeResponse),
-        (status = 400, description = "名稱超過 20 個字元或含控制字元（invalid_display_name）"),
-        (status = 403, description = "不是修課名單內的學生"),
+        (status = 400, description = "顯示名稱無效（invalid_display_name）或語言不受支援（invalid_language）"),
+        (status = 403, description = "非學生嘗試修改顯示名稱（所有登入者皆可修改語言）"),
     )
 )]
 pub(crate) async fn update_me(
-    RequireStudent(mut cu): RequireStudent,
+    AnyCurrentUser(mut cu): AnyCurrentUser,
     State(state): State<AppState>,
     Json(p): Json<MePatch>,
 ) -> Result<Json<MeResponse>, ApiError> {
-    if let Some(name) = p.display_name {
-        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-        if name.as_deref().is_some_and(|n| !valid_display_name(n)) {
-            return Err(ApiError::bad_request(
-                "invalid_display_name",
-                "顯示名稱最多 20 個字元，且不可包含控制字元",
-            ));
-        }
-        cu.user.display_name = sqlx::query_scalar(
-            "UPDATE users SET display_name = $2, updated_at = now()
-             WHERE id = $1 RETURNING display_name",
-        )
-        .bind(cu.user.id)
-        .bind(name)
-        .fetch_one(&state.pool)
-        .await?;
+    if p.display_name.is_some() && !cu.roles.student {
+        return Err(ApiError::forbidden("forbidden", "只有學生能修改顯示名稱"));
     }
+    if p.language
+        .as_deref()
+        .is_some_and(|language| !matches!(language, "zh-TW" | "en" | "es"))
+    {
+        return Err(ApiError::bad_request("invalid_language", "不支援的語言"));
+    }
+    let name = p
+        .display_name
+        .map(|n| n.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()));
+    if name.iter().flatten().any(|n| !valid_display_name(n)) {
+        return Err(ApiError::bad_request(
+            "invalid_display_name",
+            "顯示名稱最多 20 個字元，且不可包含控制字元",
+        ));
+    }
+    if name.is_none() && p.language.is_none() {
+        return Ok(Json(cu.into()));
+    }
+    // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
+    let (display_name, language): (Option<String>, String) = sqlx::query_as(
+        "UPDATE users SET
+             display_name = CASE WHEN $2 THEN $3 ELSE display_name END,
+             language = COALESCE($4::text, language),
+             language_initialized = language_initialized OR $4::text IS NOT NULL,
+             updated_at = now()
+         WHERE id = $1 RETURNING display_name, language",
+    )
+    .bind(cu.user.id)
+    .bind(name.is_some())
+    .bind(name.flatten())
+    .bind(p.language)
+    .fetch_one(&state.pool)
+    .await?;
+    cu.user.display_name = display_name;
+    cu.user.language = language;
     Ok(Json(cu.into()))
 }
 
@@ -521,6 +593,7 @@ pub(crate) async fn password_login(
     if account.disabled {
         return Err(ACCOUNT_DISABLED);
     }
+    auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     let session =
@@ -624,4 +697,35 @@ pub(crate) async fn reset_password(
         email,
         temporary_password,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pick(value: &str) -> &'static str {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_LANGUAGE, value.parse().unwrap());
+        preferred_language(&headers)
+    }
+
+    #[test]
+    fn accept_language_picks_the_highest_q_supported_language() {
+        // 沒有 q 視為 1，同分取先出現的
+        assert_eq!(pick("en, es"), "en");
+        assert_eq!(pick("fr-FR, es-MX;q=0.9, en;q=0.8"), "es");
+        assert_eq!(pick("en;q=0.1, es;q=0.9"), "es");
+        assert_eq!(pick("en; q=0.2, zh-TW; q=0.7"), "zh-TW");
+        assert_eq!(pick("zh-TW"), "zh-TW");
+    }
+
+    #[test]
+    fn accept_language_ignores_languages_the_browser_refuses() {
+        // q=0 代表「不接受」，即使排在前面也不能選
+        assert_eq!(pick("es;q=0, en"), "en");
+        assert_eq!(pick("en;q=0.000, es;q=0.1"), "es");
+        // 沒有可接受的支援語言時回到繁體中文
+        assert_eq!(pick("es;q=0"), "zh-TW");
+        assert_eq!(pick("fr, *;q=0.5"), "zh-TW");
+    }
 }

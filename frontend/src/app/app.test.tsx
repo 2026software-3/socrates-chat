@@ -147,14 +147,32 @@ describe('app shell', () => {
   })
 
   it('switches language without reloading', async () => {
-    mockMe(makeMe({ student: true }))
+    const me = makeMe({ student: true }, { language: 'zh-TW' })
+    mockMe(me)
+    const updates: unknown[] = []
+    server.use(
+      http.patch('/api/me', async ({ request }) => {
+        updates.push(await request.json())
+        return HttpResponse.json({ ...me, language: 'en' })
+      }),
+    )
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
     await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')
     expect(await screen.findByRole('heading', { name: 'Which question will you think about today?' })).toBeInTheDocument()
+    await waitFor(() => expect(updates).toEqual([{ language: 'en' }]))
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem('lang')).toBe('en')
+  })
+
+  it('uses the authenticated account language instead of a stale device preference', async () => {
+    localStorage.setItem('lang', 'en')
+    mockMe(makeMe({ student: true }, { language: 'es' }))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('heading', { name: '¿Qué pregunta quieres explorar hoy?' })).toBeInTheDocument()
+    expect(document.documentElement.lang).toBe('es')
   })
 
   it('shows the disabled page when the account has been disabled', async () => {

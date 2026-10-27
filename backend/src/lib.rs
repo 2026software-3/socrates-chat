@@ -66,6 +66,7 @@ pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
+pub(crate) mod translation_limit;
 pub mod voice;
 
 /// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
@@ -75,9 +76,11 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 4] = [
+pub const LONG_RUNNING_ROUTES: [&str; 5] = [
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
+    // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
+    "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
     "/api/voice/transcribe",
     // 同步等語音服務合成語音
@@ -99,6 +102,8 @@ pub struct AppState {
     pub live: Arc<reply::LiveReplies>,
     /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
     pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
+    /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
+    pub(crate) translation_limit: Arc<translation_limit::TranslationLimiter>,
 }
 
 impl AppState {
@@ -118,11 +123,18 @@ impl AppState {
             voice,
             live: Arc::default(),
             request_logs: Arc::default(),
+            translation_limit: Arc::default(),
         }
     }
 
     pub fn with_voice(mut self, voice: Arc<dyn VoiceProvider>) -> Self {
         self.voice = voice;
+        self
+    }
+
+    /// 換掉教師翻譯的頻率限制（測試用）。
+    pub fn with_translation_limit(mut self, max: usize, window: std::time::Duration) -> Self {
+        self.translation_limit = Arc::new(translation_limit::TranslationLimiter::new(max, window));
         self
     }
 }

@@ -7,8 +7,8 @@ import type { Conversation } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
-function setup(list: Conversation[] | 'error') {
-  mockMe(makeMe({ student: true }))
+function setup(list: Conversation[] | 'error', language: 'zh-TW' | 'en' | 'es' = 'zh-TW') {
+  mockMe(makeMe({ student: true }, { language }))
   server.use(
     http.get('/api/conversations', () => (list === 'error' ? apiError(500, 'internal') : HttpResponse.json({ items: list, next_cursor: null }))),
   )
@@ -32,7 +32,7 @@ describe('ConversationListPage', () => {
   })
 
   it('formats the date with the active language', async () => {
-    setup([makeConversation()])
+    setup([makeConversation()], 'en')
     renderApp(null, { route: '/conversations', lang: 'en' })
     expect(await screen.findByText(/Created Mar 5, 2026/)).toBeInTheDocument()
   })

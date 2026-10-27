@@ -26,6 +26,7 @@ pub struct User {
     pub google_sub: Option<String>,
     pub email: String,
     pub display_name: Option<String>,
+    pub language: String,
     pub is_admin: bool,
     /// 臨時密碼登入後必須先更改。
     pub must_change_password: bool,
@@ -84,7 +85,7 @@ pub async fn upsert_user(
         "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, $3),
                 updated_at = now()
          WHERE google_sub = $1
-         RETURNING id, google_sub, email, display_name, is_admin, must_change_password, created_at,
+         RETURNING id, google_sub, email, display_name, language, is_admin, must_change_password, created_at,
                    disabled_at IS NOT NULL AS disabled",
     )
     .bind(google_sub)
@@ -104,7 +105,7 @@ pub async fn upsert_user(
                         must_change_password = false,
                         updated_at = now()
                  WHERE email = lower($2) AND google_sub IS NULL
-                 RETURNING id, google_sub, email, display_name, is_admin,
+                 RETURNING id, google_sub, email, display_name, language, is_admin,
                            must_change_password, created_at, disabled_at IS NOT NULL AS disabled",
             )
             .bind(google_sub)
@@ -119,7 +120,7 @@ pub async fn upsert_user(
                     sqlx::query_as(
                         "INSERT INTO users (google_sub, email, display_name, is_admin)
                          VALUES ($1, lower($2), $3, $4)
-                         RETURNING id, google_sub, email, display_name, is_admin,
+                         RETURNING id, google_sub, email, display_name, language, is_admin,
                                    must_change_password, created_at,
                                    disabled_at IS NOT NULL AS disabled",
                     )
@@ -153,6 +154,43 @@ pub async fn create_session(
     .await
 }
 
+/// 首次成功登入時，以瀏覽器偏好初始化帳號語言；之後登入不覆蓋使用者的設定。
+pub async fn initialize_language(
+    pool: &PgPool,
+    user_id: Uuid,
+    preferred: &str,
+) -> Result<String, sqlx::Error> {
+    // 先讀：第一次之後的每次登入只花這一次往返，而且不寫入。
+    let (language, initialized): (String, bool) =
+        sqlx::query_as("SELECT language, language_initialized FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
+    if initialized {
+        return Ok(language);
+    }
+    let set: Option<String> = sqlx::query_scalar(
+        "UPDATE users SET language = $2, language_initialized = true, updated_at = now()
+         WHERE id = $1 AND NOT language_initialized
+         RETURNING language",
+    )
+    .bind(user_id)
+    .bind(preferred)
+    .fetch_optional(pool)
+    .await?;
+    match set {
+        Some(language) => Ok(language),
+        // 兩個首次登入同時進來，另一個先寫入了：重新讀已提交的值。
+        // （單一語句的 CTE 做不到：同一語句內的 SELECT 讀的是語句開始時的快照，會回傳舊值。）
+        None => {
+            sqlx::query_scalar("SELECT language FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+        }
+    }
+}
+
 /// `find_active_session` 一次查回的 session、使用者與角色。
 #[derive(FromRow)]
 struct SessionUserRow {
@@ -183,7 +221,7 @@ pub async fn find_active_session(
          )
          SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
                 s.must_change_password AS session_must_change_password,
-                u.id, u.google_sub, u.email, u.display_name, u.is_admin, u.must_change_password,
+                u.id, u.google_sub, u.email, u.display_name, u.language, u.is_admin, u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
                 EXISTS (SELECT 1 FROM enrollments e WHERE e.email = u.email) AS student
@@ -513,4 +551,87 @@ pub async fn create_password_session(
     .bind(token_hash)
     .fetch_one(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    /// 只有一條連線的連線池，每次從池裡取連線就記一次。直接用 `&PgPool` 執行的每條語句
+    /// 取一次連線，所以次數就是登入熱路徑的資料庫往返次數。
+    async fn counting_pool(pool: &PgPool) -> (PgPool, Arc<AtomicUsize>) {
+        let acquires = Arc::new(AtomicUsize::new(0));
+        let counter = acquires.clone();
+        let counting = PgPoolOptions::new()
+            .max_connections(1)
+            .before_acquire(move |_, _| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(true) })
+            })
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .unwrap();
+        acquires.store(0, Ordering::SeqCst);
+        (counting, acquires)
+    }
+
+    async fn seed_user(pool: &PgPool) -> Uuid {
+        sqlx::query_scalar("INSERT INTO users (email) VALUES ('lang@example.com') RETURNING id")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn initialize_language_costs_one_round_trip_after_the_first_login(pool: PgPool) {
+        let user = seed_user(&pool).await;
+        let (counting, acquires) = counting_pool(&pool).await;
+
+        let first = initialize_language(&counting, user, "es").await.unwrap();
+        assert_eq!(first, "es");
+        assert_eq!(
+            acquires.swap(0, Ordering::SeqCst),
+            2,
+            "first login: read + set"
+        );
+
+        // 之後的登入不覆蓋已初始化的語言，而且只花一次往返
+        let later = initialize_language(&counting, user, "en").await.unwrap();
+        assert_eq!(later, "es");
+        assert_eq!(acquires.swap(0, Ordering::SeqCst), 1, "later logins");
+    }
+
+    #[sqlx::test]
+    async fn racing_first_logins_both_return_the_committed_language(pool: PgPool) {
+        let user = seed_user(&pool).await;
+        // 贏家已更新但還沒 commit；輸家的語句會卡在列鎖上，等贏家 commit 後必須回傳贏家寫入的值
+        let mut winner = pool.begin().await.unwrap();
+        sqlx::query("UPDATE users SET language = 'es', language_initialized = true WHERE id = $1")
+            .bind(user)
+            .execute(&mut *winner)
+            .await
+            .unwrap();
+        let loser = tokio::spawn({
+            let pool = pool.clone();
+            async move { initialize_language(&pool, user, "en").await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        winner.commit().await.unwrap();
+        assert_eq!(loser.await.unwrap().unwrap(), "es");
+    }
+
+    #[sqlx::test]
+    async fn initialize_language_for_a_missing_user_is_row_not_found(pool: PgPool) {
+        let err = initialize_language(&pool, Uuid::new_v4(), "es")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, sqlx::Error::RowNotFound));
+    }
 }

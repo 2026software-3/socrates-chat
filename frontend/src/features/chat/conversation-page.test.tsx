@@ -54,7 +54,7 @@ function mockSummaries(...list: SummaryView[]) {
 }
 
 function renderPage(opts: { lang?: Lang } = {}) {
-  mockMe(makeMe({ student: true }))
+  mockMe(makeMe({ student: true }, { language: opts.lang ?? 'zh-TW' }))
   return renderApp(
     <Routes>
       <Route path="/conversations/:id" element={<ConversationPage pollMs={5} maxPollMs={400} />} />

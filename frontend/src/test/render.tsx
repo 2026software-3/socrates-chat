@@ -19,6 +19,7 @@ export function makeMe(roles: Partial<Roles> = {}, overrides: Partial<Me> = {}):
     id: '00000000-0000-4000-8000-000000000001',
     email: 'user@example.com',
     display_name: 'Test User',
+    language: 'zh-TW',
     is_admin: r.admin,
     must_change_password: false,
     roles: r,
