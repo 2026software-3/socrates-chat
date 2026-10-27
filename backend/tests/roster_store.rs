@@ -5,8 +5,15 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn user(pool: &PgPool, email: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
+    let student_id = match email {
+        "s@example.com" => Some("14000001A"),
+        "only-b@example.com" => Some("14000002A"),
+        "pending@example.com" => Some("14000003A"),
+        _ => None,
+    };
+    sqlx::query_scalar("INSERT INTO users (email, student_id, imported_name) VALUES ($1, $2, CASE WHEN $2::text IS NULL THEN NULL ELSE '合成姓名' END) RETURNING id")
         .bind(email)
+        .bind(student_id)
         .fetch_one(pool)
         .await
         .unwrap()
@@ -24,6 +31,8 @@ async fn roster_is_isolated_per_classroom_and_one_email_can_join_several(pool: P
     let owner = user(&pool, "owner@example.com").await;
     let a = classroom(&pool, owner, "A").await;
     let b = classroom(&pool, owner, "B").await;
+    user(&pool, "s@example.com").await;
+    user(&pool, "only-b@example.com").await;
     let mut conn = pool.acquire().await.unwrap();
 
     assert!(
@@ -50,15 +59,21 @@ async fn roster_is_isolated_per_classroom_and_one_email_can_join_several(pool: P
     );
 
     assert_eq!(
-        roster_store::list_emails(&pool, a, None, 200)
+        roster_store::list_roster(&pool, a, None, 200)
             .await
-            .unwrap(),
+            .unwrap()
+            .iter()
+            .map(|r| r.email.as_deref().unwrap())
+            .collect::<Vec<_>>(),
         ["s@example.com"]
     );
     assert_eq!(
-        roster_store::list_emails(&pool, b, None, 200)
+        roster_store::list_roster(&pool, b, None, 200)
             .await
-            .unwrap(),
+            .unwrap()
+            .iter()
+            .map(|r| r.email.as_deref().unwrap())
+            .collect::<Vec<_>>(),
         ["only-b@example.com", "s@example.com"]
     );
 }
@@ -68,6 +83,7 @@ async fn removing_from_one_classroom_keeps_the_others(pool: PgPool) {
     let owner = user(&pool, "owner@example.com").await;
     let a = classroom(&pool, owner, "A").await;
     let b = classroom(&pool, owner, "B").await;
+    user(&pool, "s@example.com").await;
     let mut conn = pool.acquire().await.unwrap();
     roster_store::add(&mut conn, a, "s@example.com")
         .await
@@ -88,15 +104,18 @@ async fn removing_from_one_classroom_keeps_the_others(pool: PgPool) {
         "removing someone who is not on this roster reports nothing removed"
     );
     assert!(
-        roster_store::list_emails(&pool, a, None, 200)
+        roster_store::list_roster(&pool, a, None, 200)
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        roster_store::list_emails(&pool, b, None, 200)
+        roster_store::list_roster(&pool, b, None, 200)
             .await
-            .unwrap(),
+            .unwrap()
+            .iter()
+            .map(|r| r.email.as_deref().unwrap())
+            .collect::<Vec<_>>(),
         ["s@example.com"]
     );
     assert!(
@@ -121,6 +140,7 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
     let student = user(&pool, "s@example.com").await;
     let a = classroom(&pool, owner, "A").await;
     let b = classroom(&pool, owner, "B").await;
+    let pending = user(&pool, "pending@example.com").await;
     let mut conn = pool.acquire().await.unwrap();
     roster_store::add(&mut conn, a, "s@example.com")
         .await
@@ -136,12 +156,14 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
         .await
         .unwrap();
     assert_eq!(
-        in_a.iter().map(|s| s.email.as_str()).collect::<Vec<_>>(),
+        in_a.iter()
+            .map(|s| s.email.as_deref().unwrap())
+            .collect::<Vec<_>>(),
         ["pending@example.com", "s@example.com"]
     );
-    assert_eq!(in_a[0].id, None);
-    assert!(!in_a[0].has_account);
-    assert_eq!(in_a[1].id, Some(student));
+    assert_eq!(in_a[0].id, pending);
+    assert!(in_a[0].has_account);
+    assert_eq!(in_a[1].id, student);
     assert!(in_a[1].has_account);
     assert_eq!(
         roster_store::list_students(&pool, b, None, 200, None)
@@ -154,7 +176,8 @@ async fn students_list_is_scoped_to_one_classroom_with_one_account_per_email(poo
 
 #[sqlx::test]
 async fn database_requires_an_existing_classroom_for_roster_rows(pool: PgPool) {
+    let student = user(&pool, "s@example.com").await;
     let mut conn = pool.acquire().await.unwrap();
-    let result = roster_store::add(&mut conn, Uuid::new_v4(), "s@example.com").await;
+    let result = roster_store::add_user(&mut conn, Uuid::new_v4(), student).await;
     assert!(result.is_err());
 }

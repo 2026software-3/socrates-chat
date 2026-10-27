@@ -89,7 +89,7 @@ pub(crate) async fn list_students(
         roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()),
     )?;
     let Page { items, next_cursor } = pagination::page(rows, limit, "students", |row| {
-        (row.email.clone(), fingerprint.clone())
+        (row.sort_key.clone(), fingerprint.clone())
     })?;
     Ok(Json(StudentPage {
         items,
@@ -328,11 +328,13 @@ pub(crate) async fn delete_student(
         return Err(ApiError::not_found());
     }
     // 所有教室的名單項目一併移除（學生可屬於多個教室）
-    let on_roster = sqlx::query("DELETE FROM enrollments WHERE email = $1")
-        .bind(&email)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let on_roster = sqlx::query(
+        "DELETE FROM enrollments WHERE user_id = (SELECT id FROM users WHERE email = $1)",
+    )
+    .bind(&email)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     // 對話、訊息、總結與 session 由外鍵連動刪除
     let had_account = sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(&email)

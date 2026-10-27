@@ -134,7 +134,7 @@ pub async fn set_status_writable(
 /// 學生可選的活動：已發布、未封存、在開放期間內（以資料庫時間計算），且所在教室的名單內有這位學生。
 pub async fn list_published_for_student(
     pool: &PgPool,
-    email: &str,
+    user_id: Uuid,
 ) -> Result<Vec<Activity>, sqlx::Error> {
     sqlx::query_as(activity_select!(
         "WHERE a.status = 'published' AND NOT a.is_archived
@@ -142,10 +142,10 @@ pub async fn list_published_for_student(
            AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
            AND NOT EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = a.classroom_id AND cl.is_archived)
            AND EXISTS (SELECT 1 FROM enrollments e
-                       WHERE e.classroom_id = a.classroom_id AND e.email = lower($1))
+                       WHERE e.classroom_id = a.classroom_id AND e.user_id = $1)
          ORDER BY a.created_at DESC, a.id"
     ))
-    .bind(email)
+    .bind(user_id)
     .fetch_all(pool)
     .await
 }
@@ -166,7 +166,7 @@ pub struct Startable {
 pub async fn find_startable(
     conn: &mut PgConnection,
     id: Uuid,
-    email: &str,
+    user_id: Uuid,
 ) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
         "SELECT a.id, a.topic_id, a.classroom_id, a.title, a.description FROM activities a
@@ -175,11 +175,11 @@ pub async fn find_startable(
            AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
            AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
            AND EXISTS (SELECT 1 FROM enrollments e
-                       WHERE e.classroom_id = a.classroom_id AND e.email = lower($2))
+                       WHERE e.classroom_id = a.classroom_id AND e.user_id = $2)
          FOR SHARE OF a, cl",
     )
     .bind(id)
-    .bind(email)
+    .bind(user_id)
     .fetch_optional(conn)
     .await
 }

@@ -88,6 +88,20 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     ));
 
     let a = seed_actors(&app).await;
+    let roster_response = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
+            Some(&a.teacher),
+            Some(json!({"text": "隱私測試姓名,98765432a,\n隱私錯誤姓名,98765433b,invalid"})),
+        ),
+    )
+    .await;
+    assert_eq!(roster_response.status(), StatusCode::OK);
+    let roster_result = json_body(roster_response).await;
+    assert!(!roster_result.to_string().contains("隱私錯誤姓名"));
+    assert!(!roster_result.to_string().contains("98765433"));
     // 名單外與錯誤密碼的登入嘗試
     let login_res = send(
         &app,
@@ -188,6 +202,10 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         ("重設對象電子郵件", "reset@example.com"),
         ("管理者電子郵件", "admin@example.com"),
         ("臨時密碼", temporary_password.as_str()),
+        ("匯入姓名", "隱私測試姓名"),
+        ("匯入學號", "98765432"),
+        ("錯誤列姓名", "隱私錯誤姓名"),
+        ("錯誤列學號", "98765433"),
     ] {
         assert!(!output.contains(secret), "日誌不應包含：{name}");
     }

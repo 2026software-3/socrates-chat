@@ -177,7 +177,7 @@ async fn roster_writes_wait_for_an_in_flight_archive_and_then_refuse(pool: PgPoo
         (StatusCode::CONFLICT, "classroom_archived")
     );
     let late: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM enrollments WHERE email = 'late@example.com'")
+        sqlx::query_scalar("SELECT count(*) FROM enrollments e JOIN users u ON u.id = e.user_id WHERE u.email = 'late@example.com'")
             .fetch_one(&pool)
             .await
             .unwrap();

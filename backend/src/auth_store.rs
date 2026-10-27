@@ -24,7 +24,7 @@ pub struct User {
     pub id: Uuid,
     /// 尚未用 Google 登入過的內建帳號為 `None`。
     pub google_sub: Option<String>,
-    pub email: String,
+    pub email: Option<String>,
     pub display_name: Option<String>,
     pub language: String,
     pub is_admin: bool,
@@ -224,7 +224,7 @@ pub async fn find_active_session(
                 u.id, u.google_sub, u.email, u.display_name, u.language, u.is_admin, u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
-                EXISTS (SELECT 1 FROM enrollments e WHERE e.email = u.email) AS student
+                EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id = u.id) AS student
          FROM s JOIN users u ON u.id = s.user_id",
     )
     .bind(token_hash)

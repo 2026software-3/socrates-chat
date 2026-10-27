@@ -304,12 +304,36 @@ pub async fn create_classroom(app: &Router, cookie: &str, name: &str) -> String 
 }
 
 /// 把文字名單匯入指定教室（`cookie` 為該教室的教師或管理者），回傳回應。
+/// 其他功能的測試夾具由信箱建立固定的合成學號；匯入契約測試直接傳三欄。
+pub fn fixture_roster(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.contains(',') {
+                return line.to_string();
+            }
+            use sha2::{Digest, Sha256};
+            let email = line.trim().to_ascii_lowercase();
+            let digest = Sha256::digest(email.as_bytes());
+            let number =
+                u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 100_000_000;
+            let student_id = if email == "student@example.com" {
+                "10000000A".to_string()
+            } else {
+                format!("{number:08}A")
+            };
+            format!("測試學生,{student_id},{email}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub async fn import_roster(
     app: &Router,
     cookie: &str,
     classroom: &str,
     text: &str,
 ) -> Response<Body> {
+    let text = fixture_roster(text);
     send(
         app,
         json_req(
@@ -492,7 +516,13 @@ pub async fn seed_classroom(app: &Router, admin: &str) -> (String, String) {
 pub async fn seed_actors(app: &Router) -> Actors {
     let admin = login_as(app, "sub-admin", "admin@example.com").await;
     let (teacher, classroom) = seed_classroom(app, &admin).await;
-    let res = import_roster(app, &admin, &classroom, "student@example.com").await;
+    let res = import_roster(
+        app,
+        &admin,
+        &classroom,
+        "學生,10000000A,student@example.com",
+    )
+    .await;
     assert!(res.status().is_success());
     Actors {
         student: login_as(app, "sub-student", "student@example.com").await,

@@ -335,7 +335,8 @@ async fn roster_paginates_by_email_as_objects(pool: PgPool) {
     let pages = all_pages(&app, &base, &a.teacher).await;
     assert_eq!(pages.len(), 3);
     assert_eq!(field(&pages, "email"), want);
-    assert_eq!(pages[0]["items"][0], json!({"email": "s01@example.com"}));
+    assert_eq!(pages[0]["items"][0]["email"], "s01@example.com");
+    assert!(pages[0]["items"][0]["id"].is_string());
     assert_eq!(pages[2]["next_cursor"], Value::Null);
 }
 

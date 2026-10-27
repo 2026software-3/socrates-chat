@@ -10,7 +10,7 @@ import { api } from '@/lib/api'
 import type { Me } from '@/lib/types'
 
 /** 顯示名稱的長度上限；後端才是準則（S-08.2），這裡只是方便使用者。 */
-const DISPLAY_NAME_MAX = 20
+const DISPLAY_NAME_MAX = 30
 
 /** 與後端一樣以 Unicode 字元計（emoji 算 1，不像 maxLength 以 UTF-16 計），去頭尾空白後再算。 */
 const nameLength = (value: string) => Array.from(value.trim()).length

@@ -5,7 +5,12 @@ CREATE TABLE users (
     -- Google 帳號 ID（OIDC `sub`）；一個 Google 帳號對應一個使用者。Google 登入時才綁定，因此可以為空
     google_sub   text UNIQUE CHECK (google_sub <> ''),
     -- 一個電子郵件對應一個使用者；Google 登入時以回傳值更新；一律小寫
-    email        text NOT NULL UNIQUE CHECK (email = lower(email) AND email <> ''),
+    email        text UNIQUE CHECK (email = lower(email) AND email <> ''),
+    -- 學生以學號識別；Google 登入的未開通帳號及教職員可沒有學號。
+    student_id   text UNIQUE CHECK (student_id ~ '^[0-9]{8}[A-Z]$'),
+    UNIQUE (id, student_id),
+    imported_name text CHECK (imported_name <> '' AND char_length(imported_name) <= 30),
+    CHECK (email IS NOT NULL OR student_id IS NOT NULL),
     -- Argon2id 的 PHC 字串；空表示尚未設定密碼（只能用 Google 登入）
     password_hash text CHECK (password_hash <> ''),
     -- 臨時密碼登入後必須先更改
@@ -17,6 +22,7 @@ CREATE TABLE users (
     language_initialized boolean NOT NULL DEFAULT false,
     -- 首次登入時依 ADMIN_EMAILS 授予，之後以資料庫為準
     is_admin     boolean NOT NULL DEFAULT false,
+    CHECK (student_id IS NULL OR (imported_name IS NOT NULL AND NOT is_admin)),
     -- 帳號停用（F-01.4，S-01.3）：只有管理者可操作；停用時清除所有 session，資料全部保留，復原後照舊
     disabled_at  timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),

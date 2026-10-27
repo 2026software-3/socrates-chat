@@ -6,11 +6,71 @@ use serde::Serialize;
 use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
 
+/// 將學生帳號加入教室；相同帳號在同一教室只保留一列。
+pub async fn add_user(
+    conn: &mut PgConnection,
+    classroom_id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT INTO enrollments (classroom_id, user_id, student_id)
+         SELECT $1, id, student_id FROM users WHERE id = $2 ON CONFLICT DO NOTHING",
+    )
+    .bind(classroom_id)
+    .bind(user_id)
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// 匯入使用的帳號查詢，鎖住已存在帳號以確保同時匯入時不會覆寫資料。
+#[derive(FromRow)]
+pub struct ImportAccount {
+    pub id: Uuid,
+    pub student_id: Option<String>,
+    pub email: Option<String>,
+}
+
+pub async fn find_import_account(
+    conn: &mut PgConnection,
+    student_id: &str,
+    email: Option<&str>,
+) -> Result<Vec<ImportAccount>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, student_id, email FROM users WHERE student_id = $1 OR email = $2 FOR UPDATE",
+    )
+    .bind(student_id)
+    .bind(email)
+    .fetch_all(conn)
+    .await
+}
+
+pub async fn create_student(
+    conn: &mut PgConnection,
+    student_id: &str,
+    name: &str,
+    email: Option<&str>,
+    password_hash: &str,
+) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar(
+        "INSERT INTO users (student_id, imported_name, display_name, email, password_hash, must_change_password)
+         VALUES ($1, $2, $2, $3, $4, true) RETURNING id",
+    )
+    .bind(student_id)
+    .bind(name)
+    .bind(email)
+    .bind(password_hash)
+    .fetch_one(conn)
+    .await
+}
+
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct StudentRow {
-    /// 使用者 UUID；尚未建立帳號時為 null。
-    pub id: Option<Uuid>,
-    pub email: String,
+    pub id: Uuid,
+    pub email: Option<String>,
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub sort_key: String,
     pub display_name: Option<String>,
     /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
     pub has_account: bool,
@@ -20,16 +80,25 @@ pub struct StudentRow {
 }
 
 /// 依 email 排序的名單，從 `after`（不含）之後取 `limit` 筆。
-pub async fn list_emails(
+#[derive(Serialize, FromRow, utoipa::ToSchema)]
+pub struct RosterEntry {
+    pub id: Uuid,
+    pub email: Option<String>,
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub sort_key: String,
+}
+
+pub async fn list_roster(
     pool: &PgPool,
     classroom_id: Uuid,
     after: Option<&str>,
     limit: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT email FROM enrollments
-         WHERE classroom_id = $1 AND ($2::text IS NULL OR email > $2)
-         ORDER BY email LIMIT $3",
+) -> Result<Vec<RosterEntry>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT u.id, u.email, COALESCE(u.email, u.student_id) AS sort_key FROM enrollments e JOIN users u ON u.id = e.user_id
+         WHERE e.classroom_id = $1 AND ($2::text IS NULL OR COALESCE(u.email, u.student_id) > $2)
+         ORDER BY COALESCE(u.email, u.student_id) LIMIT $3",
     )
     .bind(classroom_id)
     .bind(after)
@@ -45,7 +114,7 @@ pub async fn add(
     email: &str,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
-        "INSERT INTO enrollments (classroom_id, email) VALUES ($1, lower($2))
+        "INSERT INTO enrollments (classroom_id, user_id, student_id) SELECT $1, id, student_id FROM users WHERE email = lower($2)
          ON CONFLICT DO NOTHING",
     )
     .bind(classroom_id)
@@ -62,7 +131,7 @@ pub async fn remove(
     email: &str,
 ) -> Result<bool, sqlx::Error> {
     let result =
-        sqlx::query("DELETE FROM enrollments WHERE classroom_id = $1 AND email = lower($2)")
+        sqlx::query("DELETE FROM enrollments WHERE classroom_id = $1 AND user_id = (SELECT id FROM users WHERE email = lower($2))")
             .bind(classroom_id)
             .bind(email)
             .execute(conn)
@@ -70,9 +139,26 @@ pub async fn remove(
     Ok(result.rows_affected() > 0)
 }
 
+/// 以帳號 UUID 或電子郵件移出名單，回傳被移出的帳號 UUID。
+pub async fn remove_user(
+    conn: &mut PgConnection,
+    classroom_id: Uuid,
+    identifier: &str,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "DELETE FROM enrollments e USING users u
+         WHERE e.classroom_id = $1 AND e.user_id = u.id
+           AND (u.id::text = $2 OR u.email = lower($2)) RETURNING u.id",
+    )
+    .bind(classroom_id)
+    .bind(identifier)
+    .fetch_optional(conn)
+    .await
+}
+
 /// 帳號是否在任一教室的名單內；不在任何名單內的帳號登入後看到「尚未開通」。
 pub async fn is_enrolled_anywhere(pool: &PgPool, email: &str) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM enrollments WHERE email = lower($1))")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM enrollments e JOIN users u ON u.id = e.user_id WHERE u.email = lower($1))")
         .bind(email)
         .fetch_one(pool)
         .await
@@ -87,8 +173,8 @@ pub async fn belongs_only_to_owner(
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT bool_or(c.created_by = $2) AND bool_and(c.created_by = $2)
-         FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id
-         WHERE e.email = lower($1)",
+         FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id JOIN users u ON u.id = e.user_id
+         WHERE u.email = lower($1)",
     )
     .bind(email)
     .bind(owner_id)
@@ -107,7 +193,7 @@ pub async fn list_students(
     search: Option<&str>,
 ) -> Result<Vec<StudentRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT u.id, e.email, u.display_name,
+        "SELECT u.id, u.email, COALESCE(u.email, u.student_id) AS sort_key, u.display_name,
                 (u.id IS NOT NULL) AS has_account,
                 COALESCE(u.disabled_at IS NOT NULL, false) AS disabled,
                 COALESCE((SELECT count(*) FROM summaries s
@@ -115,12 +201,12 @@ pub async fn list_students(
                           WHERE c.user_id = u.id AND c.classroom_id = e.classroom_id
                             AND s.status = 'ready'), 0)
                     AS completed_conversations
-         FROM enrollments e LEFT JOIN users u ON u.email = e.email
-         WHERE e.classroom_id = $1 AND ($2::text IS NULL OR e.email > $2)
+         FROM enrollments e JOIN users u ON u.id = e.user_id
+         WHERE e.classroom_id = $1 AND ($2::text IS NULL OR COALESCE(u.email, u.student_id) > $2)
            AND ($4::text IS NULL
-                OR e.email ILIKE $4 ESCAPE '\\'
+                OR u.email ILIKE $4 ESCAPE '\\'
                 OR u.display_name ILIKE $4 ESCAPE '\\')
-         ORDER BY e.email LIMIT $3",
+         ORDER BY COALESCE(u.email, u.student_id) LIMIT $3",
     )
     .bind(classroom_id)
     .bind(after)
@@ -138,7 +224,7 @@ pub async fn count_students(
     is_admin: bool,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT count(DISTINCT e.email)
+        "SELECT count(DISTINCT e.user_id)
          FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id
          WHERE $1 OR c.created_by = $2",
     )
@@ -174,10 +260,10 @@ pub async fn count_students_matching(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*)
-         FROM enrollments e LEFT JOIN users u ON u.email = e.email
+         FROM enrollments e JOIN users u ON u.id = e.user_id
          WHERE e.classroom_id = $1
            AND ($2::text IS NULL
-                OR e.email ILIKE $2 ESCAPE '\\'
+                OR u.email ILIKE $2 ESCAPE '\\'
                 OR u.display_name ILIKE $2 ESCAPE '\\')",
     )
     .bind(classroom_id)

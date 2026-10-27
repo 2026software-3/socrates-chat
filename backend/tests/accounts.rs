@@ -47,7 +47,7 @@ async fn student_list_shows_account_state_to_teachers_and_admins_only(pool: PgPo
         &app,
         &format!("/api/classrooms/{}/roster/import", a.classroom),
         Some(&a.teacher),
-        Some(json!({"text": "later@example.com"})),
+        Some(json!({"text": "學生,12000006A,later@example.com"})),
     )
     .await;
 
@@ -57,7 +57,7 @@ async fn student_list_shows_account_state_to_teachers_and_admins_only(pool: PgPo
         let by = |e: &str| rows.iter().find(|r| r["email"] == e).unwrap().clone();
         assert_eq!(by("student@example.com")["has_account"], true);
         assert_eq!(by("student@example.com")["disabled"], false);
-        assert_eq!(by("later@example.com")["has_account"], false);
+        assert_eq!(by("later@example.com")["has_account"], true);
         assert_eq!(by("later@example.com")["completed_conversations"], 0);
     }
     for (cookie, status) in [
@@ -554,7 +554,7 @@ async fn teachers_cannot_delete_students_outside_their_own_classrooms(pool: PgPo
     let count = |email: &'static str| {
         let pool = pool.clone();
         async move {
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM enrollments WHERE email = $1")
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM enrollments e JOIN users u ON u.id = e.user_id WHERE u.email = $1")
                 .bind(email)
                 .fetch_one(&pool)
                 .await
