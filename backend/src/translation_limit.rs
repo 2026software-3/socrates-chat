@@ -42,15 +42,20 @@ impl TranslationLimiter {
         }
     }
 
-    /// 還有額度就記一次並回傳 `true`；額度用完回傳 `false`（不記錄）。
-    pub fn try_acquire(&self, user: Uuid) -> bool {
-        self.try_acquire_at(user, Instant::now())
+    /// 還有額度就記一次並回傳那筆記錄（之後可交給 `refund`）；額度用完回傳 `None`（不記錄）。
+    pub fn try_acquire(&self, user: Uuid) -> Option<Instant> {
+        let now = Instant::now();
+        self.try_acquire_at(user, now).then_some(now)
     }
 
-    /// 退回該使用者最近一次的額度（翻譯失敗時：沒有得到譯文，不該讓重試把額度燒光）。
-    pub fn refund(&self, user: Uuid) {
-        if let Some(queue) = lock(&self.hits).get_mut(&user) {
-            queue.pop_back();
+    /// 退回 `try_acquire` 給的那一筆額度（翻譯失敗時：沒有得到譯文，不該讓重試把額度燒光）。
+    /// 退的是自己那一筆，不是該使用者最近一筆：同一人的請求重疊時，別的請求的額度不受影響。
+    /// 該筆已經過期被清掉就什麼都不做。
+    pub fn refund(&self, user: Uuid, slot: Instant) {
+        if let Some(queue) = lock(&self.hits).get_mut(&user)
+            && let Some(i) = queue.iter().position(|t| *t == slot)
+        {
+            queue.remove(i);
         }
     }
 
@@ -94,16 +99,33 @@ mod tests {
     }
 
     #[test]
-    fn refund_gives_back_the_latest_slot_only_for_that_user() {
+    fn refund_gives_back_the_slot_only_for_that_user() {
         let limiter = TranslationLimiter::new(1, Duration::from_secs(60));
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         let now = Instant::now();
         assert!(limiter.try_acquire_at(a, now));
         assert!(limiter.try_acquire_at(b, now));
-        limiter.refund(a);
+        limiter.refund(a, now);
         assert!(limiter.try_acquire_at(a, now));
         assert!(!limiter.try_acquire_at(b, now), "b was not refunded");
-        limiter.refund(Uuid::new_v4()); // 沒有記錄的人：什麼都不發生
+        limiter.refund(Uuid::new_v4(), now); // 沒有記錄的人：什麼都不發生
+    }
+
+    #[test]
+    fn refund_with_overlapping_requests_keeps_the_other_requests_slot() {
+        let limiter = TranslationLimiter::new(2, Duration::from_secs(60));
+        let user = Uuid::new_v4();
+        let t0 = Instant::now();
+        // 請求 A 在 t0 取得額度，請求 B 在 t0+30 取得；A 還沒結束時 B 已經開始
+        assert!(limiter.try_acquire_at(user, t0));
+        assert!(limiter.try_acquire_at(user, t0 + Duration::from_secs(30)));
+        // A 失敗，退回的必須是 A 自己的額度；B 的額度仍要算到 t0+90 才過期
+        limiter.refund(user, t0);
+        assert!(limiter.try_acquire_at(user, t0 + Duration::from_secs(61)));
+        assert!(
+            !limiter.try_acquire_at(user, t0 + Duration::from_secs(62)),
+            "B (acquired at t0+30) still counts, so only one slot is free at t0+62"
+        );
     }
 
     #[test]

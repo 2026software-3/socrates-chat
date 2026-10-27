@@ -380,13 +380,13 @@ pub(crate) async fn translate(
         }));
     }
     // 翻譯不保存也不快取，每次都是一次 AI 呼叫：每位教師限量
-    if !state.translation_limit.try_acquire(cu.user.id) {
+    let Some(slot) = state.translation_limit.try_acquire(cu.user.id) else {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "too_many_translations",
             "翻譯太頻繁，請稍後再試",
         ));
-    }
+    };
     let req = AiRequest {
         system: build_summary_translation_prompt(&language),
         messages: vec![ChatTurn {
@@ -400,7 +400,7 @@ pub(crate) async fn translate(
         .and_then(|raw| parse_summary_translation(&raw));
     let Some(translated) = translated else {
         // 沒有得到譯文就不扣額度：AI 當機時的重試不該把教師鎖在外面
-        state.translation_limit.refund(cu.user.id);
+        state.translation_limit.refund(cu.user.id, slot);
         return Err(ApiError::new(
             StatusCode::BAD_GATEWAY,
             "ai_unavailable",
