@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { toast } from 'sonner'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { NameConfirmDialog } from '@/components/name-confirm-dialog'
-import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
+import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -199,7 +200,9 @@ function ActivityRow({
   onToggle,
   onArchive,
   onDelete,
+  href,
 }: {
+  href?: string
   activity: Activity
   topic: Topic | undefined
   busy: boolean
@@ -236,7 +239,15 @@ function ActivityRow({
         <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-medium break-words">{activity.title}</h3>
+              <h3 className="font-medium break-words">
+                {href ? (
+                  <Link to={href} className="underline-offset-4 hover:underline">
+                    {activity.title}
+                  </Link>
+                ) : (
+                  activity.title
+                )}
+              </h3>
               <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
             </div>
             <p className="text-sm">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</p>
@@ -263,7 +274,12 @@ function ActivityRow({
               </span>
             </p>
           </div>
-          <div className="flex shrink-0 gap-2">
+          <div className="flex shrink-0 flex-wrap gap-2">
+            {href ? (
+              <Button asChild size="sm">
+                <Link to={href}>{t('teacher.activities.viewResults')}</Link>
+              </Button>
+            ) : null}
             <Button variant="outline" size="sm" onClick={onEdit} disabled={busy}>
               {t('teacher.activities.edit')}
             </Button>
@@ -290,18 +306,30 @@ function ActivityRow({
   )
 }
 
-/** 教師／管理者：建立、編輯、發布、停止開放討論活動。 */
-export function ActivitiesPage() {
+/**
+ * 教師／管理者：建立、編輯、發布、停止開放討論活動。
+ * 帶 `classroomId` 時只管理該教室（教室頁內嵌），活動標題連到 `${detailBase}/${活動 id}` 的論點分布。
+ */
+export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: string; detailBase?: string }) {
   const t = useT()
   const classrooms = useFetch<Classroom[]>('/api/classrooms')
-  const [roomId, setRoomId] = useState('')
+  const [roomId, setRoomId] = useState(classroomId ?? '')
   const writableRooms = useMemo(() => (classrooms.data ?? []).filter((r) => !r.is_archived), [classrooms.data])
   // 只有確定載入且未封存的教室才可編輯；載入中或失敗時視為不可用
   const writableRoomIds = useMemo(() => new Set(writableRooms.map((r) => r.id)), [writableRooms])
-  const selectedRoom = writableRooms.some((r) => r.id === roomId) ? roomId : writableRooms[0]?.id
+  const selectedRoom = classroomId
+    ? writableRoomIds.has(classroomId)
+      ? classroomId
+      : undefined
+    : writableRooms.some((r) => r.id === roomId)
+      ? roomId
+      : writableRooms[0]?.id
   const [showArchived, setShowArchived] = useState(false)
   const [deleting, setDeleting] = useState<Activity>()
-  const list = usePagedFetch<Activity>(showArchived ? '/api/activities?archived=true' : '/api/activities')
+  const listParams = new URLSearchParams()
+  if (classroomId) listParams.set('classroom_id', classroomId)
+  if (showArchived) listParams.set('archived', 'true')
+  const list = usePagedFetch<Activity>(`/api/activities${listParams.size ? `?${listParams}` : ''}`)
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
   const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
@@ -386,14 +414,18 @@ export function ActivitiesPage() {
   }
 
   return (
-    <Page title={t('teacher.activities.title')}>
+    <div className="space-y-6">
       <Card>
         <CardContent className="space-y-3">
           <h2 className="text-lg font-medium">{t('teacher.activities.createHeading')}</h2>
-          <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
-          <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
-            {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
-          </select>
+          {classroomId ? null : (
+            <>
+              <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
+              <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+                {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+              </select>
+            </>
+          )}
           {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
           <ActivityForm
             idPrefix="create"
@@ -418,6 +450,7 @@ export function ActivitiesPage() {
             <ActivityRow
               key={a.id}
               activity={a}
+              href={detailBase ? `${detailBase}/${a.id}` : undefined}
               topic={topicById.get(a.topic_id)}
               archived={!writableRoomIds.has(a.classroom_id)}
               busy={busyIds.has(a.id) || !writableRoomIds.has(a.classroom_id)}
@@ -466,6 +499,6 @@ export function ActivitiesPage() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </Page>
+    </div>
   )
 }

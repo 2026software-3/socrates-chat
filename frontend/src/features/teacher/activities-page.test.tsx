@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ActivitiesPage } from '@/features/teacher/activities-page'
+import { ActivitiesPanel } from '@/features/teacher/activities-page'
 import { classroom, mockClassrooms, ROOM_A, renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Activity, Topic } from '@/lib/types'
 import { apiError, pageOf } from '@/test/render'
@@ -56,10 +56,10 @@ function mockList(list: Activity[]) {
 
 function setup() {
   mockClassrooms()
-  return renderTeacherPage(<ActivitiesPage />)
+  return renderTeacherPage(<ActivitiesPanel />)
 }
 
-describe('ActivitiesPage', () => {
+describe('ActivitiesPanel', () => {
   it('lists activities with status badge and topic title', async () => {
     mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2' })])
     setup()
@@ -470,7 +470,7 @@ describe('ActivitiesPage', () => {
         return HttpResponse.json(act(), { status: 201 })
       }),
     )
-    renderTeacherPage(<ActivitiesPage />)
+    renderTeacherPage(<ActivitiesPanel />)
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
     await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
@@ -485,7 +485,7 @@ describe('ActivitiesPage', () => {
       http.get('/api/topics', () => HttpResponse.json(topics)),
       http.get('/api/activities', () => pageOf([act()])),
     )
-    renderTeacherPage(<ActivitiesPage />)
+    renderTeacherPage(<ActivitiesPanel />)
     await screen.findByText('第一週討論')
     expect(screen.getByRole('button', { name: '發布' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '編輯' })).toBeDisabled()

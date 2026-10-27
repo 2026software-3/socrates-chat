@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { api } from '@/lib/api'
 import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
@@ -22,8 +24,10 @@ function Field({ label, value }: { label: string; value: string | null }) {
   )
 }
 
-function SummaryCard({ row }: { row: TeacherSummary }) {
+/** 一場對話的總結卡片；學生姓名預設連到該學生在這間教室的討論情形。 */
+export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; linkStudent?: boolean }) {
   const t = useT()
+  const base = useClassroomsBase()
   const { lang } = useI18n()
   const [translation, setTranslation] = useState<SummaryTranslation | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
@@ -55,7 +59,15 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
             <div className="min-w-0">
-              <p className="font-medium break-words">{row.student_name ?? t('teacher.summaries.unnamed')}</p>
+              <p className="font-medium break-words">
+                {linkStudent ? (
+                  <Link to={`${base}/${row.classroom_id}/students/${row.student_id}`} className="underline-offset-4 hover:underline">
+                    {row.student_name ?? t('teacher.summaries.unnamed')}
+                  </Link>
+                ) : (
+                  (row.student_name ?? t('teacher.summaries.unnamed'))
+                )}
+              </p>
               <p className="text-muted-foreground text-sm break-all">{row.student_email}</p>
             </div>
             <div className="sm:text-right">

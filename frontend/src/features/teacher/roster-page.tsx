@@ -21,6 +21,7 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { LoadMore } from '@/components/load-more'
@@ -244,8 +245,9 @@ export function RosterPage() {
 }
 
 /** 單一教室的學生名單與操作。 */
-function ClassroomRoster({ classroom }: { classroom: Classroom }) {
+export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const t = useT()
+  const base = useClassroomsBase()
   // 搜尋與人數都由後端計算：送出搜尋後從第一頁重新載入，其餘頁按「載入更多」才取
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
@@ -352,6 +354,16 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
     </>
   )
 
+  /** 有帳號的學生可點進去看他的討論情形。 */
+  const studentLink = (s: StudentRow) =>
+    s.id ? (
+      <Link to={`${base}/${classroom.id}/students/${s.id}`} className="underline-offset-4 hover:underline">
+        {s.email}
+      </Link>
+    ) : (
+      s.email
+    )
+
   const target = action?.email ?? ''
   const closeDialog = (o: boolean) => {
     if (!o && !pending) setAction(null)
@@ -401,7 +413,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                     return (
                       <li key={s.email} className="space-y-3 rounded-lg border p-3">
                         <div className="space-y-1">
-                          <p className="font-medium break-all">{s.email}</p>
+                          <p className="font-medium break-all">{studentLink(s)}</p>
                           {s.display_name ? <p className="text-muted-foreground text-sm">{s.display_name}</p> : null}
                           <div className="flex flex-wrap items-center gap-2 text-sm">
                             <StatusBadge status={status} />
@@ -430,7 +442,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                       {students.map((s) => (
                         <TableRow key={s.email}>
                           <TableCell className="break-all">
-                            {s.email}
+                            {studentLink(s)}
                             {s.display_name ? <span className="text-muted-foreground block text-xs">{s.display_name}</span> : null}
                           </TableCell>
                           <TableCell>

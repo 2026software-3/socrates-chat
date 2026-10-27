@@ -55,11 +55,11 @@ describe('app shell', () => {
 
   it('labels the workspace for teachers and for admin-only accounts', async () => {
     mockMe(makeMe({ teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     const first = renderApp(null, { route: '/' })
-    await screen.findByRole('heading', { name: '班上論點分布' })
+    await screen.findByRole('heading', { name: '我的教室' })
     expect(screen.getByText('教師工作區', { selector: 'span' })).toBeInTheDocument()
-    expect(screen.getByText('教師工作區／班上論點分布')).toBeInTheDocument()
+    expect(screen.getByText('教師工作區／我的教室')).toBeInTheDocument()
     first.unmount()
 
     mockMe(makeMe({ admin: true }))
@@ -98,22 +98,22 @@ describe('app shell', () => {
     activities: [],
   }
 
-  it('takes teachers to the class dashboard — they do not take part in discussions', async () => {
+  it('takes teachers to their classrooms — they do not take part in discussions', async () => {
     mockMe(makeMe({ teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('heading', { name: '班上論點分布' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
     for (const name of ['選擇題目', '我的對話', '我的儀表板']) {
       expect(within(nav).queryByRole('link', { name })).not.toBeInTheDocument()
     }
   })
 
-  it('sends a teacher who types a student URL back to the dashboard', async () => {
+  it('sends a teacher who types a student URL back to the classrooms', async () => {
     mockMe(makeMe({ teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/conversations' })
-    expect(await screen.findByRole('heading', { name: '班上論點分布' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
   })
 
   it('shows student navigation only to students', async () => {
@@ -139,6 +139,13 @@ describe('app shell', () => {
     expect(within(nav).getByRole('link', { name: '學生帳號' })).toBeInTheDocument()
     expect(within(nav).getByRole('link', { name: '學生總結' })).toBeInTheDocument()
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
+  })
+
+  it('sends the retired dashboard and activities URLs to the classrooms', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderApp(null, { route: '/teacher/dashboard' })
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
   })
 
   it('lets a teacher open classroom management', async () => {
@@ -182,10 +189,10 @@ describe('app shell', () => {
 
   it('keeps the normal navigation for an admin who is also a teacher', async () => {
     mockMe(makeMe({ admin: true, teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/' })
     const nav = await screen.findByRole('navigation', { name: 'main' })
-    for (const name of ['教師管理', '題目庫', '學生帳號', '班上分布']) {
+    for (const name of ['教師管理', '題目庫', '學生帳號', '教室管理']) {
       expect(within(nav).getByRole('link', { name })).toBeInTheDocument()
     }
     expect(within(nav).queryByRole('link', { name: '選擇題目' })).not.toBeInTheDocument()

@@ -2,6 +2,13 @@ import { defineMessages } from '@/i18n/define'
 
 export const classroomsMessages = defineMessages({
   'zh-TW': {
+    'classrooms.backToList': '回到教室列表',
+    'classrooms.students': '學生名單',
+    'classrooms.student': '學生',
+    'classrooms.activity': '討論活動',
+    'classrooms.distribution': '論點分佈',
+    'classrooms.studentSummaries': '學生總結',
+    'classrooms.studentEmpty': '這位學生在這間教室還沒有完成的對話。',
     'classrooms.archive': '封存教室',
     'classrooms.restore': '復原教室',
     'classrooms.delete': '刪除教室',
@@ -30,6 +37,13 @@ export const classroomsMessages = defineMessages({
     'classrooms.required': '請輸入教室名稱。',
   },
   en: {
+    'classrooms.backToList': 'Back to classrooms',
+    'classrooms.students': 'Students',
+    'classrooms.student': 'Student',
+    'classrooms.activity': 'Activity',
+    'classrooms.distribution': 'Argument distribution',
+    'classrooms.studentSummaries': 'Student summaries',
+    'classrooms.studentEmpty': 'This student has no completed conversations in this classroom yet.',
     'classrooms.archive': 'Archive classroom',
     'classrooms.restore': 'Restore classroom',
     'classrooms.delete': 'Delete classroom',
@@ -58,6 +72,13 @@ export const classroomsMessages = defineMessages({
     'classrooms.required': 'Enter a classroom name.',
   },
   es: {
+    'classrooms.backToList': 'Volver a las aulas',
+    'classrooms.students': 'Estudiantes',
+    'classrooms.student': 'Estudiante',
+    'classrooms.activity': 'Actividad',
+    'classrooms.distribution': 'Distribución de argumentos',
+    'classrooms.studentSummaries': 'Resúmenes de estudiantes',
+    'classrooms.studentEmpty': 'Este estudiante aún no tiene conversaciones completadas en esta aula.',
     'classrooms.archive': 'Archivar aula',
     'classrooms.restore': 'Restaurar aula',
     'classrooms.delete': 'Eliminar aula',

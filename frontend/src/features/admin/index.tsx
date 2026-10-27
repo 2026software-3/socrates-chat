@@ -4,12 +4,12 @@ import { TeachersPage } from '@/features/admin/teachers-page'
 import { TopicsPage } from '@/features/admin/topics-page'
 import { LogsPage } from '@/features/admin/logs-page'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { ClassroomsPage } from '@/features/classrooms/classrooms-page'
+import { classroomRoutes } from '@/features/classrooms/routes'
 
 export const adminFeature: Feature = {
   routes: [
     { path: '/admin', element: <AdminHome />, access: 'admin' },
-    { path: '/admin/classrooms', element: <ClassroomsPage />, access: 'admin' },
+    ...classroomRoutes('/admin', 'admin'),
     { path: '/admin/teachers', element: <TeachersPage />, access: 'admin' },
     { path: '/admin/roster', element: <RosterPage />, access: 'admin' },
     { path: '/admin/topics', element: <TopicsPage />, access: 'admin' },

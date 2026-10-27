@@ -74,7 +74,7 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
   // 純管理者只能進維運頁面；其他功能頁導回維運首頁
   if (isOpsAdmin(auth.me.roles) && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />
   // 教師不參與討論：學生功能導向教師首頁
-  if (access === 'member' && !participates(auth.me.roles)) return <Navigate to="/teacher/dashboard" replace />
+  if (access === 'member' && !participates(auth.me.roles)) return <Navigate to="/teacher/classrooms" replace />
   if (!canAccess(access, auth.me.roles)) {
     return (
       <Page title={t('error.forbidden')}>
@@ -87,11 +87,11 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
   return <>{children}</>
 }
 
-/** 首頁：純管理者進維運首頁，教師進班上分布，學生直接進選題。 */
+/** 首頁：純管理者進維運首頁，教師進教室列表，學生直接進選題。 */
 function Home() {
   const auth = useAuth()
   if (auth.status === 'authed' && isOpsAdmin(auth.me.roles)) return <Navigate to="/admin" replace />
-  if (auth.status === 'authed' && !participates(auth.me.roles)) return <Navigate to="/teacher/dashboard" replace />
+  if (auth.status === 'authed' && !participates(auth.me.roles)) return <Navigate to="/teacher/classrooms" replace />
   return <AvailablePage />
 }
 
@@ -117,6 +117,9 @@ export function AppRoutes() {
             <Route key={r.path} path={r.path} element={<RequireAccess access={r.access}>{r.element}</RequireAccess>} />
           )),
         )}
+        {/* 舊網址：班上分布與討論活動已併入教室頁 */}
+        <Route path="/teacher/dashboard" element={<Navigate to="/teacher/classrooms" replace />} />
+        <Route path="/teacher/activities" element={<Navigate to="/teacher/classrooms" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

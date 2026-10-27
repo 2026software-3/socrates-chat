@@ -1,6 +1,8 @@
 import { Pencil } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { useAuth } from '@/auth/auth-context'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { NameConfirmDialog } from '@/components/name-confirm-dialog'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -121,6 +123,7 @@ function ClassroomForm({
 
 export function ClassroomsPage() {
   const t = useT()
+  const base = useClassroomsBase()
   const auth = useAuth()
   const canCreate = auth.status === 'authed' && auth.me.roles.teacher
   const { data, error, loading, reload } = useFetch<Classroom[]>('/api/classrooms')
@@ -208,7 +211,11 @@ export function ClassroomsPage() {
           {visible.map((classroom) => (
             <li key={classroom.id} aria-label={classroom.name} className="flex items-start justify-between gap-3 px-4 py-3">
               <div className="min-w-0 space-y-1">
-                <h2 className="font-medium">{classroom.name}</h2>
+                <h2 className="font-medium">
+                  <Link to={`${base}/${classroom.id}`} className="underline-offset-4 hover:underline">
+                    {classroom.name}
+                  </Link>
+                </h2>
                 {classroom.is_archived ? <p>{t('classrooms.archived')}</p> : null}
                 {classroom.year_label ? <p className="text-muted-foreground text-sm">{classroom.year_label}</p> : null}
                 {classroom.description ? <p className="text-sm">{classroom.description}</p> : null}

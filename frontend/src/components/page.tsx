@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -12,12 +13,32 @@ export const WorkspaceContext = createContext<string | null>(null)
  * 頁面標題列。工作區頁面（教師、管理者）有「工作區／頁名」麵包屑與 30px 粗體標題；
  * 學生頁面是 24px 標題，說明文字放在標題下方。
  */
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+export type Crumb = { label: string; to?: string }
+
+export function PageHeader({ title, description, actions, crumbs }: { title: string; description?: ReactNode; actions?: ReactNode; crumbs?: Crumb[] }) {
   const workspace = useContext(WorkspaceContext)
   return (
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div className="flex min-w-0 flex-col gap-1">
-        {workspace ? <p className="text-muted-foreground text-xs">{`${workspace}／${title}`}</p> : null}
+        {crumbs && crumbs.length > 0 ? (
+          <nav aria-label="breadcrumb" className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
+            {workspace ? <span>{workspace}</span> : null}
+            {crumbs.map((c, i) => (
+              <span key={`${i}-${c.label}`} className="flex items-center gap-x-1.5">
+                {workspace || i > 0 ? <span aria-hidden>／</span> : null}
+                {c.to ? (
+                  <Link to={c.to} className="hover:text-foreground underline-offset-4 hover:underline">
+                    {c.label}
+                  </Link>
+                ) : (
+                  <span aria-current="page">{c.label}</span>
+                )}
+              </span>
+            ))}
+          </nav>
+        ) : workspace ? (
+          <p className="text-muted-foreground text-xs">{`${workspace}／${title}`}</p>
+        ) : null}
         <h1 className={workspace ? 'text-3xl leading-9 font-bold' : 'text-2xl leading-8 font-medium'}>{title}</h1>
         {description ? <p className="text-muted-foreground text-xs">{description}</p> : null}
       </div>
@@ -27,10 +48,22 @@ export function PageHeader({ title, description, actions }: { title: string; des
 }
 
 /** 頁面標題＋內容的共用外框。 */
-export function Page({ title, description, actions, children }: { title: string; description?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+export function Page({
+  title,
+  description,
+  actions,
+  crumbs,
+  children,
+}: {
+  title: string
+  description?: ReactNode
+  actions?: ReactNode
+  crumbs?: Crumb[]
+  children: ReactNode
+}) {
   return (
     <section className="space-y-6">
-      <PageHeader title={title} description={description} actions={actions} />
+      <PageHeader title={title} description={description} actions={actions} crumbs={crumbs} />
       {children}
     </section>
   )

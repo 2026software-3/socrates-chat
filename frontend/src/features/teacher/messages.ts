@@ -2,10 +2,9 @@ import { defineMessages } from '@/i18n/define'
 
 export const teacherMessages = defineMessages({
   'zh-TW': {
-    'teacher.nav.activities': '討論活動',
+    'teacher.activities.viewResults': '查看論點與總結',
     'teacher.nav.roster': '學生帳號',
     'teacher.nav.summaries': '學生總結',
-    'teacher.nav.dashboard': '班上分布',
     'teacher.nav.topics': '題目庫',
     'teacher.roster.statusColumn': '帳號狀態',
     'teacher.roster.completedColumn': '已完成對話',
@@ -135,10 +134,9 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.showOriginal': '顯示原文',
   },
   en: {
-    'teacher.nav.activities': 'Activities',
+    'teacher.activities.viewResults': 'View results',
     'teacher.nav.roster': 'Students',
     'teacher.nav.summaries': 'Student summaries',
-    'teacher.nav.dashboard': 'Class dashboard',
     'teacher.nav.topics': 'Topic bank',
     'teacher.roster.statusColumn': 'Account',
     'teacher.roster.completedColumn': 'Completed',
@@ -268,10 +266,9 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.showOriginal': 'Show original',
   },
   es: {
-    'teacher.nav.activities': 'Actividades',
+    'teacher.activities.viewResults': 'Ver resultados',
     'teacher.nav.roster': 'Estudiantes',
     'teacher.nav.summaries': 'Resúmenes',
-    'teacher.nav.dashboard': 'Panel de la clase',
     'teacher.nav.topics': 'Banco de temas',
     'teacher.roster.statusColumn': 'Cuenta',
     'teacher.roster.completedColumn': 'Completadas',
