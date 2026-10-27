@@ -11,7 +11,7 @@
 - **錯誤格式**：`{ "error": { "code": "...", "request_id": "..." } }`；只有 `code`，沒有已翻譯文字，前端依 `code` 顯示（S-12.1）。回應標頭也有 `x-request-id`。
 - **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`account_disabled`（403，帳號已被管理者停用）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`request_timeout`（408）、`payload_too_large`（413）、`internal`（500）。各端點特有的錯誤碼寫在 OpenAPI 的 responses 說明。
 - **請求大小上限**：所有端點的 request body 上限為 1 MiB（`MAX_BODY_BYTES`；最大的合法 JSON 是修課名單匯入，1 MiB 可容納兩萬筆以上信箱），只有 `POST /api/voice/transcribe` 放寬為 10 MB。超過時回 `413 payload_too_large`（統一的 JSON 錯誤格式，帶 `request_id`），有沒有 `Content-Length`（分段傳送）都一樣。
-- **請求逾時**：從收到請求到送出回應標頭為止（含讀取 request body 與 handler 處理）預設 10 秒（`REQUEST_TIMEOUT_SECS`），逾時回 `408 request_timeout`（統一的 JSON 錯誤格式），handler 中止、未提交的交易回滾。以下路由改用較長的逾時（`AI_TOTAL_TIMEOUT_SECS` + 60 秒，預設 120 秒）：同步等 AI 的 `POST /api/dashboard/class/regroup`、上傳音訊並等語音服務的 `POST /api/voice/transcribe`、同步等語音服務的 `POST /api/voice/speech`、管理者匯入時逐一雜湊臨時密碼的 `POST /api/roster/import`。逾時不含回應本文，SSE 的 `POST …/messages` 與 `GET …/stream` 在背景產生 AI 回覆，標頭送出後不會被截斷，串流長度由 AI 逾時限制（S-03.5）。
+- **請求逾時**：從收到請求到送出回應標頭為止（含讀取 request body 與 handler 處理）預設 10 秒（`REQUEST_TIMEOUT_SECS`），逾時回 `408 request_timeout`（統一的 JSON 錯誤格式），handler 中止、未提交的交易回滾。以下路由改用較長的逾時（`AI_TOTAL_TIMEOUT_SECS` + 60 秒，預設 120 秒）：同步等 AI 的 `POST /api/dashboard/class/regroup` 與 `POST /api/summaries/{id}/translation`、上傳音訊並等語音服務的 `POST /api/voice/transcribe`、同步等語音服務的 `POST /api/voice/speech`、管理者匯入時逐一雜湊臨時密碼的 `POST /api/roster/import`。逾時不含回應本文，SSE 的 `POST …/messages` 與 `GET …/stream` 在背景產生 AI 回覆，標頭送出後不會被截斷，串流長度由 AI 逾時限制（S-03.5）。
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
 - **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
@@ -23,7 +23,7 @@
 - Google 回呼成功設定 `sid` cookie 並導回 `APP_BASE_URL`；失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`）。
 - 用臨時密碼登入時 `must_change_password` 為 `true`：前端導向改密碼頁，除了 `GET /api/me`、改密碼與登出，其他 API 都回 `password_change_required`。旗標在 session 上，不在使用者上。
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
-- `GET /api/me` 的 `roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
+- `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生另可用同一 PATCH 修改 `display_name`；其他角色送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
 
 ## 管理（管理者）
 
@@ -78,6 +78,7 @@
 
 - `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
 - 開始對話的來源須為已發布活動或已啟用題目，否則 `400 invalid_conversation_source`。活動還必須在學生所屬教室的名單內：活動不存在、未發布與學生不在活動所屬教室名單內，回應完全相同，不外露活動是否存在。
+- 新對話會把帳號目前的 `language` 複製到對話；之後切換帳號語言不會改變既有對話。AI 回覆、總結、主張分組與語音都依對話語言執行，提示／規則版本以 `vN/<language>` 保存。
 - 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。
 - 每位學生在每個活動至多一場對話，進行中或已結束都算（S-04.7）：已有時以該活動開始對話回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個。刪除該場對話後可重新開始；只帶 `topic_id` 的個人練習不受限。
 - 對話封存（S-14）：`POST /api/conversations/{id}/archive`、`/unarchive` 只改變本人清單的顯示（回 `204`，他人的對話回 `404`），不受教室封存限制，不影響教師端總結、彙整、點數，也不解除「一人一活動一場」；封存的活動對話要重開必須先刪除。`DELETE /api/conversations/{id}` 不受教室封存限制。教室或活動被刪除時其中的對話一併刪除。
@@ -111,7 +112,9 @@
 
 ## 教師檢視
 
-教師檢視學生的總結**不含對話原文**（S-02.1）。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
+教師檢視學生的總結**不含對話原文**（S-02.1）。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
+
+- 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
 
 - `GET /api/summaries?limit=&cursor=&student=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
 - `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。

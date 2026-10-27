@@ -350,6 +350,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 .filter(|t| t.role == "user")
                 .count() as i32,
             wrap_up_turn: 15,
+            // 情境集只有繁體中文（見 f10_1_README.md 的限制）
+            language: "zh-TW",
         });
         let messages = request_turns(case);
         // Keep a full transcript of exactly what is sent, including system.

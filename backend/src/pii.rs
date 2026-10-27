@@ -268,13 +268,18 @@ mod tests {
                 stage,
                 turn: 18,
                 wrap_up_turn: 16,
+                language: "zh-TW",
             });
             assert_eq!(masked(&prompt), prompt);
         }
         for prompt in [
-            build_summary_prompt("電車難題", "你會拉桿嗎？"),
-            build_group_assign_prompt("電車難題", &["拉桿".to_string()]),
-            build_regroup_prompt("電車難題", &["該拉桿".to_string(), "不拉".to_string()]),
+            build_summary_prompt("電車難題", "你會拉桿嗎？", "zh-TW"),
+            build_group_assign_prompt("電車難題", &["拉桿".to_string()], "zh-TW"),
+            build_regroup_prompt(
+                "電車難題",
+                &["該拉桿".to_string(), "不拉".to_string()],
+                "zh-TW",
+            ),
         ] {
             assert_eq!(masked(&prompt), prompt);
         }

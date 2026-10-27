@@ -37,8 +37,8 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, RULES_VERSION, TurnMeta,
-        build_system_prompt, parse_meta,
+        AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta, build_system_prompt,
+        parse_meta, rules_version,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, load_messages},
@@ -285,6 +285,7 @@ async fn generate(
             stage: conv.stage,
             turn: conv.turn_count,
             wrap_up_turn: state.config.wrap_up_turn,
+            language: &conv.language,
         }),
         messages: messages
             .into_iter()
@@ -432,7 +433,7 @@ async fn save_reply(
     )
     .bind(conv.id)
     .bind(text)
-    .bind(RULES_VERSION)
+    .bind(rules_version(&conv.language))
     .bind(&meta.question_type)
     .bind(&meta.reason)
     .bind(new_stage)

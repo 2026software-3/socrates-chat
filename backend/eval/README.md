@@ -23,13 +23,13 @@
 | 項目 | 位置／目前版本 |
 | --- | --- |
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
-| 提示詞版本 | `RULES_VERSION`：`v1.12/zh-TW`（v1.11 加入送出前的個資遮蔽與佔位詞說明，S-02.6；v1.12 加入 F-10.1 錯字與語音逐字稿的理解規則；下方紀錄為 v1.10 的結果，之後的版本尚未重新評估） |
-| 評估 runner | `backend/examples/try_f07.rs` |
-| 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v4` |
-| 評審提示與準則 | runner 的 `JUDGE_PROMPT` |
+| 提示詞版本 | `rules_version(language)`：`v1.13/zh-TW`、`v1.13/en`、`v1.13/es`（v1.12 加入依對話語言輸出的三語提示與版本後綴；v1.13 加入 F-10.1 錯字與語音逐字稿的理解規則；下方紀錄為 v1.10 的結果，v1.11 之後尚未用真實模型重新評估，三種語言都是） |
+| 評估 runner | `backend/examples/try_f07.rs`（`--lang` 選擇語言，預設 `zh-TW`） |
+| 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v5`（v5 加入評估語言） |
+| 評審提示與準則 | runner 的 `JUDGE_PROMPT`（只有繁體中文版；三種語言共用，見下方限制） |
 | 評審準則版本 | `JUDGE_VERSION`：`f07-rubric-v1/zh-TW` |
-| 結果格式版本 | `schema_version: 4` |
-| 固定情境 | `backend/eval/f07_1_cases_reviewed.json` |
+| 結果格式版本 | `schema_version: 5`（新增 `language`、`judge_prompt_language`、`judge_prompt_matches_language` 欄位；後者在評估語言不是評審準則的語言時為 `false`，並在執行時印出警告） |
+| 固定情境 | `backend/eval/f07_1_cases_reviewed.json`（zh-TW）、`f07_1_cases_en.json`、`f07_1_cases_es.json` |
 
 修改受測提示詞時更新 `RULES_VERSION`；修改評審準則時更新 `JUDGE_VERSION`；修改評估邏輯時更新 `EVALUATOR_VERSION`。結果欄位有不相容變更時更新 `schema_version`。
 
@@ -56,15 +56,19 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 cargo test --example try_f07
 ```
 
-目前包含 8 個測試函式，涵蓋格式驗證、不同策略不直接判錯、命中預設標籤不代表一致、評審格式驗證，以及 FAIL／UNCERTAIN 不得算通過。這些測試不呼叫 API，也不驗證模型的實際生成品質。
+目前包含 13 個測試函式，涵蓋格式驗證、不同策略不直接判錯、命中預設標籤不代表一致、評審格式驗證，以及 FAIL／UNCERTAIN 不得算通過；另有語言參數解析、三份情境檔都通過驗證、en／es 情境與已審閱的 zh-TW 集逐題對應（題號、階段、標註、對話角色順序一致，且沒有殘留中文），以及系統提示依評估語言產生。這些測試不呼叫 API，也不驗證模型的實際生成品質。
 
 ### 3. 跑真實模型評估
 
 ```powershell
-cargo run --example try_f07
+cargo run --example try_f07                 # 繁體中文（預設）
+cargo run --example try_f07 -- --lang en    # English
+cargo run --example try_f07 -- --lang es    # Español
 ```
 
-runner 先驗證整份情境資料，再逐題執行受測模型；只有格式合格的回答才呼叫評審。15 題皆格式合格時，共呼叫受測模型 15 次、評審 15 次，會使用 API 額度。
+`--lang` 接受 `zh-TW`、`en`、`es`（也可寫成 `--lang=en`）；其他值或參數會在呼叫 API 前報錯。語言決定使用哪份情境檔，以及受測系統提示的語言（對應 `rules_version(language)`）；每題結果與 `summary.json` 都會記錄 `language`。
+
+runner 先驗證整份情境資料，再逐題執行受測模型；只有格式合格的回答才呼叫評審。15 題皆格式合格時，共呼叫受測模型 15 次、評審 15 次，會使用 API 額度；三種語言各跑一輪就是三倍。
 
 每次呼叫預設首個 token 15 秒、完整回覆 60 秒的逾時。runner 不自動重試失敗案例。每次執行建立新的結果目錄，不覆寫舊輪次。
 
@@ -104,7 +108,9 @@ EVAL_FIRST_TOKEN_SECS=90 EVAL_TOTAL_SECS=240 EVAL_DELAY_SECS=20 cargo run --exam
 
 資料集不得為空；ID 不可重複；對話與學習目標不得為空；首選類型必須包含於可接受類型集合，集合不可重複。輸入標註目前限五種探究類型；輸出格式驗證另外接受 `wrap_up`，但目前 15 題未專門覆蓋收尾。
 
-輸入路徑目前固定寫在 runner；沒有命令列切換資料集的功能。
+每種語言一份情境檔，只能用 `--lang` 切換；沒有指定任意檔案路徑的功能。
+
+`f07_1_cases_en.json`、`f07_1_cases_es.json` 是已審閱的 zh-TW 集的逐題翻譯：題號、階段、`expected_type`、`acceptable_types`、對話角色順序都不變，只翻譯題目、說明、對話、`learning_goal` 與 `annotation_reason`。**翻譯與其在該語言的自然程度尚未經教師或母語者審閱**，在審閱前不應當作已校準的驗證集；離線測試只檢查結構與對應關係，不檢查譯文品質。
 
 ## 評估流程與準則
 
@@ -223,7 +229,9 @@ v1.10 將只含 JSON 的格式範例改成「追問＋META＋JSON」完整範例
 - 生成模型與評審是同一型號，雖然分開呼叫且評審看不到模型標籤，仍可能有共同盲點。
 - 15 題已用於提示詞調整，屬開發評估集，不是未見過的獨立驗證集；結果不能直接推論到所有學生對話。
 - 相同設定重跑可能產生不同回答與判斷。本 runner 未指定 temperature、seed 或固定模型快照，模型名稱也不代表完全可重現。
-- 未評估 `advance` 判斷的語意正確性；只驗證它是布林值、`reason` 是非空字串。未驗證完整多回合階段推進、收斂或多語言行為。
+- 未評估 `advance` 判斷的語意正確性；只驗證它是布林值、`reason` 是非空字串。未驗證完整多回合階段推進與收斂。
+- en／es 已有情境集與 runner 支援，但還沒有任何真實模型的評估紀錄；v1.12 三種語言的行為都尚未實測。
+- 評審提示與準則只有繁體中文版，三種語言共用：評審用中文準則判讀英文／西班牙文的對話與追問。這未經驗證，可能與各語言的評審有系統性差異；結果比較三種語言時要考慮這一點。
 - 一個主要問題、尊重中立等要求目前由評審綜合評估，沒有各自獨立的硬性程式檢查。
 - 未保存 API `finish_reason`；現有紀錄不足以完全區分模型自行停止與輸出遭截斷。串流／逾時錯誤時 `collect` 不回傳部分輸出。
 - 教師團隊定期人工抽查仍需另行安排；目前不能把此文件視為教師核准或 issue 完成證明。
