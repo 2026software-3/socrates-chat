@@ -947,6 +947,23 @@ const MAX_TRANSLATED_FIELD_CHARS: usize = 4 * MAX_SUMMARY_FIELD_CHARS;
 const MAX_CLAIM_CHARS: usize = 60;
 /// 主張群組名稱的長度上限（單位同上）。
 const MAX_GROUP_NAME_CHARS: usize = 24;
+/// 一句主張的硬性字元上限：詞數上限擋不住沒有空白的超長字串（網址、亂碼）。
+const MAX_CLAIM_HARD_CHARS: usize = 600;
+/// 群組名稱的硬性字元上限；名稱有唯一索引，過長會讓寫入失敗。
+const MAX_GROUP_NAME_HARD_CHARS: usize = 240;
+
+/// 先依單位（字／詞）截斷，再套硬性字元上限。
+fn clip_with_cap(s: &str, units: usize, hard_chars: usize) -> Option<String> {
+    clip(&clip_units(s, units)?, hard_chars)
+}
+
+fn clip_claim(s: &str) -> Option<String> {
+    clip_with_cap(s, MAX_CLAIM_CHARS, MAX_CLAIM_HARD_CHARS)
+}
+
+fn clip_group_name(s: &str) -> Option<String> {
+    clip_with_cap(s, MAX_GROUP_NAME_CHARS, MAX_GROUP_NAME_HARD_CHARS)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
@@ -1045,7 +1062,7 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
     Some(Summary {
         stance: clip(&r.stance, MAX_SUMMARY_FIELD_CHARS)?,
         reasons: clip(&r.reasons, MAX_SUMMARY_FIELD_CHARS)?,
-        claim: r.claim.and_then(|c| clip_units(&c, MAX_CLAIM_CHARS)),
+        claim: r.claim.and_then(|c| clip_claim(&c)),
     })
 }
 
@@ -1097,7 +1114,7 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
         group: String,
     }
     let r: Raw = extract_json(raw)?;
-    let name = clip_units(&r.group, MAX_GROUP_NAME_CHARS)?;
+    let name = clip_group_name(&r.group)?;
     let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
     Some(
         existing
@@ -1165,7 +1182,7 @@ pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<u
     let mut seen = vec![false; claim_count];
     let mut out: Vec<(String, Vec<usize>)> = Vec::new();
     for g in r.groups {
-        let Some(name) = clip_units(&g.name, MAX_GROUP_NAME_CHARS) else {
+        let Some(name) = clip_group_name(&g.name) else {
             continue;
         };
         let members: Vec<usize> = g
@@ -1233,6 +1250,35 @@ mod tests {
             "cut mid-word: {got}"
         );
         assert_eq!(got.split(' ').count(), MAX_CLAIM_CHARS);
+    }
+
+    #[test]
+    fn unspaced_or_huge_words_cannot_get_past_the_character_caps() {
+        // 一個沒有空白的超長字串在詞數上只算 1 個單位，仍要受字元上限約束
+        let blob = "x".repeat(5000);
+        let claim = clip_claim(&blob).unwrap();
+        assert_eq!(claim.chars().count(), MAX_CLAIM_HARD_CHARS);
+        let name = clip_group_name(&blob).unwrap();
+        assert_eq!(name.chars().count(), MAX_GROUP_NAME_HARD_CHARS);
+        // 24 個各 100 字元的詞：詞數剛好沒超過，字元數超過
+        let words = vec!["y".repeat(100); 24].join(" ");
+        assert!(clip_group_name(&words).unwrap().chars().count() <= MAX_GROUP_NAME_HARD_CHARS);
+        // 經過解析函式也一樣，而且截斷後不會留下結尾空白
+        let raw = format!("{{\"group\":\"{words}\"}}");
+        let parsed = parse_group_name(&raw, &[]).unwrap();
+        assert!(parsed.chars().count() <= MAX_GROUP_NAME_HARD_CHARS);
+        assert_eq!(parsed, parsed.trim());
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{blob}\"}}");
+        let claim = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(claim.chars().count() <= MAX_CLAIM_HARD_CHARS);
+    }
+
+    #[test]
+    fn normal_length_text_is_not_touched_by_the_character_caps() {
+        let claim = ["wording"; 30].join(" "); // 30 個詞約 239 字元
+        assert_eq!(clip_claim(&claim).as_deref(), Some(claim.as_str()));
+        let name = ["moral"; 12].join(" ");
+        assert_eq!(clip_group_name(&name).as_deref(), Some(name.as_str()));
     }
 
     #[test]
