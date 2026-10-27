@@ -118,7 +118,7 @@ function ConversationRow({ conversation: c, onArchive, onDelete }: { conversatio
   const { lang } = useI18n()
   const created = formatDate(c.created_at, lang)
   return (
-    <li className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+    <li className="flex flex-col gap-3 rounded-xl border p-5 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <Link
