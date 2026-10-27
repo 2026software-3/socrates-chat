@@ -76,9 +76,11 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 4] = [
+pub const LONG_RUNNING_ROUTES: [&str; 5] = [
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
+    // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
+    "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
     "/api/voice/transcribe",
     // 同步等語音服務合成語音

@@ -746,9 +746,18 @@ async fn translation_fixture(
     ai: std::sync::Arc<FakeAi>,
     limit: Option<(usize, Duration)>,
 ) -> (Router, Actors, String) {
+    translation_fixture_with_config(pool, ai, limit, test_config()).await
+}
+
+async fn translation_fixture_with_config(
+    pool: PgPool,
+    ai: std::sync::Arc<FakeAi>,
+    limit: Option<(usize, Duration)>,
+    config: Config,
+) -> (Router, Actors, String) {
     let mut state = socrates_chat_backend::AppState::new(
         pool.clone(),
-        test_config(),
+        config,
         std::sync::Arc::new(FakeIdentity),
         ai,
     );
@@ -795,6 +804,20 @@ async fn translate(app: &Router, a: &Actors, conv: &str) -> (StatusCode, Value) 
 fn translation_reply(reasons_chars: usize) -> &'static str {
     let body = json!({"stance": "Would pull", "reasons": "x".repeat(reasons_chars)});
     Box::leak(body.to_string().into_boxed_str())
+}
+
+#[sqlx::test]
+async fn translation_is_not_cut_off_by_the_general_request_timeout(pool: PgPool) {
+    // 翻譯同步等一次 AI 呼叫，推理模型常常比一般請求逾時慢得多；要用長逾時，不能回 408
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Paced(vec![translation_reply(10)], Duration::from_millis(500)),
+    ]);
+    let (app, a, conv) = translation_fixture_with_config(pool, ai, None, short_timeout()).await;
+    set_teacher_language(&app, &a, "en").await;
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stance"], "Would pull");
 }
 
 #[sqlx::test]
