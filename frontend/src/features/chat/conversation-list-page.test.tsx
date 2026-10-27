@@ -23,18 +23,18 @@ describe('ConversationListPage', () => {
     renderApp(null, { route: '/conversations' })
     const link = await screen.findByRole('link', { name: '開啟對話：合成題目：電車難題' })
     expect(link).toHaveAttribute('href', '/conversations/c1')
-    const first = link.closest('li') as HTMLElement
+    const first = link.closest('tr') as HTMLElement
     expect(within(first).getByText('進行中')).toBeInTheDocument()
-    expect(within(first).getByText('3 回合')).toBeInTheDocument()
-    expect(within(first).getByText(/建立於 2026/)).toBeInTheDocument()
-    const second = screen.getByRole('link', { name: '開啟對話：合成題目：功利主義' }).closest('li') as HTMLElement
+    expect(within(first).getByText('3')).toBeInTheDocument()
+    expect(within(first).getByText(/2026/)).toBeInTheDocument()
+    const second = screen.getByRole('link', { name: '開啟對話：合成題目：功利主義' }).closest('tr') as HTMLElement
     expect(within(second).getByText('已結束')).toBeInTheDocument()
   })
 
   it('formats the date with the active language', async () => {
     setup([makeConversation()], 'en')
     renderApp(null, { route: '/conversations', lang: 'en' })
-    expect(await screen.findByText(/Created Mar 5, 2026/)).toBeInTheDocument()
+    expect(await screen.findByText(/Mar 5, 2026/)).toBeInTheDocument()
   })
 
   it('shows an empty state that links to the topic chooser', async () => {
@@ -149,7 +149,7 @@ describe('ConversationListPage', () => {
     setup([makeConversation({ created_at: 'not-a-date' })])
     renderApp(null, { route: '/conversations' })
     await screen.findByRole('link', { name: /開啟對話/ })
-    expect(screen.queryByText(/建立於/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/2026/)).not.toBeInTheDocument()
   })
   it('navigates next and previous pages using the opaque cursor', async () => {
     mockMe(makeMe({ student: true }))

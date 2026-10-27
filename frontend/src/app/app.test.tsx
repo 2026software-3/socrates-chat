@@ -42,7 +42,7 @@ describe('app shell', () => {
     mockMe(makeMe({ student: true }))
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     await userEvent.click(screen.getByRole('button', { name: '我已被加入，重新檢查' }))
-    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '選擇題目' })).toBeInTheDocument()
   })
 
   it('offers a way to switch account from the pending page', async () => {
@@ -73,7 +73,7 @@ describe('app shell', () => {
     mockMe(makeMe({ student: true }))
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
-    await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
+    await screen.findByRole('heading', { name: '選擇題目' })
     expect(screen.queryByText(/工作區/)).not.toBeInTheDocument()
   })
 
@@ -87,7 +87,7 @@ describe('app shell', () => {
     mockMe(makeMe({ student: true }))
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '選擇題目' })).toBeInTheDocument()
   })
 
   const emptyClass = {
@@ -210,9 +210,9 @@ describe('app shell', () => {
     )
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
-    await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
+    await screen.findByRole('heading', { name: '選擇題目' })
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')
-    expect(await screen.findByRole('heading', { name: 'Which question will you think about today?' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Choose a topic' })).toBeInTheDocument()
     await waitFor(() => expect(updates).toEqual([{ language: 'en' }]))
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem('lang')).toBe('en')
@@ -223,7 +223,7 @@ describe('app shell', () => {
     mockMe(makeMe({ student: true }, { language: 'es' }))
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('heading', { name: '¿Qué pregunta quieres explorar hoy?' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Elegir un tema' })).toBeInTheDocument()
     expect(document.documentElement.lang).toBe('es')
   })
 

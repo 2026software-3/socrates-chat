@@ -55,15 +55,14 @@ describe('student available page', () => {
   it('shows teacher activities and the topic bank as distinguishable sections', async () => {
     mockAvailable()
     renderPage()
-    const act = await screen.findByRole('region', { name: '教師活動' })
-    const bank = screen.getByRole('region', { name: '題庫題目' })
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    const bank = screen.getByRole('region', { name: '個人練習' })
     expect(within(act).getByText('Activity One')).toBeInTheDocument()
     expect(within(act).getByText('Activity desc')).toBeInTheDocument()
     expect(within(act).queryByText('Topic One')).not.toBeInTheDocument()
     expect(within(bank).getByText('Topic One')).toBeInTheDocument()
-    expect(within(bank).getByText('Ethics')).toBeInTheDocument()
+    expect(within(bank).getByText('題庫・Ethics')).toBeInTheDocument()
     expect(within(bank).queryByText('Activity One')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '我的對話' })).toHaveAttribute('href', '/conversations')
   })
 
   it('starts a conversation from an activity', async () => {
