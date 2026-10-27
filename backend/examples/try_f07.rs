@@ -1,5 +1,6 @@
-//! Run from backend/: cargo run --example try_f07
-//! Input: backend/eval/f07_1_cases_reviewed.json (synthetic scenarios only).
+//! Run from backend/: cargo run --example try_f07 [-- --lang <zh-TW|en|es>]   (default zh-TW)
+//! Input: backend/eval/f07_1_cases_reviewed.json (zh-TW), f07_1_cases_en.json, f07_1_cases_es.json
+//! (synthetic scenarios only; en/es are translations of the reviewed zh-TW set).
 //! Offline scorer tests: cargo test --example try_f07
 //! Requires OPENAI_MODEL and OPENAI_JUDGE_MODEL; each valid response triggers a judge call.
 //! Output: backend/eval/results/<unique-run-id>/
@@ -19,8 +20,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use socrates_chat_backend::{
     ai::{
-        AiRequest, ChatRole, ChatTurn, META_DELIM, OpenAiProvider, PromptContext, RULES_VERSION,
-        build_system_prompt, collect,
+        AiRequest, ChatRole, ChatTurn, META_DELIM, OpenAiProvider, PromptContext,
+        build_system_prompt, collect, rules_version,
     },
     config::load_openai_keys,
     key_pool::KeyPool,
@@ -44,6 +45,102 @@ struct Case {
 struct InputTurn {
     role: String,
     content: String,
+}
+
+const LANGUAGES: [&str; 3] = ["zh-TW", "en", "es"];
+
+/// Evaluation language from the command line: `--lang <language>` or `--lang=<language>`.
+/// Defaults to zh-TW when absent.
+fn parse_language(args: impl IntoIterator<Item = String>) -> Result<&'static str, String> {
+    let usage = || format!("usage: --lang <{}>", LANGUAGES.join("|"));
+    let mut args = args.into_iter();
+    let mut language = LANGUAGES[0];
+    while let Some(arg) = args.next() {
+        let value = if arg == "--lang" {
+            args.next()
+                .ok_or_else(|| format!("--lang needs a value ({})", usage()))?
+        } else if let Some(value) = arg.strip_prefix("--lang=") {
+            value.to_string()
+        } else {
+            return Err(format!("unknown argument: {arg} ({})", usage()));
+        };
+        language = LANGUAGES
+            .iter()
+            .copied()
+            .find(|l| *l == value)
+            .ok_or_else(|| format!("unsupported language: {value} ({})", usage()))?;
+    }
+    Ok(language)
+}
+
+/// Scenario file (relative to `backend/`) for an evaluation language.
+fn cases_file(language: &str) -> &'static str {
+    match language {
+        "en" => "eval/f07_1_cases_en.json",
+        "es" => "eval/f07_1_cases_es.json",
+        _ => "eval/f07_1_cases_reviewed.json",
+    }
+}
+
+fn parse_cases(source: &str) -> Result<Vec<Case>, serde_json::Error> {
+    serde_json::from_str(source.trim_start_matches('\u{feff}'))
+}
+
+/// Validate the entire dataset before any paid API call.
+fn validate_cases(cases: &[Case]) -> Result<(), String> {
+    let types = [
+        "clarify",
+        "reason",
+        "assumption",
+        "counterexample",
+        "perspective",
+    ];
+    let mut ids = HashSet::new();
+    if cases.is_empty() {
+        return Err("The dataset is empty".into());
+    }
+    for case in cases {
+        if case.id.is_empty()
+            || !ids.insert(case.id.clone())
+            || !(1..=3).contains(&case.stage)
+            || !types.contains(&case.expected_type.as_str())
+            || case.acceptable_types.is_empty()
+            || !case
+                .acceptable_types
+                .iter()
+                .any(|t| t == &case.expected_type)
+            || case
+                .acceptable_types
+                .iter()
+                .any(|t| !types.contains(&t.as_str()))
+            || case.acceptable_types.iter().collect::<HashSet<_>>().len()
+                != case.acceptable_types.len()
+            || case.learning_goal.trim().is_empty()
+            || case.conversation.is_empty()
+            || case.conversation.iter().any(|t| {
+                !["user", "assistant"].contains(&t.role.as_str()) || t.content.trim().is_empty()
+            })
+        {
+            return Err(format!("Invalid or duplicate case: {}", case.id));
+        }
+    }
+    Ok(())
+}
+
+/// The system prompt a student conversation in `language` would get for this case.
+fn system_prompt_for(case: &Case, language: &str) -> String {
+    build_system_prompt(&PromptContext {
+        title: &case.title,
+        description: &case.description,
+        stage: case.stage,
+        turn: case
+            .conversation
+            .iter()
+            .filter(|t| t.role == "user")
+            .count() as i32,
+        wrap_up_turn: 15,
+        language,
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -73,7 +170,7 @@ fn save_json(path: &Path, value: &Value) -> Result<(), Box<dyn Error>> {
 
 // Format validation is deterministic. Semantic consistency and suitability require review.
 // Dataset label matches are descriptive references only, never a pass/fail decision.
-const EVALUATOR_VERSION: &str = "f07-eval-v4";
+const EVALUATOR_VERSION: &str = "f07-eval-v5";
 const QUESTION_TYPES: [&str; 6] = [
     "clarify",
     "reason",
@@ -249,47 +346,11 @@ fn apply_judgment(parsed: &mut Value, judgment: &Value) -> String {
 #[tokio::main]
 async fn run() -> Result<(), Box<dyn Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cases_path = root.join("eval/f07_1_cases_reviewed.json");
+    let language = parse_language(env::args().skip(1))?;
+    let cases_path = root.join(cases_file(language));
     let source = fs::read_to_string(&cases_path)?;
-    let cases: Vec<Case> = serde_json::from_str(source.trim_start_matches('\u{feff}'))?;
-
-    // Validate the entire dataset before any paid API call.
-    let types = [
-        "clarify",
-        "reason",
-        "assumption",
-        "counterexample",
-        "perspective",
-    ];
-    let mut ids = HashSet::new();
-    if cases.is_empty() {
-        return Err("The dataset is empty".into());
-    }
-    for case in &cases {
-        if case.id.is_empty()
-            || !ids.insert(case.id.clone())
-            || !(1..=3).contains(&case.stage)
-            || !types.contains(&case.expected_type.as_str())
-            || case.acceptable_types.is_empty()
-            || !case
-                .acceptable_types
-                .iter()
-                .any(|t| t == &case.expected_type)
-            || case
-                .acceptable_types
-                .iter()
-                .any(|t| !types.contains(&t.as_str()))
-            || case.acceptable_types.iter().collect::<HashSet<_>>().len()
-                != case.acceptable_types.len()
-            || case.learning_goal.trim().is_empty()
-            || case.conversation.is_empty()
-            || case.conversation.iter().any(|t| {
-                !["user", "assistant"].contains(&t.role.as_str()) || t.content.trim().is_empty()
-            })
-        {
-            return Err(format!("Invalid or duplicate case: {}", case.id).into());
-        }
-    }
+    let cases = parse_cases(&source)?;
+    validate_cases(&cases)?;
 
     let keys = Arc::new(
         KeyPool::new(load_openai_keys()?)
@@ -331,7 +392,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     fs::write(output.join("judge_prompt.txt"), JUDGE_PROMPT)?;
     println!(
-        "模型：{model}；提示詞版本：{RULES_VERSION}；評審：{judge_model}；準則：{JUDGE_VERSION}"
+        "模型：{model}；語言：{language}；提示詞版本：{}；評審：{judge_model}；準則：{JUDGE_VERSION}",
+        rules_version(language)
     );
     println!("共 {} 題；結果資料夾：{}", cases.len(), output.display());
 
@@ -352,18 +414,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             tokio::time::sleep(delay).await;
         }
         let started_at = chrono::Utc::now().to_rfc3339();
-        let system = build_system_prompt(&PromptContext {
-            title: &case.title,
-            description: &case.description,
-            stage: case.stage,
-            turn: case
-                .conversation
-                .iter()
-                .filter(|t| t.role == "user")
-                .count() as i32,
-            wrap_up_turn: 15,
-            language: "zh-TW",
-        });
+        let system = system_prompt_for(case, language);
 
         // Keep a full transcript of exactly what is sent, including system.
         let mut transcript = vec![json!({"role": "system", "content": system})];
@@ -467,14 +518,15 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
         let predicted = parsed.get("question_type").cloned().unwrap_or(Value::Null);
         let record = json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "evaluator_version": EVALUATOR_VERSION,
             "run_id": run_id,
             "case_id": case.id,
             "started_at_utc": started_at,
             "finished_at_utc": chrono::Utc::now().to_rfc3339(),
             "model_requested": model,
-            "rules_version": RULES_VERSION,
+            "rules_version": rules_version(language),
+            "language": language,
             "stage": case.stage,
             "title": case.title,
             "description": case.description,
@@ -522,9 +574,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let summary = json!({
         "run_id": run_id,
         "model_requested": model,
-        "rules_version": RULES_VERSION,
+        "rules_version": rules_version(language),
+            "language": language,
         "total": cases.len(),
-        "schema_version": 4,
+        "schema_version": 5,
         "evaluator_version": EVALUATOR_VERSION,
         "format_valid_count": format_valid_count,
         "review_required": review_required,
@@ -679,5 +732,116 @@ mod tests {
         invalid = good;
         invalid["strategy_reason"] = serde_json::json!("");
         assert!(super::parse_judgment(&invalid.to_string()).is_err());
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn language_defaults_to_zh_tw_and_accepts_both_flag_forms() {
+        assert_eq!(super::parse_language(args(&[])), Ok("zh-TW"));
+        assert_eq!(super::parse_language(args(&["--lang", "en"])), Ok("en"));
+        assert_eq!(super::parse_language(args(&["--lang=es"])), Ok("es"));
+        assert_eq!(
+            super::parse_language(args(&["--lang", "zh-TW"])),
+            Ok("zh-TW")
+        );
+    }
+
+    #[test]
+    fn unsupported_language_or_arguments_are_rejected() {
+        for bad in [
+            args(&["--lang", "fr"]),
+            args(&["--lang=EN"]),
+            args(&["--lang"]),
+            args(&["--language", "en"]),
+            args(&["en"]),
+        ] {
+            assert!(super::parse_language(bad.clone()).is_err(), "{bad:?}");
+        }
+    }
+
+    fn load(language: &str) -> Vec<super::Case> {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(super::cases_file(language));
+        let source =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        super::parse_cases(&source).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn has_cjk(text: &str) -> bool {
+        text.chars()
+            .any(|c| matches!(c as u32, 0x3000..=0x9FFF | 0xFF00..=0xFFEF))
+    }
+
+    #[test]
+    fn each_language_has_its_own_valid_scenario_file() {
+        let files: std::collections::HashSet<_> = super::LANGUAGES
+            .iter()
+            .map(|l| super::cases_file(l))
+            .collect();
+        assert_eq!(files.len(), super::LANGUAGES.len(), "one file per language");
+        for language in super::LANGUAGES {
+            let cases = load(language);
+            super::validate_cases(&cases).unwrap_or_else(|e| panic!("{language}: {e}"));
+        }
+    }
+
+    #[test]
+    fn translated_sets_mirror_the_reviewed_zh_tw_set() {
+        let zh = load("zh-TW");
+        for language in ["en", "es"] {
+            let cases = load(language);
+            assert_eq!(cases.len(), zh.len(), "{language}: case count");
+            for (case, reference) in cases.iter().zip(&zh) {
+                let id = &reference.id;
+                // 標註（預期類型、可接受類型、階段、對話角色順序）必須與已審閱的原始集一致
+                assert_eq!(&case.id, id, "{language}: id order");
+                assert_eq!(case.stage, reference.stage, "{language} {id}: stage");
+                assert_eq!(
+                    case.expected_type, reference.expected_type,
+                    "{language} {id}"
+                );
+                assert_eq!(
+                    case.acceptable_types, reference.acceptable_types,
+                    "{language} {id}"
+                );
+                let roles = |c: &super::Case| {
+                    c.conversation
+                        .iter()
+                        .map(|t| t.role.clone())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(roles(case), roles(reference), "{language} {id}: roles");
+                // 沒有留下未翻譯的中文
+                let texts = [
+                    &case.title,
+                    &case.description,
+                    &case.learning_goal,
+                    &case.annotation_reason,
+                ]
+                .into_iter()
+                .chain(case.conversation.iter().map(|t| &t.content));
+                for text in texts {
+                    assert!(
+                        !has_cjk(text),
+                        "{language} {id}: untranslated text {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_follows_the_evaluation_language() {
+        let zh = load("zh-TW");
+        let case = &zh[0];
+        assert!(has_cjk(&super::system_prompt_for(case, "zh-TW")));
+        for language in ["en", "es"] {
+            let prompt = super::system_prompt_for(&load(language)[0], language);
+            assert!(!has_cjk(&prompt), "{language} prompt must not be Chinese");
+            assert_ne!(prompt, super::system_prompt_for(case, "zh-TW"));
+        }
     }
 }
