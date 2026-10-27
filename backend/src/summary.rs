@@ -21,8 +21,8 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, RULES_VERSION, build_summary_prompt, collect_background,
-        format_transcript, parse_summary,
+        AiRequest, ChatRole, ChatTurn, build_summary_prompt, build_summary_translation_prompt,
+        collect_background, format_transcript, parse_summary, rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
@@ -40,6 +40,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/summary", get(get_summary))
         .route("/api/conversations/{id}/summary/retry", post(retry))
         .route("/api/summaries", get(list))
+        .route("/api/summaries/{id}/translation", post(translate))
 }
 
 /// 結束對話並建立「產生中」的總結；回傳是否真的由這次呼叫結束。
@@ -103,17 +104,22 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let ((title, description, activity_id), turns): ((String, String, Option<Uuid>), _) = tokio::try_join!(
-        sqlx::query_as("SELECT title, description, activity_id FROM conversations WHERE id = $1")
-            .bind(id)
-            .fetch_one(&state.pool),
+    let ((title, description, activity_id, language), turns): (
+        (String, String, Option<Uuid>, String),
+        _,
+    ) = tokio::try_join!(
+        sqlx::query_as(
+            "SELECT title, description, activity_id, language FROM conversations WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_one(&state.pool),
         load_messages_for(state, id),
     )?;
     let req = AiRequest {
-        system: build_summary_prompt(&title, &description),
+        system: build_summary_prompt(&title, &description, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
-            content: format_transcript(&turns),
+            content: format_transcript(&turns, &language),
         }],
     };
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
@@ -140,14 +146,14 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(id)
             .bind(s.stance)
             .bind(s.reasons)
-            .bind(RULES_VERSION)
+            .bind(rules_version(&language))
             .bind(attempt)
             .bind(s.claim.as_deref())
             .execute(&state.pool)
             .await?;
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
-                crate::claims::assign_group(state, id, activity, &title, claim).await;
+                crate::claims::assign_group(state, id, activity, &title, claim, &language).await;
             }
         }
         None => {
@@ -313,9 +319,83 @@ pub(crate) struct SummaryRow {
     student_id: Uuid,
     student_name: Option<String>,
     student_email: String,
+    /// 對話建立時快照的原文語言。
+    language: String,
     stance: Option<String>,
     reasons: Option<String>,
     claim: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SummaryTranslation {
+    language: String,
+    stance: String,
+    reasons: String,
+}
+
+/// 教師明確要求時，僅把自己教室內既有總結的兩個欄位翻成教師目前的介面語言。
+/// 不讀取也不送出對話原文、學生姓名或電子郵件；管理者介面維持敏感欄位遮蔽，不提供翻譯。
+#[utoipa::path(
+    post,
+    path = "/api/summaries/{id}/translation",
+    tag = "summaries",
+    summary = "按需翻譯一筆學生總結（不含對話原文）",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses(
+        (status = 200, description = "未保存的翻譯結果", body = SummaryTranslation),
+        (status = 502, description = "AI 無法翻譯（ai_unavailable）", body = crate::error::ErrorBody),
+        crate::error::CommonErrors
+    )
+)]
+pub(crate) async fn translate(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SummaryTranslation>, ApiError> {
+    if cu.roles.admin {
+        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    let source: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT s.stance, s.reasons, c.language
+         FROM summaries s
+         JOIN conversations c ON c.id = s.conversation_id
+         JOIN classrooms cl ON cl.id = c.classroom_id AND cl.created_by = $2
+         WHERE s.conversation_id = $1 AND s.status = 'ready'",
+    )
+    .bind(id)
+    .bind(cu.user.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((stance, reasons, source_language)) = source else {
+        return Err(ApiError::not_found());
+    };
+    let language = cu.user.language;
+    if language == source_language {
+        return Ok(Json(SummaryTranslation {
+            language,
+            stance,
+            reasons,
+        }));
+    }
+    let req = AiRequest {
+        system: build_summary_translation_prompt(&language),
+        messages: vec![ChatTurn {
+            role: ChatRole::User,
+            content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
+        }],
+    };
+    let translated = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
+        .await
+        .ok()
+        .and_then(|raw| parse_summary(&raw))
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
+        })?;
+    Ok(Json(SummaryTranslation {
+        language,
+        stance: translated.stance,
+        reasons: translated.reasons,
+    }))
 }
 
 /// 總結分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
@@ -451,6 +531,7 @@ pub(crate) async fn list(
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
+                c.language,
                 s.stance, s.reasons, s.claim
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id

@@ -129,6 +129,45 @@ async fn rules_version_is_recorded_on_ai_reply(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn english_conversation_uses_an_english_prompt_and_version(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![
+        "What do you mean?<<<META>>>{\"question_type\":\"clarify\",\"advance\":false}",
+    ])]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let updated = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.student),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let conv = start_conversation(&app, &a).await;
+    let setup = Setup { app, a, ai, conv };
+
+    say(&setup, "I would pull the lever.").await;
+
+    {
+        let requests = setup.ai.requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .system
+                .contains("Respond to the student only in English")
+        );
+    }
+    let version: String =
+        sqlx::query_scalar("SELECT rules_version FROM messages WHERE role = 'ai'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(version, "v1.12/en");
+}
+
+#[sqlx::test]
 async fn stage_advances_one_step_at_a_time_and_never_back(pool: PgPool) {
     let adv = || {
         Reply(vec![

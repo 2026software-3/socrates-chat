@@ -18,6 +18,20 @@ async fn me_name(app: &axum::Router, cookie: &str) -> Value {
     json_body(res).await["display_name"].clone()
 }
 
+async fn set_language(app: &axum::Router, cookie: &str, language: &str) -> (StatusCode, Value) {
+    let res = send(
+        app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(cookie),
+            Some(json!({"language": language})),
+        ),
+    )
+    .await;
+    (res.status(), json_body(res).await)
+}
+
 #[sqlx::test]
 async fn unauthenticated_is_401(pool: PgPool) {
     let app = test_app(pool);
@@ -34,6 +48,39 @@ async fn non_students_are_403(pool: PgPool) {
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
     assert_eq!(me_name(&app, &a.teacher).await, "User sub-teacher");
+}
+
+#[sqlx::test]
+async fn every_authenticated_role_can_persist_a_supported_language(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    for (cookie, language) in [
+        (&a.student, "en"),
+        (&a.teacher, "es"),
+        (&a.admin, "zh-TW"),
+        (&a.outsider, "en"),
+    ] {
+        let (status, body) = set_language(&app, cookie, language).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["language"], language);
+
+        let me = json_body(send(&app, get("/api/me", Some(cookie))).await).await;
+        assert_eq!(me["language"], language);
+    }
+}
+
+#[sqlx::test]
+async fn unsupported_language_is_rejected_without_changing_preference(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    let (status, body) = set_language(&app, &a.student, "fr").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_language");
+
+    let me = json_body(send(&app, get("/api/me", Some(&a.student))).await).await;
+    assert_eq!(me["language"], "zh-TW");
 }
 
 #[sqlx::test]

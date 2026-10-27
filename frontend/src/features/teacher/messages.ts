@@ -130,6 +130,9 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.stance': '主要立場',
     'teacher.summaries.reasons': '核心理由',
     'teacher.summaries.none': '（無內容）',
+    'teacher.summaries.translate': '翻譯成繁體中文',
+    'teacher.summaries.translating': '翻譯中…',
+    'teacher.summaries.showOriginal': '顯示原文',
   },
   en: {
     'teacher.nav.activities': 'Activities',
@@ -260,6 +263,9 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.stance': 'Main stance',
     'teacher.summaries.reasons': 'Core reasons',
     'teacher.summaries.none': '(nothing)',
+    'teacher.summaries.translate': 'Translate to English',
+    'teacher.summaries.translating': 'Translating…',
+    'teacher.summaries.showOriginal': 'Show original',
   },
   es: {
     'teacher.nav.activities': 'Actividades',
@@ -390,5 +396,8 @@ export const teacherMessages = defineMessages({
     'teacher.summaries.stance': 'Postura principal',
     'teacher.summaries.reasons': 'Razones principales',
     'teacher.summaries.none': '(sin contenido)',
+    'teacher.summaries.translate': 'Traducir al español',
+    'teacher.summaries.translating': 'Traduciendo…',
+    'teacher.summaries.showOriginal': 'Mostrar original',
   },
 })

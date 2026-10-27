@@ -39,7 +39,7 @@ export function renderTeacherPage(ui: ReactElement, lang?: Lang, roles: Partial<
       dispatchEvent: () => false,
     })) as typeof window.matchMedia
   }
-  mockMe(makeMe(roles))
+  mockMe(makeMe(roles, { language: lang ?? 'zh-TW' }))
   return renderApp(
     <>
       {ui}

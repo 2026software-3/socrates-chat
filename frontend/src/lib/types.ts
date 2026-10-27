@@ -1,11 +1,14 @@
 /** 後端 API 的資料型別。對照 docs/api/api-reference.md。 */
 
+import type { Lang } from '@/i18n/define'
+
 export type Roles = { admin: boolean; teacher: boolean; student: boolean }
 
 export type Me = {
   id: string
   email: string
   display_name: string | null
+  language: Lang
   is_admin: boolean
   /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
   must_change_password: boolean
@@ -96,9 +99,18 @@ export type TeacherSummary = {
   student_id: string
   student_name: string | null
   student_email: string
+  /** 對話建立時快照的原文語言。 */
+  language: Lang
   stance: string | null
   reasons: string | null
   claim?: string | null
+}
+
+/** 教師明確觸發、僅保留在目前頁面的總結翻譯。 */
+export type SummaryTranslation = {
+  language: Lang
+  stance: string
+  reasons: string
 }
 
 /** 教室修課名單上的學生與帳號狀態（GET /api/classrooms/{id}/students）。 */

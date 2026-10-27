@@ -362,6 +362,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 .filter(|t| t.role == "user")
                 .count() as i32,
             wrap_up_turn: 15,
+            language: "zh-TW",
         });
 
         // Keep a full transcript of exactly what is sent, including system.

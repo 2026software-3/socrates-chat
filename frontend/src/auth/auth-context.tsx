@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, isApiError } from '@/lib/api'
+import { useI18n } from '@/i18n'
 import type { Me, Roles } from '@/lib/types'
 
 type AuthState =
@@ -22,10 +23,12 @@ const AuthContext = createContext<AuthValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' })
+  const { setLang } = useI18n()
 
   const refresh = useCallback(async () => {
     try {
       const me = await api.get<Me>('/api/me')
+      setLang(me.language)
       setState({ status: 'authed', me })
     } catch (e) {
       // 401 = 沒登入；其他（網路、500）顯示錯誤而不是假裝沒登入
@@ -33,7 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       else if (isApiError(e) && e.code === 'account_disabled') setState({ status: 'disabled' })
       else setState({ status: 'error' })
     }
-  }, [])
+  }, [setLang])
 
   useEffect(() => {
     void refresh()

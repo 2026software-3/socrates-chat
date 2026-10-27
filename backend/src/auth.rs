@@ -79,6 +79,29 @@ fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
         .filter(|v| !v.is_empty())
 }
 
+/// `Accept-Language` 中第一個支援的語言；沒有支援項目時使用繁體中文。
+fn preferred_language(headers: &HeaderMap) -> &'static str {
+    headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(|part| part.split(';').next())
+        .find_map(|tag| {
+            let tag = tag.trim().to_ascii_lowercase();
+            if tag.starts_with("zh") {
+                Some("zh-TW")
+            } else if tag.starts_with("en") {
+                Some("en")
+            } else if tag.starts_with("es") {
+                Some("es")
+            } else {
+                None
+            }
+        })
+        .unwrap_or("zh-TW")
+}
+
 /// 使用者的角色；每次請求由資料庫載入，不存在 cookie 裡（S-08.2）。
 #[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema)]
 pub struct Roles {
@@ -260,9 +283,10 @@ fn login_error(state: &AppState, code: &str) -> Response {
 )]
 pub(crate) async fn callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(p): Query<CallbackParams>,
 ) -> Response {
-    match finish_login(&state, p).await {
+    match finish_login(&state, p, preferred_language(&headers)).await {
         Ok(token) => (
             [(
                 header::SET_COOKIE,
@@ -276,7 +300,11 @@ pub(crate) async fn callback(
 }
 
 /// 成功時回傳新 session 的 token；失敗時回傳導回前端的錯誤代碼。
-async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'static str> {
+async fn finish_login(
+    state: &AppState,
+    p: CallbackParams,
+    preferred_language: &str,
+) -> Result<String, &'static str> {
     // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
     let stored = match p.state.as_deref() {
         Some(s) => auth_store::take_login_state(&state.pool, s, Utc::now())
@@ -306,7 +334,7 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
         .config
         .admin_emails
         .contains(&identity.email.to_lowercase());
-    let user = auth_store::upsert_user(
+    let mut user = auth_store::upsert_user(
         &state.pool,
         &identity.sub,
         &identity.email,
@@ -318,6 +346,9 @@ async fn finish_login(state: &AppState, p: CallbackParams) -> Result<String, &'s
     if user.disabled {
         return Err("account_disabled");
     }
+    user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
+        .await
+        .map_err(|_| "login_failed")?;
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     auth_store::create_session(&state.pool, user.id, &hash_token(&token))
@@ -356,6 +387,7 @@ pub(crate) struct MeResponse {
     id: Uuid,
     email: String,
     display_name: Option<String>,
+    language: String,
     is_admin: bool,
     must_change_password: bool,
     roles: Roles,
@@ -368,6 +400,7 @@ impl From<CurrentUser> for MeResponse {
             id: u.id,
             email: u.email,
             display_name: u.display_name,
+            language: u.language,
             is_admin: u.is_admin,
             must_change_password: cu.must_change_password,
             roles: cu.roles,
@@ -401,25 +434,36 @@ pub(crate) struct MePatch {
     /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，不可含控制字元，其他字元不限制。
     #[serde(default, deserialize_with = "nullable")]
     display_name: Option<Option<String>>,
+    /// 介面與之後建立之對話的語言；僅接受 `zh-TW`、`en`、`es`。
+    language: Option<String>,
 }
 
 #[utoipa::path(
     patch,
     path = "/api/me",
     tag = "auth",
-    summary = "修改自己的顯示名稱（學生）",
+    summary = "修改自己的語言與顯示名稱",
     request_body = MePatch,
     responses(
         (status = 200, description = "更新後的使用者", body = MeResponse),
-        (status = 400, description = "名稱超過 20 個字元或含控制字元（invalid_display_name）"),
-        (status = 403, description = "不是修課名單內的學生"),
+        (status = 400, description = "顯示名稱無效（invalid_display_name）或語言不受支援（invalid_language）"),
+        (status = 403, description = "非學生嘗試修改顯示名稱（所有登入者皆可修改語言）"),
     )
 )]
 pub(crate) async fn update_me(
-    RequireStudent(mut cu): RequireStudent,
+    AnyCurrentUser(mut cu): AnyCurrentUser,
     State(state): State<AppState>,
     Json(p): Json<MePatch>,
 ) -> Result<Json<MeResponse>, ApiError> {
+    if p.display_name.is_some() && !cu.roles.student {
+        return Err(ApiError::forbidden("forbidden", "只有學生能修改顯示名稱"));
+    }
+    if p.language
+        .as_deref()
+        .is_some_and(|language| !matches!(language, "zh-TW" | "en" | "es"))
+    {
+        return Err(ApiError::bad_request("invalid_language", "不支援的語言"));
+    }
     if let Some(name) = p.display_name {
         let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
         if name.as_deref().is_some_and(|n| !valid_display_name(n)) {
@@ -434,6 +478,16 @@ pub(crate) async fn update_me(
         )
         .bind(cu.user.id)
         .bind(name)
+        .fetch_one(&state.pool)
+        .await?;
+    }
+    if let Some(language) = p.language {
+        cu.user.language = sqlx::query_scalar(
+            "UPDATE users SET language = $2, language_initialized = true, updated_at = now()
+             WHERE id = $1 RETURNING language",
+        )
+        .bind(cu.user.id)
+        .bind(language)
         .fetch_one(&state.pool)
         .await?;
     }
@@ -521,6 +575,7 @@ pub(crate) async fn password_login(
     if account.disabled {
         return Err(ACCOUNT_DISABLED);
     }
+    auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
     // 登入一律建立新 session（防止 session fixation）
     let token = new_token();
     let session =

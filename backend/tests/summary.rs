@@ -72,6 +72,67 @@ async fn ending_generates_a_saved_summary(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn spanish_conversation_uses_spanish_summary_prompt_transcript_and_version(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![
+        "{\"stance\":\"Accionaría la palanca\",\"reasons\":\"Salvar a cinco personas\",\"claim\":\"Accionar la palanca\"}",
+    ])]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let updated = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.student),
+            Some(json!({"language": "es"})),
+        ),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "Accionaría la palanca.").await;
+
+    assert_eq!(end(&app, &a.student, &conv).await.0, StatusCode::ACCEPTED);
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "ready"
+    );
+    for _ in 0..100 {
+        if ai.request_count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(ai.request_count(), 2, "claim grouping did not call the AI");
+
+    {
+        let requests = ai.requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .system
+                .contains("Escribe el resumen únicamente en español")
+        );
+        assert!(
+            requests[0].messages[0]
+                .content
+                .contains("Estudiante: Accionaría la palanca.")
+        );
+        assert!(
+            requests[1]
+                .system
+                .contains("Agrupa la afirmación únicamente en español")
+        );
+    }
+    let version: String =
+        sqlx::query_scalar("SELECT rules_version FROM summaries WHERE conversation_id = $1")
+            .bind(uuid::Uuid::parse_str(&conv).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(version, "v1.12/es");
+}
+
+#[sqlx::test]
 async fn cannot_end_an_empty_conversation_and_ending_twice_is_idempotent(pool: PgPool) {
     let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![GOOD])]);
     let app = test_app_with_ai(pool.clone(), ai.clone());
@@ -312,6 +373,7 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
     assert_eq!(rows[0]["conversation_id"], conv);
     assert_eq!(rows[0]["student_email"], "student@example.com");
     assert_eq!(rows[0]["student_name"], "User sub-student");
+    assert_eq!(rows[0]["language"], "zh-TW");
     assert_eq!(rows[0]["stance"], "會拉桿");
     assert!(!list.to_string().contains("私密的對話原文"));
 
@@ -329,6 +391,128 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
     let list =
         json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+#[sqlx::test]
+async fn teacher_translates_a_summary_into_their_account_language_without_conversation_text(
+    pool: PgPool,
+) {
+    let translated = "{\"stance\":\"Would pull the lever\",\"reasons\":\"Save more people\"}";
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![translated])]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "這句是私密的對話原文").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+    let updated = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.teacher),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/summaries/{conv}/translation"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await,
+        json!({
+            "language": "en",
+            "stance": "Would pull the lever",
+            "reasons": "Save more people",
+        })
+    );
+
+    let requests = ai.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let translation = &requests[1];
+    assert!(
+        translation
+            .system
+            .contains("Translate the summary into English")
+    );
+    assert!(translation.messages[0].content.contains("會拉桿"));
+    assert!(translation.messages[0].content.contains("救五人優先"));
+    for private in [
+        "這句是私密的對話原文",
+        "student@example.com",
+        "User sub-student",
+    ] {
+        assert!(!translation.messages[0].content.contains(private));
+    }
+}
+
+#[sqlx::test]
+async fn summary_translation_keeps_teacher_scope_and_admin_masking_boundaries(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Fail]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "想法").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+    let path = format!("/api/summaries/{conv}/translation");
+
+    for (cookie, expected) in [
+        (Some(a.admin.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.student.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
+        (None, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            send(&app, json_req("POST", &path, cookie, None))
+                .await
+                .status(),
+            expected
+        );
+    }
+
+    send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/teachers",
+            Some(&a.admin),
+            Some(json!({"email": "other-teacher@example.com"})),
+        ),
+    )
+    .await;
+    let other = login_as(&app, "sub-other-teacher", "other-teacher@example.com").await;
+    assert_eq!(
+        send(&app, json_req("POST", &path, Some(&other), None))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.teacher),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    let failed = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
+    assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(json_body(failed).await["error"]["code"], "ai_unavailable");
+    assert_eq!(ai.request_count(), 2, "拒絕的請求不得呼叫 AI");
 }
 
 #[sqlx::test]

@@ -26,6 +26,7 @@ pub struct User {
     pub google_sub: Option<String>,
     pub email: String,
     pub display_name: Option<String>,
+    pub language: String,
     pub is_admin: bool,
     /// 臨時密碼登入後必須先更改。
     pub must_change_password: bool,
@@ -84,7 +85,7 @@ pub async fn upsert_user(
         "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, $3),
                 updated_at = now()
          WHERE google_sub = $1
-         RETURNING id, google_sub, email, display_name, is_admin, must_change_password, created_at,
+         RETURNING id, google_sub, email, display_name, language, is_admin, must_change_password, created_at,
                    disabled_at IS NOT NULL AS disabled",
     )
     .bind(google_sub)
@@ -104,7 +105,7 @@ pub async fn upsert_user(
                         must_change_password = false,
                         updated_at = now()
                  WHERE email = lower($2) AND google_sub IS NULL
-                 RETURNING id, google_sub, email, display_name, is_admin,
+                 RETURNING id, google_sub, email, display_name, language, is_admin,
                            must_change_password, created_at, disabled_at IS NOT NULL AS disabled",
             )
             .bind(google_sub)
@@ -119,7 +120,7 @@ pub async fn upsert_user(
                     sqlx::query_as(
                         "INSERT INTO users (google_sub, email, display_name, is_admin)
                          VALUES ($1, lower($2), $3, $4)
-                         RETURNING id, google_sub, email, display_name, is_admin,
+                         RETURNING id, google_sub, email, display_name, language, is_admin,
                                    must_change_password, created_at,
                                    disabled_at IS NOT NULL AS disabled",
                     )
@@ -153,6 +154,32 @@ pub async fn create_session(
     .await
 }
 
+/// 首次成功登入時，以瀏覽器偏好初始化帳號語言；之後登入不覆蓋使用者的設定。
+pub async fn initialize_language(
+    pool: &PgPool,
+    user_id: Uuid,
+    preferred: &str,
+) -> Result<String, sqlx::Error> {
+    let initialized: Option<String> = sqlx::query_scalar(
+        "UPDATE users SET language = $2, language_initialized = true, updated_at = now()
+         WHERE id = $1 AND NOT language_initialized
+         RETURNING language",
+    )
+    .bind(user_id)
+    .bind(preferred)
+    .fetch_optional(pool)
+    .await?;
+    match initialized {
+        Some(language) => Ok(language),
+        None => {
+            sqlx::query_scalar("SELECT language FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+        }
+    }
+}
+
 /// `find_active_session` 一次查回的 session、使用者與角色。
 #[derive(FromRow)]
 struct SessionUserRow {
@@ -183,7 +210,7 @@ pub async fn find_active_session(
          )
          SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
                 s.must_change_password AS session_must_change_password,
-                u.id, u.google_sub, u.email, u.display_name, u.is_admin, u.must_change_password,
+                u.id, u.google_sub, u.email, u.display_name, u.language, u.is_admin, u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
                 EXISTS (SELECT 1 FROM enrollments e WHERE e.email = u.email) AS student

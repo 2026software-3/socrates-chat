@@ -36,8 +36,9 @@ pub async fn assign_group(
     activity: Uuid,
     topic: &str,
     claim: &str,
+    language: &str,
 ) {
-    if let Err(e) = try_assign(state, conversation, activity, topic, claim).await {
+    if let Err(e) = try_assign(state, conversation, activity, topic, claim, language).await {
         tracing::warn!(class = %db_error_class(&e), "claim grouping bookkeeping failed");
     }
 }
@@ -48,6 +49,7 @@ async fn try_assign(
     activity: Uuid,
     topic: &str,
     claim: &str,
+    language: &str,
 ) -> Result<(), sqlx::Error> {
     let existing: Vec<(String,)> = sqlx::query_as(
         "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
@@ -57,7 +59,7 @@ async fn try_assign(
     .await?;
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
     let req = AiRequest {
-        system: build_group_assign_prompt(topic, &existing),
+        system: build_group_assign_prompt(topic, &existing, language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: claim.to_string(),
@@ -122,8 +124,8 @@ pub(crate) async fn regroup(
         .await?
         .ok_or_else(ApiError::not_found)?;
     crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
-    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT s.conversation_id, s.claim, a.title
+    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+        "SELECT s.conversation_id, s.claim, a.title, c.language
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN activities a ON a.id = c.activity_id
@@ -133,16 +135,17 @@ pub(crate) async fn regroup(
     .bind(body.activity_id)
     .fetch_all(&state.pool)
     .await?;
-    let Some((_, _, title)) = rows.first() else {
+    let Some((_, _, title, language)) = rows.first() else {
         return Err(ApiError::conflict(
             "no_claims",
             "這個活動還沒有可分組的主張",
         ));
     };
     let title = title.clone();
-    let claims: Vec<String> = rows.iter().map(|(_, c, _)| c.clone()).collect();
+    let language = language.clone();
+    let claims: Vec<String> = rows.iter().map(|(_, c, _, _)| c.clone()).collect();
     let req = AiRequest {
-        system: build_regroup_prompt(&title, &claims),
+        system: build_regroup_prompt(&title, &claims, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: "請分組。".into(),

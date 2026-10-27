@@ -5,9 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { api } from '@/lib/api'
+import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
-import { useI18n, useT } from '@/i18n'
-import type { Page as PageResult, TeacherSummary } from '@/lib/types'
+import { errorText, useI18n, useT } from '@/i18n'
+import type { Page as PageResult, SummaryTranslation, TeacherSummary } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 function Field({ label, value }: { label: string; value: string | null }) {
@@ -23,6 +25,29 @@ function Field({ label, value }: { label: string; value: string | null }) {
 function SummaryCard({ row }: { row: TeacherSummary }) {
   const t = useT()
   const { lang } = useI18n()
+  const [translation, setTranslation] = useState<SummaryTranslation | null>(null)
+  const [showTranslation, setShowTranslation] = useState(false)
+  const [translating, setTranslating] = useState(false)
+  const [translationError, setTranslationError] = useState<unknown>(null)
+  const visible = showTranslation && translation?.language === lang ? translation : row
+
+  async function translate() {
+    setTranslating(true)
+    setTranslationError(null)
+    try {
+      const local = await translateInBrowser(row.language, lang, [row.stance ?? '', row.reasons ?? ''])
+      const result = local
+        ? { language: lang, stance: local[0], reasons: local[1] }
+        : await api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`)
+      setTranslation(result)
+      setShowTranslation(true)
+    } catch (error) {
+      setTranslationError(error)
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   return (
     <li>
       <Card>
@@ -45,9 +70,23 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
           </div>
           {row.claim ? <p className="text-sm font-medium break-words">{row.claim}</p> : null}
           <dl className="space-y-2">
-            <Field label={t('teacher.summaries.stance')} value={row.stance} />
-            <Field label={t('teacher.summaries.reasons')} value={row.reasons} />
+            <Field label={t('teacher.summaries.stance')} value={visible.stance} />
+            <Field label={t('teacher.summaries.reasons')} value={visible.reasons} />
           </dl>
+          {translationError ? (
+            <p role="alert" className="text-destructive text-sm">
+              {errorText(t, translationError)}
+            </p>
+          ) : null}
+          {showTranslation && translation?.language === lang ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowTranslation(false)}>
+              {t('teacher.summaries.showOriginal')}
+            </Button>
+          ) : row.language !== lang ? (
+            <Button type="button" variant="outline" size="sm" disabled={translating} onClick={() => void translate()}>
+              {translating ? t('teacher.summaries.translating') : t('teacher.summaries.translate')}
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </li>
