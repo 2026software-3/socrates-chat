@@ -160,25 +160,35 @@ pub async fn initialize_language(
     user_id: Uuid,
     preferred: &str,
 ) -> Result<String, sqlx::Error> {
-    // 一次往返：還沒初始化就更新並回傳新值，否則回傳目前的值。
-    // 同一語句內的 SELECT 看不到 CTE 的更新，所以兩邊用 COALESCE 接起來。
-    let language: Option<String> = sqlx::query_scalar(
-        "WITH initialized AS (
-             UPDATE users SET language = $2, language_initialized = true, updated_at = now()
-             WHERE id = $1 AND NOT language_initialized
-             RETURNING language
-         )
-         SELECT COALESCE(
-             (SELECT language FROM initialized),
-             (SELECT language FROM users WHERE id = $1)
-         )",
+    // 先讀：第一次之後的每次登入只花這一次往返，而且不寫入。
+    let (language, initialized): (String, bool) =
+        sqlx::query_as("SELECT language, language_initialized FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
+    if initialized {
+        return Ok(language);
+    }
+    let set: Option<String> = sqlx::query_scalar(
+        "UPDATE users SET language = $2, language_initialized = true, updated_at = now()
+         WHERE id = $1 AND NOT language_initialized
+         RETURNING language",
     )
     .bind(user_id)
     .bind(preferred)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
-    // 帳號不存在時 COALESCE 為 NULL
-    language.ok_or(sqlx::Error::RowNotFound)
+    match set {
+        Some(language) => Ok(language),
+        // 兩個首次登入同時進來，另一個先寫入了：重新讀已提交的值。
+        // （單一語句的 CTE 做不到：同一語句內的 SELECT 讀的是語句開始時的快照，會回傳舊值。）
+        None => {
+            sqlx::query_scalar("SELECT language FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+        }
+    }
 }
 
 /// `find_active_session` 一次查回的 session、使用者與角色。
@@ -580,18 +590,41 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn initialize_language_sets_it_once_in_a_single_query(pool: PgPool) {
+    async fn initialize_language_costs_one_round_trip_after_the_first_login(pool: PgPool) {
         let user = seed_user(&pool).await;
         let (counting, acquires) = counting_pool(&pool).await;
 
         let first = initialize_language(&counting, user, "es").await.unwrap();
         assert_eq!(first, "es");
-        assert_eq!(acquires.swap(0, Ordering::SeqCst), 1, "first login");
+        assert_eq!(
+            acquires.swap(0, Ordering::SeqCst),
+            2,
+            "first login: read + set"
+        );
 
-        // 之後的登入不覆蓋已初始化的語言，而且仍然只花一次往返
+        // 之後的登入不覆蓋已初始化的語言，而且只花一次往返
         let later = initialize_language(&counting, user, "en").await.unwrap();
         assert_eq!(later, "es");
         assert_eq!(acquires.swap(0, Ordering::SeqCst), 1, "later logins");
+    }
+
+    #[sqlx::test]
+    async fn racing_first_logins_both_return_the_committed_language(pool: PgPool) {
+        let user = seed_user(&pool).await;
+        // 贏家已更新但還沒 commit；輸家的語句會卡在列鎖上，等贏家 commit 後必須回傳贏家寫入的值
+        let mut winner = pool.begin().await.unwrap();
+        sqlx::query("UPDATE users SET language = 'es', language_initialized = true WHERE id = $1")
+            .bind(user)
+            .execute(&mut *winner)
+            .await
+            .unwrap();
+        let loser = tokio::spawn({
+            let pool = pool.clone();
+            async move { initialize_language(&pool, user, "en").await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        winner.commit().await.unwrap();
+        assert_eq!(loser.await.unwrap().unwrap(), "es");
     }
 
     #[sqlx::test]
