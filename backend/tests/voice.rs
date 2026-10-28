@@ -105,14 +105,23 @@ async fn transcribe_returns_text_and_passes_language_and_mime(pool: PgPool) {
     );
 }
 
+/// 被拒絕的上傳內容不得出現在錯誤回應裡。
+const UNAUTHORIZED_AUDIO: &[u8] = b"UNAUTHORIZED_AUDIO_PAYLOAD";
+
 #[sqlx::test]
 async fn voice_endpoints_require_a_member(pool: PgPool) {
     let voice = Arc::new(FakeVoice::default());
     let app = app_with_voice(pool, voice.clone());
     let a = seed_actors(&app).await;
-    for (cookie, status) in [
-        (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
-        (None, StatusCode::UNAUTHORIZED),
+    for (cookie, status, code) in [
+        (
+            Some(a.outsider.as_str()),
+            StatusCode::FORBIDDEN,
+            "not_enrolled",
+        ),
+        (Some(a.teacher.as_str()), StatusCode::FORBIDDEN, "forbidden"),
+        (Some(a.admin.as_str()), StatusCode::FORBIDDEN, "forbidden"),
+        (None, StatusCode::UNAUTHORIZED, "unauthorized"),
     ] {
         let res = send(
             &app,
@@ -120,11 +129,17 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
                 "/api/voice/transcribe?language=en",
                 cookie,
                 "audio/webm",
-                vec![1],
+                UNAUTHORIZED_AUDIO.to_vec(),
             ),
         )
         .await;
         assert_eq!(res.status(), status);
+        let text = text_body(res).await;
+        assert!(!text.contains(std::str::from_utf8(UNAUTHORIZED_AUDIO).unwrap()));
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["error"]["code"], code);
+        assert!(body["error"]["request_id"].is_string());
+
         let res = send(
             &app,
             json_req(
@@ -136,6 +151,9 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), status);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], code);
+        assert!(body["error"]["request_id"].is_string());
     }
     assert!(
         voice.calls.lock().unwrap().is_empty(),
