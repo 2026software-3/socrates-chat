@@ -147,21 +147,6 @@
     "annotation_reason": "「有力」可能是「有理（合理）」或「有利（有好處）」的辨識錯誤，分別指向正當性與後果，影響討論方向；應請學生確認原意。"
   },
   {
-    "id": "A03",
-    "stage": 1,
-    "title": "校園手機管理",
-    "description": "學校是否應禁止學生在上課時使用手機？",
-    "conversation": [
-      {
-        "role": "user",
-        "source": "speech-browser",
-        "content": "我覺得應該 嗯 禁 不 呃 那個"
-      }
-    ],
-    "ambiguity": "material",
-    "annotation_reason": "辨識結果中斷，無法判斷學生支持或反對禁止；應簡短請學生確認或補完立場，而不是自行推定。"
-  },
-  {
     "id": "T01",
     "stage": 1,
     "title": "電車難題",
