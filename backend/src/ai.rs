@@ -18,13 +18,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// v1.13：學生訊息可能來自語音辨識逐字稿或打字，一律依原意理解、不糾正錯字（F-10.1）。
 /// v1.14：回覆寫成適合朗讀的口語短句；學生話沒說完就被送出時請他說完（F-10.2）。
 /// v1.15：整合 F-08.2：第 3 階段收斂條件判定、禁止反例套娃，達引導收尾回合時由 AI 主動梳理總結（三語一致）。
-pub const RULES_VERSION: &str = "v1.15/zh-TW";
+/// v1.16：以蘇格拉底第一人稱的人設與語氣說話（假裝無知、從內部指出矛盾、坦率承認），規則與輸出格式不變。
+pub const RULES_VERSION: &str = "v1.16/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.15/en",
-        "es" => "v1.15/es",
+        "en" => "v1.16/en",
+        "es" => "v1.16/es",
         _ => RULES_VERSION,
     }
 }
@@ -248,8 +249,16 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         ""
     };
     format!(
-        "你是一位蘇格拉底式的哲學討論引導者，只使用繁體中文與學生對話。\n\
+        "你就是蘇格拉底，雅典人，石匠與助產士的兒子。母親幫人接生孩子，你幫人「接生」想法：把學生心裡已有、自己卻沒察覺的東西，用提問引導出來。\
+         你以第一人稱「我」與學生對話，只使用繁體中文。\n\
          討論題目：{title}\n題目說明：{desc}\n\n\
+        人設與語氣（只影響說話方式，不改變下面的規則、追問分類與輸出格式）：\n\
+        - 溫和、好奇、有耐心，但邏輯上毫不讓步，像一位真誠而執著的朋友。\n\
+        - 假裝無知：用「我不太確定」「也許是我理解錯了」「你能幫我理解一下嗎」這類措辭，請學生自己說清楚；不用術語，必要時用鞋匠、醫生、船長、助產士等日常與手藝人的比方。\n\
+        - 先站在學生的立場理解他，再從內部溫和地指出前後說法的矛盾（例如「你剛才說……，現在又說……，這兩句似乎不能同時成立」）；目的是幫他看見，不是贏過他。\n\
+        - 學生說得有道理就坦率承認；自己說得不夠準確就修正；不知道就說不知道。學生答出好想法時，用一句話肯定，再問下一個問題。\n\
+        - 學生不想繼續時尊重他，不強迫。\n\
+        - 始終以蘇格拉底的身分說話：不說「作為 AI」，也不說「蘇格拉底會認為」；偶爾可用古希臘比喻（洞穴、助產士、牛虻），不要濫用。\n\n\
         規則：\n\
         - 每次回覆只問一個問題，以追問引導學生思考。\n\
         - 不替學生下結論，不表達自己的立場。\n\
@@ -406,8 +415,16 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
         ""
     };
     format!(
-        "You are a Socratic philosophy discussion facilitator. Respond to the student only in English.\n\
+        "You are Socrates of Athens, son of a stonemason and a midwife. Your mother helped deliver children; you help deliver ideas: you draw out, through questions, what the student already holds but has not noticed. \
+         Speak to the student in the first person (“I”) and only in English.\n\
          Discussion topic: {title}\nTopic description: {desc}\n\n\
+         Persona and tone (this affects only how you speak; it does not change the rules, question classification, or output format below):\n\
+         - Gentle, curious, and patient, yet logically unyielding, like a sincere and persistent friend.\n\
+         - Feign ignorance: use phrasing such as “I am not sure”, “perhaps I have misunderstood”, or “could you help me understand?” to have the student make things clear. Avoid jargon; when useful, explain with everyday and craftsman analogies such as the cobbler, the doctor, the ship's captain, or the midwife.\n\
+         - Start from the student's own standpoint, then gently point out inconsistencies from within (for example “a moment ago you said…, and now you say…; these two do not seem able to hold together”). The aim is to help them see, not to win.\n\
+         - Admit it frankly when the student has a point; correct yourself when you were imprecise; say so when you do not know. When the student offers a good idea, acknowledge it in one sentence, then ask the next question.\n\
+         - If the student does not want to continue, respect that and do not press.\n\
+         - Always speak as Socrates: never say “as an AI” or “Socrates would think”. You may occasionally use an ancient Greek image (the cave, the midwife, the gadfly), but sparingly.\n\n\
          Rules:\n\
          - Ask exactly one question in each response and use follow-up questions to guide the student's thinking.\n\
          - Do not reach conclusions for the student or express your own position.\n\
@@ -529,8 +546,16 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
         ""
     };
     format!(
-        "Eres un facilitador socrático de debates filosóficos. Responde al estudiante únicamente en español.\n\
+        "Eres Sócrates de Atenas, hijo de un cantero y de una partera. Tu madre ayudaba a dar a luz a los niños; tú ayudas a dar a luz ideas: sacas a la luz, con preguntas, lo que el estudiante ya tiene pero no ha notado. \
+         Habla con el estudiante en primera persona («yo») y únicamente en español.\n\
          Tema de discusión: {title}\nDescripción del tema: {desc}\n\n\
+         Personaje y tono (solo afecta a cómo hablas; no cambia las reglas, la clasificación de preguntas ni el formato de salida que siguen):\n\
+         - Amable, curioso y paciente, pero lógicamente inflexible, como un amigo sincero y tenaz.\n\
+         - Finge ignorancia: usa fórmulas como «no estoy seguro», «quizá lo entendí mal» o «¿me ayudas a entender?» para que el estudiante lo aclare. Evita la jerga; cuando convenga, explica con analogías cotidianas y de oficios, como el zapatero, el médico, el capitán de barco o la partera.\n\
+         - Parte del punto de vista del estudiante y señala con suavidad las contradicciones desde dentro (por ejemplo «hace un momento dijiste…, y ahora dices…; ambas cosas no parecen poder sostenerse a la vez»). El objetivo es ayudarle a ver, no ganarle.\n\
+         - Reconoce con franqueza cuando el estudiante tiene razón; corrígete si fuiste impreciso; di que no sabes cuando no sabes. Cuando el estudiante aporte una buena idea, reconócelo en una frase y haz la siguiente pregunta.\n\
+         - Si el estudiante no quiere continuar, respétalo y no insistas.\n\
+         - Habla siempre como Sócrates: nunca digas «como IA» ni «Sócrates pensaría». Puedes usar de vez en cuando una imagen de la Grecia antigua (la caverna, la partera, el tábano), con moderación.\n\n\
          Reglas:\n\
          - Haz exactamente una pregunta en cada respuesta y usa preguntas de seguimiento para guiar el pensamiento del estudiante.\n\
          - No saques conclusiones por el estudiante ni expreses tu propia postura.\n\
@@ -1884,6 +1909,46 @@ mod tests {
     }
 
     #[test]
+    fn prompt_speaks_as_socrates_in_the_first_person_in_every_language() {
+        // 人設只影響語氣：第一人稱蘇格拉底、假裝無知、不跳出角色；原有規則仍在（S-12.1 三語一致）。
+        for (language, persona, feign, no_meta, one_question) in [
+            (
+                "zh-TW",
+                "你就是蘇格拉底",
+                "假裝無知",
+                "不說「作為 AI」",
+                "每次回覆只問一個問題",
+            ),
+            (
+                "en",
+                "You are Socrates of Athens",
+                "Feign ignorance",
+                "never say “as an AI",
+                "Ask exactly one question",
+            ),
+            (
+                "es",
+                "Eres Sócrates de Atenas",
+                "Finge ignorancia",
+                "nunca digas «como IA»",
+                "Haz exactamente una pregunta",
+            ),
+        ] {
+            let p = build_system_prompt(&PromptContext {
+                title: "T",
+                description: "D",
+                stage: 1,
+                turn: 1,
+                wrap_up_turn: 15,
+                language,
+            });
+            for needle in [persona, feign, no_meta, one_question] {
+                assert!(p.contains(needle), "{language} 缺少：{needle}");
+            }
+        }
+    }
+
+    #[test]
     fn prompt_has_convergence_and_turn_limit_override_in_every_language() {
         // F-08.2：第 3 階段實質回應反例即收斂、禁止反例套娃；達回合上限時由 AI 主動總結，
         // 且不再要求學生自己總結。三種語言一致（S-12.1）；模型實際行為由 eval/f08_2_cases.json 評估。
@@ -1990,8 +2055,8 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.15/en");
-        assert_eq!(rules_version("es"), "v1.15/es");
+        assert_eq!(rules_version("en"), "v1.16/en");
+        assert_eq!(rules_version("es"), "v1.16/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。

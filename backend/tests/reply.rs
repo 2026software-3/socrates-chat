@@ -153,18 +153,14 @@ async fn english_conversation_uses_an_english_prompt_and_version(pool: PgPool) {
 
     {
         let requests = setup.ai.requests.lock().unwrap();
-        assert!(
-            requests[0]
-                .system
-                .contains("Respond to the student only in English")
-        );
+        assert!(requests[0].system.contains("and only in English"));
     }
     let version: String =
         sqlx::query_scalar("SELECT rules_version FROM messages WHERE role = 'ai'")
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, "v1.15/en");
+    assert_eq!(version, "v1.16/en");
 }
 
 #[sqlx::test]
