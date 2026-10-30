@@ -678,6 +678,8 @@ pub struct OpenAiProvider {
     base_url: String,
     /// 第一個是主模型，其後是備援模型（依序）；每個模型各有自己的 key 池冷卻狀態
     targets: Vec<ModelTarget>,
+    /// 送給每個模型的推理強度（例如 `high`）；`None` 表示不指定
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone)]
@@ -720,7 +722,14 @@ impl OpenAiProvider {
                 model: model.to_string(),
                 keys,
             }],
+            reasoning_effort: None,
         }
+    }
+
+    /// 指定推理強度（`reasoning_effort`）；只有支援推理的模型才會接受這個欄位。
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
+        self
     }
 
     /// 主模型被限流（429）時依序改用的備援模型。與主模型相同或重複的會略過。
@@ -903,6 +912,9 @@ impl SseDecoder {
 struct ChatBody<'a> {
     messages: &'a [ChatMsg<'a>],
     model: &'a str,
+    /// 推理強度（`OPENAI_REASONING_EFFORT`）；沒設定就不送這個欄位
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
     stream: bool,
 }
 
@@ -936,6 +948,7 @@ impl OpenAiProvider {
         let body = ChatBody {
             messages: &messages,
             model: &target.model,
+            reasoning_effort: self.reasoning_effort.as_deref(),
             stream: true,
         };
         // 後面還有備援模型時不等 key 冷卻，直接換
@@ -1939,6 +1952,31 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少輸入理解規則：{rule}");
             }
         }
+    }
+
+    #[test]
+    fn chat_body_sends_reasoning_effort_only_when_it_is_set() {
+        let messages = [ChatMsg {
+            content: "hi",
+            role: "user",
+        }];
+        let body = |reasoning_effort| {
+            serde_json::to_string(&ChatBody {
+                messages: &messages,
+                model: "m",
+                reasoning_effort,
+                stream: true,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            body(Some("high")),
+            r#"{"messages":[{"content":"hi","role":"user"}],"model":"m","reasoning_effort":"high","stream":true}"#
+        );
+        assert_eq!(
+            body(None),
+            r#"{"messages":[{"content":"hi","role":"user"}],"model":"m","stream":true}"#
+        );
     }
 
     #[test]
