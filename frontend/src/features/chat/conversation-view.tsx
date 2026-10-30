@@ -115,6 +115,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           showComposer={!ended}
           composerDisabled={ending}
           language={detail.language}
+          topicId={detail.topic_id}
           onVoiceSource={(s: RecognitionSource) => messageSource.set(s)}
         />
         {ended ? (
