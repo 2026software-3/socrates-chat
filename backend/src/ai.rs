@@ -15,13 +15,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
 /// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
 /// v1.12：對話、總結與主張分組依對話語言輸出，版本後綴記錄語言。
-pub const RULES_VERSION: &str = "v1.12/zh-TW";
+/// v1.13：學生訊息可能來自語音辨識逐字稿或打字，一律依原意理解、不糾正錯字（F-10.1）。
+pub const RULES_VERSION: &str = "v1.13/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.12/en",
-        "es" => "v1.12/es",
+        "en" => "v1.13/en",
+        "es" => "v1.13/es",
         _ => RULES_VERSION,
     }
 }
@@ -279,6 +280,13 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         \n\
         上述 assumption 或 perspective 問題即使附加「為什麼」，分類也不會變成 reason。\n\
         \n\
+        理解學生的訊息（F-10.1）：\n\
+        學生訊息可能來自打字或語音辨識（學生確認後送出），可能有同音錯字、贅詞（例如「嗯」「那個」「就是」）、重複、自我修正或缺少標點。\n\
+        - 依最合理的原意理解，直接承接學生的論點追問。\n\
+        - 不指出、糾正或評論錯字、贅詞與標點，也不要求學生改用其他方式輸入。\n\
+        - 只有在錯字讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
+        - 判斷 advance 時，依學生實際表達的思考，不因口語化、錯字或贅詞而降低或提高。\n\
+        \n\
         目前階段（階段只進不退）：{stage}{wrap}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
         第一部分：給學生看的簡短追問。\n\
@@ -366,6 +374,12 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          Question: “Can you think of a situation in which following the rule would be unreasonable?” → counterexample, because it asks the student to find a case.\n\
          Question: “Does that principle necessarily apply in every situation?” → assumption, because it tests the generalization abstractly without asking for a case.\n\n\
          An assumption or perspective question remains that type even if it also says “why”.\n\n\
+         Reading the student's message (F-10.1):\n\
+         Student messages may be typed or come from speech recognition (confirmed by the student before sending), and may contain homophone errors, filler words (such as “um”, “like”, “you know”), repetition, self-corrections, or missing punctuation.\n\
+         - Read the message by its most plausible intended meaning and respond directly to the student's point.\n\
+         - Do not point out, correct, or comment on typos, filler words, or punctuation, and do not ask the student to switch to another input method.\n\
+         - Only when a typo makes a key term or the position open to clearly different readings that would affect the discussion, ask one short question to confirm what the student meant, and label it clarify.\n\
+         - When judging advance, go by the thinking the student actually expressed; do not lower or raise it because of informal speech, typos, or filler words.\n\n\
          Current stage (stages never move backward): {stage}{wrap}\n\n\
          Output format (follow it completely in every response):\n\
          Part 1: one concise follow-up question visible to the student, in English.\n\
@@ -445,6 +459,12 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          Pregunta: «¿Puedes imaginar una situación en la que cumplir la regla resulte irrazonable?» → counterexample, porque pide encontrar un caso.\n\
          Pregunta: «¿Ese principio se aplica necesariamente en toda situación?» → assumption, porque comprueba la generalización de forma abstracta sin pedir un caso.\n\n\
          Una pregunta assumption o perspective conserva su tipo aunque también diga “por qué”.\n\n\
+         Comprender el mensaje del estudiante (F-10.1):\n\
+         Los mensajes del estudiante pueden escribirse o provenir del reconocimiento de voz (el estudiante los confirma antes de enviarlos), y pueden contener errores de palabras que suenan parecido, muletillas (como «eh», «o sea», «este»), repeticiones, autocorrecciones o falta de puntuación.\n\
+         - Interpreta el mensaje según su significado más plausible y responde directamente a lo que plantea el estudiante.\n\
+         - No señales, corrijas ni comentes errores de escritura, muletillas o puntuación, y no pidas al estudiante que cambie de forma de entrada.\n\
+         - Solo cuando un error haga que un término clave o la postura admitan interpretaciones claramente distintas que afecten la discusión, haz una pregunta breve para confirmar lo que quiso decir y márcala como clarify.\n\
+         - Al decidir advance, guíate por el pensamiento que el estudiante realmente expresó; no lo bajes ni lo subas por el lenguaje informal, los errores o las muletillas.\n\n\
          Etapa actual (las etapas nunca retroceden): {stage}{wrap}\n\n\
          Formato de salida (síguelo por completo en cada respuesta):\n\
          Parte 1: una pregunta breve visible para el estudiante, en español.\n\
@@ -1685,6 +1705,59 @@ mod tests {
 
         assert!(!build_group_assign_prompt("T", &[], "en").contains("目前"));
         assert!(!build_group_assign_prompt("T", &[], "es").contains("目前"));
+    }
+
+    #[test]
+    fn prompt_reads_typos_and_speech_transcripts_by_meaning_in_every_language() {
+        // F-10.1：語音辨識逐字稿與打字一律當作文字處理，不另加標記；規則對所有學生訊息生效，
+        // 三種語言一致（S-12.1）。只檢查規則存在；模型實際行為由 eval/f10_1_cases.json 評估。
+        let context = PromptContext {
+            title: "T",
+            description: "D",
+            stage: 1,
+            turn: 1,
+            wrap_up_turn: 15,
+            language: "zh-TW",
+        };
+        for (language, rules) in [
+            (
+                "zh-TW",
+                [
+                    "可能來自打字或語音辨識",
+                    "依最合理的原意理解",
+                    "不指出、糾正或評論錯字、贅詞與標點",
+                    "才用一個簡短問題請學生確認原意",
+                ],
+            ),
+            (
+                "en",
+                [
+                    "may be typed or come from speech recognition",
+                    "most plausible intended meaning",
+                    "Do not point out, correct, or comment on typos",
+                    "ask one short question to confirm what the student meant",
+                ],
+            ),
+            (
+                "es",
+                [
+                    "pueden escribirse o provenir del reconocimiento de voz",
+                    "significado más plausible",
+                    "No señales, corrijas ni comentes errores",
+                    "haz una pregunta breve para confirmar lo que quiso decir",
+                ],
+            ),
+        ] {
+            let p = build_system_prompt(&PromptContext {
+                language,
+                ..context
+            });
+            for rule in rules {
+                assert!(p.contains(rule), "{language} 缺少輸入理解規則：{rule}");
+            }
+        }
+        assert_eq!(rules_version("en"), "v1.13/en");
+        assert_eq!(rules_version("es"), "v1.13/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
