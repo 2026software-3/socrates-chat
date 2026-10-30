@@ -93,6 +93,7 @@ pub fn test_config() -> Config {
         ai_first_token_timeout: Duration::from_millis(200),
         ai_total_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
+        demo_mode: false,
     }
 }
 

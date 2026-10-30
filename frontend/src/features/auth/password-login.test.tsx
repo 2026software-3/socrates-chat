@@ -121,3 +121,38 @@ describe('forced password change', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(text))
   })
 })
+
+describe('demo accounts panel', () => {
+  const accounts = [
+    { role: 'teacher', label: '示範教師', account: 'demo.teacher@example.com', password: 'Teacher-Demo-2026', language: 'zh-TW' },
+    { role: 'student', label: '王小明', account: '11500001A', password: 'Student-Demo-2026', language: 'zh-TW' },
+    { role: 'student', label: 'Emma Carter', account: '11500009J', password: 'Student-Demo-2026', language: 'en' },
+  ]
+
+  it('is hidden when the backend is not in demo mode', async () => {
+    mockMe(null)
+    renderApp(null, { route: '/login' })
+    await screen.findByLabelText('學號或電子郵件')
+    expect(screen.queryByText('示範帳號')).not.toBeInTheDocument()
+  })
+
+  it('fills the account and password without submitting', async () => {
+    let posted = false
+    mockMe(null)
+    server.use(
+      http.get('/api/demo/accounts', () => HttpResponse.json({ accounts })),
+      http.post('/api/auth/login', () => {
+        posted = true
+        return HttpResponse.json({ must_change_password: false })
+      }),
+    )
+    renderApp(null, { route: '/login' })
+    await userEvent.click(await screen.findByRole('button', { name: /示範教師/ }))
+    expect(screen.getByLabelText('學號或電子郵件')).toHaveValue('demo.teacher@example.com')
+    expect(screen.getByLabelText('密碼')).toHaveValue('Teacher-Demo-2026')
+    await userEvent.click(screen.getByRole('button', { name: /Emma Carter/ }))
+    expect(screen.getByLabelText('學號或電子郵件')).toHaveValue('11500009J')
+    expect(screen.getByLabelText('密碼')).toHaveValue('Student-Demo-2026')
+    expect(posted).toBe(false)
+  })
+})

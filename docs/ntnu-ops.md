@@ -48,13 +48,17 @@ SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
 1. 優先：如果管理者有使用同一信箱的 Google 帳號，可以用 Google 登入，會綁定到同一個帳號（不受改密碼限制）。
 2. 如果上一步不可行，`ADMIN_INITIAL_PASSWORD` 無法重設既有帳號。只能直接修改資料庫中的密碼雜湊，必須先與試用負責人確認，並使用 Argon2id 產生 PHC 格式的雜湊。
 
-## 不要用 seed-demo.sh 操作 NTNU
+## 示範模式與 seed-demo.sh
 
-`scripts/seed-demo.sh` 是給本機開發與試用用的，不要在 NTNU 上執行：
+NTNU 目前可以開 `DEMO_MODE=true`（寫在未納入版控的 `docker-compose.ntnu.yml`）供發表使用。注意它是**公開網址**：
 
-- 它會把示範帳號（`teacher@example.com`、`student1`～`student8@example.com`）重設成固定密碼。
-- 它會刪除並重建示範教室、活動與對話。
-- 它的預設資料庫指令 `DEMO_PSQL` 是 `docker compose exec -T db ...`，沒有指定專案時會對目前目錄的 compose 專案執行，也就是開發用的 `socrates-chat`。
+- 示範教師與學生的密碼寫在原始碼裡、登入頁也會列出來，任何人都能用它們登入，看到所有示範資料。示範帳號不含管理者。
+- 發表完成後把 `DEMO_MODE` 拿掉並重新部署：端點會回 404、登入頁不再列出帳號，但既有的示範帳號仍帶著公開密碼。要停用就把它們停用或刪除（管理者介面），或乾脆重建資料庫（先告知試用負責人）。
+- `scripts/seed-demo.sh` 會刪除並重建 `[demo]` 開頭的示範教室、活動與對話，不會碰其他資料。它的預設資料庫指令 `DEMO_PSQL` 是對目前目錄的 compose 專案（開發用的 `socrates-chat`）執行，對 NTNU 必須明確指定：
+
+```bash
+DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compose.ntnu.yml exec -T db psql -U socrates -d socrates' ./scripts/seed-demo.sh
+```
 
 ## 狀態紀錄
 

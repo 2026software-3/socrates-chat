@@ -54,6 +54,9 @@ pub struct Config {
     pub ai_total_timeout: Duration,
     /// 一般 API 請求的逾時（#325）：從收到請求到送出回應標頭為止，含讀取 request body。
     pub request_timeout: Duration,
+    /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
+    /// 讓登入頁一鍵填入。密碼公開，只能用在展示環境；示範帳號不含管理者。
+    pub demo_mode: bool,
 }
 
 #[derive(Debug)]
@@ -249,6 +252,7 @@ impl Config {
             )?),
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
             request_timeout: Duration::from_secs(request_timeout_secs),
+            demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             app_base_url,
         })
     }

@@ -7,7 +7,7 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard,
+    accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard, demo,
     error::ErrorBody, points, reply, request_logs, roster, roster_store, summary, voice,
 };
 
@@ -131,7 +131,7 @@ impl Modify for SessionCookie {
         summary::end, summary::get_summary, summary::retry, summary::list, summary::translate,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech,
-        points::mine,
+        points::mine, demo::accounts,
     ),
     components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
     modifiers(&SessionCookie, &CommonErrorResponses),

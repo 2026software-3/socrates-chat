@@ -1,0 +1,20 @@
+{
+  "teacher": {
+    "email": "demo.teacher@example.com",
+    "name": "示範教師",
+    "password": "Teacher-Demo-2026"
+  },
+  "student_password": "Student-Demo-2026",
+  "students": [
+    { "student_id": "11500001A", "name": "王小明", "language": "zh-TW" },
+    { "student_id": "11500002B", "name": "李小華", "language": "zh-TW" },
+    { "student_id": "11500003C", "name": "陳怡君", "language": "zh-TW" },
+    { "student_id": "11500004D", "name": "林建宏", "language": "zh-TW" },
+    { "student_id": "11500005E", "name": "張雅婷", "language": "zh-TW" },
+    { "student_id": "11500006F", "name": "黃志豪", "language": "zh-TW" },
+    { "student_id": "11500007G", "name": "吳佩珊", "language": "zh-TW" },
+    { "student_id": "11500008H", "name": "劉冠宇", "language": "zh-TW" },
+    { "student_id": "11500009J", "name": "Emma Carter", "language": "en" },
+    { "student_id": "11500010K", "name": "Lucía Romero", "language": "es" }
+  ]
+}

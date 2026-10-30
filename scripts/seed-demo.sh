@@ -1,70 +1,30 @@
 #!/usr/bin/env bash
-# 匯入示範資料（只給本機開發與試用，全部是合成資料）：
-#   - 1 位教師 teacher@example.com、8 位學生 student1～8@example.com（固定的示範密碼）
-#   - 2 間教室（週一班 6 人、週三班 4 人，student3、student4 兩班都在），另有 1 間已封存的舊教室
-#   - 4 個題目（內建「電車難題」加 3 題）、7 個活動（含草稿、已發布、已停止開放）
-#   - 約 25 場對話：已完成（含逐則訊息、AI 總結、最終主張與主張分組）、進行中、總結產生中／失敗
-#     全部直接寫入資料庫，不呼叫 AI；讓班上論點分布、個人儀表板與對話頁都有東西可看
-# 可重複執行：帳號會重設成示範密碼，示範教室、活動與對話會先刪除再重建。
+# 匯入示範資料（發表與試用用，全部是合成資料），直接寫入資料庫，不呼叫 AI：
+#   - 教師 demo.teacher@example.com、學生 11500001A～11500010K（帳號由後端 DEMO_MODE=true 啟動時建立，
+#     見 backend/src/demo_accounts.json；其中 Emma 用英文、Lucía 用西班牙文，可示範教師端總結翻譯）
+#   - 3 間教室：週一班（6 人）、週三班（6 人，含 2 位外語學生，部分學生兩班都在）、已封存的舊班
+#   - 5 個題目（內建「電車難題」加 4 題）、9 個活動（草稿、已發布、已停止開放、預定開放、尚無人對話的現場示範用活動）
+#   - 約 26 場對話：已完成（含逐則訊息、AI 總結、最終主張與主張分組）、進行中、總結產生中／失敗
+# 可重複執行：示範教室、活動與對話會先刪除再重建；不需要管理者密碼。
 #
-# 前置：服務已啟動（後端啟動時會補上內建題目），且管理者已登入過一次並更改了初始密碼。
+# 前置：後端已用 DEMO_MODE=true 啟動過一次（會建立示範帳號與內建題目）。
 # 用法：
-#   ADMIN_PASSWORD='<管理者目前的密碼>' ./scripts/seed-demo.sh
+#   ./scripts/seed-demo.sh
 # 可用環境變數：
-#   BASE_URL         服務網址，預設取 .env 的 APP_BASE_URL，沒有就是 http://localhost:3000
-#   ADMIN_EMAIL      管理者信箱，預設取 .env 的 ADMIN_EMAILS 第一個
-#   ADMIN_PASSWORD   管理者目前的密碼（必填）
-#   DEMO_PSQL        執行 SQL 的指令，預設 docker compose exec -T db psql -U socrates -d socrates
+#   DEMO_PSQL   執行 SQL 的指令，預設 docker compose exec -T db psql -U socrates -d socrates
+#               NTNU 試用環境：
+#               DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compose.ntnu.yml exec -T db psql -U socrates -d socrates'
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-fi
-
-BASE_URL="${BASE_URL:-${APP_BASE_URL:-http://localhost:3000}}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-${ADMIN_EMAILS%%,*}}"
-: "${ADMIN_EMAIL:?請設定 ADMIN_EMAIL（或在 .env 設定 ADMIN_EMAILS）}"
-: "${ADMIN_PASSWORD:?請設定 ADMIN_PASSWORD（管理者目前的密碼）}"
 DEMO_PSQL="${DEMO_PSQL:-docker compose exec -T db psql -U socrates -d socrates}"
 
-TEACHER_PASSWORD='Teacher-Demo-2026'
-STUDENT_PASSWORD='Student-Demo-2026'
-STUDENTS=(student1@example.com student2@example.com student3@example.com student4@example.com
-          student5@example.com student6@example.com student7@example.com student8@example.com)
-
-json_get() { python3 -c "import sys,json; print(json.load(sys.stdin)$1)"; }
-api() { # api <cookie-jar> <METHOD> <path> [json-body]
-  local jar="$1" method="$2" path="$3" body="${4:-}"
-  curl -sS -f -b "$jar" -c "$jar" -X "$method" "$BASE_URL$path" \
-    -H "Origin: $BASE_URL" -H 'Content-Type: application/json' ${body:+-d "$body"}
-}
-
-echo "→ 管理者登入 $ADMIN_EMAIL"
-ADMIN_JAR=$(mktemp)
-login=$(api "$ADMIN_JAR" POST /api/auth/login "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}") \
-  || { echo "登入失敗：請確認服務已啟動、帳號密碼正確。" >&2; exit 1; }
-if [ "$(echo "$login" | json_get "['must_change_password']")" = "True" ]; then
-  echo "這是臨時密碼：請先用瀏覽器登入並更改密碼，再用新密碼重新執行。" >&2
+echo "→ 檢查示範帳號"
+have=$($DEMO_PSQL -tA -c "SELECT count(*) FROM users WHERE student_id LIKE '115000%' OR email = 'demo.teacher@example.com'")
+if [ "$have" -lt 11 ]; then
+  echo "找不到示範帳號：請先以 DEMO_MODE=true 啟動後端一次。" >&2
   exit 1
 fi
-
-# 重設成示範密碼：臨時密碼登入後立刻改成固定的示範密碼
-set_password() { # set_password <email> <final-password>
-  local temp jar
-  temp=$(api "$ADMIN_JAR" POST /api/admin/users/reset-password "{\"email\":\"$1\"}" | json_get "['temporary_password']")
-  jar=$(mktemp)
-  api "$jar" POST /api/auth/login "{\"email\":\"$1\",\"password\":\"$temp\"}" >/dev/null
-  api "$jar" POST /api/auth/change-password "{\"current_password\":\"$temp\",\"new_password\":\"$2\"}" >/dev/null
-  rm -f "$jar"
-}
-
-echo "→ 建立教師帳號"
-api "$ADMIN_JAR" POST /api/admin/teachers '{"email":"teacher@example.com"}' >/dev/null
-set_password teacher@example.com "$TEACHER_PASSWORD"
 
 echo "→ 建立教室、修課名單與題目"
 # 先清掉上次的示範資料：教室以 [demo] 標記在說明；活動、對話、總結、主張分組隨之刪除
@@ -77,18 +37,29 @@ DELETE FROM classrooms WHERE description LIKE '[demo]%';
 DELETE FROM topics WHERE id::text LIKE '00000000-0000-4000-8000-0000000001%';
 
 INSERT INTO classrooms (name, year_label, description, created_by)
-SELECT n, y, d, (SELECT id FROM users WHERE email = 'teacher@example.com')
+SELECT n, y, d, (SELECT id FROM users WHERE email = 'demo.teacher@example.com')
 FROM (VALUES
   ('哲學導論 週一班', '115 學年度', '[demo] 週一上午班，6 位學生'),
-  ('哲學導論 週三班', '115 學年度', '[demo] 週三下午班，4 位學生'),
+  ('哲學導論 週三班', '115 學年度', '[demo] 週三下午班，6 位學生（含 2 位外語學生）'),
   ('哲學導論 舊班（已封存）', '114 學年度', '[demo] 上學年的班級，保留供查閱')
 ) AS t(n, y, d);
+UPDATE classrooms SET is_archived = true WHERE description LIKE '[demo]%' AND name LIKE '%已封存%';
 
-INSERT INTO enrollments (classroom_id, email)
-SELECT c.id, e FROM classrooms c, unnest(CASE c.name
+-- 示範學生：別名 → 學號（與 backend/src/demo_accounts.json 一致）
+CREATE TEMP TABLE demo_student (alias text PRIMARY KEY, student_id text NOT NULL) ON COMMIT DROP;
+INSERT INTO demo_student VALUES
+  ('student1','11500001A'),('student2','11500002B'),('student3','11500003C'),('student4','11500004D'),
+  ('student5','11500005E'),('student6','11500006F'),('student7','11500007G'),('student8','11500008H'),
+  ('student9','11500009J'),('student10','11500010K');
+
+INSERT INTO enrollments (classroom_id, user_id, student_id)
+SELECT c.id, u.id, u.student_id
+FROM classrooms c, unnest(CASE c.name
   WHEN '哲學導論 週一班' THEN ARRAY['student1','student2','student3','student4','student5','student6']
-  WHEN '哲學導論 週三班' THEN ARRAY['student3','student4','student7','student8']
-  ELSE ARRAY['student1','student2'] END) AS e0(e0), LATERAL (SELECT e0.e0 || '@example.com' AS e) x(e)
+  WHEN '哲學導論 週三班' THEN ARRAY['student3','student4','student7','student8','student9','student10']
+  ELSE ARRAY['student1','student2'] END) AS e0(alias)
+JOIN demo_student d ON d.alias = e0.alias
+JOIN users u ON u.student_id = d.student_id
 WHERE c.description LIKE '[demo]%';
 
 INSERT INTO topics (id, title, description, category) VALUES
@@ -97,13 +68,11 @@ INSERT INTO topics (id, title, description, category) VALUES
   ('00000000-0000-4000-8000-000000000102', '我們能確定自己不是在做夢嗎？',
    '笛卡兒懷疑我們的感官經驗可能全是夢境。你有什麼理由相信眼前的世界是真實的？', '知識論'),
   ('00000000-0000-4000-8000-000000000103', '電腦程式能擁有心靈嗎？',
-   '如果一個 AI 能完美通過對話測試，我們是否該說它「理解」語言、甚至有意識？', '心靈哲學');
+   '如果一個 AI 能完美通過對話測試，我們是否該說它「理解」語言、甚至有意識？', '心靈哲學'),
+  ('00000000-0000-4000-8000-000000000104', '自由意志是幻覺嗎？',
+   '如果我們的每個決定都由先前的原因決定，我們還能為自己的行為負責嗎？', '形上學');
 COMMIT;
 SQL
-
-echo "→ 建立學生帳號"
-for s in "${STUDENTS[@]}"; do set_password "$s" "$STUDENT_PASSWORD"; done
-rm -f "$ADMIN_JAR"
 
 echo "→ 匯入示範活動、對話與總結"
 $DEMO_PSQL -v ON_ERROR_STOP=1 -q <<'SQL'
@@ -118,9 +87,20 @@ FROM (VALUES
   ('哲學導論 週一班', 'AI 與心靈（草稿）', '尚未發布，預計下週開放',           '00000000-0000-4000-8000-000000000103', 'draft'),
   ('哲學導論 週三班', '電車難題：第一週', '先想想你的直覺，再說明理由',       '00000000-0000-4000-8000-000000000001', 'published'),
   ('哲學導論 週三班', 'AI 與心靈',       'AI 能擁有心靈嗎？',                 '00000000-0000-4000-8000-000000000103', 'published'),
+  ('哲學導論 週一班', '自由意志（現場示範）', '還沒有人開始，留給現場示範：用學生帳號開一場新對話', '00000000-0000-4000-8000-000000000104', 'published'),
+  ('哲學導論 週三班', '期末回顧（預定開放）', '兩天後自動開放、一週後自動關閉，示範活動排程', '00000000-0000-4000-8000-000000000001', 'published'),
   ('哲學導論 舊班（已封存）', '電車難題：期末討論', '上學年的活動', '00000000-0000-4000-8000-000000000001', 'closed')
 ) AS t(classroom, title, descr, topic, status)
 JOIN classrooms c ON c.name = t.classroom AND c.description LIKE '[demo]%';
+UPDATE activities SET opens_at = now() + interval '2 days', closes_at = now() + interval '9 days'
+WHERE title = '期末回顧（預定開放）' AND description LIKE '[demo]%';
+
+-- 示範學生：別名 → 學號（與 backend/src/demo_accounts.json 一致）
+CREATE TEMP TABLE demo_student (alias text PRIMARY KEY, student_id text NOT NULL) ON COMMIT DROP;
+INSERT INTO demo_student VALUES
+  ('student1','11500001A'),('student2','11500002B'),('student3','11500003C'),('student4','11500004D'),
+  ('student5','11500005E'),('student6','11500006F'),('student7','11500007G'),('student8','11500008H'),
+  ('student9','11500009J'),('student10','11500010K');
 
 CREATE TEMP TABLE demo_conv (
   student text, classroom text, act text, state text, claim text, grp text, reasons text,
@@ -154,6 +134,9 @@ INSERT INTO demo_conv VALUES
  ('student4','哲學導論 週三班','AI 與心靈','ended','可能有，要看功能','功能論','心靈是功能組織，不一定取決於材質','如果功能一樣，我看不出為什麼材質有差別。','這是否代表一台複雜的恆溫器也有一點心靈？','不一定，功能要夠複雜；但界線在哪確實是難題。'),
  ('student7','哲學導論 週三班','AI 與心靈','active',NULL,NULL,NULL,'我覺得 AI 只是工具。','你說它只是工具，那工具和有心靈的東西差在哪裡？',NULL),
  ('student8','哲學導論 週三班','AI 與心靈','active',NULL,NULL,NULL,'我不知道，我沒想過這件事。',NULL,NULL),
+ -- 外語學生（對話與總結用該學生的語言，教師端可翻譯成中文）
+ ('student9','哲學導論 週三班','電車難題：第一週','ended','Pull the lever, but own the choice','pull the lever','Saving more lives matters, yet the person who acts must accept responsibility','I would pull the lever, because five lives outweigh one.','You say five outweigh one. Would your answer change if the one person were someone you love?','It might change what I feel, but I think the principle should stay the same. I would just have to live with it.'),
+ ('student10','哲學導論 週三班','AI 與心靈','ended','Una máquina podría tener mente si siente','depende de la experiencia','Pasar una prueba de conversación no basta; lo importante es si hay experiencia subjetiva','Creo que una IA solo imita, pero no estoy segura de que eso sea suficiente para negar que piense.','¿Qué tendría que ocurrir para que cambiaras de opinión y aceptaras que una IA tiene experiencia?','Tendría que haber algo más que respuestas correctas, quizá una forma de sentir que podamos reconocer.'),
  -- 舊班
  ('student1','哲學導論 舊班（已封存）','電車難題：期末討論','ended','拉桿','拉桿','傷害越少越好','期末我仍然傾向拉桿。','經過一學期，你的理由有改變嗎？','更細緻了，我現在會先問誰有權做這個決定。'),
  ('student2','哲學導論 舊班（已封存）','電車難題：期末討論','ended','不拉桿','不拉桿','人不能被當成工具','我維持不拉桿。','一學期後你有遇到最有力的反對意見嗎？','有，就是不作為也是選擇，我至今還沒完全回應它。');
@@ -161,34 +144,39 @@ INSERT INTO demo_conv VALUES
 DO $$
 DECLARE
   r record; cid uuid; gid uuid; n int := 0;
-  stage_v int; turns int; st text;
+  stage_v int; turns int; st text; lang text;
 BEGIN
   FOR r IN SELECT * FROM demo_conv LOOP
     n := n + 1;
     st := CASE WHEN r.state = 'active' THEN 'active' ELSE 'ended' END;
     turns := CASE WHEN r.state = 'active' THEN (CASE WHEN r.followup IS NULL THEN 1 ELSE 2 END) ELSE 6 + n % 3 END;
     stage_v := CASE WHEN r.state = 'active' THEN (CASE WHEN r.followup IS NULL THEN 1 ELSE 2 END) ELSE 3 END;
-    INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description,
+    INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language,
                                status, stage, turn_count, converge_ready, created_at, ended_at)
-    SELECT u.id, a.id, a.topic_id, a.classroom_id, a.title, a.description, st, stage_v, turns,
+    SELECT u.id, a.id, a.topic_id, a.classroom_id, a.title, a.description, u.language, st, stage_v, turns,
            r.state <> 'active', now() - (n * interval '3 hours') - interval '30 minutes',
            CASE WHEN st = 'ended' THEN now() - n * interval '3 hours' END
     FROM users u
     JOIN activities a ON a.title = r.act AND a.description LIKE '[demo]%'
     JOIN classrooms c ON c.id = a.classroom_id AND c.name = r.classroom
-    WHERE u.email = r.student || '@example.com'
+    JOIN demo_student d ON d.student_id = u.student_id AND d.alias = r.student
     RETURNING id INTO cid;
 
+    SELECT language INTO lang FROM conversations WHERE id = cid;
     INSERT INTO messages (conversation_id, role, content, rules_version, question_type) VALUES
       (cid, 'student', r.opening, NULL, NULL);
     IF r.followup IS NOT NULL THEN
       INSERT INTO messages (conversation_id, role, content, rules_version, question_type)
-        VALUES (cid, 'ai', r.followup, 'v1/zh-TW', 'clarify');
+        VALUES (cid, 'ai', r.followup, 'v1/' || lang, 'clarify');
     END IF;
     IF r.reply IS NOT NULL THEN
       INSERT INTO messages (conversation_id, role, content, rules_version, question_type) VALUES
         (cid, 'student', r.reply, NULL, NULL),
-        (cid, 'ai', '謝謝你的想法。' || COALESCE('聽起來你的立場有一個核心理由：' || r.reasons || '。', '') || '最後一個問題：有什麼情境會讓你放棄這個立場？', 'v1/zh-TW', 'challenge');
+        (cid, 'ai', CASE lang
+          WHEN 'en' THEN 'Thank you. One last question: what situation would make you give up this position?'
+          WHEN 'es' THEN 'Gracias. Una última pregunta: ¿qué situación te haría abandonar esta postura?'
+          ELSE '謝謝你的想法。' || COALESCE('聽起來你的立場有一個核心理由：' || r.reasons || '。', '') || '最後一個問題：有什麼情境會讓你放棄這個立場？' END,
+          'v1/' || lang, 'challenge');
     END IF;
 
     IF r.state = 'ended' THEN
@@ -201,7 +189,7 @@ BEGIN
       JOIN classrooms c ON c.id = a.classroom_id
       WHERE a.title = r.act AND c.name = r.classroom AND a.description LIKE '[demo]%' AND g.name = r.grp;
       INSERT INTO summaries (conversation_id, status, stance, reasons, claim, claim_group_id, rules_version, completed_at)
-      VALUES (cid, 'ready', '傾向：' || r.claim, r.reasons, r.claim, gid, 'demo', now());
+      VALUES (cid, 'ready', CASE lang WHEN 'en' THEN 'Leans toward: ' WHEN 'es' THEN 'Tiende a: ' ELSE '傾向：' END || r.claim, r.reasons, r.claim, gid, 'demo', now());
     ELSIF r.state = 'summary_pending' THEN
       UPDATE conversations SET ended_at = now() - interval '1 minute' WHERE id = cid;
       INSERT INTO summaries (conversation_id, status) VALUES (cid, 'pending');
@@ -213,15 +201,15 @@ END $$;
 COMMIT;
 SQL
 
-cat <<DONE
+cat <<'DONE'
 
-完成。示範帳號（只給本機使用）：
-  教師  teacher@example.com           密碼 $TEACHER_PASSWORD
-  學生  student1~8@example.com        密碼 $STUDENT_PASSWORD
+完成。示範帳號（密碼是公開的，只用在展示環境）：
+  教師  demo.teacher@example.com        密碼 Teacher-Demo-2026
+  學生  11500001A～11500010K（用學號登入） 密碼 Student-Demo-2026
+  登入頁在 DEMO_MODE 下會列出這些帳號，點一下就填入。
 資料內容：
-  教室  週一班（student1~6）、週三班（student3、4、7、8）、舊班（已封存）
-  題目  電車難題＋說謊、夢境、AI 心靈 共 4 題
-  活動  7 個（草稿、已發布、已停止開放各有）
+  教室  週一班、週三班（含英文／西班牙文學生）、已封存的舊班
+  活動  草稿、已發布、已停止開放、預定開放、「自由意志（現場示範）」尚無對話
   對話  已完成、進行中、總結產生中、總結失敗皆有
-用教師登入看各教室「班上分布」；用 student3 登入可看到跨兩個教室的個人儀表板。
+講稿與流程見 docs/demo-script.md。
 DONE

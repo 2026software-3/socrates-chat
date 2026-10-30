@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config,
+    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo,
     identity::GoogleIdentity, logging, password, summary,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -42,6 +42,13 @@ async fn main() {
         match auth_store::bootstrap_admins(&pool, &config.admin_emails, &hash).await {
             Ok(n) => tracing::info!(created = n, "bootstrapped admin accounts"),
             Err(_) => tracing::error!("failed to bootstrap admin accounts"),
+        }
+    }
+    // 示範模式：固定密碼的示範教師與學生（不含管理者）；每次啟動都重設回公開的密碼
+    if config.demo_mode {
+        match demo::seed_accounts(&pool).await {
+            Ok(()) => tracing::warn!("DEMO_MODE is on: public demo accounts are active"),
+            Err(_) => tracing::error!("failed to seed demo accounts"),
         }
     }
     let identity = GoogleIdentity::discover(

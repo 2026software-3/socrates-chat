@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { dictionaries, errorText, useT, type MessageKey } from '@/i18n'
 import { api } from '@/lib/api'
+import { DemoAccounts } from './demo-accounts'
 
 /** 後端登入失敗時導回 `/login?error=<code>`（S-08.2）。 */
 function loginErrorKey(code: string | null): MessageKey | null {
@@ -98,6 +99,13 @@ export function LoginPage() {
           {t('login.google')}
         </Button>
         <p className="text-muted-foreground text-center text-xs">{t('login.noSignup')}</p>
+        <DemoAccounts
+          onPick={(a, p) => {
+            setAccount(a)
+            setPassword(p)
+            setFormError(null)
+          }}
+        />
       </AuthCard>
     </AuthFrame>
   )
