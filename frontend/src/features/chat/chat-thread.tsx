@@ -11,6 +11,7 @@ import {
 import { ArrowUp, RefreshCw } from 'lucide-react'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { DemoReplies } from '@/features/chat/demo-replies'
 import { VoiceControls } from '@/features/chat/voice/voice-controls'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { errorText, useT } from '@/i18n'
@@ -27,10 +28,13 @@ export function ChatThread({
   showComposer,
   composerDisabled,
   language,
+  topicId,
   onVoiceSource,
 }: {
   showComposer: boolean
   composerDisabled: boolean
+  /** 這場對話的題目；示範模式的快速回覆只在示範題出現 */
+  topicId: string | null
   /** 這場對話的語言；語音辨識與合成跟隨它（S-12.1） */
   language: string
   /** 輸入框目前的文字是以哪種語音來源輸入的；送出時一起保存（S-05.4） */
@@ -56,6 +60,7 @@ export function ChatThread({
       {showComposer ? (
         <div className="flex flex-col gap-2 border-t px-4 pt-4 pb-6 md:px-8">
           <PendingReply />
+          <DemoReplies topicId={topicId} disabled={composerDisabled} />
           <p className="text-muted-foreground text-xs">{t('chat.privacy')}</p>
           <ChatComposer disabled={composerDisabled} language={language} onVoiceSource={onVoiceSource} />
         </div>
