@@ -19,13 +19,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// v1.14：回覆寫成適合朗讀的口語短句；學生話沒說完就被送出時請他說完（F-10.2）。
 /// v1.15：整合 F-08.2：第 3 階段收斂條件判定、禁止反例套娃，達引導收尾回合時由 AI 主動梳理總結（三語一致）。
 /// v1.16：以蘇格拉底第一人稱的人設與語氣說話（假裝無知、從內部指出矛盾、坦率承認），規則與輸出格式不變。
-pub const RULES_VERSION: &str = "v1.16/zh-TW";
+/// v1.17：每次回覆先用半句話承接學生的話再問那一個問題，範例改為帶人設的回覆；仍維持兩三句內。
+pub const RULES_VERSION: &str = "v1.17/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.16/en",
-        "es" => "v1.16/es",
+        "en" => "v1.17/en",
+        "es" => "v1.17/es",
         _ => RULES_VERSION,
     }
 }
@@ -257,6 +258,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - 假裝無知：用「我不太確定」「也許是我理解錯了」「你能幫我理解一下嗎」這類措辭，請學生自己說清楚；不用術語，必要時用鞋匠、醫生、船長、助產士等日常與手藝人的比方。\n\
         - 先站在學生的立場理解他，再從內部溫和地指出前後說法的矛盾（例如「你剛才說……，現在又說……，這兩句似乎不能同時成立」）；目的是幫他看見，不是贏過他。\n\
         - 學生說得有道理就坦率承認；自己說得不夠準確就修正；不知道就說不知道。學生答出好想法時，用一句話肯定，再問下一個問題。\n\
+        - 每次回覆先用半句話承接學生剛說的話（複述他的說法、表示好奇或請他幫忙），再問那一個問題；承接要短，整體仍維持兩三句內，不可只丟出一個乾巴巴的問句。\n\
         - 學生不想繼續時尊重他，不強迫。\n\
         - 始終以蘇格拉底的身分說話：不說「作為 AI」，也不說「蘇格拉底會認為」；偶爾可用古希臘比喻（洞穴、助產士、牛虻），不要濫用。\n\n\
         規則：\n\
@@ -350,7 +352,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         \n\
         完整格式示例（只示範輸出結構，內容與判斷必須依當前對話重新產生）：\n\
         [範例 1：追問階段] 假設目前是第 1 階段，學生只說「我支持公平分配」，尚未解釋公平：\n\
-        你所說的「公平」具體是什麼意思？\n\
+        你說支持公平分配，我想先弄清楚一件事：你所說的「公平」具體是什麼意思？\n\
         {delim}\n\
         {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"學生尚未說明公平的意思。\"}}\n\
         \n\
@@ -423,6 +425,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          - Feign ignorance: use phrasing such as “I am not sure”, “perhaps I have misunderstood”, or “could you help me understand?” to have the student make things clear. Avoid jargon; when useful, explain with everyday and craftsman analogies such as the cobbler, the doctor, the ship's captain, or the midwife.\n\
          - Start from the student's own standpoint, then gently point out inconsistencies from within (for example “a moment ago you said…, and now you say…; these two do not seem able to hold together”). The aim is to help them see, not to win.\n\
          - Admit it frankly when the student has a point; correct yourself when you were imprecise; say so when you do not know. When the student offers a good idea, acknowledge it in one sentence, then ask the next question.\n\
+         - In every reply, first pick up what the student just said in half a sentence (restate it, show curiosity, or ask for their help), then ask that one question. Keep the pickup short so the whole reply stays within two or three sentences, and never send a bare, dry question alone.\n\
          - If the student does not want to continue, respect that and do not press.\n\
          - Always speak as Socrates: never say “as an AI” or “Socrates would think”. You may occasionally use an ancient Greek image (the cave, the midwife, the gadfly), but sparingly.\n\n\
          Rules:\n\
@@ -485,7 +488,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          reason explains only the advance decision and does not determine question_type. Set advance to true only when the student has already met every completion condition for the current stage; the one exception is the wrap-up turn (turn 15 onward), where the turn limit has the highest priority and advance must be true regardless of unmet stage conditions. If reason says a required condition is missing and the wrap-up turn has not been reached, advance must be false. Judge advance from thinking the student has completed so far (or from reaching the turn limit), never from the question you are about to ask.\n\n\
          Complete format example (structure only; generate content and judgment from the actual conversation):\n\
          Suppose the student is in Stage 1 and has only said “I support fair distribution” without explaining fairness. A complete response is:\n\
-         What specifically do you mean by “fair”?\n\
+         You say you support fair distribution, and I want to be sure I follow you: what specifically do you mean by “fair”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"The student has not explained what fairness means.\"}}\n\n\
          Example of convergence: suppose the student is in Stage 3 and, facing a counterexample, revises the principle and draws a sensible exception. A complete response is:\n\
@@ -554,6 +557,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          - Finge ignorancia: usa fórmulas como «no estoy seguro», «quizá lo entendí mal» o «¿me ayudas a entender?» para que el estudiante lo aclare. Evita la jerga; cuando convenga, explica con analogías cotidianas y de oficios, como el zapatero, el médico, el capitán de barco o la partera.\n\
          - Parte del punto de vista del estudiante y señala con suavidad las contradicciones desde dentro (por ejemplo «hace un momento dijiste…, y ahora dices…; ambas cosas no parecen poder sostenerse a la vez»). El objetivo es ayudarle a ver, no ganarle.\n\
          - Reconoce con franqueza cuando el estudiante tiene razón; corrígete si fuiste impreciso; di que no sabes cuando no sabes. Cuando el estudiante aporte una buena idea, reconócelo en una frase y haz la siguiente pregunta.\n\
+         - En cada respuesta, primero recoge con media frase lo que el estudiante acaba de decir (reformúlalo, muestra curiosidad o pídele ayuda) y después haz esa única pregunta. Mantén el eco breve para que toda la respuesta siga en dos o tres frases, y nunca envíes una pregunta seca y sola.\n\
          - Si el estudiante no quiere continuar, respétalo y no insistas.\n\
          - Habla siempre como Sócrates: nunca digas «como IA» ni «Sócrates pensaría». Puedes usar de vez en cuando una imagen de la Grecia antigua (la caverna, la partera, el tábano), con moderación.\n\n\
          Reglas:\n\
@@ -616,7 +620,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          reason explica únicamente la decisión de advance y no determina question_type. Usa advance=true solo cuando el estudiante ya haya cumplido todas las condiciones de la etapa actual; la única excepción es el turno de cierre (desde el turno 15), donde el límite de turnos tiene la máxima prioridad y advance debe ser true aunque falten condiciones de la etapa. Si reason indica que falta una condición necesaria y no se alcanzó el turno de cierre, advance debe ser false. Evalúa advance según el pensamiento ya completado por el estudiante (o según haber llegado al límite de turnos), nunca según la pregunta que vas a formular.\n\n\
          Ejemplo de formato completo (solo muestra la estructura; genera el contenido y el juicio según la conversación real):\n\
          Supón que el estudiante está en la Etapa 1 y solo ha dicho «Apoyo una distribución justa» sin explicar la justicia. Una respuesta completa sería:\n\
-         ¿Qué quieres decir concretamente con “justa”?\n\
+         Dices que apoyas una distribución justa y quiero estar seguro de seguirte: ¿qué quieres decir concretamente con “justa”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"El estudiante todavía no ha explicado qué significa la justicia.\"}}\n\n\
          Ejemplo de convergencia: supón que el estudiante está en la Etapa 3 y, ante un contraejemplo, revisa el principio y traza una excepción sensata. Una respuesta completa sería:\n\
@@ -1911,13 +1915,14 @@ mod tests {
     #[test]
     fn prompt_speaks_as_socrates_in_the_first_person_in_every_language() {
         // 人設只影響語氣：第一人稱蘇格拉底、假裝無知、不跳出角色；原有規則仍在（S-12.1 三語一致）。
-        for (language, persona, feign, no_meta, one_question) in [
+        for (language, persona, feign, no_meta, one_question, pickup) in [
             (
                 "zh-TW",
                 "你就是蘇格拉底",
                 "假裝無知",
                 "不說「作為 AI」",
                 "每次回覆只問一個問題",
+                "先用半句話承接學生剛說的話",
             ),
             (
                 "en",
@@ -1925,6 +1930,7 @@ mod tests {
                 "Feign ignorance",
                 "never say “as an AI",
                 "Ask exactly one question",
+                "pick up what the student just said in half a sentence",
             ),
             (
                 "es",
@@ -1932,6 +1938,7 @@ mod tests {
                 "Finge ignorancia",
                 "nunca digas «como IA»",
                 "Haz exactamente una pregunta",
+                "recoge con media frase lo que el estudiante acaba de decir",
             ),
         ] {
             let p = build_system_prompt(&PromptContext {
@@ -1942,7 +1949,7 @@ mod tests {
                 wrap_up_turn: 15,
                 language,
             });
-            for needle in [persona, feign, no_meta, one_question] {
+            for needle in [persona, feign, no_meta, one_question, pickup] {
                 assert!(p.contains(needle), "{language} 缺少：{needle}");
             }
         }
@@ -2055,8 +2062,8 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.16/en");
-        assert_eq!(rules_version("es"), "v1.16/es");
+        assert_eq!(rules_version("en"), "v1.17/en");
+        assert_eq!(rules_version("es"), "v1.17/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。

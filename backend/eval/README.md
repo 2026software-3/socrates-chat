@@ -119,7 +119,7 @@ EVAL_FIRST_TOKEN_SECS=90 EVAL_TOTAL_SECS=240 EVAL_DELAY_SECS=20 cargo run --exam
 預期受測輸出：
 
 ```text
-你所說的「公平」具體是什麼意思？
+你說支持公平分配，我想先弄清楚一件事：你所說的「公平」具體是什麼意思？
 <<<META>>>
 {"question_type":"clarify","advance":false,"reason":"學生尚未說明公平的意思。"}
 ```
