@@ -23,13 +23,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// v1.18：第 1、2 階段的通過條件各只有兩個且不得自創額外條件，條件達成即晉級；承接只回應當回合、句型要變化、問題用開放式。
 /// v1.19：第 3 階段要學生針對「具體」反例實質回應才算收斂（承認假設、重述立場、只答是否都不算）；承接限半句約 15 字、句型要變化；收尾回顧限三句且不重複。
 /// v1.20：學生對同一個具體情境第二次回應仍不夠具體時，改用不同角度的具體情境，不再第三次回到同一情境；禁止反例套娃僅適用於學生已實質回應之後。
-pub const RULES_VERSION: &str = "v1.20/zh-TW";
+/// v1.21：學生開始往具體方向思考時先順著他提到的那一點追問，不換情境、不說他不夠具體；只有連續兩次含糊且沒有具體方向才換情境。
+pub const RULES_VERSION: &str = "v1.21/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.20/en",
-        "es" => "v1.20/es",
+        "en" => "v1.21/en",
+        "es" => "v1.21/es",
         _ => RULES_VERSION,
     }
 }
@@ -253,7 +254,8 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
                  【以下情況不算收斂】：只承認「我可能預設了……」或重述原本立場、只回答「是／不是」「該／不該」而沒有理由、泛泛地反思而沒有對應到該情境的具體條件，\
                  或根本還沒有人提出具體的反例。此時 advance 必須為 false，question_type 不得為 wrap_up：\
                  若尚未提出具體反例，這一回合就提出一個；若學生已回應但不夠具體，第一次請他針對剛才情境的具體條件說明理由；\
-                 若你已為同一個情境追問過一次、學生第二次回應仍不夠具體，就換一個角度的具體情境（同一個原則、不同的條件，一次只提一個），不要第三次回到同一個情境。\
+                 【順著學生的想法】學生開始往具體方向思考時（例如提到該情境中的某個具體條件、提出可能的理由，或說出自己試探性的想法），即使還不完整，先順著他剛提到的那一點追問一個問題，不要換情境，也不要說他不夠具體；\
+                 換情境只用在學生連續兩次回應都停在含糊、沒有任何具體方向時：若你已為同一個情境追問過一次、學生第二次回應仍沒有具體方向，就換一個角度的具體情境（同一個原則、不同的條件，一次只提一個），不要第三次回到同一個情境。\
                  禁止套娃只適用於學生已實質回應之後。\
                  學生完全迴避反例、敷衍情緒性回應或不置可否時，同樣 advance 為 false，繼續追問。".to_string()
             }
@@ -436,7 +438,8 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
                  [Keep the recap short] No more than three sentences: the final position, one core reason, and the turn in their thinking; do not retell turn by turn. If you already gave a recap and the student kept talking, update only what changed in one or two sentences and do not repeat the whole recap. \
                  [These do not count as convergence] Only admitting “I may have assumed…” or restating the original position; answering just yes/no or should/should not without reasons; reflecting in general terms without tying it to the case's specific conditions; or no concrete counterexample having been raised yet. In these cases advance must be false and question_type must not be wrap_up: \
                  if no concrete counterexample has been raised, raise one this turn; if the student responded but not specifically enough, the first time ask them to explain their reasons about the specific conditions of that case; \
-                 if you have already followed up once on the same case and the student's second response is still not specific enough, switch to a concrete case from a different angle (same principle, different conditions, one at a time) instead of returning to the same case a third time. \
+                 [Follow the student's thinking] When the student starts moving toward something specific (for example mentioning a particular condition of the case, offering a possible reason, or voicing a tentative idea of their own), even if incomplete, first follow up on the point they just raised with one question; do not switch cases and do not tell them they were not specific enough. \
+                 Switch cases only when the student's responses have stayed vague, with no specific direction, twice in a row: if you have already followed up once on the same case and the second response still has no specific direction, switch to a concrete case from a different angle (same principle, different conditions, one at a time) instead of returning to the same case a third time. \
                  The ban on stacking counterexamples applies only after the student has responded substantively. \
                  Likewise, when the student avoids the counterexample entirely, answers dismissively or emotionally, or stays noncommittal, advance is false and you continue questioning.".to_string()
             }
@@ -583,7 +586,8 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
                  [Resumen breve] No más de tres frases: la postura final, una razón central y el giro en su pensamiento; no lo cuentes turno por turno. Si ya hiciste un resumen y el estudiante siguió hablando, actualiza solo lo que cambió en una o dos frases y no repitas todo el resumen. \
                  [Esto no cuenta como convergencia] Solo admitir «quizá supuse…» o repetir la postura original; responder solo sí/no o debe/no debe sin razones; reflexionar en general sin vincularlo a las condiciones concretas del caso; o que todavía no se haya planteado ningún contraejemplo concreto. En estos casos advance debe ser false y question_type no debe ser wrap_up: \
                  si no se ha planteado un contraejemplo concreto, plantea uno en este turno; si el estudiante respondió pero sin suficiente concreción, la primera vez pídele que explique sus razones sobre las condiciones concretas de ese caso; \
-                 si ya insististe una vez sobre el mismo caso y la segunda respuesta del estudiante sigue sin ser concreta, cambia a un caso concreto desde otro ángulo (mismo principio, condiciones distintas, uno a la vez) en lugar de volver al mismo caso una tercera vez. \
+                 [Sigue el pensamiento del estudiante] Cuando el estudiante empiece a avanzar hacia algo concreto (por ejemplo, mencionar una condición particular del caso, ofrecer una posible razón o expresar una idea propia tentativa), aunque esté incompleta, primero profundiza con una pregunta sobre el punto que acaba de plantear; no cambies de caso ni le digas que no fue lo bastante concreto. \
+                 Cambia de caso solo cuando las respuestas del estudiante hayan seguido siendo vagas, sin ninguna dirección concreta, dos veces seguidas: si ya insististe una vez sobre el mismo caso y la segunda respuesta sigue sin dirección concreta, cambia a un caso concreto desde otro ángulo (mismo principio, condiciones distintas, uno a la vez) en lugar de volver al mismo caso una tercera vez. \
                  La prohibición de apilar contraejemplos solo se aplica una vez que el estudiante ha respondido de forma sustancial. \
                  Igualmente, cuando el estudiante evite por completo el contraejemplo, responda de forma superficial o emocional, o no se comprometa, advance es false y sigues preguntando.".to_string()
             }
@@ -1989,7 +1993,7 @@ mod tests {
                 language,
             })
         };
-        for (language, concrete, not_converged, recap, pickup, switch) in [
+        for (language, concrete, not_converged, recap, pickup, switch, follow) in [
             (
                 "zh-TW",
                 "具體的反例或對立觀點被提出",
@@ -1997,6 +2001,7 @@ mod tests {
                 "回顧不超過三句",
                 "約 15 個字以內",
                 "換一個角度的具體情境",
+                "順著學生的想法",
             ),
             (
                 "en",
@@ -2005,6 +2010,7 @@ mod tests {
                 "No more than three sentences",
                 "about 10 words",
                 "a concrete case from a different angle",
+                "Follow the student's thinking",
             ),
             (
                 "es",
@@ -2013,10 +2019,11 @@ mod tests {
                 "No más de tres frases",
                 "unas 10 palabras",
                 "un caso concreto desde otro ángulo",
+                "Sigue el pensamiento del estudiante",
             ),
         ] {
             let stage3 = prompt(language, 3);
-            for needle in [concrete, not_converged, recap, switch] {
+            for needle in [concrete, not_converged, recap, switch, follow] {
                 assert!(
                     stage3.contains(needle),
                     "{language} 第 3 階段缺少：{needle}"
@@ -2249,8 +2256,8 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.20/en");
-        assert_eq!(rules_version("es"), "v1.20/es");
+        assert_eq!(rules_version("en"), "v1.21/en");
+        assert_eq!(rules_version("es"), "v1.21/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
