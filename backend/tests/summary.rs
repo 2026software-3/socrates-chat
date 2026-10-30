@@ -127,7 +127,7 @@ async fn spanish_conversation_uses_spanish_summary_prompt_transcript_and_version
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, "v1.12/es");
+    assert_eq!(version, "v1.21/es");
 }
 
 #[sqlx::test]
