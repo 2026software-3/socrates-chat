@@ -43,11 +43,11 @@ async fn student_list_shows_account_state_to_teachers_and_admins_only(pool: PgPo
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     // 另一位還沒登入過的名單學生
-    post(
+    import_roster(
         &app,
-        &format!("/api/classrooms/{}/roster/import", a.classroom),
-        Some(&a.teacher),
-        Some(json!({"text": "學生,12000006A,later@example.com"})),
+        &a.teacher,
+        &a.classroom,
+        "學生,12000006A,later@example.com",
     )
     .await;
 
@@ -547,9 +547,7 @@ async fn teachers_cannot_delete_students_outside_their_own_classrooms(pool: PgPo
                 "DELETE",
                 &format!("/api/students/{email}"),
                 Some(cookie),
-                Some(
-                    json!({"confirm_student_id": fixture_roster(email).split(',').nth(1).unwrap()}),
-                ),
+                Some(json!({"confirm_student_id": fixture_student_id(email)})),
             ),
         )
     };

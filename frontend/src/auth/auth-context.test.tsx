@@ -29,7 +29,7 @@ describe('language picked before logging in', () => {
     )
     renderApp(null, { route: '/login' })
     await userEvent.selectOptions(await screen.findByLabelText('語言'), 'es')
-    await userEvent.type(await screen.findByLabelText('Correo electrónico'), 'a@example.com')
+    await userEvent.type(await screen.findByLabelText('Número de estudiante o correo electrónico'), 'a@example.com')
     await userEvent.type(screen.getByLabelText('Contraseña'), 'password-123')
     await userEvent.click(screen.getByRole('button', { name: 'Iniciar sesión' }))
     await screen.findByRole('navigation', { name: 'main' })
@@ -85,7 +85,7 @@ describe('a leftover pre-login pick must not reach the next account', () => {
     sessionStorage.setItem(KEY, stored('es', 60_000))
     trackPatches(null)
     renderApp(null, { route: '/login' })
-    await screen.findByLabelText('電子郵件')
+    await screen.findByLabelText('學號或電子郵件')
     await waitFor(() => expect(sessionStorage.getItem(KEY)).toBeNull())
   })
 

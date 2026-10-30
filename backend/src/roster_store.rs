@@ -23,42 +23,29 @@ pub async fn add_user(
     Ok(result.rows_affected() > 0)
 }
 
-/// 匯入使用的帳號查詢，鎖住已存在帳號以確保同時匯入時不會覆寫資料。
-#[derive(FromRow)]
-pub struct ImportAccount {
-    pub id: Uuid,
-    pub student_id: Option<String>,
-    pub email: Option<String>,
-}
-
+/// 以學號找既有帳號並鎖住，確保同時匯入時不會建立重複帳號。
 pub async fn find_import_account(
     conn: &mut PgConnection,
     student_id: &str,
-    email: Option<&str>,
-) -> Result<Vec<ImportAccount>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT id, student_id, email FROM users WHERE student_id = $1 OR email = $2 FOR UPDATE",
-    )
-    .bind(student_id)
-    .bind(email)
-    .fetch_all(conn)
-    .await
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT id FROM users WHERE student_id = $1 FOR UPDATE")
+        .bind(student_id)
+        .fetch_optional(conn)
+        .await
 }
 
 pub async fn create_student(
     conn: &mut PgConnection,
     student_id: &str,
     name: &str,
-    email: Option<&str>,
     password_hash: &str,
 ) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar(
-        "INSERT INTO users (student_id, imported_name, display_name, email, password_hash, must_change_password)
-         VALUES ($1, $2, $2, $3, $4, true) RETURNING id",
+        "INSERT INTO users (student_id, imported_name, display_name, password_hash, must_change_password)
+         VALUES ($1, $2, $2, $3, true) RETURNING id",
     )
     .bind(student_id)
     .bind(name)
-    .bind(email)
     .bind(password_hash)
     .fetch_one(conn)
     .await

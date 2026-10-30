@@ -352,17 +352,13 @@ pub(crate) async fn delete_student(
             "確認的學號與要刪除的帳號不符",
         ));
     }
+    // 限流紀錄用學號與電子郵件的雜湊為鍵，要在帳號還在時清掉
+    crate::auth_store::clear_login_failures_of_user(&mut tx, user_id).await?;
     // 對話、訊息、總結與 session 由外鍵連動刪除
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    if let Some(email) = &email {
-        sqlx::query("DELETE FROM login_failures WHERE email = $1")
-            .bind(email)
-            .execute(&mut *tx)
-            .await?;
-    }
     audit(
         &mut *tx,
         cu.user.id,

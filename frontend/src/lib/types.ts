@@ -6,7 +6,7 @@ export type Roles = { admin: boolean; teacher: boolean; student: boolean }
 
 export type Me = {
   id: string
-  email: string
+  email: string | null
   display_name: string | null
   language: Lang
   is_admin: boolean
@@ -94,6 +94,8 @@ export type SummaryView = {
 /** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
 export type TeacherSummary = {
   conversation_id: string
+  /** 對話所屬的教室 */
+  classroom_id: string
   title: string
   ended_at: string
   student_id: string
@@ -182,12 +184,14 @@ export type Classroom = {
   updated_at: string
 }
 
+export type ImportErrorReason = 'missing_fields' | 'invalid_format'
+
 export type RosterImportResult = {
   added: number
   existing: number
-  invalid: { line: number; value: string }[]
+  invalid: { line: number; reason: ImportErrorReason }[]
   /** 這次新建立的內建帳號與臨時密碼（只出現一次；教師匯入時為空或沒有這個欄位） */
-  credentials?: { email: string; temporary_password: string }[]
+  credentials?: { student_id: string; temporary_password: string }[]
 }
 
 /** SSE `done` 事件的內容。 */

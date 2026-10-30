@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { toast } from 'sonner'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { NameConfirmDialog } from '@/components/name-confirm-dialog'
-import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
+import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadMore } from '@/components/load-more'
+import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
@@ -52,7 +54,7 @@ function ActivityForm({
   topics,
   topicsFailed,
   submitLabel,
-  resetOnSuccess = false,
+  publishLabel,
   onSubmit,
 }: {
   idPrefix: string
@@ -60,10 +62,10 @@ function ActivityForm({
   topics: Topic[]
   topicsFailed: boolean
   submitLabel: string
-  /** 成功後是否清空表單（建立表單用）。 */
-  resetOnSuccess?: boolean
+  /** 有值時多一顆「儲存並發布」按鈕（建立表單用）。 */
+  publishLabel?: string
   /** 失敗時 throw。 */
-  onSubmit: (v: Values) => Promise<void>
+  onSubmit: (v: Values, publish: boolean) => Promise<void>
 }) {
   const t = useT()
   const [values, setValues] = useState<Values>(initial)
@@ -74,8 +76,8 @@ function ActivityForm({
   const busy = useRef(false)
   const hasInitialTopic = initial.topicId !== ''
 
-  async function submit(e: FormEvent) {
-    e.preventDefault()
+  async function submit(e: FormEvent | undefined, publish = false) {
+    e?.preventDefault()
     if (busy.current) return
     // 活動必須選題庫題目（S-04.7）；標題與題目都缺時一起提示
     const titleMissing = !values.title.trim()
@@ -100,8 +102,7 @@ function ActivityForm({
     busy.current = true
     setPending(true)
     try {
-      await onSubmit({ ...values, title: values.title.trim() })
-      if (resetOnSuccess) setValues(initial)
+      await onSubmit({ ...values, title: values.title.trim() }, publish)
     } catch (err) {
       // 前端自己丟的一般 Error（例如尚無可用教室）直接顯示其訊息
       setServerError(err instanceof Error && err.name !== 'ApiError' ? err.message : errorText(t, err))
@@ -182,9 +183,17 @@ function ActivityForm({
           <AlertDescription>{serverError}</AlertDescription>
         </Alert>
       ) : null}
-      <Button type="submit" disabled={pending}>
-        {pending ? t('teacher.working') : submitLabel}
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" variant={publishLabel ? 'outline' : 'default'} disabled={pending}>
+          {pending ? t('teacher.working') : submitLabel}
+        </Button>
+        {publishLabel ? (
+          <Button type="button" disabled={pending} onClick={() => void submit(undefined, true)}>
+            {publishLabel}
+          </Button>
+        ) : null}
+      </div>
+      {publishLabel ? <p className="text-muted-foreground text-xs">{t('teacher.activities.publishHint')}</p> : null}
     </form>
   )
 }
@@ -199,7 +208,9 @@ function ActivityRow({
   onToggle,
   onArchive,
   onDelete,
+  href,
 }: {
+  href?: string
   activity: Activity
   topic: Topic | undefined
   busy: boolean
@@ -231,77 +242,95 @@ function ActivityRow({
     closed: 'teacher.activities.reopen',
   } as const
   return (
-    <li>
-      <Card>
-        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-medium break-words">{activity.title}</h3>
-              <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
-            </div>
-            <p className="text-sm">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</p>
-            <p className="text-muted-foreground text-sm">
-              {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
-              {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
-            </p>
-            {activity.description ? (
-              <p className="text-muted-foreground text-sm break-words whitespace-pre-line">{activity.description}</p>
-            ) : null}
-            <p className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
-              {topic ? <span>{t('teacher.activities.topicOf', { title: topic.title })}</span> : null}
-              {!topic && activity.topic_id ? (
-                <span>
-                  {t('teacher.activities.topicOf', {
-                    title: t('teacher.activities.topicUnavailable'),
-                  })}
-                </span>
-              ) : null}
-              <span>
-                {t('teacher.activities.createdAt', {
-                  date: formatDate(activity.created_at, lang),
-                })}
-              </span>
-            </p>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button variant="outline" size="sm" onClick={onEdit} disabled={busy}>
-              {t('teacher.activities.edit')}
-            </Button>
-            {activity.is_archived ? null : (
-              <Button size="sm" onClick={onToggle} disabled={busy}>
-                {t(toggleKey[activity.status])}
-              </Button>
+    <TableRow>
+      <TableCell className="max-w-72 align-top whitespace-normal">
+        <div className="space-y-1">
+          <p className="font-medium break-words">
+            {href ? (
+              <Link to={href} className="underline underline-offset-2">
+                {activity.title}
+              </Link>
+            ) : (
+              activity.title
             )}
-            <Button variant="outline" size="sm" onClick={onArchive} disabled={busy}>
-              {t(activity.is_archived ? 'teacher.activities.restore' : 'teacher.activities.archive')}
-            </Button>
-            <Button variant="outline" size="sm" onClick={onDelete}>
-              {t('teacher.activities.delete')}
-            </Button>
-          </div>
-          {error ? (
-            <Alert variant="destructive" role="alert" className="sm:basis-full">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+          </p>
+          <p className="text-muted-foreground text-xs">
+            {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
+            {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
+          </p>
+          {activity.description ? (
+            <p className="text-muted-foreground text-xs break-words whitespace-pre-line">{activity.description}</p>
           ) : null}
-        </CardContent>
-      </Card>
-    </li>
+        </div>
+      </TableCell>
+      <TableCell className="align-top whitespace-normal">
+        {topic ? topic.title : activity.topic_id ? t('teacher.activities.topicUnavailable') : '—'}
+      </TableCell>
+      <TableCell className="align-top">{formatDate(activity.created_at, lang)}</TableCell>
+      <TableCell className="align-top">
+        <div className="flex flex-col items-start gap-1">
+          <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
+          <span className="text-muted-foreground text-xs">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</span>
+        </div>
+      </TableCell>
+      <TableCell className="align-top whitespace-normal">
+        <div className="flex flex-wrap gap-1">
+          {href ? (
+            <Button asChild variant="ghost" size="sm">
+              <Link to={href}>{t('teacher.activities.viewResults')}</Link>
+            </Button>
+          ) : null}
+          <Button variant="ghost" size="sm" onClick={onEdit} disabled={busy}>
+            {t('teacher.activities.edit')}
+          </Button>
+          {activity.is_archived ? null : (
+            <Button variant="ghost" size="sm" onClick={onToggle} disabled={busy}>
+              {t(toggleKey[activity.status])}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onArchive} disabled={busy}>
+            {t(activity.is_archived ? 'teacher.activities.restore' : 'teacher.activities.archive')}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onDelete}>
+            {t('teacher.activities.delete')}
+          </Button>
+        </div>
+        {error ? (
+          <Alert variant="destructive" role="alert" className="mt-2">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+      </TableCell>
+    </TableRow>
   )
 }
 
-/** 教師／管理者：建立、編輯、發布、停止開放討論活動。 */
-export function ActivitiesPage() {
+/**
+ * 教師／管理者：建立、編輯、發布、停止開放討論活動。
+ * 帶 `classroomId` 時只管理該教室（教室頁內嵌），活動標題連到 `${detailBase}/${活動 id}` 的論點分布。
+ */
+export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: string; detailBase?: string }) {
   const t = useT()
   const classrooms = useFetch<Classroom[]>('/api/classrooms')
-  const [roomId, setRoomId] = useState('')
+  const [roomId, setRoomId] = useState(classroomId ?? '')
   const writableRooms = useMemo(() => (classrooms.data ?? []).filter((r) => !r.is_archived), [classrooms.data])
   // 只有確定載入且未封存的教室才可編輯；載入中或失敗時視為不可用
   const writableRoomIds = useMemo(() => new Set(writableRooms.map((r) => r.id)), [writableRooms])
-  const selectedRoom = writableRooms.some((r) => r.id === roomId) ? roomId : writableRooms[0]?.id
+  const selectedRoom = classroomId
+    ? writableRoomIds.has(classroomId)
+      ? classroomId
+      : undefined
+    : writableRooms.some((r) => r.id === roomId)
+      ? roomId
+      : writableRooms[0]?.id
   const [showArchived, setShowArchived] = useState(false)
   const [deleting, setDeleting] = useState<Activity>()
-  const list = usePagedFetch<Activity>(showArchived ? '/api/activities?archived=true' : '/api/activities')
+  const [creating, setCreating] = useState(false)
+  const [confirming, setConfirming] = useState<{ activity: Activity; kind: 'publish' | 'close' | 'reopen' | 'archive' }>()
+  const listParams = new URLSearchParams()
+  if (classroomId) listParams.set('classroom_id', classroomId)
+  if (showArchived) listParams.set('archived', 'true')
+  const list = usePagedFetch<Activity>(`/api/activities${listParams.size ? `?${listParams}` : ''}`)
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
   const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
@@ -312,9 +341,9 @@ export function ActivitiesPage() {
   // 以活動 id 記錄列內錯誤，顯示在失敗的那一列
   const [rowError, setRowError] = useState<{ id: string; message: string }>()
 
-  async function create(v: Values) {
+  async function create(v: Values, publish: boolean) {
     if (!selectedRoom) throw new Error(t('teacher.activities.roomRequired'))
-    await api.post<Activity>('/api/activities', {
+    const created = await api.post<Activity>('/api/activities', {
       title: v.title,
       ...(v.description.trim() ? { description: v.description.trim() } : {}),
       topic_id: v.topicId,
@@ -322,7 +351,19 @@ export function ActivitiesPage() {
       ...(v.opensAt ? { opens_at: utcTime(v.opensAt) } : {}),
       ...(v.closesAt ? { closes_at: utcTime(v.closesAt) } : {}),
     })
-    toast.success(t('teacher.activities.created'))
+    if (publish) {
+      try {
+        await api.post<Activity>(`/api/activities/${created.id}/publish`)
+      } catch (err) {
+        // 草稿已建立，只是沒發布成功：關掉表單，讓教師從列表重試發布
+        setCreating(false)
+        list.reload()
+        setRowError({ id: created.id, message: errorText(t, err) })
+        return
+      }
+    }
+    toast.success(t(publish ? 'teacher.activities.published' : 'teacher.activities.created'))
+    setCreating(false)
     setRowError(undefined)
     list.reload()
   }
@@ -386,51 +427,83 @@ export function ActivitiesPage() {
   }
 
   return (
-    <Page title={t('teacher.activities.title')}>
-      <Card>
-        <CardContent className="space-y-3">
-          <h2 className="text-lg font-medium">{t('teacher.activities.createHeading')}</h2>
-          <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
-          <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
-            {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
-          </select>
-          {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
-          <ActivityForm
-            idPrefix="create"
-            initial={{ title: '', description: '', topicId: '', opensAt: '', closesAt: '' }}
-            topics={topics}
-            topicsFailed={!!available.error}
-            submitLabel={t('teacher.activities.createButton')}
-            resetOnSuccess
-            onSubmit={create}
-          />
-        </CardContent>
-      </Card>
-
-      <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+        <Button type="button" onClick={() => setCreating(true)}>
+          {t('teacher.activities.new')}
+        </Button>
+      </div>
       <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {list.loading && !list.items ? <LoadingBlock /> : null}
       {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
       {list.items && list.items.length === 0 ? <EmptyBlock>{t(showArchived ? 'teacher.activities.emptyArchived' : 'teacher.activities.empty')}</EmptyBlock> : null}
       {list.items && list.items.length > 0 ? (
-        <ul className="space-y-3">
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('teacher.activities.col.title')}</TableHead>
+                <TableHead>{t('teacher.activities.col.topic')}</TableHead>
+                <TableHead>{t('teacher.activities.col.created')}</TableHead>
+                <TableHead>{t('teacher.activities.col.status')}</TableHead>
+                <TableHead>{t('teacher.activities.col.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
           {list.items.map((a) => (
             <ActivityRow
               key={a.id}
               activity={a}
+              href={detailBase ? `${detailBase}/${a.id}` : undefined}
               topic={topicById.get(a.topic_id)}
               archived={!writableRoomIds.has(a.classroom_id)}
               busy={busyIds.has(a.id) || !writableRoomIds.has(a.classroom_id)}
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}
-              onToggle={() => void toggle(a)}
-              onArchive={() => void archive(a)}
+              onToggle={() => setConfirming({ activity: a, kind: a.status === 'draft' ? 'publish' : a.status === 'published' ? 'close' : 'reopen' })}
+              onArchive={() => (a.is_archived ? void archive(a) : setConfirming({ activity: a, kind: 'archive' }))}
               onDelete={() => setDeleting(a)}
             />
           ))}
-        </ul>
+            </TableBody>
+          </Table>
+        </div>
       ) : null}
       <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
+
+      {confirming ? (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => !o && setConfirming(undefined)}
+          title={
+            confirming.kind === 'archive'
+              ? t('teacher.activities.confirm.archive.title', { title: confirming.activity.title })
+              : t(`teacher.activities.confirm.${confirming.kind}.title`)
+          }
+          description={t(`teacher.activities.confirm.${confirming.kind}.body`)}
+          confirmLabel={t(`teacher.activities.confirm.${confirming.kind}.action`)}
+          destructive={confirming.kind === 'archive'}
+          onConfirm={() => {
+            const { activity, kind } = confirming
+            setConfirming(undefined)
+            void (kind === 'archive' ? archive(activity) : toggle(activity))
+          }}
+        >
+          {confirming.kind === 'publish' ? (
+            <>
+              <ConfirmFact label={t('teacher.activities.fact.title')}>{confirming.activity.title}</ConfirmFact>
+              <ConfirmFact label={t('teacher.activities.fact.classroom')}>
+                {classrooms.data?.find((r) => r.id === confirming.activity.classroom_id)?.name ?? '—'}
+              </ConfirmFact>
+            </>
+          ) : confirming.kind === 'archive' ? null : (
+            <ConfirmFact label={t('teacher.activities.fact.state')}>
+              {t(confirming.kind === 'close' ? 'teacher.activities.fact.open' : 'teacher.activities.fact.stopped', { title: confirming.activity.title })}
+            </ConfirmFact>
+          )}
+        </ConfirmDialog>
+      ) : null}
 
       {deleting ? (
         <NameConfirmDialog
@@ -441,6 +514,33 @@ export function ActivitiesPage() {
           onCancel={() => setDeleting(undefined)}
         />
       ) : null}
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('teacher.activities.createHeading')}</DialogTitle>
+            <DialogDescription>{t('teacher.activities.createDescription')}</DialogDescription>
+          </DialogHeader>
+          {classroomId ? null : (
+            <div className="space-y-1.5">
+              <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
+              <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+                {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+              </select>
+            </div>
+          )}
+          {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
+          <ActivityForm
+            idPrefix="create"
+            initial={{ title: '', description: '', topicId: '', opensAt: '', closesAt: '' }}
+            topics={topics}
+            topicsFailed={!!available.error}
+            submitLabel={t('teacher.activities.saveDraft')}
+            publishLabel={t('teacher.activities.publishNow')}
+            onSubmit={create}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
@@ -466,6 +566,6 @@ export function ActivitiesPage() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </Page>
+    </div>
   )
 }

@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router'
 import { useAuth } from '@/auth/auth-context'
 import { Alert, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { errorText, useT } from '@/i18n'
+import { dictionaries, errorText, useT, type MessageKey } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Me } from '@/lib/types'
 
@@ -19,7 +20,102 @@ const nameLength = (value: string) => Array.from(value.trim()).length
 export function ProfileForm() {
   const auth = useAuth()
   // 登入者載入完成前不顯示（外框保證實際使用時一定已登入）
-  return auth.status === 'authed' ? <Form me={auth.me} update={auth.update} /> : null
+  if (auth.status !== 'authed') return null
+  return (
+    <>
+      <Form me={auth.me} update={auth.update} />
+      {auth.me.roles.student ? <GoogleLink me={auth.me} update={auth.update} /> : null}
+    </>
+  )
+}
+
+/** 後端連結流程結束後導回 `/dashboard?link=ok` 或 `?link_error=<code>`。 */
+function linkResultKey(params: URLSearchParams): MessageKey | null {
+  if (params.get('link') === 'ok') return 'profile.google.linked'
+  const code = params.get('link_error')
+  if (!code) return null
+  const key = `profile.google.error.${code}` as MessageKey
+  return dictionaries['zh-TW'][key] ? key : 'profile.google.error.link_failed'
+}
+
+/**
+ * 學生連結 Google 帳號：信箱由 Google 證明是本人的才會寫入（後端檢查），之後用 Google 登入會回到這個帳號。
+ * 連結與改連結都是整頁導向，由後端與 Google 完成授權；取消連結要再按一次確認。
+ */
+function GoogleLink({ me, update }: { me: Me; update: (me: Me) => void }) {
+  const t = useT()
+  const [params] = useSearchParams()
+  const resultKey = linkResultKey(params)
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+
+  async function unlink() {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.delete('/api/me/google-link')
+      update({ ...me, email: null })
+      setConfirming(false)
+    } catch (err) {
+      setError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const linkClass = buttonVariants({ variant: me.email ? 'outline' : 'default' })
+  return (
+    <Card>
+      <CardContent>
+        <section aria-labelledby="google-link-title" className="max-w-sm space-y-3">
+          <h2 id="google-link-title" className="text-lg font-medium">
+            {t('profile.google.title')}
+          </h2>
+          {resultKey ? (
+            <Alert variant={resultKey === 'profile.google.linked' ? 'default' : 'destructive'} role="status">
+              <AlertTitle>{t(resultKey)}</AlertTitle>
+            </Alert>
+          ) : null}
+          {error ? (
+            <Alert variant="destructive" role="alert">
+              <AlertTitle>{errorText(t, error)}</AlertTitle>
+            </Alert>
+          ) : null}
+          {me.email ? (
+            <p className="text-sm">
+              {t('profile.google.current')} <strong>{me.email}</strong>
+            </p>
+          ) : (
+            <p className="text-sm">{t('profile.google.none')}</p>
+          )}
+          <p className="text-muted-foreground text-xs">{t('profile.google.hint')}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 整頁導向：授權由後端與 Google 完成，前端不處理任何 token */}
+            <a href="/api/auth/google/link" className={linkClass}>
+              {t(me.email ? 'profile.google.change' : 'profile.google.link')}
+            </a>
+            {me.email && !confirming ? (
+              <Button type="button" variant="ghost" onClick={() => setConfirming(true)}>
+                {t('profile.google.unlink')}
+              </Button>
+            ) : null}
+            {me.email && confirming ? (
+              <>
+                <Button type="button" variant="destructive" disabled={busy} onClick={() => void unlink()}>
+                  {t('profile.google.unlinkConfirm')}
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setConfirming(false)}>
+                  {t('profile.google.cancel')}
+                </Button>
+              </>
+            ) : null}
+          </div>
+          {confirming ? <p className="text-muted-foreground text-xs">{t('profile.google.unlinkWarn')}</p> : null}
+        </section>
+      </CardContent>
+    </Card>
+  )
 }
 
 function Form({ me, update }: { me: Me; update: (me: Me) => void }) {

@@ -13,16 +13,7 @@ async fn import(
     classroom: &str,
     text: &str,
 ) -> (StatusCode, Value) {
-    let res = send(
-        app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{classroom}/roster/import"),
-            cookie,
-            Some(json!({"text": fixture_roster(text)})),
-        ),
-    )
-    .await;
+    let res = import_roster_as(app, cookie, classroom, text).await;
     (res.status(), json_body(res).await)
 }
 
@@ -88,7 +79,7 @@ async fn roster_import_belongs_to_one_classroom_and_never_removes(pool: PgPool) 
     assert_eq!(body["existing"], 1);
     assert_eq!(
         body["invalid"],
-        json!([{"line": 3, "reason": "invalid_format"}])
+        json!([{"line": 3, "reason": "missing_fields"}])
     );
 
     // 另一個教室不受影響
@@ -156,10 +147,9 @@ async fn removal_only_affects_that_classroom_and_keeps_data_until_re_added(pool:
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let room_b = create_classroom(&app, &a.teacher, "B 班").await;
-    // 已登入但不在任何名單的帳號：匯入前不是學生，匯入後立即是學生
+    // 已用 Google 登入但不在任何名單的帳號仍不是學生：匯入不處理電子郵件，
+    // 所以不會把這個帳號加進名單（由學生自己填寫電子郵件的流程待規格化）
     assert!(!student_flag(&app, &a.outsider).await);
-    import(&app, Some(&a.teacher), &room_b, "outsider@example.com").await;
-    assert!(student_flag(&app, &a.outsider).await);
 
     import(&app, Some(&a.teacher), &room_b, "student@example.com").await;
     let conv = start_conversation(&app, &a).await;

@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
@@ -129,9 +130,10 @@ export function TopicsPage() {
   const [actionError, setActionError] = useState<unknown>()
   const [notice, setNotice] = useState<string>()
   const [editing, setEditing] = useState<Topic>()
+  const [creating, setCreating] = useState(false)
+  const [confirming, setConfirming] = useState<{ topic: Topic; next: boolean }>()
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('')
-  const [includeInactive, setIncludeInactive] = useState(true)
 
   const topics = useMemo(() => (data ?? []).map((x) => ({ ...x, ...patched[x.id] })), [data, patched])
   const categories = useMemo(
@@ -143,12 +145,11 @@ export function TopicsPage() {
   const q = query.trim().toLowerCase()
   const shown = topics.filter(
     (x) =>
-      (includeInactive || x.is_active) &&
       (!activeCategory || x.category === activeCategory) &&
       (!q || [x.title, x.description, x.category ?? ''].some((s) => s.toLowerCase().includes(q))),
   )
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
-  const filtered = q !== '' || activeCategory !== '' || !includeInactive
+  const filtered = q !== '' || activeCategory !== ''
 
   function patch(id: string, p: Partial<Topic>) {
     setPatchState((prev) => {
@@ -163,6 +164,7 @@ export function TopicsPage() {
     if (v.category.trim()) body.category = v.category.trim()
     setNotice(undefined)
     await api.post('/api/topics', body)
+    setCreating(false)
     setNotice(t('admin.topics.created', { title: body.title }))
     reload()
   }
@@ -197,29 +199,24 @@ export function TopicsPage() {
         copy.delete(topic.id)
         return copy
       })
+      setConfirming(undefined)
     }
   }
 
   return (
-    <Page title={t('admin.topics.title')}>
+    <Page
+      title={t('admin.topics.title')}
+      actions={
+        <Button type="button" onClick={() => { setNotice(undefined); setCreating(true) }}>
+          {t('admin.topics.new')}
+        </Button>
+      }
+    >
       <p className="text-muted-foreground text-sm">{t('admin.topics.intro')}</p>
 
-      <section aria-labelledby="topic-create-heading" className="space-y-3 rounded-md border p-4">
-        <h2 id="topic-create-heading" className="font-medium">
-          {t('admin.topics.create')}
-        </h2>
-        <TopicForm
-          idPrefix="create"
-          initial={{ title: '', description: '', category: '' }}
-          submitLabel={t('admin.topics.create')}
-          pendingLabel={t('admin.topics.creating')}
-          categories={categories}
-          onSubmit={create}
-        />
-        <div aria-live="polite">
-          {notice ? <p className="text-sm text-green-700 dark:text-green-400">{notice}</p> : null}
-        </div>
-      </section>
+      <div aria-live="polite">
+        {notice ? <p className="text-sm text-green-700 dark:text-green-400">{notice}</p> : null}
+      </div>
 
       {actionError ? (
         <Alert variant="destructive" role="alert">
@@ -252,10 +249,6 @@ export function TopicsPage() {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2 pb-1.5">
-              <Switch id="topic-include-inactive" checked={includeInactive} onCheckedChange={setIncludeInactive} />
-              <Label htmlFor="topic-include-inactive">{t('admin.topics.includeInactive')}</Label>
-            </div>
           </div>
 
           <p className="text-sm font-medium" aria-live="polite">
@@ -269,33 +262,82 @@ export function TopicsPage() {
           ) : shown.length === 0 ? (
             <EmptyBlock>{t('admin.topics.noMatch')}</EmptyBlock>
           ) : (
-            <ul aria-label={t('admin.topics.list')} className="divide-y rounded-md border">
-              {shown.map((x) => (
-                <li key={x.id} className={`flex items-start gap-3 px-3 py-3 ${x.is_active ? '' : 'bg-muted/50 text-muted-foreground'}`}>
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium break-words">{x.title}</span>
-                      {x.category ? <Badge variant="outline">{x.category}</Badge> : null}
-                      {x.is_active ? null : <Badge variant="secondary">{t('admin.topics.inactive')}</Badge>}
-                    </div>
-                    <p className="text-sm break-words">{x.description || t('admin.topics.noDescription')}</p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Switch
-                      checked={x.is_active}
-                      disabled={toggling.has(x.id)}
-                      aria-label={t('admin.topics.activeToggle', { title: x.title })}
-                      onCheckedChange={(next) => void toggle(x, next)}
-                    />
-                    <Button variant="ghost" size="icon" aria-label={t('admin.topics.edit', { title: x.title })} onClick={() => setEditing(x)}>
-                      <Pencil aria-hidden />
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <div className="rounded-md border">
+              <Table aria-label={t('admin.topics.list')}>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('admin.topics.col.title')}</TableHead>
+                    <TableHead>{t('admin.topics.col.category')}</TableHead>
+                    <TableHead>{t('admin.topics.col.status')}</TableHead>
+                    <TableHead>{t('admin.topics.col.actions')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {shown.map((x) => (
+                    <TableRow key={x.id} className={x.is_active ? '' : 'text-muted-foreground'}>
+                      <TableCell className="max-w-96 font-medium whitespace-normal break-words">{x.title}</TableCell>
+                      <TableCell>{x.category ?? '—'}</TableCell>
+                      <TableCell>
+                        <Badge variant={x.is_active ? 'default' : 'secondary'}>
+                          {x.is_active ? t('admin.topics.active') : t('admin.topics.inactive')}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button variant="ghost" size="icon" aria-label={t('admin.topics.edit', { title: x.title })} onClick={() => setEditing(x)}>
+                            <Pencil aria-hidden />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            disabled={toggling.has(x.id)}
+                            aria-label={t(x.is_active ? 'admin.topics.deactivateAria' : 'admin.topics.activateAria', { title: x.title })}
+                            onClick={() => setConfirming({ topic: x, next: !x.is_active })}
+                          >
+                            {x.is_active ? t('admin.topics.deactivate') : t('admin.topics.activate')}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </div>
+      ) : null}
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{t('admin.topics.create')}</DialogTitle>
+            <DialogDescription>{t('admin.topics.createDesc')}</DialogDescription>
+          </DialogHeader>
+          <TopicForm
+            idPrefix="create"
+            initial={{ title: '', description: '', category: '' }}
+            submitLabel={t('admin.topics.create')}
+            pendingLabel={t('admin.topics.creating')}
+            categories={categories}
+            onSubmit={create}
+            onCancel={() => setCreating(false)}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {confirming ? (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => !open && setConfirming(undefined)}
+          title={t(confirming.next ? 'admin.topics.activateTitle' : 'admin.topics.deactivateTitle')}
+          description={t(confirming.next ? 'admin.topics.activateBody' : 'admin.topics.deactivateBody')}
+          confirmLabel={t(confirming.next ? 'admin.topics.activateConfirm' : 'admin.topics.deactivateConfirm')}
+          destructive={!confirming.next}
+          pending={toggling.has(confirming.topic.id)}
+          onConfirm={() => void toggle(confirming.topic, confirming.next)}
+        >
+          <ConfirmFact label={t('admin.topics.fact.topic')}>{confirming.topic.title}</ConfirmFact>
+          <ConfirmFact label={t('admin.topics.fact.category')}>{confirming.topic.category ?? '—'}</ConfirmFact>
+        </ConfirmDialog>
       ) : null}
 
       <Dialog open={editing !== undefined} onOpenChange={(o) => !o && setEditing(undefined)}>

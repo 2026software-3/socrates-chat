@@ -60,6 +60,8 @@ pub struct LoginState {
     pub state: String,
     pub nonce: String,
     pub pkce_verifier: String,
+    /// 連結 Google 帳號的流程帶著發起者；一般登入為 `None`。
+    pub link_user_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -263,17 +265,120 @@ pub async fn save_login_state(
     nonce: &str,
     pkce_verifier: &str,
 ) -> Result<(), sqlx::Error> {
+    save_state(pool, state, nonce, pkce_verifier, None).await
+}
+
+/// 已登入學生開始連結 Google 帳號：state 記下發起者，回呼時才能確認是同一個人。
+pub async fn save_link_state(
+    pool: &PgPool,
+    state: &str,
+    nonce: &str,
+    pkce_verifier: &str,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    save_state(pool, state, nonce, pkce_verifier, Some(user_id)).await
+}
+
+async fn save_state(
+    pool: &PgPool,
+    state: &str,
+    nonce: &str,
+    pkce_verifier: &str,
+    link_user_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
     // 順便清掉放棄的登入流程，避免資料表無限成長
     sqlx::query("DELETE FROM oauth_login_states WHERE created_at < now() - interval '10 minutes'")
         .execute(pool)
         .await?;
-    sqlx::query("INSERT INTO oauth_login_states (state, nonce, pkce_verifier) VALUES ($1, $2, $3)")
-        .bind(state)
-        .bind(nonce)
-        .bind(pkce_verifier)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO oauth_login_states (state, nonce, pkce_verifier, link_user_id)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(state)
+    .bind(nonce)
+    .bind(pkce_verifier)
+    .bind(link_user_id)
+    .execute(pool)
+    .await?;
     Ok(())
+}
+
+/// 連結 Google 帳號的結果。
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkOutcome {
+    Linked,
+    /// 信箱或 Google 帳號已屬於另一個帳號，或信箱是教師／管理者的；不揭露是哪一種。
+    InUse,
+    /// 這個使用者沒有學號（教師、管理者與未開通帳號不能連結）。
+    NotStudent,
+}
+
+/// 把已由 Google 證明的信箱與 Google 帳號寫進學號帳號；再次連結會取代原本的。
+/// 信箱已屬於別的帳號、是教師名單或 `ADMIN_EMAILS` 的信箱時一律拒絕：
+/// 否則之後用 Google 登入會讓學號帳號多出教師或管理者權限，或搶走別人的帳號。
+pub async fn link_google(
+    pool: &PgPool,
+    user_id: Uuid,
+    google_sub: &str,
+    email: &str,
+    admin_emails: &[String],
+) -> Result<LinkOutcome, sqlx::Error> {
+    let email = email.to_lowercase();
+    if admin_emails.contains(&email) {
+        return Ok(LinkOutcome::InUse);
+    }
+    let mut tx = pool.begin().await?;
+    let is_student: Option<bool> =
+        sqlx::query_scalar("SELECT student_id IS NOT NULL FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if is_student != Some(true) {
+        return Ok(LinkOutcome::NotStudent);
+    }
+    let taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id <> $1 AND (email = $2 OR google_sub = $3))
+             OR EXISTS (SELECT 1 FROM teachers WHERE email = $2)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(google_sub)
+    .fetch_one(&mut *tx)
+    .await?;
+    if taken {
+        return Ok(LinkOutcome::InUse);
+    }
+    sqlx::query("UPDATE users SET email = $2, google_sub = $3, updated_at = now() WHERE id = $1")
+        .bind(user_id)
+        .bind(&email)
+        .bind(google_sub)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(LinkOutcome::Linked)
+}
+
+/// 取消連結：清除信箱與 Google 帳號，學號與密碼照舊可登入。回傳是否為學號帳號。
+pub async fn unlink_google(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE users SET email = NULL, google_sub = NULL, updated_at = now()
+         WHERE id = $1 AND student_id IS NOT NULL",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() == 1)
+}
+
+/// 只看 state 是不是連結流程，不刪除；回呼用它決定走連結還是一般登入。
+pub async fn peek_link_user(pool: &PgPool, state: &str) -> Result<Option<Uuid>, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar("SELECT link_user_id FROM oauth_login_states WHERE state = $1")
+            .bind(state)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+    )
 }
 
 /// 取出並刪除 state 紀錄（單次使用）；不存在或超過 10 分鐘回傳 `None`（過期的紀錄仍會被刪除）。
@@ -284,7 +389,7 @@ pub async fn take_login_state(
 ) -> Result<Option<LoginState>, sqlx::Error> {
     let row: Option<LoginState> = sqlx::query_as(
         "DELETE FROM oauth_login_states WHERE state = $1
-         RETURNING state, nonce, pkce_verifier, created_at",
+         RETURNING state, nonce, pkce_verifier, link_user_id, created_at",
     )
     .bind(state)
     .fetch_optional(pool)
@@ -298,22 +403,58 @@ pub async fn take_login_state(
 #[derive(Debug, Clone, FromRow)]
 pub struct PasswordAccount {
     pub id: Uuid,
+    /// 沒有電子郵件的學生為 `None`（只能以學號登入）。
+    pub email: Option<String>,
     pub password_hash: Option<String>,
     /// 管理者已停用此帳號（S-01.3）。
     pub disabled: bool,
 }
 
+/// 登入帳號輸入正規化：去前後空白；含 `@` 者轉小寫（電子郵件），否則轉大寫（學號）。
+/// 限流與帳號比對都用正規化後的值，大小寫與空白的變化不能繞過計數（S-08.2）。
+pub fn normalize_login_input(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.contains('@') {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_uppercase()
+    }
+}
+
+/// 限流用的鍵：正規化後的登入帳號輸入的 SHA-256 十六進位，不存學號或電子郵件明文。
+pub fn login_key(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(normalize_login_input(raw).as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub async fn find_password_account(
     pool: &PgPool,
-    email: &str,
+    account: &str,
 ) -> Result<Option<PasswordAccount>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT id, password_hash, disabled_at IS NOT NULL AS disabled
-         FROM users WHERE email = lower($1)",
-    )
-    .bind(email)
-    .fetch_optional(pool)
-    .await
+    let normalized = normalize_login_input(account);
+    // 含 `@` 以電子郵件比對；否則符合學號格式才以學號比對；兩者皆不符視為帳號不存在
+    if normalized.contains('@') {
+        sqlx::query_as(
+            "SELECT id, email, password_hash, disabled_at IS NOT NULL AS disabled
+             FROM users WHERE email = $1",
+        )
+        .bind(normalized)
+        .fetch_optional(pool)
+        .await
+    } else if crate::roster::is_valid_student_id(&normalized) {
+        sqlx::query_as(
+            "SELECT id, email, password_hash, disabled_at IS NOT NULL AS disabled
+             FROM users WHERE student_id = $1",
+        )
+        .bind(normalized)
+        .fetch_optional(pool)
+        .await
+    } else {
+        Ok(None)
+    }
 }
 
 /// 讀取目前密碼雜湊（改密碼時驗證舊密碼用）。
@@ -326,36 +467,36 @@ pub async fn password_hash_of(pool: &PgPool, user_id: Uuid) -> Result<Option<Str
     Ok(row.and_then(|(h,)| h))
 }
 
-/// `login_failures` 裡代表「這個信箱在所有 IP 的累計」的列（不會是任何真實的 `rate_limit_key`）。
-const EMAIL_TOTAL_KEY: &str = "*";
+/// `login_failures` 裡代表「這個登入帳號輸入在所有 IP 的累計」的列（不會是任何真實的 `rate_limit_key`）。
+const ACCOUNT_TOTAL_KEY: &str = "*";
 
-/// 這個（電子郵件, 來源 IP）或這個信箱的跨 IP 總量目前是否被鎖定。`ip_key` 是
+/// 這個（登入帳號輸入, 來源 IP）或這個登入帳號輸入的跨 IP 總量目前是否被鎖定。`ip_key` 是
 /// `client_ip::rate_limit_key` 的結果，沒有連線資訊時傳空字串。
 pub async fn is_locked(
     pool: &PgPool,
-    email: &str,
+    account: &str,
     ip_key: &str,
     now: DateTime<Utc>,
 ) -> Result<bool, sqlx::Error> {
     let (locked,): (bool,) = sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM login_failures
-                        WHERE email = lower($1) AND ip IN ($2, $3) AND locked_until > $4)",
+                        WHERE login_key = $1 AND ip IN ($2, $3) AND locked_until > $4)",
     )
-    .bind(email)
+    .bind(login_key(account))
     .bind(ip_key)
-    .bind(EMAIL_TOTAL_KEY)
+    .bind(ACCOUNT_TOTAL_KEY)
     .bind(now)
     .fetch_one(pool)
     .await?;
     Ok(locked)
 }
 
-/// 記錄一次登入失敗：（電子郵件, 來源 IP）累計達 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`；
-/// 同時累計這個信箱在所有 IP 的總數，達 `MAX_EMAIL_LOGIN_FAILURES` 次就在所有 IP 鎖定。
+/// 記錄一次登入失敗：（登入帳號輸入, 來源 IP）累計達 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`；
+/// 同時累計這個登入帳號輸入在所有 IP 的總數，達 `MAX_EMAIL_LOGIN_FAILURES` 次就在所有 IP 鎖定。
 /// 鎖定已過期的紀錄會從 0 重新計。
 pub async fn record_login_failure(
     pool: &PgPool,
-    email: &str,
+    account: &str,
     ip_key: &str,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
@@ -364,21 +505,22 @@ pub async fn record_login_failure(
         .bind(now - Duration::days(1))
         .execute(pool)
         .await?;
-    bump_failures(pool, email, ip_key, MAX_LOGIN_FAILURES, now).await?;
-    bump_failures(pool, email, EMAIL_TOTAL_KEY, MAX_EMAIL_LOGIN_FAILURES, now).await
+    let key = login_key(account);
+    bump_failures(pool, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
+    bump_failures(pool, &key, ACCOUNT_TOTAL_KEY, MAX_EMAIL_LOGIN_FAILURES, now).await
 }
 
 async fn bump_failures(
     pool: &PgPool,
-    email: &str,
+    login_key: &str,
     key: &str,
     max_failures: i32,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO login_failures (email, ip, failures, locked_until, last_failed_at)
-         VALUES (lower($1), $2, 1, NULL, $3)
-         ON CONFLICT (email, ip) DO UPDATE SET
+        "INSERT INTO login_failures (login_key, ip, failures, locked_until, last_failed_at)
+         VALUES ($1, $2, 1, NULL, $3)
+         ON CONFLICT (login_key, ip) DO UPDATE SET
             failures = CASE WHEN login_failures.locked_until IS NOT NULL
                                  AND login_failures.locked_until <= $3
                             THEN 1 ELSE login_failures.failures + 1 END,
@@ -389,7 +531,7 @@ async fn bump_failures(
                 ELSE login_failures.locked_until END,
             last_failed_at = $3",
     )
-    .bind(email)
+    .bind(login_key)
     .bind(key)
     .bind(now)
     .bind(max_failures)
@@ -399,30 +541,42 @@ async fn bump_failures(
     Ok(())
 }
 
-/// 成功登入：清掉這個（電子郵件, 來源 IP）的計數與這個信箱的跨 IP 總量；別的 IP
+/// 成功登入：清掉這個（登入帳號輸入, 來源 IP）的計數與這個登入帳號輸入的跨 IP 總量；別的 IP
 /// （可能是攻擊者）各自的計數不動。
 pub async fn clear_login_failures_for(
     conn: impl sqlx::PgExecutor<'_>,
-    email: &str,
+    account: &str,
     ip_key: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM login_failures WHERE email = lower($1) AND ip IN ($2, $3)")
-        .bind(email)
+    sqlx::query("DELETE FROM login_failures WHERE login_key = $1 AND ip IN ($2, $3)")
+        .bind(login_key(account))
         .bind(ip_key)
-        .bind(EMAIL_TOTAL_KEY)
+        .bind(ACCOUNT_TOTAL_KEY)
         .execute(conn)
         .await?;
     Ok(())
 }
 
-/// 清掉這個電子郵件在所有來源 IP 的計數（管理者重設密碼、使用者改密碼時）。
-pub async fn clear_login_failures(
-    conn: impl sqlx::PgExecutor<'_>,
-    email: &str,
+/// 清掉這個帳號所有登入帳號輸入（學號與電子郵件）在所有來源 IP 的計數
+/// （管理者重設密碼、使用者改密碼、刪除帳號時）。
+pub async fn clear_login_failures_of_user(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM login_failures WHERE email = lower($1)")
-        .bind(email)
-        .execute(conn)
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT email, student_id FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let keys: Vec<String> = row
+        .into_iter()
+        .flat_map(|(email, student_id)| [email, student_id])
+        .flatten()
+        .map(|account| login_key(&account))
+        .collect();
+    sqlx::query("DELETE FROM login_failures WHERE login_key = ANY($1)")
+        .bind(keys)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -450,10 +604,8 @@ pub async fn set_password(
             .execute(pool)
             .await?;
     }
-    sqlx::query("DELETE FROM login_failures WHERE email = (SELECT email FROM users WHERE id = $1)")
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+    let mut conn = pool.acquire().await?;
+    clear_login_failures_of_user(&mut conn, user_id).await?;
     Ok(())
 }
 
@@ -493,7 +645,7 @@ pub async fn reset_password(
     .fetch_one(&mut *conn)
     .await?;
     delete_sessions_except(&mut *conn, id, None).await?;
-    clear_login_failures(&mut *conn, email).await?;
+    clear_login_failures_of_user(&mut *conn, id).await?;
     Ok(id)
 }
 
