@@ -258,3 +258,25 @@ describe('app shell', () => {
     expect(await screen.findByRole('heading', { name: '找不到資料。' })).toBeInTheDocument()
   })
 })
+
+// jsdom 不排版，只能檢查決定「固定在視窗內」的 class；實際效果要在瀏覽器確認
+describe('sidebar stays in view on long pages', () => {
+  it.each([
+    ['student', { student: true }, '/', 'md:sticky md:top-0 md:h-svh'],
+    ['teacher', { teacher: true }, '/teacher/classrooms', 'md:sticky md:top-[52px] md:h-[calc(100svh-52px)]'],
+    ['admin', { admin: true }, '/admin', 'md:sticky md:top-[52px] md:h-[calc(100svh-52px)]'],
+  ])('keeps the account block of a %s pinned', async (_name, roles, route, classes) => {
+    mockMe(makeMe(roles))
+    server.use(
+      http.get('/api/classrooms', () => HttpResponse.json([])),
+      http.get('/api/activities/available', () => HttpResponse.json([])),
+      http.get('/api/admin/*', () => HttpResponse.json([])),
+    )
+    renderApp(null, { route })
+    const logout = await screen.findByRole('button', { name: '登出' })
+    const aside = logout.closest('aside')
+    expect(aside).not.toBeNull()
+    for (const c of classes.split(' ')) expect(aside).toHaveClass(c)
+    expect(aside).toHaveClass('md:overflow-y-auto')
+  })
+})

@@ -12,6 +12,9 @@ import type { Me } from '@/lib/types'
 /** 學生外框用左側欄（272px）；教師與管理者用頂欄（52px）加工作區側欄（216px）。 */
 const STUDENT_SIDEBAR = 'md:w-[272px]'
 const WORKSPACE_SIDEBAR = 'md:w-[216px]'
+/** 桌面寬度時側欄固定在視窗內，名稱、語言與登出在每一頁都貼著左下角，不會隨長頁面落到頁尾。 */
+const STUDENT_STICKY = 'md:sticky md:top-0 md:h-svh md:overflow-y-auto'
+const WORKSPACE_STICKY = 'md:sticky md:top-[52px] md:h-[calc(100svh-52px)] md:overflow-y-auto'
 
 function MainNav({ items, label }: { items: NavItem[]; label: string }) {
   const t = useT()
@@ -84,7 +87,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
   if (student) {
     return (
       <div className={cn('flex flex-col md:flex-row', fullBleed ? 'h-svh' : 'min-h-svh')}>
-        <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:px-3 md:py-4', STUDENT_SIDEBAR)}>
+        <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:px-3 md:py-4', STUDENT_SIDEBAR, STUDENT_STICKY)}>
           <Link to="/" className="px-2.5 pt-2 pb-2 text-lg leading-7 font-medium md:pb-4">
             {t('app.name')}
           </Link>
@@ -98,7 +101,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
 
   return (
     <div className="flex min-h-svh flex-col">
-      <header className="flex h-[52px] shrink-0 items-center justify-between border-b px-6">
+      <header className="bg-background sticky top-0 z-10 flex h-[52px] shrink-0 items-center justify-between border-b px-6">
         <Link to="/" className="flex items-baseline gap-3">
           <span className="text-lg leading-7 font-medium">{t('app.brand')}</span>
           <span className="text-muted-foreground text-xs">{workspace}</span>
@@ -112,7 +115,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
         </span>
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:py-4', WORKSPACE_SIDEBAR)}>
+        <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:py-4', WORKSPACE_SIDEBAR, WORKSPACE_STICKY)}>
           <MainNav items={items} label="main" />
           <Account me={me} />
         </aside>
