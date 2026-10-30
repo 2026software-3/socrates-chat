@@ -118,7 +118,8 @@ export type SummaryTranslation = {
 /** 教室修課名單上的學生與帳號狀態（GET /api/classrooms/{id}/students）。 */
 export type StudentRow = {
   id: string | null
-  email: string
+  email: string | null
+  student_id: string
   display_name: string | null
   /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */
   has_account: boolean

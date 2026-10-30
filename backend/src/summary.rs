@@ -319,7 +319,7 @@ pub(crate) struct SummaryRow {
     ended_at: DateTime<Utc>,
     student_id: Uuid,
     student_name: Option<String>,
-    student_email: String,
+    student_email: Option<String>,
     /// 對話建立時快照的原文語言。
     language: String,
     stance: Option<String>,

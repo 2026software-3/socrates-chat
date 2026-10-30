@@ -170,7 +170,7 @@ async fn roster_changes_are_recorded_per_student_and_skip_existing_entries(pool:
             &app,
             &format!("/api/classrooms/{room}/roster/import"),
             &admin,
-            import("a@x.com\nb@x.com\nbad-line")
+            import("甲,13000001A,a@x.com\n乙,13000002A,b@x.com\nbad-line")
         )
         .await,
         StatusCode::OK
@@ -181,7 +181,7 @@ async fn roster_changes_are_recorded_per_student_and_skip_existing_entries(pool:
             &app,
             &format!("/api/classrooms/{room}/roster/import"),
             &admin,
-            import("b@x.com\nc@x.com")
+            import("乙,13000002A,b@x.com\n丙,13000003A,c@x.com")
         )
         .await,
         StatusCode::OK
@@ -240,7 +240,7 @@ async fn teacher_roster_changes_name_the_teacher_as_actor(pool: PgPool) {
             &app,
             &format!("/api/classrooms/{}/roster/import", a.classroom),
             &a.teacher,
-            json!({"text": "new@x.com"})
+            json!({"text": "學生,13000004A,new@x.com"})
         )
         .await,
         StatusCode::OK
@@ -367,7 +367,7 @@ async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPo
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
     let (_teacher, room) = seed_classroom(&app, &admin).await;
     reject_audit(&pool, "roster_added").await;
-    let body = json!({"text": "retry@example.com"});
+    let body = json!({"text": "學生,13000005A,retry@example.com"});
     assert_eq!(
         post(
             &app,
@@ -379,7 +379,7 @@ async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPo
         StatusCode::INTERNAL_SERVER_ERROR
     );
     let enrolled: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM enrollments WHERE email = 'retry@example.com')",
+        "SELECT EXISTS (SELECT 1 FROM enrollments e JOIN users u ON u.id = e.user_id WHERE u.email = 'retry@example.com')",
     )
     .fetch_one(&pool)
     .await
@@ -403,7 +403,7 @@ async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPo
     let result = json_body(res).await;
     assert_eq!(result["added"], 1);
     assert_eq!(result["existing"], 0);
-    assert_eq!(result["credentials"][0]["email"], "retry@example.com");
+    assert_eq!(result["credentials"][0]["student_id"], "13000005A");
     assert!(trail(&pool).await.contains(&entry(
         "admin@example.com",
         "roster_added",
@@ -430,14 +430,14 @@ async fn roster_import_rolls_back_batch_and_audits_when_account_creation_fails(p
             &app,
             &format!("/api/classrooms/{room}/roster/import"),
             &admin,
-            json!({"text": "first@example.com\nfail@example.com"})
+            json!({"text": "甲,13000006A,first@example.com\n乙,13000007A,fail@example.com"})
         )
         .await,
         StatusCode::INTERNAL_SERVER_ERROR
     );
     for sql in [
         "SELECT count(*) FROM users WHERE email IN ('first@example.com', 'fail@example.com')",
-        "SELECT count(*) FROM enrollments WHERE email IN ('first@example.com', 'fail@example.com')",
+        "SELECT count(*) FROM enrollments e JOIN users u ON u.id = e.user_id WHERE u.email IN ('first@example.com', 'fail@example.com')",
     ] {
         let count: i64 = sqlx::query_scalar(sql).fetch_one(&pool).await.unwrap();
         assert_eq!(count, 0, "失敗的匯入不得留下名單或帳號資料");

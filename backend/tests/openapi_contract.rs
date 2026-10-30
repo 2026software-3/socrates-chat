@@ -184,9 +184,22 @@ mod roster {
             "#/components/schemas/ImportResult"
         );
         let result = &document["components"]["schemas"]["ImportResult"]["properties"];
-        for field in ["added", "existing", "invalid", "credentials"] {
+        for field in [
+            "added",
+            "existing",
+            "email_updated",
+            "errors",
+            "invalid",
+            "credentials",
+        ] {
             assert!(result.get(field).is_some(), "ImportResult.{field}");
         }
+        let credential = &document["components"]["schemas"]["Credential"]["properties"];
+        assert!(credential.get("student_id").is_some());
+        assert!(credential.get("temporary_password").is_some());
+        let error = &document["components"]["schemas"]["StudentImportError"]["properties"];
+        assert!(error.get("line").is_some());
+        assert!(error.get("reason").is_some());
         let params = import["parameters"].as_array().unwrap();
         assert!(
             params
@@ -218,6 +231,7 @@ mod roster {
         for field in [
             "id",
             "email",
+            "student_id",
             "display_name",
             "has_account",
             "disabled",

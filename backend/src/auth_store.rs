@@ -24,7 +24,7 @@ pub struct User {
     pub id: Uuid,
     /// 尚未用 Google 登入過的內建帳號為 `None`。
     pub google_sub: Option<String>,
-    pub email: String,
+    pub email: Option<String>,
     pub display_name: Option<String>,
     pub language: String,
     pub is_admin: bool,
@@ -224,7 +224,7 @@ pub async fn find_active_session(
                 u.id, u.google_sub, u.email, u.display_name, u.language, u.is_admin, u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
-                EXISTS (SELECT 1 FROM enrollments e WHERE e.email = u.email) AS student
+                EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id = u.id) AS student
          FROM s JOIN users u ON u.id = s.user_id",
     )
     .bind(token_hash)
@@ -495,23 +495,6 @@ pub async fn reset_password(
     delete_sessions_except(&mut *conn, id, None).await?;
     clear_login_failures(&mut *conn, email).await?;
     Ok(id)
-}
-
-/// 匯入名單時為新加入的學生建立內建帳號；信箱已有帳號（例如用 Google 登入過）時不動，回傳 `false`。
-pub async fn create_account_if_absent(
-    conn: impl sqlx::PgExecutor<'_>,
-    email: &str,
-    password_hash: &str,
-) -> Result<bool, sqlx::Error> {
-    let r = sqlx::query(
-        "INSERT INTO users (email, password_hash, must_change_password)
-         VALUES (lower($1), $2, true) ON CONFLICT (email) DO NOTHING",
-    )
-    .bind(email)
-    .bind(password_hash)
-    .execute(conn)
-    .await?;
-    Ok(r.rows_affected() > 0)
 }
 
 /// 部署時依 `ADMIN_EMAILS` 建立首位管理者的內建帳號（初始密碼來自環境變數，首次登入須更改）。

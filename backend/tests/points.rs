@@ -164,7 +164,7 @@ async fn deleting_the_account_removes_its_ledger(pool: PgPool) {
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            Some(json!({"confirm_email": "student@example.com"})),
+            Some(json!({"confirm_student_id": "10000000A"})),
         ),
     )
     .await;

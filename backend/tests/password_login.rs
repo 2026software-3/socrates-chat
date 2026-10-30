@@ -388,7 +388,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
             "POST",
             &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
-            Some(json!({"text": "email\nS1@example.com\ns2@example.com"})),
+            Some(json!({"text": "甲,11000001A,S1@example.com\n乙,11000002A,s2@example.com"})),
         ),
     )
     .await;
@@ -404,7 +404,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
 
     let s1 = creds
         .iter()
-        .find(|c| c["email"] == "s1@example.com")
+        .find(|c| c["student_id"] == "11000001A")
         .unwrap();
     let temp = s1["temporary_password"].as_str().unwrap();
     let res = login(&app, "s1@example.com", temp).await;
@@ -426,7 +426,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
             "POST",
             &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
-            Some(json!({"text": "s1@example.com"})),
+            Some(json!({"text": "甲,11000001A,s1@example.com"})),
         ),
     )
     .await;
@@ -451,7 +451,7 @@ async fn roster_import_does_not_overwrite_an_existing_account(pool: PgPool) {
             "POST",
             &format!("/api/classrooms/{room}/roster/import"),
             Some(&admin),
-            Some(json!({"text": "student@example.com"})),
+            Some(json!({"text": "學生,10000000A,student@example.com"})),
         ),
     )
     .await;
@@ -573,7 +573,7 @@ async fn google_login_does_not_inherit_the_must_change_gate(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn teachers_importing_the_roster_do_not_get_student_credentials(pool: PgPool) {
+async fn teachers_importing_the_roster_get_student_credentials(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let res = send(
@@ -582,21 +582,21 @@ async fn teachers_importing_the_roster_do_not_get_student_credentials(pool: PgPo
             "POST",
             &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.teacher),
-            Some(json!({"text": "newstudent@example.com"})),
+            Some(json!({"text": "學生,11000003A,newstudent@example.com"})),
         ),
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = json_body(res).await;
     assert_eq!(body["added"], 1);
-    assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
-    // 沒有建立帳號：教師拿不到可以冒用學生身分的密碼
+    assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
+    // 教師匯入會建立帳號並取得一次性密碼
     let (n,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM users WHERE email = 'newstudent@example.com'")
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(n, 0);
+    assert_eq!(n, 1);
     assert_eq!(
         login(&app, "newstudent@example.com", "anything-at-all")
             .await
@@ -616,7 +616,7 @@ async fn roster_import_never_creates_accounts_for_staff_emails(pool: PgPool) {
             "POST",
             &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.admin),
-            Some(json!({"text": "other-teacher@example.com\nadmin2@example.com\nregular@example.com"})),
+            Some(json!({"text": "甲,12000001A,other-teacher@example.com\n乙,12000002A,admin2@example.com\n丙,12000003A,regular@example.com"})),
         ),
     )
     .await;
@@ -632,7 +632,7 @@ async fn roster_import_never_creates_accounts_for_staff_emails(pool: PgPool) {
             "POST",
             &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.admin),
-            Some(json!({"text": "other-teacher@example.com\nteacher@example.com\nadmin@example.com"})),
+            Some(json!({"text": "甲,12000001A,other-teacher@example.com\n乙,12000004A,teacher@example.com\n丙,12000005A,admin@example.com"})),
         ),
     )
     .await;

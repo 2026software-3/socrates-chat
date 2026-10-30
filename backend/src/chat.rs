@@ -131,7 +131,7 @@ pub(crate) async fn create(
     type Source = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String, String);
     let source: Option<Source> =
         match (b.activity_id, b.topic_id) {
-            (Some(a), _) => activity_store::find_startable(&mut tx, a, &cu.user.email)
+            (Some(a), _) => activity_store::find_startable(&mut tx, a, cu.user.id)
                 .await?
                 .map(|s| {
                     (

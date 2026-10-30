@@ -60,7 +60,7 @@ pub fn routes() -> Router<AppState> {
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 q 有效，換搜尋條件要從第一頁開始"),
         ("q" = Option<String>, Query, description = "搜尋電子郵件或顯示名稱（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
-    responses((status = 200, description = "學生分頁，依 email 排序，帶符合條件的 total", body = StudentPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "學生分頁，依帳號 UUID 排序，帶符合條件的 total", body = StudentPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_students(
     RequireTeacher(cu): RequireTeacher,
@@ -71,7 +71,7 @@ pub(crate) async fn list_students(
     let limit = query.page.limit()?;
     let q = pagination::search_term(query.q.as_deref())?;
     let fingerprint = pagination::fingerprint(&q.map(str::to_lowercase));
-    let cursor: Option<(String, String)> = query.page.cursor("students")?;
+    let cursor: Option<(Uuid, String)> = query.page.cursor("students")?;
     // 游標只對產生它時的搜尋條件有效；換條件要從第一頁開始
     if cursor.as_ref().is_some_and(|c| c.1 != fingerprint) {
         return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
@@ -82,15 +82,14 @@ pub(crate) async fn list_students(
         roster_store::list_students(
             &state.pool,
             classroom.id,
-            cursor.as_ref().map(|c| c.0.as_str()),
+            cursor.as_ref().map(|c| c.0),
             (limit + 1) as i64,
             search.as_deref(),
         ),
         roster_store::count_students_matching(&state.pool, classroom.id, search.as_deref()),
     )?;
-    let Page { items, next_cursor } = pagination::page(rows, limit, "students", |row| {
-        (row.email.clone(), fingerprint.clone())
-    })?;
+    let Page { items, next_cursor } =
+        pagination::page(rows, limit, "students", |row| (row.id, fingerprint.clone()))?;
     Ok(Json(StudentPage {
         items,
         next_cursor,
@@ -290,8 +289,9 @@ pub(crate) async fn set_status(
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct DeleteBody {
-    /// 再次確認：必須與路徑上的電子郵件相同（S-02.5）
-    confirm_email: String,
+    /// 再次確認：必須與學生學號相同（不分大小寫）。
+    #[schema(required)]
+    confirm_student_id: Option<String>,
 }
 
 /// 刪除學生帳號：一併刪除對話、總結與所有教室的修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除；
@@ -301,7 +301,7 @@ pub(crate) struct DeleteBody {
     path = "/api/students/{email}",
     tag = "roster",
     summary = "刪除學生帳號與其資料",
-    params(("email" = String, Path, description = "電子郵件")),
+    params(("email" = String, Path, description = "學生帳號 UUID 或電子郵件")),
     request_body = DeleteBody,
     responses((status = 204, description = "已刪除"), (status = 400, description = "confirmation_mismatch", body = crate::error::ErrorBody), (status = 404, description = "not_found：帳號不存在，或教師要刪除的學生不完全屬於自己建立的教室", body = crate::error::ErrorBody), (status = 409, description = "not_a_student", body = crate::error::ErrorBody))
 )]
@@ -311,42 +311,66 @@ pub(crate) async fn delete_student(
     Path(email): Path<String>,
     Json(body): Json<DeleteBody>,
 ) -> Result<StatusCode, ApiError> {
-    let email = email_or_400(&email)?;
-    if normalize_email(&body.confirm_email).as_deref() != Some(email.as_str()) {
-        return Err(ApiError::bad_request(
-            "confirmation_mismatch",
-            "確認的電子郵件與要刪除的帳號不符",
-        ));
-    }
+    let id = Uuid::parse_str(&email).ok();
+    let normalized_email = if id.is_none() {
+        Some(email_or_400(&email)?)
+    } else {
+        None
+    };
     let mut tx = state.pool.begin().await?;
-    if is_staff_email(&state, &mut tx, &email).await? {
+    let account: Option<(Uuid, Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT id, email, student_id, is_admin FROM users WHERE id = $1 OR email = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(normalized_email.as_deref())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (user_id, email, student_id, is_admin) = account.ok_or_else(ApiError::not_found)?;
+    if is_admin
+        || if let Some(email) = &email {
+            is_staff_email(&state, &mut tx, email).await?
+        } else {
+            false
+        }
+    {
         return Err(ApiError::conflict("not_a_student", "只能刪除學生帳號"));
     }
     // 刪除會連同所有教室的資料一併刪除：教師只能刪除完全屬於自己教室的學生（範圍待確認，S-02.5）；
     // 其他情況與不存在的帳號同樣回 404，不外露資源是否存在。
-    if !cu.roles.admin && !roster_store::belongs_only_to_owner(&mut tx, &email, cu.user.id).await? {
+    if !cu.roles.admin
+        && !roster_store::user_belongs_only_to_owner(&mut tx, user_id, cu.user.id).await?
+    {
         return Err(ApiError::not_found());
     }
-    // 所有教室的名單項目一併移除（學生可屬於多個教室）
-    let on_roster = sqlx::query("DELETE FROM enrollments WHERE email = $1")
-        .bind(&email)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    if !student_id
+        .as_deref()
+        .zip(body.confirm_student_id.as_deref())
+        .is_some_and(|(expected, supplied)| expected.eq_ignore_ascii_case(supplied.trim()))
+    {
+        return Err(ApiError::bad_request(
+            "confirmation_mismatch",
+            "確認的學號與要刪除的帳號不符",
+        ));
+    }
     // 對話、訊息、總結與 session 由外鍵連動刪除
-    let had_account = sqlx::query("DELETE FROM users WHERE email = $1")
-        .bind(&email)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    if on_roster + had_account == 0 {
-        return Err(ApiError::not_found());
-    }
-    sqlx::query("DELETE FROM login_failures WHERE email = $1")
-        .bind(&email)
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    audit(&mut *tx, cu.user.id, "student_deleted", &email, None).await?;
+    if let Some(email) = &email {
+        sqlx::query("DELETE FROM login_failures WHERE email = $1")
+            .bind(email)
+            .execute(&mut *tx)
+            .await?;
+    }
+    audit(
+        &mut *tx,
+        cu.user.id,
+        "student_deleted",
+        email.as_deref().unwrap_or(&user_id.to_string()),
+        None,
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

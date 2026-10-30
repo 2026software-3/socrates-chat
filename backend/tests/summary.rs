@@ -370,7 +370,7 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["conversation_id"], conv);
     assert_eq!(rows[0]["student_email"], "student@example.com");
-    assert_eq!(rows[0]["student_name"], "User sub-student");
+    assert_eq!(rows[0]["student_name"], "學生");
     assert_eq!(rows[0]["language"], "zh-TW");
     assert_eq!(rows[0]["stance"], "會拉桿");
     assert!(!list.to_string().contains("私密的對話原文"));
@@ -445,11 +445,7 @@ async fn teacher_translates_a_summary_into_their_account_language_without_conver
     );
     assert!(translation.messages[0].content.contains("會拉桿"));
     assert!(translation.messages[0].content.contains("救五人優先"));
-    for private in [
-        "這句是私密的對話原文",
-        "student@example.com",
-        "User sub-student",
-    ] {
+    for private in ["這句是私密的對話原文", "student@example.com", "學生"] {
         assert!(!translation.messages[0].content.contains(private));
     }
 }

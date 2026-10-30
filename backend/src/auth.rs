@@ -370,9 +370,15 @@ async fn finish_login(
     auth_store::create_session(&state.pool, user.id, &hash_token(&token))
         .await
         .map_err(|_| "login_failed")?;
-    audit(&state.pool, user.id, "login", &user.email, None)
-        .await
-        .map_err(|_| "login_failed")?;
+    audit(
+        &state.pool,
+        user.id,
+        "login",
+        user.email.as_deref().unwrap_or(""),
+        None,
+    )
+    .await
+    .map_err(|_| "login_failed")?;
     Ok(token)
 }
 
@@ -401,7 +407,7 @@ pub(crate) async fn logout(
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct MeResponse {
     id: Uuid,
-    email: String,
+    email: Option<String>,
     display_name: Option<String>,
     language: String,
     is_admin: bool,
@@ -436,7 +442,7 @@ pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
 }
 
 /// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
-const DISPLAY_NAME_MAX_CHARS: usize = 20;
+const DISPLAY_NAME_MAX_CHARS: usize = 30;
 
 /// 去頭尾空白後的名稱是否可用：不超過上限，且不含控制字元（換行、tab、NUL 等）。
 /// U+2028／U+2029（行／段落分隔，類別 Zl／Zp）不屬於 `is_control`，但同樣會破壞清單排版，一併拒絕。
@@ -447,7 +453,7 @@ fn valid_display_name(name: &str) -> bool {
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct MePatch {
-    /// 沒帶＝保留；`null` 或空白字串＝清除（介面回到顯示電子郵件）；上限 20 個字元，不可含控制字元，其他字元不限制。
+    /// 沒帶＝保留；`null` 或空白字串＝恢復匯入姓名；上限 30 個字元，不可含控制字元。
     #[serde(default, deserialize_with = "nullable")]
     display_name: Option<Option<String>>,
     /// 介面與之後建立之對話的語言；僅接受 `zh-TW`、`en`、`es`。
@@ -486,7 +492,7 @@ pub(crate) async fn update_me(
     if name.iter().flatten().any(|n| !valid_display_name(n)) {
         return Err(ApiError::bad_request(
             "invalid_display_name",
-            "顯示名稱最多 20 個字元，且不可包含控制字元",
+            "顯示名稱最多 30 個字元，且不可包含控制字元",
         ));
     }
     if name.is_none() && p.language.is_none() {
@@ -495,7 +501,7 @@ pub(crate) async fn update_me(
     // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
     let (display_name, language): (Option<String>, String) = sqlx::query_as(
         "UPDATE users SET
-             display_name = CASE WHEN $2 THEN $3 ELSE display_name END,
+             display_name = CASE WHEN $2 THEN COALESCE($3, imported_name) ELSE display_name END,
              language = COALESCE($4::text, language),
              language_initialized = language_initialized OR $4::text IS NOT NULL,
              updated_at = now()

@@ -10,6 +10,11 @@ async fn database_clock_decides_and_one_sided_schedules_work(pool: PgPool) {
     use socrates_chat_backend::activity_store;
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
+    let student_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let id: uuid::Uuid = published_activity_with_topic(&app, &a, "schedule")
         .await
         .parse()
@@ -37,7 +42,7 @@ async fn database_clock_decides_and_one_sided_schedules_work(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-        let listed = activity_store::list_published_for_student(&pool, "student@example.com")
+        let listed = activity_store::list_published_for_student(&pool, student_id)
             .await
             .unwrap();
         assert_eq!(
@@ -46,7 +51,7 @@ async fn database_clock_decides_and_one_sided_schedules_work(pool: PgPool) {
             "{opens:?} {closes:?}"
         );
         let mut conn = pool.acquire().await.unwrap();
-        let allowed = activity_store::find_startable(&mut conn, id, "student@example.com")
+        let allowed = activity_store::find_startable(&mut conn, id, student_id)
             .await
             .unwrap();
         assert_eq!(allowed.is_some(), open_now, "{opens:?} {closes:?}");
@@ -68,14 +73,14 @@ async fn database_clock_decides_and_one_sided_schedules_work(pool: PgPool) {
             .await
             .unwrap();
         assert!(
-            activity_store::list_published_for_student(&pool, "student@example.com")
+            activity_store::list_published_for_student(&pool, student_id)
                 .await
                 .unwrap()
                 .is_empty()
         );
         let mut conn = pool.acquire().await.unwrap();
         assert!(
-            activity_store::find_startable(&mut conn, id, "student@example.com")
+            activity_store::find_startable(&mut conn, id, student_id)
                 .await
                 .unwrap()
                 .is_none()
