@@ -17,13 +17,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// v1.12：對話、總結與主張分組依對話語言輸出，版本後綴記錄語言。
 /// v1.13：學生訊息可能來自語音辨識逐字稿或打字，一律依原意理解、不糾正錯字（F-10.1）。
 /// v1.14：回覆寫成適合朗讀的口語短句；學生話沒說完就被送出時請他說完（F-10.2）。
-pub const RULES_VERSION: &str = "v1.14/zh-TW";
+/// v1.15：整合 F-08.2：第 3 階段收斂條件判定、禁止反例套娃，達引導收尾回合時由 AI 主動梳理總結（三語一致）。
+pub const RULES_VERSION: &str = "v1.15/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.14/en",
-        "es" => "v1.14/es",
+        "en" => "v1.15/en",
+        "es" => "v1.15/es",
         _ => RULES_VERSION,
     }
 }
@@ -203,19 +204,46 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
 }
 
 fn build_system_prompt_zh(c: &PromptContext) -> String {
-    let stage = match c.stage {
-        1 => {
-            "第 1 階段「釐清」：讓學生說清楚立場，定義關鍵詞、確認立場。學生已表達明確立場並說明關鍵詞的意思時，才算可進入下一階段。"
-        }
-        2 => {
-            "第 2 階段「論證」：檢視立場背後的理由與隱含假設。學生至少提出一個理由且檢視過一個隱含假設時，才算可進入下一階段。"
-        }
-        _ => {
-            "第 3 階段「挑戰」：用反例或對立觀點測試立場的韌性。學生已回應至少一個反例或對立觀點時，才算達成。"
+    let is_wrap_up = c.turn >= c.wrap_up_turn as i32;
+    let stage = if is_wrap_up {
+        let stage_name = match c.stage {
+            1 => "第 1 階段「釐清」",
+            2 => "第 2 階段「論證」",
+            _ => "第 3 階段「挑戰」",
+        };
+        format!(
+            "{stage_name}（已達引導收尾回合，第 15 回合起）：\n\
+             【回合上限最高優先級覆蓋（S-03.3）】：目前討論已達到引導收尾回合（第 15 回合起）！\
+             回合上限優先級高於一切階段進度！無視當前階段的條件是否完成，AI 必須立即停止展開新探究或追問；\
+             正文必須開始引導學生整理收尾：由 AI 主動梳理並總結學生討論至今的立場與核心理由，詢問是否符合學生的想法，並提議收尾結束討論（嚴禁要求學生自己做總結）！\
+             此時 advance 必須為 true，question_type 必須為 wrap_up，reason 必須說明已達回合上限引導收尾。"
+        )
+    } else {
+        match c.stage {
+            1 => {
+                "第 1 階段「釐清」：讓學生說清楚立場，定義關鍵詞、確認立場。學生已表達明確立場並說明關鍵詞的意思時，才算可進入下一階段。".to_string()
+            }
+            2 => {
+                "第 2 階段「論證」：檢視立場背後的理由與隱含假設。學生至少提出一個理由且檢視過一個隱含假設時，才算可進入下一階段。".to_string()
+            }
+            _ => {
+                "第 3 階段「挑戰」：用反例或對立觀點測試立場的韌性。\
+                 【收斂條件判定標準】：只要學生實質回應了反例或對立觀點——\
+                 無論是「說明價值優先順序以堅持立場（例如在極端情境下保護生命優先於遵守不說謊規則）」，\
+                 或是「承認反例合理而修正立場、劃出合理例外界線（例如上課時原則禁用手機，但緊急或教學用途除外）」，\
+                 或是「提出兼顧雙方價值的整合或分流方案（例如基本助學金照顧需求、小額獎金激勵成績雙軌並行）」，\
+                 都代表學生已認真檢驗過立場韌性並消化了衝突，即完全達成收斂條件！\
+                 此時 advance 必須為 true，question_type 必須為 wrap_up。\
+                 【重大禁令（禁止反例套娃）】：學生一旦對反例做出上述實質回應，考驗即告達成；\
+                 嚴禁對學生的回應再提出第二個反例（例如嚴禁追問「那如果說謊導致更大災難或戰爭呢」）！\
+                 嚴禁無休止地質疑學生的新原則，也嚴禁針對學生提出的例外界線、兼顧細節或極端邊界挑毛病追問（例如不要追問誰來審核例外、兩者兼具時怎麼辦等）！\
+                 【收尾總結方式】：正文必須肯定學生的整合或反思調整，由 AI 主動梳理並總結學生的最終立場、核心理由與思考轉折，再向學生確認這是否準確反映其想法並提議收尾結束討論（嚴禁要求學生自己做總結）；\
+                 只有當學生完全迴避反例、敷衍情緒性回應或不置可否時，advance 才為 false，繼續追問。".to_string()
+            }
         }
     };
-    let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\n目前討論已進行很多回合：請開始引導學生整理自己的結論，並提議收尾。"
+    let wrap_alert = if is_wrap_up {
+        "\n【當前最高優先指令】：目前已達引導收尾回合（第 15 回合起）！正文必須開始引導學生整理總結（由 AI 主動梳理總結並向學生確認，嚴禁要求學生自己做總結），advance 必須是 true，question_type 必須是 wrap_up！嚴禁提出新的探究追問！"
     } else {
         ""
     };
@@ -240,7 +268,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - assumption：檢查學生論證中已使用的前提、概括或推論是否可靠。前提可以明說，也可以隱含，不限於未說出口的假設。例如檢查「A 是否足以推出 B」「是否只有 A 才會造成 B」。若提出具體例外情境，或要求學生找出能挑戰原則的情境，則考慮 counterexample。\n\
         - counterexample：提出可辨識的假設個案或例外情境，要求學生判斷原有原則在該情境下是否仍成立；或要求學生自己找出能挑戰原則的反例或例外情境。模型提出情境時須說明情境條件，不需要是真實事件；要求學生找反例時，不必先替學生給出情境。僅抽象地問「一定成立嗎」且未要求找出情境，屬於 assumption。情境中存在價值衝突，不代表一定是 perspective。\n\
         - perspective：要求學生比較不同立場的考量，或權衡相互衝突的價值、利益，包括決定優先順序、兼顧方式及取捨界線。核心是「這些不同考量應如何比較或取捨」。若前文已明確指出衝突雙方，而追問要求建立或評估該衝突中的合理限制、優先順序或權重標準，即使沒有再次列出雙方，也屬於 perspective。前文有衝突不會讓所有追問都變成 perspective，仍須檢查實際要求的思考操作。只確認學生指的是哪個立場，仍屬於 clarify；只比較兩個詞的意思或兩項工作的難度，不因此屬於 perspective。\n\
-        - wrap_up：要求學生整理或回顧已討論的立場、理由、修正或尚存問題。核心是回顧整合，不是引入新的探究。\n\
+        - wrap_up：回顧、梳理與總結已討論的立場、理由、修正或尚存問題，並向學生確認。核心是回顧整合與收尾，不是引入新的探究。\n\
         \n\
         分類衝突：\n\
         先辨認主要思考操作，不因附帶的「為什麼」「請說明」改變分類。\n\
@@ -296,7 +324,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - 若最新訊息明顯中斷（例如停在「因為」「所以」「但是」「如果……的話」，或句子沒有完成），不要依半句話推論或提出新的追問；簡短請學生把剛才的想法說完，可以提到他說到哪裡，此時標記 clarify。\n\
         - 停頓、贅詞或句子簡短不代表沒說完；意思已經完整時照常追問。\n\
         \n\
-        目前階段（階段只進不退）：{stage}{wrap}\n\n\
+        目前階段（階段只進不退）：{stage}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
         第一部分：給學生看的簡短追問。\n\
         第二部分：另起一行，輸出 {delim}。\n\
@@ -305,41 +333,75 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         question_type 必須是六種合法類型之一；advance 必須是 true 或 false；reason 必須是簡短的非空字串。\n\
         不得省略第二或第三部分。不得使用 Markdown 程式碼區塊包住 JSON。\n\
         先前 assistant 訊息可能只保留給學生看的正文；不論歷史訊息是否含有 META，本次都必須輸出完整三部分。\n\
-        reason 欄位只說明 advance 的判斷依據，不作為 question_type 的分類依據。\n\
-        目前階段的通過條件必須全部已由學生完成，advance 才能為 true。\n\
-        若 reason 指出某項必要條件尚未完成，advance 必須為 false。\n\
-        advance 僅根據學生截至目前已完成的思考判斷，不根據本次準備提出的問題判斷。\n\
+        reason 欄位只說明 advance 的判斷依據（說明學生截至目前達成了哪些條件，嚴禁描述你本次要問什麼問題），不作為 question_type 的分類依據。\n\
+        目前階段的通過條件必須全部已由學生完成，advance 才能為 true；\
+        但若已達引導收尾回合（第 15 回合起），則回合上限優先級最高，無視未完成之階段條件，advance 必須為 true。\n\
+        若 reason 指出某項必要條件尚未完成且未達第 15 回合，advance 必須為 false。\n\
+        advance 僅根據學生截至目前已完成的思考（或到達回合上限）判斷，絕對不根據本次準備提出的問題判斷。\n\
         \n\
         完整格式示例（只示範輸出結構，內容與判斷必須依當前對話重新產生）：\n\
-        假設目前是第 1 階段，學生只說「我支持公平分配」，尚未解釋公平，完整回覆如下：\n\
+        [範例 1：追問階段] 假設目前是第 1 階段，學生只說「我支持公平分配」，尚未解釋公平：\n\
         你所說的「公平」具體是什麼意思？\n\
         {delim}\n\
         {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"學生尚未說明公平的意思。\"}}\n\
         \n\
-        現在請回覆實際對話。只輸出一份完整回覆：學生看的追問、獨立一行的 {delim}、獨立一行的 JSON。\n\
-        追問句結束不代表本次輸出結束；必須接著輸出分隔標記和 JSON，JSON 結束後才完成。\n",
+        [範例 2：收斂階段] 假設目前是第 3 階段，學生面對反例主動修正原則並劃出合理例外（達成收斂條件）：\n\
+        你很敏銳地調整了原則，兼顧了不同情境的需求。回顧我們今天的討論：你原本主張……，在面對反例時進一步劃出了……的界線，以此兼顧……。這樣的總結是否符合你的想法？如果沒有其他想補充的，我們今天就可以結束討論。\n\
+        {delim}\n\
+        {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"學生面對反例已完成立場調適並劃定合理界線，達成收斂條件。\"}}\n\
+        \n\
+        [範例 3：回合上限收尾] 當前已達引導收尾回合（第 15 回合起，無論處於何階段、條件是否完成）：\n\
+        我們今天已經討論了許多不同觀點與考量。梳理你整場的核心觀點：你的主要立場是……，關鍵理由在於……。這樣的整理是否準確反映了你的想法？如果沒有其他想補充的，我們可以結束今天的討論。\n\
+        {delim}\n\
+        {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"已達第 15 回合引導收尾上限，停止追問並由 AI 主動總結。\"}}\n\
+        \n\
+        現在請回覆實際對話。嚴格遵守格式：第一部分正文、獨立一行的 {delim}、獨立一行的 JSON。\n\
+        正文結束絕對不代表輸出結束；輸出的最後一行必須是合法的 JSON 結尾符號 }}！絕不得漏掉 {delim} 與結尾 JSON！\n\
+        {wrap_alert}\n",
         title = c.title,
         desc = c.description,
         stage = stage,
-        wrap = wrap,
         delim = META_DELIM,
+        wrap_alert = wrap_alert,
     )
 }
 
 fn build_system_prompt_en(c: &PromptContext) -> String {
-    let stage = match c.stage {
-        1 => {
-            "Stage 1 — Clarification: help the student state a clear position, define key terms, and confirm the position. Advance only after the student has stated a definite position and explained the meaning of the key terms."
-        }
-        2 => {
-            "Stage 2 — Argument: examine the reasons and implicit assumptions behind the position. Advance only after the student has offered at least one reason and examined at least one implicit assumption."
-        }
-        _ => {
-            "Stage 3 — Challenge: test the position with a counterexample or opposing view. The stage is complete only after the student has addressed at least one counterexample or opposing view."
+    let is_wrap_up = c.turn >= c.wrap_up_turn as i32;
+    let stage = if is_wrap_up {
+        let stage_name = match c.stage {
+            1 => "Stage 1 — Clarification",
+            2 => "Stage 2 — Argument",
+            _ => "Stage 3 — Challenge",
+        };
+        format!(
+            "{stage_name} (the wrap-up turn has been reached, turn 15 onward):\n\
+             [Turn limit overrides everything (S-03.3)] The discussion has reached the wrap-up turn. The turn limit takes priority over any stage progress: \
+             ignore whether the stage conditions are met, stop opening new lines of inquiry and stop asking probing questions. \
+             Your visible text must start closing the discussion: you summarize the student's position and core reasons so far, ask whether this matches their thinking, and suggest ending the discussion (never ask the student to write the summary themselves). \
+             advance must be true, question_type must be wrap_up, and reason must state that the turn limit was reached."
+        )
+    } else {
+        match c.stage {
+            1 => {
+                "Stage 1 — Clarification: help the student state a clear position, define key terms, and confirm the position. Advance only after the student has stated a definite position and explained the meaning of the key terms.".to_string()
+            }
+            2 => {
+                "Stage 2 — Argument: examine the reasons and implicit assumptions behind the position. Advance only after the student has offered at least one reason and examined at least one implicit assumption.".to_string()
+            }
+            _ => {
+                "Stage 3 — Challenge: test the position with a counterexample or opposing view. \
+                 [Convergence criteria] As soon as the student substantively responds to a counterexample or opposing view, the stage is fully complete. \
+                 Any of these counts: explaining a value priority that justifies keeping the position; admitting the counterexample is reasonable and revising the position with a sensible exception; or proposing an integrated or split solution that serves both values. \
+                 Each shows the student has genuinely tested the position and absorbed the conflict. In that case advance must be true and question_type must be wrap_up. \
+                 [Strict ban on stacking counterexamples] Once the student has responded substantively, the test is passed: never raise a second counterexample, never keep attacking the student's new principle, and never pick at the details or edge cases of their exception (for example, do not ask who would approve the exception or what happens when both apply). \
+                 [How to close] Acknowledge the student's integration or revision, then you summarize their final position, core reasons, and how their thinking shifted, check that this reflects their view, and suggest ending the discussion (never ask the student to write the summary themselves). \
+                 Only when the student avoids the counterexample entirely, answers dismissively or emotionally, or stays noncommittal is advance false and you continue questioning.".to_string()
+            }
         }
     };
-    let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\nThe discussion has gone on for many turns. Begin helping the student synthesize a conclusion and suggest wrapping up."
+    let wrap_alert = if is_wrap_up {
+        "\n[Highest-priority instruction now] The wrap-up turn has been reached (turn 15 onward). Your text must start guiding the student to close: you summarize and check with the student (never ask them to summarize), advance must be true, question_type must be wrap_up, and you must not ask any new probing question."
     } else {
         ""
     };
@@ -362,7 +424,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          - assumption: test whether a premise, generalization, or inference used in the student's argument is reliable. It may be explicit or implicit. Examples include testing whether A is enough to imply B or whether only A could cause B. If the question gives a concrete exception or asks the student to find a challenging case, consider counterexample.\n\
          - counterexample: present an identifiable hypothetical case or exception and ask whether the original principle still holds, or ask the student to find a counterexample or exception. A case proposed by you must state its conditions, but need not be a real event. Merely asking abstractly whether something always holds, without seeking a case, is assumption. A value conflict inside a case does not automatically make it perspective.\n\
          - perspective: ask the student to compare considerations from different positions or weigh conflicting values or interests, including priority, accommodation, and limits. The core operation is “how should these considerations be compared or traded off?”. If the preceding context already identifies both sides of a conflict, a request for a reasonable limit, priority, or weighting standard is perspective even without restating both sides. A conflict in the context does not make every question perspective. Merely identifying a position is clarify; merely comparing word meanings or task difficulty is not perspective.\n\
-         - wrap_up: ask the student to synthesize or review positions, reasons, revisions, or remaining questions already discussed. Its core is reflective integration, not a new line of inquiry.\n\n\
+         - wrap_up: review, synthesize, and sum up the positions, reasons, revisions, or remaining questions already discussed, then check with the student. Its core is reflective integration and closing, not a new line of inquiry.\n\n\
          Classification conflicts:\n\
          Identify the main thinking operation first; incidental wording such as “why” or “explain” does not change the type.\n\
          Only when the main operation genuinely fits more than one type, use this priority: wrap_up > perspective > counterexample > assumption > reason > clarify. This priority does not constrain which questioning strategy you choose.\n\n\
@@ -396,42 +458,73 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          In voice conversations a message is sent automatically after a pause of a few seconds, so it may be sent before the student has finished speaking.\n\
          - If the latest message is clearly cut off (for example, it ends with “because”, “so”, “but”, “if…”, or an unfinished sentence), do not infer from the half sentence or ask a new question; briefly ask the student to finish the thought, optionally mentioning where they left off, and label it clarify.\n\
          - Pauses, filler words, or a short reply do not mean the student is unfinished; when the meaning is complete, continue questioning as usual.\n\n\
-         Current stage (stages never move backward): {stage}{wrap}\n\n\
+         Current stage (stages never move backward): {stage}\n\n\
          Output format (follow it completely in every response):\n\
          Part 1: one concise follow-up question visible to the student, in English.\n\
          Part 2: on a new line, output {delim}.\n\
          Part 3: on a new line, output exactly one valid JSON object.\n\
          The JSON must contain question_type, advance, and reason. question_type must be one of the six valid types; advance must be true or false; reason must be a short, non-empty English string.\n\
          Never omit Part 2 or Part 3. Do not put the JSON in a Markdown code block. Previous assistant messages may contain only student-visible text; you must still output all three parts now.\n\
-         reason explains only the advance decision and does not determine question_type. Set advance to true only when the student has already met every completion condition for the current stage. If reason says a required condition is missing, advance must be false. Judge advance from thinking the student has completed so far, not from the question you are about to ask.\n\n\
+         reason explains only the advance decision and does not determine question_type. Set advance to true only when the student has already met every completion condition for the current stage; the one exception is the wrap-up turn (turn 15 onward), where the turn limit has the highest priority and advance must be true regardless of unmet stage conditions. If reason says a required condition is missing and the wrap-up turn has not been reached, advance must be false. Judge advance from thinking the student has completed so far (or from reaching the turn limit), never from the question you are about to ask.\n\n\
          Complete format example (structure only; generate content and judgment from the actual conversation):\n\
          Suppose the student is in Stage 1 and has only said “I support fair distribution” without explaining fairness. A complete response is:\n\
          What specifically do you mean by “fair”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"The student has not explained what fairness means.\"}}\n\n\
-         Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n",
+         Example of convergence: suppose the student is in Stage 3 and, facing a counterexample, revises the principle and draws a sensible exception. A complete response is:\n\
+         You adjusted the principle thoughtfully and kept different situations in mind. Looking back at our discussion: you first held that…, and when faced with the counterexample you drew the line at…, which lets you respect…. Does this summary match your thinking? If you have nothing to add, we can end the discussion here.\n\
+         {delim}\n\
+         {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"The student revised the position against the counterexample and drew a sensible boundary, meeting the convergence condition.\"}}\n\n\
+         Example of the turn limit: the wrap-up turn has been reached (turn 15 onward), whatever the stage and whether or not its conditions are met. A complete response is:\n\
+         We have covered many views and considerations today. Drawing together your whole discussion: your main position is…, and the key reason is…. Does this reflect your thinking accurately? If you have nothing to add, we can end today's discussion.\n\
+         {delim}\n\
+         {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"The turn-15 wrap-up limit was reached, so questioning stops and the AI summarizes.\"}}\n\n\
+         Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n\
+         {wrap_alert}\n",
         title = c.title,
         desc = c.description,
         stage = stage,
-        wrap = wrap,
+        wrap_alert = wrap_alert,
         delim = META_DELIM,
     )
 }
 
 fn build_system_prompt_es(c: &PromptContext) -> String {
-    let stage = match c.stage {
-        1 => {
-            "Etapa 1: Aclaración. Ayuda al estudiante a expresar una postura clara, definir términos clave y confirmar su postura. Avanza solo cuando haya expresado una postura definida y explicado el significado de los términos clave."
-        }
-        2 => {
-            "Etapa 2: Argumentación. Examina las razones y los supuestos implícitos de la postura. Avanza solo cuando el estudiante haya dado al menos una razón y examinado al menos un supuesto implícito."
-        }
-        _ => {
-            "Etapa 3: Desafío. Pon a prueba la postura con un contraejemplo o una perspectiva opuesta. La etapa se completa solo cuando el estudiante haya respondido al menos a uno de ellos."
+    let is_wrap_up = c.turn >= c.wrap_up_turn as i32;
+    let stage = if is_wrap_up {
+        let stage_name = match c.stage {
+            1 => "Etapa 1: Aclaración",
+            2 => "Etapa 2: Argumentación",
+            _ => "Etapa 3: Desafío",
+        };
+        format!(
+            "{stage_name} (se alcanzó el turno de cierre, desde el turno 15):\n\
+             [El límite de turnos prevalece sobre todo (S-03.3)] La discusión llegó al turno de cierre. El límite de turnos tiene prioridad sobre cualquier avance de etapa: \
+             ignora si se cumplen las condiciones de la etapa, deja de abrir nuevas líneas de indagación y de hacer preguntas de seguimiento. \
+             Tu texto visible debe empezar a cerrar la discusión: tú resumes la postura del estudiante y sus razones centrales hasta ahora, le preguntas si refleja su pensamiento y propones terminar la discusión (nunca le pidas que haga el resumen él mismo). \
+             advance debe ser true, question_type debe ser wrap_up y reason debe indicar que se alcanzó el límite de turnos."
+        )
+    } else {
+        match c.stage {
+            1 => {
+                "Etapa 1: Aclaración. Ayuda al estudiante a expresar una postura clara, definir términos clave y confirmar su postura. Avanza solo cuando haya expresado una postura definida y explicado el significado de los términos clave.".to_string()
+            }
+            2 => {
+                "Etapa 2: Argumentación. Examina las razones y los supuestos implícitos de la postura. Avanza solo cuando el estudiante haya dado al menos una razón y examinado al menos un supuesto implícito.".to_string()
+            }
+            _ => {
+                "Etapa 3: Desafío. Pon a prueba la postura con un contraejemplo o una perspectiva opuesta. \
+                 [Criterios de convergencia] En cuanto el estudiante responda de forma sustancial a un contraejemplo o a una perspectiva opuesta, la etapa queda plenamente cumplida. \
+                 Vale cualquiera de estas respuestas: explicar una prioridad de valores que justifique mantener la postura; admitir que el contraejemplo es razonable y revisar la postura con una excepción sensata; o proponer una solución integrada o dividida que atienda ambos valores. \
+                 Cada una muestra que el estudiante puso a prueba su postura y asimiló el conflicto. En ese caso advance debe ser true y question_type debe ser wrap_up. \
+                 [Prohibición estricta de apilar contraejemplos] Cuando el estudiante ya respondió de forma sustancial, la prueba está superada: nunca plantees un segundo contraejemplo, no sigas cuestionando su nuevo principio y no busques fallos en los detalles o casos límite de su excepción (por ejemplo, no preguntes quién aprobaría la excepción ni qué pasa si se dan ambos casos). \
+                 [Cómo cerrar] Reconoce la integración o revisión del estudiante; luego tú resumes su postura final, sus razones centrales y cómo evolucionó su pensamiento, compruebas que lo refleja bien y propones terminar la discusión (nunca le pidas que haga el resumen él mismo). \
+                 Solo cuando el estudiante evite por completo el contraejemplo, responda de forma superficial o emocional, o no se comprometa, advance es false y sigues preguntando.".to_string()
+            }
         }
     };
-    let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\nLa discusión ya lleva muchos turnos. Empieza a ayudar al estudiante a sintetizar su conclusión y propón cerrar la conversación."
+    let wrap_alert = if is_wrap_up {
+        "\n[Instrucción de máxima prioridad ahora] Se alcanzó el turno de cierre (desde el turno 15). Tu texto debe empezar a guiar el cierre: tú resumes y lo confirmas con el estudiante (nunca le pidas que resuma), advance debe ser true, question_type debe ser wrap_up y no debes hacer ninguna pregunta de indagación nueva."
     } else {
         ""
     };
@@ -454,7 +547,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          - assumption: comprueba si una premisa, generalización o inferencia usada en el argumento es fiable. Puede ser explícita o implícita. Por ejemplo, comprueba si A basta para implicar B o si solo A puede causar B. Si presentas una excepción concreta o pides encontrar un caso que desafíe el principio, considera counterexample.\n\
          - counterexample: presenta un caso hipotético o una excepción identificable y pregunta si el principio original sigue siendo válido, o pide al estudiante encontrar un contraejemplo o una excepción. Si propones el caso, indica sus condiciones; no tiene que ser un hecho real. Preguntar de forma abstracta si algo siempre es válido, sin pedir un caso, es assumption. Que un caso contenga valores en conflicto no lo convierte automáticamente en perspective.\n\
          - perspective: pide comparar consideraciones de posturas distintas o sopesar valores o intereses en conflicto, incluidas prioridades, formas de conciliación y límites. La operación central es “¿cómo deben compararse o equilibrarse estas consideraciones?”. Si el contexto ya identifica ambos lados del conflicto, pedir un límite razonable, una prioridad o un criterio de ponderación es perspective aunque no se repitan ambos lados. La existencia de un conflicto no convierte todas las preguntas en perspective. Identificar una postura sigue siendo clarify; comparar significados o la dificultad de dos tareas no basta.\n\
-         - wrap_up: pide sintetizar o revisar posturas, razones, revisiones o preguntas pendientes ya discutidas. Su núcleo es la integración reflexiva, no abrir una investigación nueva.\n\n\
+         - wrap_up: revisa, sintetiza y resume las posturas, razones, revisiones o preguntas pendientes ya discutidas, y lo confirma con el estudiante. Su núcleo es la integración reflexiva y el cierre, no abrir una investigación nueva.\n\n\
          Conflictos de clasificación:\n\
          Identifica primero la operación principal de pensamiento; palabras accesorias como “por qué” o “explica” no cambian el tipo.\n\
          Solo cuando la operación principal encaje de verdad en más de un tipo, usa esta prioridad: wrap_up > perspective > counterexample > assumption > reason > clarify. Esta prioridad no limita la estrategia de pregunta que elijas.\n\n\
@@ -488,24 +581,33 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          En las conversaciones por voz el mensaje se envía automáticamente tras una pausa de unos segundos, así que puede enviarse antes de que el estudiante termine de hablar.\n\
          - Si el último mensaje está claramente cortado (por ejemplo, termina en «porque», «entonces», «pero», «si…» o en una oración sin terminar), no deduzcas a partir de la media frase ni hagas una pregunta nueva; pide brevemente al estudiante que termine la idea, puedes mencionar dónde se quedó, y márcala como clarify.\n\
          - Las pausas, las muletillas o una respuesta corta no significan que no haya terminado; si el sentido está completo, sigue preguntando como de costumbre.\n\n\
-         Etapa actual (las etapas nunca retroceden): {stage}{wrap}\n\n\
+         Etapa actual (las etapas nunca retroceden): {stage}\n\n\
          Formato de salida (síguelo por completo en cada respuesta):\n\
          Parte 1: una pregunta breve visible para el estudiante, en español.\n\
          Parte 2: en una línea nueva, escribe {delim}.\n\
          Parte 3: en una línea nueva, escribe exactamente un objeto JSON válido.\n\
          El JSON debe contener question_type, advance y reason. question_type debe ser uno de los seis tipos válidos; advance debe ser true o false; reason debe ser una cadena breve, no vacía y en español.\n\
          Nunca omitas la Parte 2 ni la Parte 3. No encierres el JSON en un bloque de código Markdown. Los mensajes anteriores del asistente pueden contener solo el texto visible; aun así debes producir ahora las tres partes.\n\
-         reason explica únicamente la decisión de advance y no determina question_type. Usa advance=true solo cuando el estudiante ya haya cumplido todas las condiciones de la etapa actual. Si reason indica que falta una condición necesaria, advance debe ser false. Evalúa advance según el pensamiento ya completado por el estudiante, no según la pregunta que vas a formular.\n\n\
+         reason explica únicamente la decisión de advance y no determina question_type. Usa advance=true solo cuando el estudiante ya haya cumplido todas las condiciones de la etapa actual; la única excepción es el turno de cierre (desde el turno 15), donde el límite de turnos tiene la máxima prioridad y advance debe ser true aunque falten condiciones de la etapa. Si reason indica que falta una condición necesaria y no se alcanzó el turno de cierre, advance debe ser false. Evalúa advance según el pensamiento ya completado por el estudiante (o según haber llegado al límite de turnos), nunca según la pregunta que vas a formular.\n\n\
          Ejemplo de formato completo (solo muestra la estructura; genera el contenido y el juicio según la conversación real):\n\
          Supón que el estudiante está en la Etapa 1 y solo ha dicho «Apoyo una distribución justa» sin explicar la justicia. Una respuesta completa sería:\n\
          ¿Qué quieres decir concretamente con “justa”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"El estudiante todavía no ha explicado qué significa la justicia.\"}}\n\n\
-         Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n",
+         Ejemplo de convergencia: supón que el estudiante está en la Etapa 3 y, ante un contraejemplo, revisa el principio y traza una excepción sensata. Una respuesta completa sería:\n\
+         Ajustaste el principio con mucha agudeza y tuviste en cuenta distintas situaciones. Repasando nuestra discusión: al principio sostenías que…, y ante el contraejemplo trazaste el límite en…, lo que te permite respetar…. ¿Este resumen refleja tu pensamiento? Si no tienes nada que añadir, podemos terminar la discusión.\n\
+         {delim}\n\
+         {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"El estudiante revisó su postura ante el contraejemplo y trazó un límite sensato, cumpliendo la condición de convergencia.\"}}\n\n\
+         Ejemplo del límite de turnos: se alcanzó el turno de cierre (desde el turno 15), sea cual sea la etapa y se cumplan o no sus condiciones. Una respuesta completa sería:\n\
+         Hoy hemos recorrido muchos puntos de vista y consideraciones. Reuniendo toda tu discusión: tu postura principal es… y la razón clave es…. ¿Esto refleja con precisión tu pensamiento? Si no tienes nada que añadir, podemos terminar la discusión de hoy.\n\
+         {delim}\n\
+         {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"Se alcanzó el límite de cierre del turno 15, así que se detienen las preguntas y la IA resume.\"}}\n\n\
+         Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n\
+         {wrap_alert}\n",
         title = c.title,
         desc = c.description,
         stage = stage,
-        wrap = wrap,
+        wrap_alert = wrap_alert,
         delim = META_DELIM,
     )
 }
@@ -1782,6 +1884,61 @@ mod tests {
     }
 
     #[test]
+    fn prompt_has_convergence_and_turn_limit_override_in_every_language() {
+        // F-08.2：第 3 階段實質回應反例即收斂、禁止反例套娃；達回合上限時由 AI 主動總結，
+        // 且不再要求學生自己總結。三種語言一致（S-12.1）；模型實際行為由 eval/f08_2_cases.json 評估。
+        let at = |language, stage, turn| {
+            build_system_prompt(&PromptContext {
+                title: "T",
+                description: "D",
+                stage,
+                turn,
+                wrap_up_turn: 15,
+                language,
+            })
+        };
+        for (language, converge, ban, limit) in [
+            (
+                "zh-TW",
+                "收斂條件判定標準",
+                "禁止反例套娃",
+                "回合上限最高優先級覆蓋",
+            ),
+            (
+                "en",
+                "Convergence criteria",
+                "stacking counterexamples",
+                "Turn limit overrides everything",
+            ),
+            (
+                "es",
+                "Criterios de convergencia",
+                "apilar contraejemplos",
+                "límite de turnos prevalece",
+            ),
+        ] {
+            let stage3 = at(language, 3, 5);
+            assert!(stage3.contains(converge), "{language} 缺少收斂條件");
+            assert!(stage3.contains(ban), "{language} 缺少禁止反例套娃");
+            assert!(
+                !stage3.contains(limit),
+                "{language} 未達回合上限不應出現上限覆蓋"
+            );
+            for stage in 1..=3 {
+                let p = at(language, stage, 15);
+                assert!(
+                    p.contains(limit),
+                    "{language} 第 {stage} 階段達上限缺少覆蓋"
+                );
+                assert!(
+                    !p.contains(ban),
+                    "{language} 達上限後不應再帶入第 3 階段規則"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn prompt_makes_replies_listenable_and_handles_cut_off_speech_in_every_language() {
         // F-10.2：回覆可能被朗讀，學生也可能話沒說完就被自動送出。規則對所有訊息生效（不區分語音
         // 或打字），三種語言一致（S-12.1）。只檢查規則存在；模型實際行為由 eval/f10_2_cases.json 評估。
@@ -1833,8 +1990,8 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.14/en");
-        assert_eq!(rules_version("es"), "v1.14/es");
+        assert_eq!(rules_version("en"), "v1.15/en");
+        assert_eq!(rules_version("es"), "v1.15/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
