@@ -2,7 +2,7 @@ import { defineMessages } from '@/i18n/define'
 
 export const authMessages = defineMessages({
   'zh-TW': {
-    'login.email': '電子郵件',
+    'login.account': '學號或電子郵件',
     'login.password': '密碼',
     'login.submit': '登入',
     'login.or': '或',
@@ -14,7 +14,7 @@ export const authMessages = defineMessages({
     'password.hint': '長度 8 到 128 個字元。',
     'password.submit': '更改密碼',
     'password.mismatch': '兩次輸入的新密碼不一致。',
-    'error.invalid_credentials': '電子郵件或密碼錯誤。',
+    'error.invalid_credentials': '學號、電子郵件或密碼錯誤。',
     'error.too_many_attempts': '嘗試次數過多，請 15 分鐘後再試。',
     'error.invalid_current_password': '目前密碼不正確。',
     'error.invalid_new_password': '新密碼長度需介於 8 到 128 個字元。',
@@ -41,7 +41,7 @@ export const authMessages = defineMessages({
     'disabled.back': '返回登入',
   },
   en: {
-    'login.email': 'Email',
+    'login.account': 'Student ID or email',
     'login.password': 'Password',
     'login.submit': 'Log in',
     'login.or': 'or',
@@ -53,7 +53,7 @@ export const authMessages = defineMessages({
     'password.hint': '8 to 128 characters.',
     'password.submit': 'Change password',
     'password.mismatch': 'The new passwords do not match.',
-    'error.invalid_credentials': 'Incorrect email or password.',
+    'error.invalid_credentials': 'Incorrect student ID, email or password.',
     'error.too_many_attempts': 'Too many attempts. Please try again in 15 minutes.',
     'error.invalid_current_password': 'The current password is incorrect.',
     'error.invalid_new_password': 'The new password must be 8 to 128 characters.',
@@ -81,7 +81,7 @@ export const authMessages = defineMessages({
     'disabled.back': 'Back to log in',
   },
   es: {
-    'login.email': 'Correo electrónico',
+    'login.account': 'Número de estudiante o correo electrónico',
     'login.password': 'Contraseña',
     'login.submit': 'Iniciar sesión',
     'login.or': 'o',
@@ -93,7 +93,7 @@ export const authMessages = defineMessages({
     'password.hint': 'De 8 a 128 caracteres.',
     'password.submit': 'Cambiar contraseña',
     'password.mismatch': 'Las nuevas contraseñas no coinciden.',
-    'error.invalid_credentials': 'Correo o contraseña incorrectos.',
+    'error.invalid_credentials': 'Número de estudiante, correo o contraseña incorrectos.',
     'error.too_many_attempts': 'Demasiados intentos. Inténtalo de nuevo en 15 minutos.',
     'error.invalid_current_password': 'La contraseña actual es incorrecta.',
     'error.invalid_new_password': 'La nueva contraseña debe tener de 8 a 128 caracteres.',

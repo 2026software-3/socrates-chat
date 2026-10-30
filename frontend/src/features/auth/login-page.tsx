@@ -21,7 +21,7 @@ export function LoginPage() {
   const auth = useAuth()
   const [params] = useSearchParams()
   const errorKey = loginErrorKey(params.get('error'))
-  const [email, setEmail] = useState('')
+  const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<unknown>(null)
@@ -31,7 +31,7 @@ export function LoginPage() {
     setSubmitting(true)
     setFormError(null)
     try {
-      await api.post('/api/auth/login', { email: email.trim(), password })
+      await api.post('/api/auth/login', { account: account.trim(), password })
       // 登入成功後讀取登入者；auth 變成 authed 就會導向首頁（需改密碼者再由外框導向改密碼頁）
       await auth.refresh()
     } catch (err) {
@@ -58,15 +58,16 @@ export function LoginPage() {
             </p>
           ) : null}
           <div className="flex flex-col gap-2">
-            <Label htmlFor="login-email">{t('login.email')}</Label>
+            <Label htmlFor="login-account">{t('login.account')}</Label>
             <Input
-              id="login-email"
-              type="email"
+              id="login-account"
+              type="text"
               autoComplete="username"
-              placeholder="name@example.com"
+              autoCapitalize="off"
+              spellCheck={false}
               required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
             />
           </div>
           <div className="flex flex-col gap-2">

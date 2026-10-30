@@ -551,7 +551,9 @@ const INVALID_CREDENTIALS: ApiError = ApiError::new(
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct LoginBody {
-    email: String,
+    /// 學號或電子郵件（含 `@` 以電子郵件比對，否則以學號比對）；舊欄位名稱 `email` 仍可使用。
+    #[serde(alias = "email")]
+    account: String,
     password: String,
 }
 
@@ -564,7 +566,7 @@ pub(crate) struct LoginResponse {
     post,
     path = "/api/auth/login",
     tag = "auth",
-    summary = "內建帳號登入",
+    summary = "內建帳號登入（學號或電子郵件加密碼）",
     request_body = LoginBody,
     security(()),
     responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody))
@@ -575,26 +577,26 @@ pub(crate) async fn password_login(
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result<Response, ApiError> {
-    let email = body.email.trim().to_lowercase();
+    let login_account = body.account;
     let now = Utc::now();
-    // 沒有連線資訊（例如測試）時 ip_key 為空字串：退回只以信箱計
+    // 沒有連線資訊（例如測試）時 ip_key 為空字串：退回只以登入帳號輸入計
     let ip_key = client_ip::client_key(
         connect_info.map(|Extension(ConnectInfo(addr))| addr.ip()),
         headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
         &state.config.trusted_proxies,
     );
-    if auth_store::is_locked(&state.pool, &email, &ip_key, now).await? {
+    if auth_store::is_locked(&state.pool, &login_account, &ip_key, now).await? {
         return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
     }
-    let account = auth_store::find_password_account(&state.pool, &email).await?;
+    let account = auth_store::find_password_account(&state.pool, &login_account).await?;
     let real_hash = account.as_ref().and_then(|a| a.password_hash.clone());
     let has_password = real_hash.is_some();
     let ok = verify_blocking(body.password, real_hash).await && has_password;
     let (Some(account), true) = (account, ok) else {
-        auth_store::record_login_failure(&state.pool, &email, &ip_key, now).await?;
+        auth_store::record_login_failure(&state.pool, &login_account, &ip_key, now).await?;
         return Err(INVALID_CREDENTIALS);
     };
-    auth_store::clear_login_failures_for(&state.pool, &email, &ip_key).await?;
+    auth_store::clear_login_failures_for(&state.pool, &login_account, &ip_key).await?;
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if account.disabled {
         return Err(ACCOUNT_DISABLED);
@@ -604,7 +606,12 @@ pub(crate) async fn password_login(
     let token = new_token();
     let session =
         auth_store::create_password_session(&state.pool, account.id, &hash_token(&token)).await?;
-    audit(&state.pool, account.id, "login", &email, None).await?;
+    // 稽核對象沒有電子郵件時（只用學號的學生）以帳號 UUID 識別，不記學號
+    let target = account
+        .email
+        .clone()
+        .unwrap_or_else(|| account.id.to_string());
+    audit(&state.pool, account.id, "login", &target, None).await?;
     Ok((
         [(
             header::SET_COOKIE,

@@ -249,7 +249,7 @@ fn csv_fields(line: &str) -> Option<Vec<String>> {
 }
 
 /// 學號為 8 位數字加 1 個英文字母（與資料庫 CHECK 一致，大小寫皆收）。
-fn is_valid_student_id(id: &str) -> bool {
+pub fn is_valid_student_id(id: &str) -> bool {
     id.len() == 9
         && id.as_bytes()[..8].iter().all(u8::is_ascii_digit)
         && id.as_bytes()[8].is_ascii_alphabetic()
