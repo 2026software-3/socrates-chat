@@ -226,13 +226,14 @@ async fn failure_records_never_hold_the_student_id_or_email(pool: PgPool) {
 async fn changing_the_password_clears_the_lock_on_both_the_student_id_and_the_email(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let known = "Known-Password-2026";
+    // 每次執行產生新的密碼，不在原始碼寫死密碼值（CodeQL 的 hard-coded cryptographic value）
+    let known = format!("Known-{}", uuid::Uuid::new_v4());
     let user_id: uuid::Uuid =
         sqlx::query_scalar("SELECT id FROM users WHERE student_id = '10000000A'")
             .fetch_one(&pool)
             .await
             .unwrap();
-    let hash = password::hash(known).unwrap();
+    let hash = password::hash(&known).unwrap();
     auth_store::set_password(&pool, user_id, &hash, false)
         .await
         .unwrap();
@@ -241,7 +242,7 @@ async fn changing_the_password_clears_the_lock_on_both_the_student_id_and_the_em
             login(&app, account, "wrong-password").await;
         }
         assert_json_error(
-            login(&app, account, known).await,
+            login(&app, account, &known).await,
             StatusCode::TOO_MANY_REQUESTS,
             "too_many_attempts",
         )
@@ -251,7 +252,7 @@ async fn changing_the_password_clears_the_lock_on_both_the_student_id_and_the_em
         .await
         .unwrap();
     for account in ["10000000A", "student@example.com"] {
-        assert_eq!(login(&app, account, known).await.status(), StatusCode::OK);
+        assert_eq!(login(&app, account, &known).await.status(), StatusCode::OK);
     }
     drop(a);
 }

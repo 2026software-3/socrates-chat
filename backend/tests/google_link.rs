@@ -34,6 +34,7 @@ async fn emailless_student(app: &Router, a: &Actors, student_id: &str) -> String
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let temp_cookie = session_cookie(&res).unwrap();
+    let new_password = format!("Fresh-{}", uuid::Uuid::new_v4());
     // 臨時密碼登入後必須先改密碼；改完用新密碼重新登入才是一般的學生 session
     let changed = send(
         app,
@@ -41,7 +42,7 @@ async fn emailless_student(app: &Router, a: &Actors, student_id: &str) -> String
             "POST",
             "/api/auth/change-password",
             Some(&temp_cookie),
-            Some(json!({"current_password": temp, "new_password": "Brand-New-Password-1"})),
+            Some(json!({"current_password": temp, "new_password": new_password})),
         ),
     )
     .await;
@@ -52,7 +53,7 @@ async fn emailless_student(app: &Router, a: &Actors, student_id: &str) -> String
             "POST",
             "/api/auth/login",
             None,
-            Some(json!({"account": student_id, "password": "Brand-New-Password-1"})),
+            Some(json!({"account": student_id, "password": new_password})),
         ),
     )
     .await;

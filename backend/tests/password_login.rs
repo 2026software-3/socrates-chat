@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use socrates_chat_backend::{auth_store, password};
 use sqlx::PgPool;
 
-const GOOD_PASSWORD: &str = "Correct-Horse-9";
+/// 每次執行都產生新的密碼，不在原始碼寫死密碼值。
+static GOOD_PASSWORD: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("Good-{}", uuid::Uuid::new_v4()));
 
 async fn login(app: &axum::Router, email: &str, pw: &str) -> axum::http::Response<Body> {
     send(
@@ -185,7 +187,7 @@ async fn there_is_no_registration_endpoint(pool: PgPool) {
                 "POST",
                 path,
                 None,
-                Some(json!({"email": "new@example.com", "password": GOOD_PASSWORD})),
+                Some(json!({"email": "new@example.com", "password": GOOD_PASSWORD.as_str()})),
             ),
         )
         .await;
@@ -232,7 +234,7 @@ async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
     assert_eq!(json_body(me).await["must_change_password"], true);
 
     assert_eq!(
-        change(&app, &cookie, &temp, GOOD_PASSWORD).await,
+        change(&app, &cookie, &temp, GOOD_PASSWORD.as_str()).await,
         StatusCode::NO_CONTENT
     );
     let res = send(
@@ -243,7 +245,7 @@ async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::OK);
     // 新密碼可登入，舊的臨時密碼不行
     assert_eq!(
-        login(&app, "teacher@example.com", GOOD_PASSWORD)
+        login(&app, "teacher@example.com", GOOD_PASSWORD.as_str())
             .await
             .status(),
         StatusCode::OK
@@ -262,7 +264,7 @@ async fn change_password_validates_input(pool: PgPool) {
     let cookie = session_cookie(&login(&app, "teacher@example.com", &temp).await).unwrap();
 
     assert_eq!(
-        change(&app, &cookie, "wrong-current", GOOD_PASSWORD).await,
+        change(&app, &cookie, "wrong-current", GOOD_PASSWORD.as_str()).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -280,7 +282,7 @@ async fn change_password_validates_input(pool: PgPool) {
             "POST",
             "/api/auth/change-password",
             None,
-            Some(json!({"current_password": temp, "new_password": GOOD_PASSWORD})),
+            Some(json!({"current_password": temp, "new_password": GOOD_PASSWORD.as_str()})),
         ),
     )
     .await;
@@ -301,7 +303,7 @@ async fn changing_password_keeps_current_session_and_drops_others(pool: PgPool) 
     let other = session_cookie(&login(&app, "teacher@example.com", &temp).await).unwrap();
 
     assert_eq!(
-        change(&app, &current, &temp, GOOD_PASSWORD).await,
+        change(&app, &current, &temp, GOOD_PASSWORD.as_str()).await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
@@ -318,7 +320,8 @@ async fn changing_password_keeps_current_session_and_drops_others(pool: PgPool) 
 async fn admin_reset_invalidates_existing_sessions_and_unlocks(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
-    let teacher = account_with_password(&app, &admin, "teacher@example.com", GOOD_PASSWORD).await;
+    let teacher =
+        account_with_password(&app, &admin, "teacher@example.com", GOOD_PASSWORD.as_str()).await;
     for _ in 0..5 {
         login(&app, "teacher@example.com", "bad-password").await;
     }
@@ -334,7 +337,7 @@ async fn admin_reset_invalidates_existing_sessions_and_unlocks(pool: PgPool) {
         StatusCode::OK
     );
     assert_eq!(
-        login(&app, "teacher@example.com", GOOD_PASSWORD)
+        login(&app, "teacher@example.com", GOOD_PASSWORD.as_str())
             .await
             .status(),
         StatusCode::UNAUTHORIZED
@@ -409,7 +412,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
     assert_eq!(res.status(), StatusCode::OK);
     let cookie = session_cookie(&res).unwrap();
     assert_eq!(
-        change(&app, &cookie, temp, GOOD_PASSWORD).await,
+        change(&app, &cookie, temp, GOOD_PASSWORD.as_str()).await,
         StatusCode::NO_CONTENT
     );
     // 名單內學生可以進入學生功能
@@ -423,7 +426,9 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
     assert_eq!(body["added"], 0);
     assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
     assert_eq!(
-        login(&app, "s1@example.com", GOOD_PASSWORD).await.status(),
+        login(&app, "s1@example.com", GOOD_PASSWORD.as_str())
+            .await
+            .status(),
         StatusCode::OK
     );
 }
@@ -540,10 +545,10 @@ fn password_hash_round_trips_and_temporary_passwords_are_random() {
 async fn password_changed_by_the_owner_survives_google_binding(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
-    account_with_password(&app, &admin, "student@example.com", GOOD_PASSWORD).await;
+    account_with_password(&app, &admin, "student@example.com", GOOD_PASSWORD.as_str()).await;
     login_as(&app, "sub-s", "student@example.com").await;
     assert_eq!(
-        login(&app, "student@example.com", GOOD_PASSWORD)
+        login(&app, "student@example.com", GOOD_PASSWORD.as_str())
             .await
             .status(),
         StatusCode::OK
