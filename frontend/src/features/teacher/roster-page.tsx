@@ -133,10 +133,10 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
               {result.invalid.length > 0 ? (
                 <ul className="text-destructive space-y-0.5 text-sm break-all">
                   {result.invalid.map((i) => (
-                    <li key={`${i.line}-${i.value}`}>
+                    <li key={`${i.line}-${i.reason}`}>
                       {t('teacher.roster.invalidLine', {
                         line: i.line,
-                        value: i.value,
+                        value: t(`teacher.roster.reason.${i.reason}`),
                       })}
                     </li>
                   ))}
@@ -151,14 +151,14 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>{t('teacher.roster.credsEmail')}</TableHead>
+                        <TableHead>{t('teacher.roster.credsStudentId')}</TableHead>
                         <TableHead>{t('teacher.roster.credsPassword')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {result.credentials.map((c) => (
-                        <TableRow key={c.email}>
-                          <TableCell className="break-all">{c.email}</TableCell>
+                        <TableRow key={c.student_id}>
+                          <TableCell className="break-all">{c.student_id}</TableCell>
                           <TableCell className="font-mono">{c.temporary_password}</TableCell>
                         </TableRow>
                       ))}
@@ -168,7 +168,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.email},${c.temporary_password}`).join('\n'))}
+                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.student_id},${c.temporary_password}`).join('\n'))}
                   >
                     {isCopied ? t('teacher.roster.credsCopied') : t('teacher.roster.credsCopyAll')}
                   </Button>

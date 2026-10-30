@@ -51,8 +51,8 @@
 
 修課名單屬於教室（S-14、S-01.4）；名單端點的路徑都帶教室 ID，由教室的建立者或管理者操作。其他教師存取他人的教室，與教室不存在、ID 格式不正確一律回相同的 `404 not_found`；學生、名單外帳號回 `403`，未登入回 `401`。
 
-- `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依帳號 UUID 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；排序鍵不因補上電子郵件而改變；原本以電子郵件為鍵的游標失效，請重新從第一頁開始。
-- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, email_updated, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；`email_updated` 是補上電子郵件的筆數，`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields`、`invalid_format`、`student_id_conflict` 或 `email_conflict`，不回顯姓名、學號。`credentials` 包含 `{ student_id, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
+- `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依帳號 UUID 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；排序鍵不隨電子郵件變動；原本以電子郵件為鍵的游標失效，請重新從第一頁開始。
+- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；匯入不會替既有帳號補上或修改電子郵件，新列的信箱在帳號已存在且沒有信箱時直接忽略；`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields`、`invalid_format`、`student_id_conflict`（學號相同但電子郵件不同）或 `email_conflict`，不回顯姓名、學號。`credentials` 包含 `{ student_id, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
 - `DELETE /api/classrooms/{id}/roster/{email}`：路徑參數可用學生信箱或帳號 UUID，只移出這間教室；原本就不在這間教室名單內回 `404`。學生仍在其他教室的名單時保有學生權限；不在任何教室名單內時，登入後看到 `403 not_enrolled`（尚未開通）。
 - `GET /api/classrooms/{id}/students?limit=&cursor=&q=`（#333）：該教室名單上的學生與帳號狀態（包含 `student_id` 學號，僅該教室的教師與管理者可存取），依帳號 UUID 排序分頁，回 `{ items, next_cursor, total }`。`q` 搜尋電子郵件與顯示名稱（不分大小寫的子字串，前後空白忽略，最多 100 字元；`%`、`_` 當一般字元），由後端對所有頁搜尋，不比對對話內容或其他欄位；空白或過長回 `400 invalid_filter`。`total` 是符合同一個 `q` 的學生總數，每一頁都帶，不受游標影響。舊版以電子郵件為鍵的游標失效，請從第一頁開始。游標綁定產生它時的 `q`（正規化後的雜湊，不含姓名或電子郵件）：換了 `q` 還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
 - `GET /api/dashboard/class` 的 `students_total`：教師為自己建立的所有教室內不重複的學生數，管理者為全部教室。

@@ -184,14 +184,7 @@ mod roster {
             "#/components/schemas/ImportResult"
         );
         let result = &document["components"]["schemas"]["ImportResult"]["properties"];
-        for field in [
-            "added",
-            "existing",
-            "email_updated",
-            "errors",
-            "invalid",
-            "credentials",
-        ] {
+        for field in ["added", "existing", "errors", "invalid", "credentials"] {
             assert!(result.get(field).is_some(), "ImportResult.{field}");
         }
         let credential = &document["components"]["schemas"]["Credential"]["properties"];

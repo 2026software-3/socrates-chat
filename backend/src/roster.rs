@@ -303,7 +303,6 @@ pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
 pub(crate) struct ImportResult {
     added: usize,
     existing: usize,
-    email_updated: usize,
     errors: usize,
     invalid: Vec<StudentImportError>,
     /// 這次新建立的內建帳號與臨時密碼（只在這次回應出現）；信箱已有帳號的不在其中。
@@ -357,7 +356,6 @@ pub(crate) async fn import_roster(
     let parsed = parse_student_roster(&body.text);
     let mut added = 0;
     let mut existing = 0;
-    let mut email_updated = 0;
     let mut invalid = parsed.invalid;
     let mut credentials = Vec::new();
     let mut tx = state.pool.begin().await?;
@@ -411,25 +409,21 @@ pub(crate) async fn import_roster(
             continue;
         }
         let user_id = if let Some(account) = accounts.first() {
-            let fill_email = account.email.is_none() && row.email.is_some();
-            if account.student_id.is_none() || fill_email {
+            // 既有帳號的電子郵件只由學生自己填：Google 登入靠電子郵件比對帳號，
+            // 匯入若能補上信箱，知道學號的人就能接管沒有信箱的學生帳號。
+            if account.student_id.is_none() {
                 sqlx::query(
                     "UPDATE users SET
                          student_id = COALESCE(student_id, $1),
                          imported_name = COALESCE(imported_name, $2),
-                         display_name = CASE WHEN student_id IS NULL THEN $2 ELSE display_name END,
-                         email = COALESCE(email, $3)
-                     WHERE id = $4",
+                         display_name = CASE WHEN student_id IS NULL THEN $2 ELSE display_name END
+                     WHERE id = $3",
                 )
                 .bind(&row.student_id)
                 .bind(&row.name)
-                .bind(&row.email)
                 .bind(account.id)
                 .execute(&mut *tx)
                 .await?;
-            }
-            if fill_email {
-                email_updated += 1;
             }
             account.id
         } else {
@@ -469,7 +463,6 @@ pub(crate) async fn import_roster(
         Json(ImportResult {
             added,
             existing,
-            email_updated,
             errors: invalid.len(),
             invalid,
             credentials,
