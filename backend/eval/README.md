@@ -1,6 +1,6 @@
 # F-07.1-AI 追問行為評估
 
-> F-10.1-AI（語音逐字稿與錯字理解）的評估另見 [`f10_1_README.md`](f10_1_README.md)。
+> F-10.1-AI（語音逐字稿與錯字理解）的評估另見 [`f10_1_README.md`](f10_1_README.md)；F-10.2-AI（輪流語音對話）另見 [`f10_2_README.md`](f10_2_README.md)。
 
 對應 [Issue #183：追問類型選擇：AI 提示與行為評估](https://github.com/2026software-3/socrates-chat/issues/183)。專案規則以 `docs/specs/` 的 S-03.2、S-03.4 為準；本文記錄目前評估實作，不新增或取代產品規格。
 
@@ -23,7 +23,7 @@
 | 項目 | 位置／目前版本 |
 | --- | --- |
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
-| 提示詞版本 | `rules_version(language)`：`v1.13/zh-TW`、`v1.13/en`、`v1.13/es`（v1.12 加入依對話語言輸出的三語提示與版本後綴；v1.13 加入 F-10.1 錯字與語音逐字稿的理解規則；下方紀錄為 v1.10 的結果，v1.11 之後尚未用真實模型重新評估，三種語言都是） |
+| 提示詞版本 | `rules_version(language)`：`v1.14/zh-TW`、`v1.14/en`、`v1.14/es`（v1.12 加入依對話語言輸出的三語提示與版本後綴；v1.13 加入 F-10.1 錯字與語音逐字稿的理解規則；v1.14 加入 F-10.2 朗讀友善回覆與未說完處理的規則；下方紀錄為 v1.10 的結果，v1.11 之後尚未用真實模型重新評估，三種語言都是） |
 | 評估 runner | `backend/examples/try_f07.rs`（`--lang` 選擇語言，預設 `zh-TW`） |
 | 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v5`（v5 加入評估語言） |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT`（只有繁體中文版；三種語言共用，見下方限制） |

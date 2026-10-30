@@ -16,13 +16,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
 /// v1.12：對話、總結與主張分組依對話語言輸出，版本後綴記錄語言。
 /// v1.13：學生訊息可能來自語音辨識逐字稿或打字，一律依原意理解、不糾正錯字（F-10.1）。
-pub const RULES_VERSION: &str = "v1.13/zh-TW";
+/// v1.14：回覆寫成適合朗讀的口語短句；學生話沒說完就被送出時請他說完（F-10.2）。
+pub const RULES_VERSION: &str = "v1.14/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.13/en",
-        "es" => "v1.13/es",
+        "en" => "v1.14/en",
+        "es" => "v1.14/es",
         _ => RULES_VERSION,
     }
 }
@@ -287,6 +288,14 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - 只有在錯字讓關鍵詞或立場出現明顯不同的理解，而且會影響討論時，才用一個簡短問題請學生確認原意，此時標記 clarify。\n\
         - 判斷 advance 時，依學生實際表達的思考，不因口語化、錯字或贅詞而降低或提高。\n\
         \n\
+        語音對話（F-10.2）：\n\
+        回覆可能會以語音朗讀給學生聽：\n\
+        - 用口語、完整的短句，整體控制在兩三句內，把問題放在最後。\n\
+        - 不使用 Markdown、條列、編號、表格、表情符號、網址或括號補充，也不用只適合閱讀的符號（例如 →、/、*）。\n\
+        學生用語音對話時，停頓幾秒就會自動送出，所以訊息可能在學生還沒說完時就送出。\n\
+        - 若最新訊息明顯中斷（例如停在「因為」「所以」「但是」「如果……的話」，或句子沒有完成），不要依半句話推論或提出新的追問；簡短請學生把剛才的想法說完，可以提到他說到哪裡，此時標記 clarify。\n\
+        - 停頓、贅詞或句子簡短不代表沒說完；意思已經完整時照常追問。\n\
+        \n\
         目前階段（階段只進不退）：{stage}{wrap}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
         第一部分：給學生看的簡短追問。\n\
@@ -380,6 +389,13 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          - Do not point out, correct, or comment on typos, filler words, or punctuation, and do not ask the student to switch to another input method.\n\
          - Only when a typo makes a key term or the position open to clearly different readings that would affect the discussion, ask one short question to confirm what the student meant, and label it clarify.\n\
          - When judging advance, go by the thinking the student actually expressed; do not lower or raise it because of informal speech, typos, or filler words.\n\n\
+         Voice conversation (F-10.2):\n\
+         Your response may be read aloud to the student:\n\
+         - Use natural, complete spoken sentences, keep the whole response to two or three sentences, and put the question last.\n\
+         - Do not use Markdown, bullet points, numbering, tables, emoji, URLs, or parenthetical asides, and avoid symbols that only work on screen (such as →, /, *).\n\
+         In voice conversations a message is sent automatically after a pause of a few seconds, so it may be sent before the student has finished speaking.\n\
+         - If the latest message is clearly cut off (for example, it ends with “because”, “so”, “but”, “if…”, or an unfinished sentence), do not infer from the half sentence or ask a new question; briefly ask the student to finish the thought, optionally mentioning where they left off, and label it clarify.\n\
+         - Pauses, filler words, or a short reply do not mean the student is unfinished; when the meaning is complete, continue questioning as usual.\n\n\
          Current stage (stages never move backward): {stage}{wrap}\n\n\
          Output format (follow it completely in every response):\n\
          Part 1: one concise follow-up question visible to the student, in English.\n\
@@ -465,6 +481,13 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          - No señales, corrijas ni comentes errores de escritura, muletillas o puntuación, y no pidas al estudiante que cambie de forma de entrada.\n\
          - Solo cuando un error haga que un término clave o la postura admitan interpretaciones claramente distintas que afecten la discusión, haz una pregunta breve para confirmar lo que quiso decir y márcala como clarify.\n\
          - Al decidir advance, guíate por el pensamiento que el estudiante realmente expresó; no lo bajes ni lo subas por el lenguaje informal, los errores o las muletillas.\n\n\
+         Conversación por voz (F-10.2):\n\
+         Tu respuesta puede leerse en voz alta al estudiante:\n\
+         - Usa oraciones habladas, naturales y completas; limita la respuesta a dos o tres oraciones y deja la pregunta al final.\n\
+         - No uses Markdown, viñetas, numeración, tablas, emojis, URL ni aclaraciones entre paréntesis, y evita símbolos que solo funcionan en pantalla (como →, /, *).\n\
+         En las conversaciones por voz el mensaje se envía automáticamente tras una pausa de unos segundos, así que puede enviarse antes de que el estudiante termine de hablar.\n\
+         - Si el último mensaje está claramente cortado (por ejemplo, termina en «porque», «entonces», «pero», «si…» o en una oración sin terminar), no deduzcas a partir de la media frase ni hagas una pregunta nueva; pide brevemente al estudiante que termine la idea, puedes mencionar dónde se quedó, y márcala como clarify.\n\
+         - Las pausas, las muletillas o una respuesta corta no significan que no haya terminado; si el sentido está completo, sigue preguntando como de costumbre.\n\n\
          Etapa actual (las etapas nunca retroceden): {stage}{wrap}\n\n\
          Formato de salida (síguelo por completo en cada respuesta):\n\
          Parte 1: una pregunta breve visible para el estudiante, en español.\n\
@@ -1756,8 +1779,62 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少輸入理解規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.13/en");
-        assert_eq!(rules_version("es"), "v1.13/es");
+    }
+
+    #[test]
+    fn prompt_makes_replies_listenable_and_handles_cut_off_speech_in_every_language() {
+        // F-10.2：回覆可能被朗讀，學生也可能話沒說完就被自動送出。規則對所有訊息生效（不區分語音
+        // 或打字），三種語言一致（S-12.1）。只檢查規則存在；模型實際行為由 eval/f10_2_cases.json 評估。
+        let context = PromptContext {
+            title: "T",
+            description: "D",
+            stage: 2,
+            turn: 2,
+            wrap_up_turn: 15,
+            language: "zh-TW",
+        };
+        for (language, rules) in [
+            (
+                "zh-TW",
+                [
+                    "回覆可能會以語音朗讀給學生聽",
+                    "不使用 Markdown、條列、編號、表格、表情符號、網址",
+                    "學生還沒說完時就送出",
+                    "簡短請學生把剛才的想法說完",
+                    "停頓、贅詞或句子簡短不代表沒說完",
+                ],
+            ),
+            (
+                "en",
+                [
+                    "may be read aloud to the student",
+                    "Do not use Markdown, bullet points, numbering, tables, emoji, URLs",
+                    "before the student has finished speaking",
+                    "briefly ask the student to finish the thought",
+                    "do not mean the student is unfinished",
+                ],
+            ),
+            (
+                "es",
+                [
+                    "puede leerse en voz alta al estudiante",
+                    "No uses Markdown, viñetas, numeración, tablas, emojis, URL",
+                    "antes de que el estudiante termine de hablar",
+                    "pide brevemente al estudiante que termine la idea",
+                    "no significan que no haya terminado",
+                ],
+            ),
+        ] {
+            let p = build_system_prompt(&PromptContext {
+                language,
+                ..context
+            });
+            for rule in rules {
+                assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
+            }
+        }
+        assert_eq!(rules_version("en"), "v1.14/en");
+        assert_eq!(rules_version("es"), "v1.14/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
