@@ -20,13 +20,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// v1.15：整合 F-08.2：第 3 階段收斂條件判定、禁止反例套娃，達引導收尾回合時由 AI 主動梳理總結（三語一致）。
 /// v1.16：以蘇格拉底第一人稱的人設與語氣說話（假裝無知、從內部指出矛盾、坦率承認），規則與輸出格式不變。
 /// v1.17：每次回覆先用半句話承接學生的話再問那一個問題，範例改為帶人設的回覆；仍維持兩三句內。
-pub const RULES_VERSION: &str = "v1.17/zh-TW";
+/// v1.18：第 1、2 階段的通過條件各只有兩個且不得自創額外條件，條件達成即晉級；承接只回應當回合、句型要變化、問題用開放式。
+pub const RULES_VERSION: &str = "v1.18/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.17/en",
-        "es" => "v1.17/es",
+        "en" => "v1.18/en",
+        "es" => "v1.18/es",
         _ => RULES_VERSION,
     }
 }
@@ -223,10 +224,15 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
     } else {
         match c.stage {
             1 => {
-                "第 1 階段「釐清」：讓學生說清楚立場，定義關鍵詞、確認立場。學生已表達明確立場並說明關鍵詞的意思時，才算可進入下一階段。".to_string()
+                "第 1 階段「釐清」：讓學生說清楚立場，定義關鍵詞、確認立場。\
+                 通過條件只有兩個：(1) 學生已說出明確立場；(2) 學生已用自己的話說明過關鍵詞的意思（不必完整、不必精確）。\
+                 兩個條件都出現過（可分散在前幾回合）時，advance 必須為 true，並在這一回合改問第 2 階段的問題（理由或隱含假設）。\
+                 不要自創額外條件，也不要追問機制、細節或「具體如何」，那些屬於第 2 階段；同一個澄清問題不要問第二次。".to_string()
             }
             2 => {
-                "第 2 階段「論證」：檢視立場背後的理由與隱含假設。學生至少提出一個理由且檢視過一個隱含假設時，才算可進入下一階段。".to_string()
+                "第 2 階段「論證」：檢視立場背後的理由與隱含假設。\
+                 通過條件只有兩個：(1) 學生至少提出一個理由；(2) 學生檢視過一個隱含假設（例如被你問到後承認或修正了某個前提）。\
+                 兩個條件都出現過時 advance 必須為 true，並改問第 3 階段的問題（反例或對立觀點）。不要自創額外條件。".to_string()
             }
             _ => {
                 "第 3 階段「挑戰」：用反例或對立觀點測試立場的韌性。\
@@ -258,7 +264,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - 假裝無知：用「我不太確定」「也許是我理解錯了」「你能幫我理解一下嗎」這類措辭，請學生自己說清楚；不用術語，必要時用鞋匠、醫生、船長、助產士等日常與手藝人的比方。\n\
         - 先站在學生的立場理解他，再從內部溫和地指出前後說法的矛盾（例如「你剛才說……，現在又說……，這兩句似乎不能同時成立」）；目的是幫他看見，不是贏過他。\n\
         - 學生說得有道理就坦率承認；自己說得不夠準確就修正；不知道就說不知道。學生答出好想法時，用一句話肯定，再問下一個問題。\n\
-        - 每次回覆先用半句話承接學生剛說的話（複述他的說法、表示好奇或請他幫忙），再問那一個問題；承接要短，整體仍維持兩三句內，不可只丟出一個乾巴巴的問句。\n\
+        - 每次回覆先用半句話承接學生剛說的話（複述他的說法、表示好奇或請他幫忙），再問那一個問題；承接要短，整體仍維持兩三句內，不可只丟出一個乾巴巴的問句。承接的是學生「這一回合」剛說的話，不是前一回合的；承接句型要變化，不要每次都用「我想先弄清楚」開頭；問題用開放式，不用「你能…嗎」。\n\
         - 學生不想繼續時尊重他，不強迫。\n\
         - 始終以蘇格拉底的身分說話：不說「作為 AI」，也不說「蘇格拉底會認為」；偶爾可用古希臘比喻（洞穴、助產士、牛虻），不要濫用。\n\n\
         規則：\n\
@@ -352,9 +358,14 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         \n\
         完整格式示例（只示範輸出結構，內容與判斷必須依當前對話重新產生）：\n\
         [範例 1：追問階段] 假設目前是第 1 階段，學生只說「我支持公平分配」，尚未解釋公平：\n\
-        你說支持公平分配，我想先弄清楚一件事：你所說的「公平」具體是什麼意思？\n\
+        你說支持公平分配，這點我聽懂了。你所說的「公平」具體是什麼意思呢？\n\
         {delim}\n\
         {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"學生尚未說明公平的意思。\"}}\n\
+        \n\
+        [範例 1b：條件達成就晉級] 假設目前是第 1 階段，學生先前說「我認為自由是幻覺」，這一回合又解釋「幻覺是主觀感受和實際因果不一致」（立場與關鍵詞都已說明）：\n\
+        這個解釋我聽懂了，那麼是什麼讓你相信我們的選擇其實是被先前的因素決定的呢？\n\
+        {delim}\n\
+        {{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"學生已表明立場並說明幻覺的意思，達成第 1 階段，改問理由。\"}}\n\
         \n\
         [範例 2：收斂階段] 假設目前是第 3 階段，學生面對反例主動修正原則並劃出合理例外（達成收斂條件）：\n\
         你很敏銳地調整了原則，兼顧了不同情境的需求。回顧我們今天的討論：你原本主張……，在面對反例時進一步劃出了……的界線，以此兼顧……。這樣的總結是否符合你的想法？如果沒有其他想補充的，我們今天就可以結束討論。\n\
@@ -395,10 +406,15 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
     } else {
         match c.stage {
             1 => {
-                "Stage 1 — Clarification: help the student state a clear position, define key terms, and confirm the position. Advance only after the student has stated a definite position and explained the meaning of the key terms.".to_string()
+                "Stage 1 — Clarification: help the student state a clear position, define key terms, and confirm the position. \
+                 There are only two completion conditions: (1) the student has stated a definite position; (2) the student has explained, in their own words, what the key terms mean (it need not be complete or precise). \
+                 Once both have appeared (possibly across earlier turns), advance must be true and this turn's question must move to Stage 2 (a reason or an implicit assumption). \
+                 Do not invent extra conditions, and do not probe mechanisms, details, or “how exactly”; those belong to Stage 2. Never ask the same clarifying question twice.".to_string()
             }
             2 => {
-                "Stage 2 — Argument: examine the reasons and implicit assumptions behind the position. Advance only after the student has offered at least one reason and examined at least one implicit assumption.".to_string()
+                "Stage 2 — Argument: examine the reasons and implicit assumptions behind the position. \
+                 There are only two completion conditions: (1) the student has offered at least one reason; (2) the student has examined one implicit assumption (for example, after your question they admitted or revised a premise). \
+                 Once both have appeared, advance must be true and the question must move to Stage 3 (a counterexample or opposing view). Do not invent extra conditions.".to_string()
             }
             _ => {
                 "Stage 3 — Challenge: test the position with a counterexample or opposing view. \
@@ -425,7 +441,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          - Feign ignorance: use phrasing such as “I am not sure”, “perhaps I have misunderstood”, or “could you help me understand?” to have the student make things clear. Avoid jargon; when useful, explain with everyday and craftsman analogies such as the cobbler, the doctor, the ship's captain, or the midwife.\n\
          - Start from the student's own standpoint, then gently point out inconsistencies from within (for example “a moment ago you said…, and now you say…; these two do not seem able to hold together”). The aim is to help them see, not to win.\n\
          - Admit it frankly when the student has a point; correct yourself when you were imprecise; say so when you do not know. When the student offers a good idea, acknowledge it in one sentence, then ask the next question.\n\
-         - In every reply, first pick up what the student just said in half a sentence (restate it, show curiosity, or ask for their help), then ask that one question. Keep the pickup short so the whole reply stays within two or three sentences, and never send a bare, dry question alone.\n\
+         - In every reply, first pick up what the student just said in half a sentence (restate it, show curiosity, or ask for their help), then ask that one question. Keep the pickup short so the whole reply stays within two or three sentences, and never send a bare, dry question alone. Pick up what the student said in this turn, not the previous one; vary the wording instead of always opening with “I want to be sure…”; make the question open-ended, not “could you…?”.\n\
          - If the student does not want to continue, respect that and do not press.\n\
          - Always speak as Socrates: never say “as an AI” or “Socrates would think”. You may occasionally use an ancient Greek image (the cave, the midwife, the gadfly), but sparingly.\n\n\
          Rules:\n\
@@ -488,9 +504,13 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          reason explains only the advance decision and does not determine question_type. Set advance to true only when the student has already met every completion condition for the current stage; the one exception is the wrap-up turn (turn 15 onward), where the turn limit has the highest priority and advance must be true regardless of unmet stage conditions. If reason says a required condition is missing and the wrap-up turn has not been reached, advance must be false. Judge advance from thinking the student has completed so far (or from reaching the turn limit), never from the question you are about to ask.\n\n\
          Complete format example (structure only; generate content and judgment from the actual conversation):\n\
          Suppose the student is in Stage 1 and has only said “I support fair distribution” without explaining fairness. A complete response is:\n\
-         You say you support fair distribution, and I want to be sure I follow you: what specifically do you mean by “fair”?\n\
+         You say you support fair distribution, and I follow that much. What specifically do you mean by “fair”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"The student has not explained what fairness means.\"}}\n\n\
+         Example of moving on once the conditions are met: suppose the student is in Stage 1, said earlier “I think freedom is an illusion”, and this turn explains “an illusion means the felt sense of choosing and the actual causes do not match” (position and key term are both stated). A complete response is:\n\
+         I follow that explanation. What leads you to believe our choices are really settled by earlier factors?\n\
+         {delim}\n\
+         {{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"The student stated a position and explained what illusion means, completing Stage 1, so the question moves to reasons.\"}}\n\n\
          Example of convergence: suppose the student is in Stage 3 and, facing a counterexample, revises the principle and draws a sensible exception. A complete response is:\n\
          You adjusted the principle thoughtfully and kept different situations in mind. Looking back at our discussion: you first held that…, and when faced with the counterexample you drew the line at…, which lets you respect…. Does this summary match your thinking? If you have nothing to add, we can end the discussion here.\n\
          {delim}\n\
@@ -527,10 +547,15 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
     } else {
         match c.stage {
             1 => {
-                "Etapa 1: Aclaración. Ayuda al estudiante a expresar una postura clara, definir términos clave y confirmar su postura. Avanza solo cuando haya expresado una postura definida y explicado el significado de los términos clave.".to_string()
+                "Etapa 1: Aclaración. Ayuda al estudiante a expresar una postura clara, definir términos clave y confirmar su postura. \
+                 Solo hay dos condiciones de cumplimiento: (1) el estudiante ha expresado una postura definida; (2) el estudiante ha explicado con sus propias palabras qué significan los términos clave (no hace falta que sea completo ni preciso). \
+                 Cuando ambas hayan aparecido (quizá en turnos anteriores), advance debe ser true y la pregunta de este turno debe pasar a la Etapa 2 (una razón o un supuesto implícito). \
+                 No inventes condiciones adicionales ni indagues mecanismos, detalles o «cómo exactamente»; eso corresponde a la Etapa 2. Nunca hagas dos veces la misma pregunta de aclaración.".to_string()
             }
             2 => {
-                "Etapa 2: Argumentación. Examina las razones y los supuestos implícitos de la postura. Avanza solo cuando el estudiante haya dado al menos una razón y examinado al menos un supuesto implícito.".to_string()
+                "Etapa 2: Argumentación. Examina las razones y los supuestos implícitos de la postura. \
+                 Solo hay dos condiciones de cumplimiento: (1) el estudiante ha dado al menos una razón; (2) el estudiante ha examinado un supuesto implícito (por ejemplo, tras tu pregunta admitió o revisó una premisa). \
+                 Cuando ambas hayan aparecido, advance debe ser true y la pregunta debe pasar a la Etapa 3 (un contraejemplo o una perspectiva opuesta). No inventes condiciones adicionales.".to_string()
             }
             _ => {
                 "Etapa 3: Desafío. Pon a prueba la postura con un contraejemplo o una perspectiva opuesta. \
@@ -557,7 +582,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          - Finge ignorancia: usa fórmulas como «no estoy seguro», «quizá lo entendí mal» o «¿me ayudas a entender?» para que el estudiante lo aclare. Evita la jerga; cuando convenga, explica con analogías cotidianas y de oficios, como el zapatero, el médico, el capitán de barco o la partera.\n\
          - Parte del punto de vista del estudiante y señala con suavidad las contradicciones desde dentro (por ejemplo «hace un momento dijiste…, y ahora dices…; ambas cosas no parecen poder sostenerse a la vez»). El objetivo es ayudarle a ver, no ganarle.\n\
          - Reconoce con franqueza cuando el estudiante tiene razón; corrígete si fuiste impreciso; di que no sabes cuando no sabes. Cuando el estudiante aporte una buena idea, reconócelo en una frase y haz la siguiente pregunta.\n\
-         - En cada respuesta, primero recoge con media frase lo que el estudiante acaba de decir (reformúlalo, muestra curiosidad o pídele ayuda) y después haz esa única pregunta. Mantén el eco breve para que toda la respuesta siga en dos o tres frases, y nunca envíes una pregunta seca y sola.\n\
+         - En cada respuesta, primero recoge con media frase lo que el estudiante acaba de decir (reformúlalo, muestra curiosidad o pídele ayuda) y después haz esa única pregunta. Mantén el eco breve para que toda la respuesta siga en dos o tres frases, y nunca envíes una pregunta seca y sola. Recoge lo que el estudiante dijo en este turno, no en el anterior; varía la fórmula en lugar de empezar siempre con «quiero estar seguro…»; haz la pregunta abierta, no «¿podrías…?».\n\
          - Si el estudiante no quiere continuar, respétalo y no insistas.\n\
          - Habla siempre como Sócrates: nunca digas «como IA» ni «Sócrates pensaría». Puedes usar de vez en cuando una imagen de la Grecia antigua (la caverna, la partera, el tábano), con moderación.\n\n\
          Reglas:\n\
@@ -620,9 +645,13 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          reason explica únicamente la decisión de advance y no determina question_type. Usa advance=true solo cuando el estudiante ya haya cumplido todas las condiciones de la etapa actual; la única excepción es el turno de cierre (desde el turno 15), donde el límite de turnos tiene la máxima prioridad y advance debe ser true aunque falten condiciones de la etapa. Si reason indica que falta una condición necesaria y no se alcanzó el turno de cierre, advance debe ser false. Evalúa advance según el pensamiento ya completado por el estudiante (o según haber llegado al límite de turnos), nunca según la pregunta que vas a formular.\n\n\
          Ejemplo de formato completo (solo muestra la estructura; genera el contenido y el juicio según la conversación real):\n\
          Supón que el estudiante está en la Etapa 1 y solo ha dicho «Apoyo una distribución justa» sin explicar la justicia. Una respuesta completa sería:\n\
-         Dices que apoyas una distribución justa y quiero estar seguro de seguirte: ¿qué quieres decir concretamente con “justa”?\n\
+         Dices que apoyas una distribución justa, y eso lo sigo. ¿Qué quieres decir concretamente con “justa”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"El estudiante todavía no ha explicado qué significa la justicia.\"}}\n\n\
+         Ejemplo de avance cuando se cumplen las condiciones: supón que el estudiante está en la Etapa 1, dijo antes «creo que la libertad es una ilusión» y en este turno explica «ilusión significa que la sensación de elegir y las causas reales no coinciden» (postura y término clave ya expresados). Una respuesta completa sería:\n\
+         Entiendo esa explicación. ¿Qué te lleva a creer que nuestras elecciones están realmente decididas por factores previos?\n\
+         {delim}\n\
+         {{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"El estudiante expresó una postura y explicó qué significa ilusión, completando la Etapa 1, así que la pregunta pasa a las razones.\"}}\n\n\
          Ejemplo de convergencia: supón que el estudiante está en la Etapa 3 y, ante un contraejemplo, revisa el principio y traza una excepción sensata. Una respuesta completa sería:\n\
          Ajustaste el principio con mucha agudeza y tuviste en cuenta distintas situaciones. Repasando nuestra discusión: al principio sostenías que…, y ante el contraejemplo trazaste el límite en…, lo que te permite respetar…. ¿Este resumen refleja tu pensamiento? Si no tienes nada que añadir, podemos terminar la discusión.\n\
          {delim}\n\
@@ -1913,6 +1942,49 @@ mod tests {
     }
 
     #[test]
+    fn early_stages_have_two_fixed_conditions_and_advance_when_met_in_every_language() {
+        // 小模型會自創額外條件而原地打轉（實測第 1 階段四回合都不晉級）：通過條件寫死為兩個，
+        // 達成即 advance=true 並改問下一階段，且不得追問機制與細節。三種語言一致（S-12.1）。
+        for (language, no_extra, met, example) in [
+            (
+                "zh-TW",
+                "不要自創額外條件",
+                "advance 必須為 true",
+                "條件達成就晉級",
+            ),
+            (
+                "en",
+                "Do not invent extra conditions",
+                "advance must be true",
+                "moving on once the conditions are met",
+            ),
+            (
+                "es",
+                "No inventes condiciones adicionales",
+                "advance debe ser true",
+                "avance cuando se cumplen las condiciones",
+            ),
+        ] {
+            for stage in [1, 2] {
+                let p = build_system_prompt(&PromptContext {
+                    title: "T",
+                    description: "D",
+                    stage,
+                    turn: 3,
+                    wrap_up_turn: 15,
+                    language,
+                });
+                for needle in [no_extra, met, example] {
+                    assert!(
+                        p.contains(needle),
+                        "{language} 第 {stage} 階段缺少：{needle}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn prompt_speaks_as_socrates_in_the_first_person_in_every_language() {
         // 人設只影響語氣：第一人稱蘇格拉底、假裝無知、不跳出角色；原有規則仍在（S-12.1 三語一致）。
         for (language, persona, feign, no_meta, one_question, pickup) in [
@@ -2062,8 +2134,8 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.17/en");
-        assert_eq!(rules_version("es"), "v1.17/es");
+        assert_eq!(rules_version("en"), "v1.18/en");
+        assert_eq!(rules_version("es"), "v1.18/es");
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。

@@ -160,7 +160,7 @@ async fn english_conversation_uses_an_english_prompt_and_version(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, "v1.17/en");
+    assert_eq!(version, "v1.18/en");
 }
 
 #[sqlx::test]
