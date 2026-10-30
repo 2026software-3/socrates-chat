@@ -217,6 +217,28 @@ pub async fn json_body(res: Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+/// 依 `next_cursor` 讀完分頁列表的所有頁，回傳全部項目；每頁都必須是 200。
+/// 只讀第一頁的測試在測資超過一頁時會靜默漏掉資料。
+pub async fn all_items(app: &Router, path: &str, cookie: &str) -> Value {
+    let sep = if path.contains('?') { '&' } else { '?' };
+    let mut items = Vec::new();
+    let mut next: Option<String> = None;
+    loop {
+        let url = match &next {
+            Some(cursor) => format!("{path}{sep}cursor={cursor}"),
+            None => path.to_string(),
+        };
+        let res = send(app, get(&url, Some(cookie))).await;
+        assert!(res.status().is_success(), "{url}: {}", res.status());
+        let page = json_body(res).await;
+        items.extend(page["items"].as_array().unwrap().iter().cloned());
+        next = page["next_cursor"].as_str().map(str::to_string);
+        if next.is_none() {
+            return Value::Array(items);
+        }
+    }
+}
+
 /// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
 pub async fn assert_json_error(res: Response<Body>, status: StatusCode, code: &str) {
     assert_eq!(res.status(), status);
