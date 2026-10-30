@@ -90,9 +90,12 @@ async fn finish(pool: &PgPool, conversation: &str, claim: &str) {
 async fn list(app: &Router, path: &str, cookie: &str) -> Value {
     let res = send(app, get(path, Some(cookie))).await;
     assert_eq!(res.status(), StatusCode::OK, "{path}");
-    // 分頁列表的項目在 items；其餘端點直接回傳
+    // 分頁列表讀完所有頁再回傳全部項目；其餘端點直接回傳
     let body = json_body(res).await;
-    body.get("items").cloned().unwrap_or(body)
+    if body.get("items").is_some() {
+        return all_items(app, path, cookie).await;
+    }
+    body
 }
 
 fn titles(rows: &Value) -> Vec<String> {

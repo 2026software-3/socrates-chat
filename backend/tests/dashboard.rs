@@ -226,8 +226,7 @@ async fn builtin_trolley_problem_is_seeded_once_and_respects_edits(pool: PgPool)
 #[sqlx::test]
 async fn summary_has_a_claim_but_no_school_classification(pool: PgPool) {
     let Seeded { app, a, .. } = seeded(pool).await;
-    let list =
-        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
+    let list = all_items(&app, "/api/summaries", &a.teacher).await;
     let claims: Vec<Value> = list
         .as_array()
         .unwrap()
