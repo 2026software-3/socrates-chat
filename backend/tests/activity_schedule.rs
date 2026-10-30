@@ -163,7 +163,7 @@ async fn schedule_authorization_and_existing_conversations(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(count, 1);
-    sqlx::query("INSERT INTO summaries (conversation_id, status, stance, reasons) VALUES ($1, 'ready', 'synthetic stance', 'synthetic reasons')")
+    sqlx::query("INSERT INTO summaries (conversation_id, status, stance, reasons, completed_at) VALUES ($1, 'ready', 'synthetic stance', 'synthetic reasons', now())")
         .bind(conv.parse::<uuid::Uuid>().unwrap()).execute(&pool).await.unwrap();
     assert_eq!(
         send(
