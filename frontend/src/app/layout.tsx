@@ -73,7 +73,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
   const fullBleed = useMatch('/conversations/:id') !== null
   const student = me.roles.student
   const adminOnly = me.roles.admin && !me.roles.teacher && !me.roles.student
-  const displayName = me.display_name ?? me.email
+  const displayName = me.display_name ?? me.email ?? ''
   const workspace = student ? null : t(adminOnly ? 'nav.workspace.admin' : 'nav.workspace.teacher')
 
   const content = (

@@ -13,7 +13,7 @@ export function PendingPage() {
       <AuthCard role="alertdialog" aria-labelledby="pending-title">
         <div className="flex flex-col gap-2">
           <AuthHeading id="pending-title" title={t('pending.title')} description={t('pending.body')} />
-          <p className="text-muted-foreground text-xs">{t('pending.email', { email: me.email })}</p>
+          <p className="text-muted-foreground text-xs">{t('pending.email', { email: me.email ?? '' })}</p>
         </div>
         <div className="flex flex-col gap-3">
           <Button size="lg" className="w-full" onClick={() => void refresh()}>

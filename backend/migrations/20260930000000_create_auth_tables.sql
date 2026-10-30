@@ -48,6 +48,8 @@ CREATE TABLE oauth_login_states (
     state         text PRIMARY KEY,
     nonce         text NOT NULL,
     pkce_verifier text NOT NULL,
+    -- 不為空表示這是「已登入學生連結 Google 帳號」的流程，回呼時必須仍是同一位使用者的 session
+    link_user_id  uuid REFERENCES users (id) ON DELETE CASCADE,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 

@@ -60,6 +60,8 @@ pub struct LoginState {
     pub state: String,
     pub nonce: String,
     pub pkce_verifier: String,
+    /// 連結 Google 帳號的流程帶著發起者；一般登入為 `None`。
+    pub link_user_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -263,17 +265,120 @@ pub async fn save_login_state(
     nonce: &str,
     pkce_verifier: &str,
 ) -> Result<(), sqlx::Error> {
+    save_state(pool, state, nonce, pkce_verifier, None).await
+}
+
+/// 已登入學生開始連結 Google 帳號：state 記下發起者，回呼時才能確認是同一個人。
+pub async fn save_link_state(
+    pool: &PgPool,
+    state: &str,
+    nonce: &str,
+    pkce_verifier: &str,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    save_state(pool, state, nonce, pkce_verifier, Some(user_id)).await
+}
+
+async fn save_state(
+    pool: &PgPool,
+    state: &str,
+    nonce: &str,
+    pkce_verifier: &str,
+    link_user_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
     // 順便清掉放棄的登入流程，避免資料表無限成長
     sqlx::query("DELETE FROM oauth_login_states WHERE created_at < now() - interval '10 minutes'")
         .execute(pool)
         .await?;
-    sqlx::query("INSERT INTO oauth_login_states (state, nonce, pkce_verifier) VALUES ($1, $2, $3)")
-        .bind(state)
-        .bind(nonce)
-        .bind(pkce_verifier)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO oauth_login_states (state, nonce, pkce_verifier, link_user_id)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(state)
+    .bind(nonce)
+    .bind(pkce_verifier)
+    .bind(link_user_id)
+    .execute(pool)
+    .await?;
     Ok(())
+}
+
+/// 連結 Google 帳號的結果。
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkOutcome {
+    Linked,
+    /// 信箱或 Google 帳號已屬於另一個帳號，或信箱是教師／管理者的；不揭露是哪一種。
+    InUse,
+    /// 這個使用者沒有學號（教師、管理者與未開通帳號不能連結）。
+    NotStudent,
+}
+
+/// 把已由 Google 證明的信箱與 Google 帳號寫進學號帳號；再次連結會取代原本的。
+/// 信箱已屬於別的帳號、是教師名單或 `ADMIN_EMAILS` 的信箱時一律拒絕：
+/// 否則之後用 Google 登入會讓學號帳號多出教師或管理者權限，或搶走別人的帳號。
+pub async fn link_google(
+    pool: &PgPool,
+    user_id: Uuid,
+    google_sub: &str,
+    email: &str,
+    admin_emails: &[String],
+) -> Result<LinkOutcome, sqlx::Error> {
+    let email = email.to_lowercase();
+    if admin_emails.contains(&email) {
+        return Ok(LinkOutcome::InUse);
+    }
+    let mut tx = pool.begin().await?;
+    let is_student: Option<bool> =
+        sqlx::query_scalar("SELECT student_id IS NOT NULL FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if is_student != Some(true) {
+        return Ok(LinkOutcome::NotStudent);
+    }
+    let taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id <> $1 AND (email = $2 OR google_sub = $3))
+             OR EXISTS (SELECT 1 FROM teachers WHERE email = $2)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(google_sub)
+    .fetch_one(&mut *tx)
+    .await?;
+    if taken {
+        return Ok(LinkOutcome::InUse);
+    }
+    sqlx::query("UPDATE users SET email = $2, google_sub = $3, updated_at = now() WHERE id = $1")
+        .bind(user_id)
+        .bind(&email)
+        .bind(google_sub)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(LinkOutcome::Linked)
+}
+
+/// 取消連結：清除信箱與 Google 帳號，學號與密碼照舊可登入。回傳是否為學號帳號。
+pub async fn unlink_google(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE users SET email = NULL, google_sub = NULL, updated_at = now()
+         WHERE id = $1 AND student_id IS NOT NULL",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() == 1)
+}
+
+/// 只看 state 是不是連結流程，不刪除；回呼用它決定走連結還是一般登入。
+pub async fn peek_link_user(pool: &PgPool, state: &str) -> Result<Option<Uuid>, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar("SELECT link_user_id FROM oauth_login_states WHERE state = $1")
+            .bind(state)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+    )
 }
 
 /// 取出並刪除 state 紀錄（單次使用）；不存在或超過 10 分鐘回傳 `None`（過期的紀錄仍會被刪除）。
@@ -284,7 +389,7 @@ pub async fn take_login_state(
 ) -> Result<Option<LoginState>, sqlx::Error> {
     let row: Option<LoginState> = sqlx::query_as(
         "DELETE FROM oauth_login_states WHERE state = $1
-         RETURNING state, nonce, pkce_verifier, created_at",
+         RETURNING state, nonce, pkce_verifier, link_user_id, created_at",
     )
     .bind(state)
     .fetch_optional(pool)

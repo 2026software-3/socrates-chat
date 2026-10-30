@@ -115,3 +115,57 @@ describe('profile form on the personal dashboard', () => {
     expect(screen.queryByRole('link', { name: 'Test User' })).not.toBeInTheDocument()
   })
 })
+
+describe('Google account link on the profile', () => {
+  function mockStudent(email: string | null) {
+    let current = email
+    const deletes: string[] = []
+    server.use(
+      http.get('/api/dashboard/me', () => HttpResponse.json({ total_conversations: 0, completed: 0, total_turns: 0, recent: [] })),
+      http.get('/api/me', () => HttpResponse.json(makeMe({ student: true }, { email: current }))),
+      http.delete('/api/me/google-link', () => {
+        deletes.push('x')
+        current = null
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    return deletes
+  }
+
+  it('offers to link when the student has no email yet', async () => {
+    mockStudent(null)
+    renderApp(null, { route: '/dashboard' })
+    expect(await screen.findByText('尚未連結 Google 帳號')).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: '連結 Google 帳號' })
+    expect(link).toHaveAttribute('href', '/api/auth/google/link')
+    expect(screen.queryByRole('button', { name: '取消連結' })).not.toBeInTheDocument()
+  })
+
+  it('shows the linked email and lets the student switch to another Google account', async () => {
+    mockStudent('mine@example.com')
+    renderApp(null, { route: '/dashboard' })
+    expect(await screen.findByText('mine@example.com')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '改連結其他 Google 帳號' })).toHaveAttribute('href', '/api/auth/google/link')
+  })
+
+  it('asks for a second click before unlinking, then shows the unlinked state', async () => {
+    const deletes = mockStudent('mine@example.com')
+    renderApp(null, { route: '/dashboard' })
+    await userEvent.click(await screen.findByRole('button', { name: '取消連結' }))
+    expect(deletes).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: '確定取消連結' }))
+    expect(await screen.findByText('尚未連結 Google 帳號')).toBeInTheDocument()
+    expect(deletes).toHaveLength(1)
+  })
+
+  it.each([
+    ['link=ok', '已連結 Google 帳號。'],
+    ['link_error=email_in_use', '這個 Google 帳號或信箱已被其他帳號使用，請聯絡教師或管理者。'],
+    ['link_error=email_not_verified', '你的 Google 電子郵件尚未驗證。'],
+    ['link_error=unknown_code', '連結失敗，請稍後再試。'],
+  ])('reports the result of the redirect (%s)', async (query, text) => {
+    mockStudent(null)
+    renderApp(null, { route: `/dashboard?${query}` })
+    expect(await screen.findByText(text)).toBeInTheDocument()
+  })
+})

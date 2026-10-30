@@ -7,7 +7,7 @@ use axum::{
     extract::{ConnectInfo, FromRequestParts, Query, State},
     http::{HeaderMap, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
@@ -35,6 +35,7 @@ const ACCOUNT_DISABLED: ApiError = ApiError::forbidden("account_disabled", "帳�
 pub fn routes(trusted_proxies: Vec<client_ip::Cidr>) -> Router<AppState> {
     Router::new()
         .route("/api/auth/google/login", get(login))
+        .route("/api/auth/google/link", get(link_start))
         .route("/api/auth/google/callback", get(callback))
         .route(
             "/api/auth/login",
@@ -44,6 +45,7 @@ pub fn routes(trusted_proxies: Vec<client_ip::Cidr>) -> Router<AppState> {
         .route("/api/admin/users/reset-password", post(reset_password))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me).patch(update_me))
+        .route("/api/me/google-link", delete(unlink_google))
 }
 
 /// 256 位元隨機 token（base64url）。
@@ -302,6 +304,16 @@ pub(crate) async fn callback(
     headers: HeaderMap,
     Query(p): Query<CallbackParams>,
 ) -> Response {
+    // 連結流程的 state 帶著發起者；先取出判斷，避免走一般登入建立新 session
+    let link = match p.state.as_deref() {
+        Some(s) => auth_store::peek_link_user(&state.pool, s)
+            .await
+            .unwrap_or(None),
+        None => None,
+    };
+    if link.is_some() {
+        return finish_link(&state, &headers, p).await;
+    }
     match finish_login(&state, p, preferred_language(&headers)).await {
         Ok(token) => (
             [(
@@ -313,6 +325,143 @@ pub(crate) async fn callback(
             .into_response(),
         Err(code) => login_error(&state, code),
     }
+}
+
+fn link_redirect(state: &AppState, query: &str) -> Response {
+    Redirect::to(&format!("{}/dashboard?{query}", state.config.app_base_url)).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/link",
+    tag = "auth",
+    summary = "學生連結 Google 帳號：導向 Google 授權頁（回呼後導回 /dashboard?link=ok 或 ?link_error=code）",
+    responses(
+        (status = 303, description = "重新導向到 Google"),
+        (status = 403, description = "沒有學號的帳號不能連結")
+    )
+)]
+pub(crate) async fn link_start(
+    State(state): State<AppState>,
+    CurrentUser { user, .. }: CurrentUser,
+) -> Result<Redirect, ApiError> {
+    let is_student: bool =
+        sqlx::query_scalar("SELECT student_id IS NOT NULL FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&state.pool)
+            .await?;
+    if !is_student {
+        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    let req = state.identity.start();
+    auth_store::save_link_state(
+        &state.pool,
+        &req.state,
+        &req.nonce,
+        &req.pkce_verifier,
+        user.id,
+    )
+    .await?;
+    Ok(Redirect::to(&req.url))
+}
+
+/// 連結流程的回呼：必須仍是發起連結的那位學生（同一個 session），信箱必須由 Google 驗證過。
+async fn finish_link(state: &AppState, headers: &HeaderMap, p: CallbackParams) -> Response {
+    let fail = |code: &str| link_redirect(state, &format!("link_error={code}"));
+    // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
+    let stored = match p.state.as_deref() {
+        Some(s) => auth_store::take_login_state(&state.pool, s, Utc::now())
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let current = match token_from_headers(headers) {
+        Some(t) => auth_store::find_active_session(&state.pool, &hash_token(t), Utc::now())
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let (Some(stored), Some(current)) = (stored, current) else {
+        return fail("invalid_state");
+    };
+    if stored.link_user_id != Some(current.user.id) {
+        return fail("invalid_state");
+    }
+    if let Some(err) = p.error {
+        return fail(if err == "access_denied" {
+            "access_denied"
+        } else {
+            "link_failed"
+        });
+    }
+    let Some(code) = p.code else {
+        return fail("invalid_state");
+    };
+    let Ok(identity) = state
+        .identity
+        .finish(&code, &stored.nonce, &stored.pkce_verifier)
+        .await
+    else {
+        return fail("link_failed");
+    };
+    if !identity.email_verified {
+        return fail("email_not_verified");
+    }
+    match auth_store::link_google(
+        &state.pool,
+        current.user.id,
+        &identity.sub,
+        &identity.email,
+        &state.config.admin_emails,
+    )
+    .await
+    {
+        Ok(auth_store::LinkOutcome::Linked) => {
+            // 稽核只記帳號 ID，不記信箱
+            let _ = audit(
+                &state.pool,
+                current.user.id,
+                "link_google",
+                &current.user.id.to_string(),
+                None,
+            )
+            .await;
+            link_redirect(state, "link=ok")
+        }
+        Ok(auth_store::LinkOutcome::InUse) => fail("email_in_use"),
+        Ok(auth_store::LinkOutcome::NotStudent) => fail("link_failed"),
+        Err(_) => fail("link_failed"),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/me/google-link",
+    tag = "auth",
+    summary = "取消連結 Google 帳號（清除信箱；學號與密碼照舊可登入）",
+    responses(
+        (status = 204, description = "已取消"),
+        (status = 403, description = "沒有學號的帳號不能操作")
+    )
+)]
+pub(crate) async fn unlink_google(
+    State(state): State<AppState>,
+    CurrentUser { user, .. }: CurrentUser,
+) -> Result<StatusCode, ApiError> {
+    if !auth_store::unlink_google(&state.pool, user.id).await? {
+        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    let _ = audit(
+        &state.pool,
+        user.id,
+        "unlink_google",
+        &user.id.to_string(),
+        None,
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 成功時回傳新 session 的 token；失敗時回傳導回前端的錯誤代碼。

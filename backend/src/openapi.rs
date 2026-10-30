@@ -111,7 +111,7 @@ impl Modify for SessionCookie {
                        錯誤格式為 { error: { code, request_id } }。"
     ),
     paths(
-        auth::login, auth::callback, auth::password_login, auth::change_password, auth::logout,
+        auth::login, auth::link_start, auth::unlink_google, auth::callback, auth::password_login, auth::change_password, auth::logout,
         auth::me, auth::update_me, auth::reset_password,
         classrooms::list_classrooms, classrooms::create_classroom,
         classrooms::get_classroom, classrooms::update_classroom, classrooms::delete_classroom,

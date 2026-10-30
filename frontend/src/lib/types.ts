@@ -6,7 +6,7 @@ export type Roles = { admin: boolean; teacher: boolean; student: boolean }
 
 export type Me = {
   id: string
-  email: string
+  email: string | null
   display_name: string | null
   language: Lang
   is_admin: boolean
