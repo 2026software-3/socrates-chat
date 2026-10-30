@@ -27,7 +27,8 @@ CREATE TABLE summaries (
     rules_version   text,
     started_at      timestamptz NOT NULL DEFAULT now(),
     completed_at    timestamptz,
-    CHECK (status <> 'ready' OR (stance IS NOT NULL AND reasons IS NOT NULL))
+    CHECK (status <> 'ready' OR (stance IS NOT NULL AND reasons IS NOT NULL AND completed_at IS NOT NULL))
 );
 
-CREATE INDEX summaries_ready_idx ON summaries (completed_at DESC) WHERE status = 'ready';
+-- 總結列表（GET /api/summaries）依 completed_at DESC, conversation_id 做 keyset 分頁，只列 ready。
+CREATE INDEX summaries_ready_idx ON summaries (completed_at DESC, conversation_id) WHERE status = 'ready';
