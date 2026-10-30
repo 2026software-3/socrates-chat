@@ -14,7 +14,7 @@ async fn user_id(pool: &PgPool, email: &str) -> Uuid {
         .unwrap()
 }
 
-/// 直接寫入一場已結束、總結已完成的對話。
+/// 直接寫入一場已結束、總結已完成的對話；總結的完成時間與結束時間相同。
 async fn seed_ready(
     pool: &PgPool,
     classroom: Uuid,
@@ -36,10 +36,11 @@ async fn seed_ready(
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO summaries (conversation_id, status, stance, reasons, claim)
-         VALUES ($1, 'ready', 'Synthetic stance', 'Synthetic reasons', 'Synthetic claim')",
+        "INSERT INTO summaries (conversation_id, status, stance, reasons, claim, completed_at)
+         VALUES ($1, 'ready', 'Synthetic stance', 'Synthetic reasons', 'Synthetic claim', $2::timestamptz)",
     )
     .bind(id)
+    .bind(ended_at)
     .execute(pool)
     .await
     .unwrap();
@@ -73,7 +74,7 @@ fn ids(pages: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// 兩位學生、兩個題目；ended_at 有相同的（測試 tie-breaker）。依 ended_at DESC, conversation_id ASC 排序。
+/// 兩位學生、兩個題目；完成時間有相同的（測試 tie-breaker）。依 completed_at DESC, conversation_id ASC 排序。
 async fn seed_many(
     pool: &PgPool,
     classroom: &str,
@@ -131,6 +132,55 @@ async fn paginates_in_stable_order_without_duplicates_or_gaps(pool: PgPool) {
     assert_eq!(ids(&pages), want);
     // 教師看得到總結內容
     assert_eq!(pages[0]["items"][0]["stance"], "Synthetic stance");
+}
+
+#[sqlx::test]
+async fn summary_ready_between_pages_appears_on_the_first_page_without_shifting_others(
+    pool: PgPool,
+) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let (s1, _, expected) = seed_many(&pool, &a.classroom).await;
+    let first = json_body(send(&app, get("/api/summaries?limit=3", Some(&a.teacher))).await).await;
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+
+    // 翻頁之間，一場最早結束的對話這時才產生總結（例如重試成功）
+    let late = Uuid::from_u128(8);
+    sqlx::query(
+        "INSERT INTO conversations (id, user_id, classroom_id, title, status, ended_at)
+         VALUES ($1, $2, $3, 'Topic A', 'ended', '2025-12-31T00:00:00Z')",
+    )
+    .bind(late)
+    .bind(s1)
+    .bind(a.classroom.parse::<Uuid>().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO summaries (conversation_id, status, stance, reasons, completed_at)
+         VALUES ($1, 'ready', 'Synthetic stance', 'Synthetic reasons', now())",
+    )
+    .bind(late)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 往後翻：原有的總結不重複、不遺漏，順序不受影響
+    let mut pages = vec![first];
+    let mut next = Some(cursor);
+    while let Some(cursor) = next {
+        let path = format!("/api/summaries?limit=3&cursor={cursor}");
+        let page = json_body(send(&app, get(&path, Some(&a.teacher))).await).await;
+        next = page["next_cursor"].as_str().map(str::to_string);
+        pages.push(page);
+    }
+    let seen = ids(&pages);
+    let want: Vec<String> = expected.iter().map(|e| e.0.to_string()).collect();
+    assert_eq!(seen, want);
+    // 重新開啟列表：新完成的總結在第一頁最上面
+    let reopened =
+        json_body(send(&app, get("/api/summaries?limit=3", Some(&a.teacher))).await).await;
+    assert_eq!(reopened["items"][0]["conversation_id"], late.to_string());
 }
 
 #[sqlx::test]
@@ -376,8 +426,8 @@ async fn default_and_maximum_page_sizes(pool: PgPool) {
              INSERT INTO conversations (user_id, classroom_id, title, status, ended_at)
              SELECT $1, $2, 'Synthetic', 'ended', now() - make_interval(secs => g)
              FROM generate_series(1, 201) g RETURNING id)
-         INSERT INTO summaries (conversation_id, status, stance, reasons)
-         SELECT id, 'ready', 's', 'r' FROM c",
+         INSERT INTO summaries (conversation_id, status, stance, reasons, completed_at)
+         SELECT id, 'ready', 's', 'r', now() FROM c",
     )
     .bind(user)
     .bind(a.classroom.parse::<Uuid>().unwrap())
