@@ -194,7 +194,6 @@ pub struct StudentImportRow {
     pub line: usize,
     pub name: String,
     pub student_id: String,
-    pub email: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, utoipa::ToSchema)]
@@ -256,7 +255,7 @@ fn is_valid_student_id(id: &str) -> bool {
         && id.as_bytes()[8].is_ascii_alphabetic()
 }
 
-/// 每行依序為姓名、學號及選填信箱；錯誤不回顯個資。
+/// 每行依序為姓名、學號兩欄；多出來的欄位（含舊格式的電子郵件）整行拒絕，錯誤不回顯個資。
 pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
     let mut result = ParsedStudentRoster::default();
     for (index, line) in text.lines().enumerate() {
@@ -267,33 +266,34 @@ pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
             });
             continue;
         };
-        if fields.len() != 3 || fields[0].is_empty() || fields[1].is_empty() {
+        if fields.len() > 2 {
+            result.invalid.push(StudentImportError {
+                line: index + 1,
+                reason: "invalid_format".to_string(),
+            });
+            continue;
+        }
+        if fields.len() < 2 || fields[0].is_empty() || fields[1].is_empty() {
             result.invalid.push(StudentImportError {
                 line: index + 1,
                 reason: "missing_fields".to_string(),
             });
             continue;
         }
-        let email = if fields[2].is_empty() {
-            Some(None)
-        } else {
-            normalize_email(&fields[2]).map(Some)
-        };
         let valid = fields[0].chars().count() <= 30
             && !fields[0].contains('\0')
             && is_valid_student_id(&fields[1]);
-        let (true, Some(email)) = (valid, email) else {
+        if !valid {
             result.invalid.push(StudentImportError {
                 line: index + 1,
                 reason: "invalid_format".to_string(),
             });
             continue;
-        };
+        }
         result.students.push(StudentImportRow {
             line: index + 1,
             name: fields[0].to_owned(),
             student_id: fields[1].to_ascii_uppercase(),
-            email,
         });
     }
     result
@@ -356,7 +356,7 @@ pub(crate) async fn import_roster(
     let parsed = parse_student_roster(&body.text);
     let mut added = 0;
     let mut existing = 0;
-    let mut invalid = parsed.invalid;
+    let invalid = parsed.invalid;
     let mut credentials = Vec::new();
     let mut tx = state.pool.begin().await?;
     // 封存檢查與寫入同一個交易：教室列的共享鎖持續到提交，封存不會插在中間
@@ -369,87 +369,29 @@ pub(crate) async fn import_roster(
         .execute(&mut *tx)
         .await?;
     for row in &parsed.students {
-        if let Some(email) = row.email.as_deref()
-            && is_staff_email(&state, &mut tx, email).await?
-        {
-            invalid.push(StudentImportError {
-                line: row.line,
-                reason: "email_conflict".into(),
-            });
-            continue;
-        }
-        let accounts =
-            roster_store::find_import_account(&mut tx, &row.student_id, row.email.as_deref())
-                .await?;
-        let id_conflict = accounts.iter().any(|account| {
-            account.student_id.as_deref() == Some(&row.student_id)
-                && account
-                    .email
-                    .as_deref()
-                    .zip(row.email.as_deref())
-                    .is_some_and(|(a, b)| a != b)
-        });
-        let email_conflict = accounts.len() > 1
-            || accounts.iter().any(|account| {
-                account
-                    .student_id
-                    .as_deref()
-                    .is_some_and(|id| id != row.student_id)
-            });
-        if id_conflict || email_conflict {
-            let reason = if id_conflict {
-                "student_id_conflict"
+        // 電子郵件不經匯入：Google 登入靠電子郵件比對帳號，匯入若能設定信箱，
+        // 知道學號的人就能接管別人的帳號，所以信箱只由學生自己填寫。
+        let user_id =
+            if let Some(id) = roster_store::find_import_account(&mut tx, &row.student_id).await? {
+                id
             } else {
-                "email_conflict"
+                let temporary_password = password::generate_temporary();
+                let hash = hash_blocking(temporary_password.clone()).await?;
+                let id = roster_store::create_student(&mut tx, &row.student_id, &row.name, &hash)
+                    .await?;
+                credentials.push(Credential {
+                    student_id: row.student_id.clone(),
+                    temporary_password,
+                });
+                id
             };
-            invalid.push(StudentImportError {
-                line: row.line,
-                reason: reason.into(),
-            });
-            continue;
-        }
-        let user_id = if let Some(account) = accounts.first() {
-            // 既有帳號的電子郵件只由學生自己填：Google 登入靠電子郵件比對帳號，
-            // 匯入若能補上信箱，知道學號的人就能接管沒有信箱的學生帳號。
-            if account.student_id.is_none() {
-                sqlx::query(
-                    "UPDATE users SET
-                         student_id = COALESCE(student_id, $1),
-                         imported_name = COALESCE(imported_name, $2),
-                         display_name = CASE WHEN student_id IS NULL THEN $2 ELSE display_name END
-                     WHERE id = $3",
-                )
-                .bind(&row.student_id)
-                .bind(&row.name)
-                .bind(account.id)
-                .execute(&mut *tx)
-                .await?;
-            }
-            account.id
-        } else {
-            let temporary_password = password::generate_temporary();
-            let hash = hash_blocking(temporary_password.clone()).await?;
-            let id = roster_store::create_student(
-                &mut tx,
-                &row.student_id,
-                &row.name,
-                row.email.as_deref(),
-                &hash,
-            )
-            .await?;
-            credentials.push(Credential {
-                student_id: row.student_id.clone(),
-                temporary_password,
-            });
-            id
-        };
         if roster_store::add_user(&mut tx, classroom.id, user_id).await? {
             added += 1;
             audit(
                 &mut *tx,
                 cu.user.id,
                 "roster_added",
-                row.email.as_deref().unwrap_or(&user_id.to_string()),
+                &user_id.to_string(),
                 None,
             )
             .await?;

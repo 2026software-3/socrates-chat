@@ -62,6 +62,7 @@ impl VoiceProvider for FakeVoice {
 }
 
 fn app_with_voice(pool: PgPool, voice: Arc<dyn VoiceProvider>) -> Router {
+    register_fixture_pool(&pool);
     let state = AppState::new(
         pool,
         test_config(),

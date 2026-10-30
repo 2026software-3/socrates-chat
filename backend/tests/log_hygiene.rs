@@ -80,6 +80,7 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         Arc::new(KeyPool::new(vec!["SECRETAPIKEY".into()]).unwrap()),
         "some-model",
     );
+    register_fixture_pool(&pool);
     let app = app(AppState::new(
         pool,
         test_config(),
@@ -94,7 +95,7 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
             "POST",
             &format!("/api/classrooms/{}/roster/import", a.classroom),
             Some(&a.teacher),
-            Some(json!({"text": "隱私測試姓名,98765432a,\n隱私錯誤姓名,98765433b,invalid"})),
+            Some(json!({"text": "隱私測試姓名,98765432a\n隱私錯誤姓名,98765433b,invalid"})),
         ),
     )
     .await;

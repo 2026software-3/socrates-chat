@@ -134,19 +134,19 @@ describe('RosterPage', () => {
         return HttpResponse.json({
           added: 2,
           existing: 1,
-          invalid: [{ line: 4, reason: 'student_id_conflict' }],
+          invalid: [{ line: 4, reason: 'invalid_format' }],
         })
       }),
     )
     setup()
     await screen.findByText('alice@example.com')
-    await userEvent.type(screen.getByLabelText('名單（姓名,學號,電子郵件）'), '甲,12345678A,x@example.com')
+    await userEvent.type(screen.getByLabelText('名單（姓名,學號）'), '甲,12345678A')
     await userEvent.click(screen.getByRole('button', { name: '匯入' }))
     const result = await screen.findByRole('region', { name: '匯入結果' })
-    expect(body).toEqual({ text: '甲,12345678A,x@example.com' })
+    expect(body).toEqual({ text: '甲,12345678A' })
     expect(within(result).getByText('新增：2')).toBeInTheDocument()
     expect(within(result).getByText('已在名單中：1')).toBeInTheDocument()
-    expect(within(result).getByText(/^第 4 行：學號與既有帳號衝突/)).toBeInTheDocument()
+    expect(within(result).getByText(/^第 4 行：格式不正確：每行只能有姓名與學號兩欄/)).toBeInTheDocument()
   })
 
   it('refuses to import empty text', async () => {
@@ -169,7 +169,7 @@ describe('RosterPage', () => {
     )
     setup()
     await screen.findByText('alice@example.com')
-    await userEvent.type(screen.getByLabelText('名單（姓名,學號,電子郵件）'), '甲,12345678A,x@example.com')
+    await userEvent.type(screen.getByLabelText('名單（姓名,學號）'), '甲,12345678A')
     await userEvent.dblClick(screen.getByRole('button', { name: '匯入' }))
     expect(await screen.findByText('你沒有權限執行這個操作。')).toBeInTheDocument()
     expect(count).toBe(1)
@@ -183,7 +183,7 @@ describe('RosterPage', () => {
       type: 'text/csv',
     })
     await userEvent.upload(screen.getByLabelText('從 .csv 或 .txt 檔載入'), file)
-    await waitFor(() => expect(screen.getByLabelText('名單（姓名,學號,電子郵件）')).toHaveValue('email\ndan@example.com\n'))
+    await waitFor(() => expect(screen.getByLabelText('名單（姓名,學號）')).toHaveValue('email\ndan@example.com\n'))
   })
 
   it('removes a student after confirmation and reloads', async () => {
@@ -262,7 +262,7 @@ describe('RosterPage', () => {
     )
     setup()
     await screen.findByText('alice@example.com')
-    const box = screen.getByLabelText('名單（姓名,學號,電子郵件）')
+    const box = screen.getByLabelText('名單（姓名,學號）')
     await userEvent.type(box, 'x@example.com')
     await userEvent.click(screen.getByRole('button', { name: '匯入' }))
     await screen.findByRole('region', { name: '匯入結果' })
@@ -283,7 +283,7 @@ describe('RosterPage', () => {
     )
     setup()
     await screen.findByText('alice@example.com')
-    await userEvent.type(screen.getByLabelText('名單（姓名,學號,電子郵件）'), '甲,12345678A,x@example.com')
+    await userEvent.type(screen.getByLabelText('名單（姓名,學號）'), '甲,12345678A')
     await userEvent.click(screen.getByRole('button', { name: '匯入' }))
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
     expect(screen.getByText('alice@example.com')).toBeInTheDocument()
@@ -320,7 +320,7 @@ describe('RosterPage', () => {
       ),
     )
     setup()
-    await userEvent.type(await screen.findByLabelText('名單（姓名,學號,電子郵件）'), 'new@example.com')
+    await userEvent.type(await screen.findByLabelText('名單（姓名,學號）'), 'new@example.com')
     await userEvent.click(screen.getByRole('button', { name: '匯入' }))
     expect(await screen.findByRole('heading', { name: '臨時密碼（新帳號）' })).toBeInTheDocument()
     expect(screen.getByText('12345678A')).toBeInTheDocument()
@@ -373,7 +373,7 @@ describe('RosterPage', () => {
     expect(await screen.findByText('zoe@example.com')).toBeInTheDocument()
     expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '2026 秋季班 的學生名單' })).toBeInTheDocument()
-    await userEvent.type(screen.getByLabelText('名單（姓名,學號,電子郵件）'), 'new@example.com')
+    await userEvent.type(screen.getByLabelText('名單（姓名,學號）'), 'new@example.com')
     await userEvent.click(screen.getByRole('button', { name: '匯入' }))
     await screen.findByRole('region', { name: '匯入結果' })
     expect(target).toBe(ROOM_B)
@@ -387,7 +387,7 @@ describe('RosterPage', () => {
     )
     setup()
     await screen.findByText('alice@example.com')
-    await userEvent.type(screen.getByLabelText('名單（姓名,學號,電子郵件）'), '甲,12345678A,x@example.com')
+    await userEvent.type(screen.getByLabelText('名單（姓名,學號）'), '甲,12345678A')
     await userEvent.click(screen.getByRole('button', { name: '匯入' }))
     await screen.findByRole('region', { name: '匯入結果' })
     await userEvent.selectOptions(screen.getByRole('combobox', { name: '教室' }), ROOM_B)
@@ -400,7 +400,7 @@ describe('RosterPage', () => {
     renderTeacherPage(<RosterPage />)
     expect(await screen.findByText('你還沒有教室，請先建立教室再匯入修課名單。')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '前往教室管理' })).toHaveAttribute('href', '/teacher/classrooms')
-    expect(screen.queryByLabelText('名單（姓名,學號,電子郵件）')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('名單（姓名,學號）')).not.toBeInTheDocument()
   })
 
   it('tells an admin there is no classroom to manage', async () => {

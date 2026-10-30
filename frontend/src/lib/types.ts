@@ -184,7 +184,7 @@ export type Classroom = {
   updated_at: string
 }
 
-export type ImportErrorReason = 'missing_fields' | 'invalid_format' | 'student_id_conflict' | 'email_conflict'
+export type ImportErrorReason = 'missing_fields' | 'invalid_format'
 
 export type RosterImportResult = {
   added: number

@@ -56,34 +56,50 @@ async fn database_enforces_student_identifier_and_name_invariants(pool: PgPool) 
 #[test]
 fn parses_students_and_reports_invalid_lines_without_echoing_personal_data() {
     let parsed = parse_student_roster(
-        " 王小明 ,11234567a, WANG@example.com \n李小華,12345678b,\n姓名,學號,電子郵件\n,12345678C,x@example.com\n王小明,wrong,x@example.com\n",
+        " 王小明 ,11234567a \n李小華,12345678b\n姓名,學號,電子郵件\n,12345678C\n王小明,wrong\n",
     );
     assert_eq!(parsed.students.len(), 2);
     assert_eq!(parsed.students[0].name, "王小明");
     assert_eq!(parsed.students[0].student_id, "11234567A");
-    assert_eq!(
-        parsed.students[0].email.as_deref(),
-        Some("wang@example.com")
-    );
-    assert_eq!(parsed.students[1].email, None);
+    assert_eq!(parsed.students[1].student_id, "12345678B");
     assert_eq!(
         parsed
             .invalid
             .iter()
-            .map(|row| row.line)
+            .map(|row| (row.line, row.reason.as_str()))
             .collect::<Vec<_>>(),
-        vec![3, 4, 5]
+        vec![
+            (3, "invalid_format"),
+            (4, "missing_fields"),
+            (5, "invalid_format")
+        ]
     );
     let errors = serde_json::to_string(&parsed.invalid).unwrap();
     assert!(!errors.contains("王小明"));
     assert!(!errors.contains("12345678"));
 }
 
+/// 匯入只有姓名與學號兩欄；多出來的欄位（例如舊格式的電子郵件）整行拒絕，
+/// 讓教師看得出信箱不會被匯入，而不是悄悄被忽略。
+#[test]
+fn a_line_with_an_email_column_is_rejected() {
+    let parsed = parse_student_roster("甲,12345678A,a@example.com\n乙,12345679B,\n丙,12345670C");
+    assert_eq!(parsed.students.len(), 1);
+    assert_eq!(parsed.students[0].name, "丙");
+    assert_eq!(
+        parsed
+            .invalid
+            .iter()
+            .map(|row| (row.line, row.reason.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, "invalid_format"), (2, "invalid_format")]
+    );
+}
+
 #[test]
 fn supports_quoted_csv_fields_and_rejects_malformed_quotes() {
-    let parsed = parse_student_roster(
-        "\"王,小明\",12345678A,one@example.com\n\"李\"\"小華\",12345679B,\n\"bad,12345670C,\n",
-    );
+    let parsed =
+        parse_student_roster("\"王,小明\",12345678A\n\"李\"\"小華\",12345679B\n\"bad,12345670C\n");
     assert_eq!(parsed.students.len(), 2);
     assert_eq!(parsed.students[0].name, "王,小明");
     assert_eq!(parsed.students[1].name, "李\"小華");
@@ -93,7 +109,7 @@ fn supports_quoted_csv_fields_and_rejects_malformed_quotes() {
 #[test]
 fn imported_name_limit_is_thirty_unicode_characters_after_trimming() {
     let input = format!(
-        " {} ,12345678A,\n{},12345679A,",
+        " {} ,12345678A\n{},12345679A",
         "字".repeat(30),
         "字".repeat(31)
     );
@@ -105,15 +121,13 @@ fn imported_name_limit_is_thirty_unicode_characters_after_trimming() {
 
 #[test]
 fn rejects_nul_in_imported_name_before_database_write() {
-    let parsed = parse_student_roster("小\0明,12345678A,");
+    let parsed = parse_student_roster("小\0明,12345678A");
     assert!(parsed.students.is_empty());
     assert_eq!(parsed.invalid[0].reason, "invalid_format");
 }
 
 #[sqlx::test]
-async fn teacher_import_creates_one_account_and_credential_for_a_student_without_email(
-    pool: PgPool,
-) {
+async fn teacher_import_creates_one_account_and_credential_per_student(pool: PgPool) {
     let app = test_app(pool.clone());
     let actors = seed_actors(&app).await;
     let request = || {
@@ -121,7 +135,7 @@ async fn teacher_import_creates_one_account_and_credential_for_a_student_without
             "POST",
             &format!("/api/classrooms/{}/roster/import", actors.classroom),
             Some(&actors.teacher),
-            Some(json!({"text": "王小明,11234567a,"})),
+            Some(json!({"text": "王小明,11234567a"})),
         )
     };
     let response = send(&app, request()).await;
@@ -154,46 +168,18 @@ async fn teacher_import_creates_one_account_and_credential_for_a_student_without
 }
 
 #[sqlx::test]
-async fn existing_student_can_join_another_class_but_conflicts_are_rejected(pool: PgPool) {
+async fn existing_student_can_join_another_class_without_a_new_account(pool: PgPool) {
     let app = test_app(pool.clone());
     let actors = seed_actors(&app).await;
-    let first = json_req(
-        "POST",
-        &format!("/api/classrooms/{}/roster/import", actors.classroom),
-        Some(&actors.teacher),
-        Some(json!({"text":"甲,12345678a,student2@example.com"})),
-    );
-    let original = json_body(send(&app, first).await).await;
-    assert_eq!(original["credentials"].as_array().unwrap().len(), 1);
+    import_text(&app, &actors.teacher, &actors.classroom, "甲,12345678a").await;
     let room = create_classroom(&app, &actors.teacher, "另一個教室").await;
-    let request = |text: &str| {
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{room}/roster/import"),
-            Some(&actors.teacher),
-            Some(json!({"text": text})),
-        )
-    };
-    let joined = json_body(send(&app, request("改名,12345678A,student2@example.com")).await).await;
+
+    let joined = import_text(&app, &actors.teacher, &room, "改名,12345678A").await;
+
     assert_eq!(joined["added"], 1);
     assert_eq!(joined["credentials"], json!([]));
-    let conflict = json_body(
-        send(
-            &app,
-            request("甲,12345678A,other@example.com\n乙,87654321B,student2@example.com"),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(conflict["added"], 0);
-    assert_eq!(conflict["invalid"].as_array().unwrap().len(), 2);
-    assert_eq!(conflict["errors"], 2);
-    assert_eq!(conflict["invalid"][0]["reason"], "student_id_conflict");
-    assert_eq!(conflict["invalid"][1]["reason"], "email_conflict");
-    assert!(!conflict.to_string().contains("12345678"));
-    assert!(!conflict.to_string().contains("甲"));
-    let row: (String, String, i64) = sqlx::query_as("SELECT u.display_name, u.email, count(e.user_id) FROM users u JOIN enrollments e ON e.user_id = u.id WHERE u.student_id = '12345678A' GROUP BY u.id").fetch_one(&pool).await.unwrap();
-    assert_eq!(row, ("甲".into(), "student2@example.com".into(), 2));
+    let row: (String, i64) = sqlx::query_as("SELECT u.display_name, count(e.user_id) FROM users u JOIN enrollments e ON e.user_id = u.id WHERE u.student_id = '12345678A' GROUP BY u.id").fetch_one(&pool).await.unwrap();
+    assert_eq!(row, ("甲".into(), 2));
 }
 
 #[sqlx::test]
@@ -219,7 +205,7 @@ async fn another_teacher_importing_existing_student_never_receives_a_password(po
             "POST",
             &format!("/api/classrooms/{classroom}/roster/import"),
             Some(&teacher),
-            Some(json!({"text":"不同姓名,10000000a,student@example.com"})),
+            Some(json!({"text":"不同姓名,10000000a"})),
         ),
     )
     .await;
@@ -240,7 +226,7 @@ async fn import_checks_identity_classroom_ownership_and_archive_status(pool: PgP
             "POST",
             &path,
             cookie,
-            Some(json!({"text": "合成姓名,54321098a,"})),
+            Some(json!({"text": "合成姓名,54321098a"})),
         )
     };
     assert_eq!(
@@ -331,19 +317,18 @@ async fn email_of(pool: &PgPool, student_id: &str) -> Option<String> {
         .unwrap()
 }
 
-/// 學生的電子郵件只由學生自己填：匯入不會替既有帳號補上，不論誰匯入。
+/// 學生的電子郵件只由學生自己填：匯入沒有電子郵件欄，帶了信箱的行整行拒絕，
+/// 不論誰匯入、學生是否已在自己的名單內，帳號的信箱都不會被改動。
 #[sqlx::test]
 async fn import_never_attaches_an_email_to_an_existing_student(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    import_text(&app, &a.teacher, &a.classroom, "甲,12345678A,").await;
+    import_text(&app, &a.teacher, &a.classroom, "甲,12345678A").await;
     let other = second_teacher(&app, &a.admin).await;
     let room = create_classroom(&app, &other, "另一位教師的教室").await;
-
-    // 先不帶信箱把學生加進自己的教室，再補信箱：兩步都不能改動帳號。
-    let enrolled = import_text(&app, &other, &room, "甲,12345678A,").await;
+    let enrolled = import_text(&app, &other, &room, "甲,12345678A").await;
     assert_eq!(enrolled["added"], 1);
-    assert_eq!(email_of(&pool, "12345678A").await, None);
+
     for (cookie, classroom) in [
         (&other, &room),
         (&a.teacher, &a.classroom),
@@ -351,25 +336,8 @@ async fn import_never_attaches_an_email_to_an_existing_student(pool: PgPool) {
     ] {
         let result =
             import_text(&app, cookie, classroom, "甲,12345678A,attacker@example.com").await;
-        assert_eq!(result["errors"], 0);
-        assert!(result.get("email_updated").is_none());
+        assert_eq!(result["errors"], 1);
+        assert_eq!(result["invalid"][0]["reason"], "invalid_format");
         assert_eq!(email_of(&pool, "12345678A").await, None);
     }
-}
-
-#[sqlx::test]
-async fn teacher_can_enroll_an_existing_student_in_a_new_classroom_even_with_an_email_on_the_line(
-    pool: PgPool,
-) {
-    let app = test_app(pool.clone());
-    let a = seed_actors(&app).await;
-    import_text(&app, &a.teacher, &a.classroom, "甲,12345678A,").await;
-    let other = second_teacher(&app, &a.admin).await;
-    let room = create_classroom(&app, &other, "另一位教師的教室").await;
-
-    let result = import_text(&app, &other, &room, "甲,12345678A,attacker@example.com").await;
-
-    assert_eq!(result["added"], 1);
-    assert_eq!(result["credentials"], json!([]));
-    assert_eq!(email_of(&pool, "12345678A").await, None);
 }
