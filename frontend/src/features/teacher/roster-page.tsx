@@ -89,6 +89,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
             <Textarea
               id="roster-text"
               rows={6}
+              placeholder={t('teacher.roster.textPlaceholder')}
               value={text}
               onChange={(e) => setText(e.target.value)}
               className="font-mono"
