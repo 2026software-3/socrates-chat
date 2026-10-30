@@ -33,7 +33,7 @@ CREATE TABLE conversations (
 );
 
 CREATE INDEX conversations_user_idx ON conversations (user_id, created_at DESC, id);
--- 總結列表（GET /api/summaries）依 ended_at DESC, id 做 keyset 分頁，只列已結束的對話。
+-- 依結束時間排序已結束的對話（儀表板、主張分組）。
 CREATE INDEX conversations_ended_idx ON conversations (ended_at DESC, id) WHERE ended_at IS NOT NULL;
 CREATE INDEX conversations_classroom_idx ON conversations (classroom_id) WHERE classroom_id IS NOT NULL;
 -- 刪除活動時的連動刪除與對話計數（S-14）

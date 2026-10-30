@@ -317,6 +317,9 @@ pub(crate) struct SummaryRow {
     classroom_id: Uuid,
     title: String,
     ended_at: DateTime<Utc>,
+    /// 排序與游標用，不輸出
+    #[serde(skip)]
+    completed_at: DateTime<Utc>,
     student_id: Uuid,
     student_name: Option<String>,
     student_email: Option<String>,
@@ -437,6 +440,9 @@ pub(crate) struct SummaryQuery {
     q: Option<String>,
 }
 
+/// 游標種類；排序鍵改為 completed_at 後換名，依 ended_at 產生的舊游標回 `invalid_cursor`。
+const CURSOR_KIND: &str = "summaries_by_completion";
+
 /// 搜尋字串長度上限（字元數）。
 const MAX_SEARCH_CHARS: usize = 100;
 
@@ -482,10 +488,12 @@ fn fingerprint(
 impl SummaryQuery {
     fn filters(&self, classroom: Option<Uuid>) -> Result<Filters<'_>, ApiError> {
         let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
-        let student = match self.student.as_deref() {
-            None => None,
-            Some(s) => Some(Uuid::parse_str(s).map_err(|_| invalid())?),
-        };
+        let student = self
+            .student
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+            .map_err(|_| invalid())?;
         let topic = match self.topic.as_deref() {
             None => None,
             Some(t) if t.trim().is_empty() => return Err(invalid()),
@@ -522,7 +530,7 @@ impl SummaryQuery {
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
-    responses((status = 200, description = "總結分頁，依 ended_at DESC, conversation_id ASC", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "總結分頁，依總結完成時間新到舊（completed_at DESC, conversation_id ASC）", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list(
     RequireTeacher(cu): RequireTeacher,
@@ -537,15 +545,16 @@ pub(crate) async fn list(
         search,
         fingerprint,
     } = query.filters(classroom)?;
-    let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor("summaries")?;
+    let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor(CURSOR_KIND)?;
     // 游標只對產生它時的篩選條件有效；換條件要從第一頁開始
     if cursor.as_ref().is_some_and(|c| c.2 != fingerprint) {
         return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
     }
     let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
+    // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
-        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
+        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at, s.completed_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
                 c.language,
                 s.stance, s.reasons, s.claim
@@ -562,8 +571,8 @@ pub(crate) async fn list(
                 OR u.email ILIKE $6 ESCAPE '\\'
                 OR c.title ILIKE $6 ESCAPE '\\')
            AND ($7::timestamptz IS NULL
-                OR c.ended_at < $7 OR (c.ended_at = $7 AND s.conversation_id > $8))
-         ORDER BY c.ended_at DESC, s.conversation_id ASC
+                OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
+         ORDER BY s.completed_at DESC, s.conversation_id ASC
          LIMIT $9",
     )
     .bind(cu.roles.admin)
@@ -589,7 +598,7 @@ pub(crate) async fn list(
     Ok(Json(pagination::page(
         rows,
         limit,
-        "summaries",
-        |row: &SummaryRow| (row.ended_at, row.conversation_id, fingerprint),
+        CURSOR_KIND,
+        |row: &SummaryRow| (row.completed_at, row.conversation_id, fingerprint),
     )?))
 }
