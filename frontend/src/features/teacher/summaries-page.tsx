@@ -172,11 +172,11 @@ function SummaryList({
   const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor))
   const data = summaries.data?.items
   const nextCursor = summaries.data?.next_cursor
-  // 失效的游標（例如部署後游標版本改變）重試也不會成功，改從第一頁開始
 
   return (
     <>
       {summaries.loading && !data ? <LoadingBlock /> : null}
+      {/* 失效的游標（例如部署後游標版本改變）重試也不會成功，改從第一頁開始 */}
       {summaries.error ? <ErrorBlock error={summaries.error} onRetry={isInvalidCursor(summaries.error) ? onRestart : summaries.reload} /> : null}
       {data && data.length === 0 ? <EmptyBlock>{search ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
       {data && data.length > 0 ? (
