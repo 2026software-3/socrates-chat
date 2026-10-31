@@ -253,6 +253,23 @@ pub async fn all_items(app: &Router, base: &str, cookie: &str) -> Value {
     items_of(&all_pages(app, base, cookie).await)
 }
 
+/// 輪詢到學生這場對話的總結不再是 pending 為止（背景產生），回傳最終的總結。
+pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
+    for _ in 0..100 {
+        let res = send(
+            app,
+            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
+        )
+        .await;
+        let v = json_body(res).await;
+        if v["status"] != "pending" {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("summary stayed pending");
+}
+
 /// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
 pub async fn assert_json_error(res: Response<Body>, status: StatusCode, code: &str) {
     assert_eq!(res.status(), status);
