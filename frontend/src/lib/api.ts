@@ -17,9 +17,20 @@ export class ApiError extends Error {
   }
 }
 
+import { markAiUsageStale } from '@/lib/ai-usage-events'
+
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
 
+/** 寫入類請求結束後通知用量顯示重新載入：任何一個都可能呼叫了 AI（教師翻譯、重新分組等），成功或失敗都一樣。 */
 async function request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  try {
+    return await send<T>(method, path, body, signal)
+  } finally {
+    if (method !== 'GET') markAiUsageStale()
+  }
+}
+
+async function send<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let res: Response
   try {
     res = await fetch(path, {

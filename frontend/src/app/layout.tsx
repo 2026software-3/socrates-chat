@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useAuth } from '@/auth/auth-context'
 import { canAccess, type NavItem } from '@/app/feature'
 import { LangSwitcher } from '@/components/lang-switcher'
+import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
 import { WorkspaceContext } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { useT } from '@/i18n'
@@ -55,6 +56,9 @@ function Account({ me }: { me: Me }) {
         <span className="text-sm font-medium">{me.display_name ?? me.email}</span>
       )}
       <span className="text-muted-foreground hidden text-xs md:inline">{roles.map((r) => t(`role.${r}`)).join(' / ')}</span>
+      <div className="w-full max-w-48 md:mt-2">
+        <AiUsageMeter />
+      </div>
       <div className="flex flex-wrap items-center gap-2 md:mt-2">
         <LangSwitcher />
         <Button variant="outline" size="sm" onClick={() => void logout()}>

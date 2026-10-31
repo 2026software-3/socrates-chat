@@ -280,3 +280,18 @@ describe('sidebar stays in view on long pages', () => {
     expect(aside).toHaveClass('md:overflow-y-auto')
   })
 })
+
+describe('app shell: AI usage', () => {
+  it('shows the signed-in user\'s AI usage in the sidebar', async () => {
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/me/usage', () => HttpResponse.json({ used: 5, limit: 200, window_secs: 86400, resets_in_secs: 100 })))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('meter', { name: 'AI 用量' })).toHaveAttribute('aria-valuenow', '5')
+  })
+
+  it('shows it for teachers too', async () => {
+    mockMe(makeMe({ teacher: true }))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('meter', { name: 'AI 用量' })).toBeInTheDocument()
+  })
+})

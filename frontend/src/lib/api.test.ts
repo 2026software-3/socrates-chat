@@ -1,7 +1,37 @@
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { api, ApiError } from '@/lib/api'
+import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import { server } from '@/test/server'
+
+/** 記錄 `fn` 執行期間（含之後的微任務）收到幾次「AI 用量可能變了」。 */
+async function staleEvents(fn: () => Promise<unknown>): Promise<number> {
+  let n = 0
+  const on = () => (n += 1)
+  window.addEventListener(AI_USAGE_STALE_EVENT, on)
+  try {
+    await fn().catch(() => undefined)
+  } finally {
+    window.removeEventListener(AI_USAGE_STALE_EVENT, on)
+  }
+  return n
+}
+
+describe('api client: AI usage refresh', () => {
+  it('announces that the AI usage may have changed after a write, even a failed one', async () => {
+    server.use(
+      http.post('/api/ok', () => HttpResponse.json({})),
+      http.post('/api/bad', () => HttpResponse.json({ error: { code: 'ai_usage_exceeded', request_id: 'r' } }, { status: 429 })),
+    )
+    expect(await staleEvents(() => api.post('/api/ok'))).toBe(1)
+    expect(await staleEvents(() => api.post('/api/bad'))).toBe(1)
+  })
+
+  it('does not announce anything for reads', async () => {
+    server.use(http.get('/api/x', () => HttpResponse.json({})))
+    expect(await staleEvents(() => api.get('/api/x'))).toBe(0)
+  })
+})
 
 describe('api client', () => {
   it('parses JSON and sends same-origin credentials', async () => {
