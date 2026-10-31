@@ -169,15 +169,16 @@ pub(crate) async fn regroup(
             content: regroup_user_message(language).into(),
         }],
     };
+    // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
+    let usage_slot = state.charge_ai(cu.user.id)?;
     let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
     let groups = raw
         .ok()
         .and_then(|r| parse_regroup(&r, claims.len()))
-        .ok_or(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "ai_unavailable",
-            "AI 暫時無法回覆",
-        ))?;
+        .ok_or_else(|| {
+            state.refund_ai(cu.user.id, usage_slot);
+            ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
+        })?;
     let mut tx = state.pool.begin().await?;
     // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
     crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;

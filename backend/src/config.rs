@@ -32,6 +32,11 @@ pub struct Config {
     /// 之後每隔多久回補一個。預設值見 `login_rate_limit`（暫定，待需求方確認）。
     pub login_rate_burst: u32,
     pub login_rate_replenish: Duration,
+    /// 每位使用者在一個滑動時間窗內最多可觸發幾次 AI 呼叫（`AI_USAGE_MAX`、`AI_USAGE_WINDOW_SECS`）。
+    /// 計入使用者按下去才發生的呼叫：對話回覆、語音辨識與合成、教師翻譯總結與重新分組。
+    /// 預設值見 `ai_usage`（暫定，待需求方確認）。
+    pub ai_usage_max: usize,
+    pub ai_usage_window: Duration,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
     /// AI 服務的 API key 池（`OPENAI_API_KEYS`、`.apikeylist`）；對話與語音共用，冷卻狀態也共用。
@@ -219,6 +224,16 @@ impl Config {
                 "LOGIN_RATE_BURST and LOGIN_RATE_REPLENISH_SECS must be at least 1".into(),
             ));
         }
+        let ai_usage_max: usize = parse_or("AI_USAGE_MAX", crate::ai_usage::DEFAULT_MAX)?;
+        let ai_usage_window_secs: u64 = parse_or(
+            "AI_USAGE_WINDOW_SECS",
+            crate::ai_usage::DEFAULT_WINDOW.as_secs(),
+        )?;
+        if ai_usage_max == 0 || ai_usage_window_secs == 0 {
+            return Err(ConfigError(
+                "AI_USAGE_MAX and AI_USAGE_WINDOW_SECS must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
@@ -239,6 +254,8 @@ impl Config {
             .map_err(|e| ConfigError(format!("invalid TRUSTED_PROXIES: {e}")))?,
             login_rate_burst,
             login_rate_replenish: Duration::from_secs(login_rate_replenish_secs),
+            ai_usage_max,
+            ai_usage_window: Duration::from_secs(ai_usage_window_secs),
             frontend_dir: env::var("FRONTEND_DIR")
                 .ok()
                 .filter(|v| !v.is_empty())

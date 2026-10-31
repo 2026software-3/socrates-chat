@@ -146,6 +146,50 @@ async fn failed_grouping_leaves_the_claim_ungrouped_until_regroup(pool: PgPool) 
 }
 
 #[sqlx::test]
+async fn regroup_counts_against_the_ai_usage_limit_and_failures_are_refunded(pool: PgPool) {
+    let s1 = summary("該拉桿", "理由甲");
+    let ai = FakeAi::with(vec![
+        Reply(vec![Box::leak(s1.into_boxed_str())]),
+        Reply(vec!["{\"group\":\"拉桿\"}"]),
+        Fail,
+        Reply(vec!["{\"groups\":[{\"name\":\"拉桿\",\"members\":[1]}]}"]),
+    ]);
+    let config = Config {
+        ai_usage_max: 1,
+        ..test_config()
+    };
+    let app = test_app_with_config(pool.clone(), ai.clone(), config);
+    let a = seed_actors(&app).await;
+    let act = published_activity_with_topic(&app, &a, "電車難題").await;
+    finish(&app, &a.student, &act, &ai, &pool, 2).await;
+    let usage = |cookie: String| {
+        let app = app.clone();
+        async move {
+            json_body(send(&app, get("/api/me/usage", Some(&cookie))).await).await["used"].clone()
+        }
+    };
+
+    // AI 失敗：不扣額度，教師可以再試
+    assert_eq!(
+        regroup(&app, Some(&a.teacher), &act).await.0,
+        StatusCode::BAD_GATEWAY
+    );
+    assert_eq!(usage(a.teacher.clone()).await, 0);
+
+    // 成功一次後用完額度；再按會被擋，而且不碰 AI
+    assert_eq!(
+        regroup(&app, Some(&a.teacher), &act).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(usage(a.teacher.clone()).await, 1);
+    let before = ai.request_count();
+    let (status, body) = regroup(&app, Some(&a.teacher), &act).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "ai_usage_exceeded");
+    assert_eq!(ai.request_count(), before);
+}
+
+#[sqlx::test]
 async fn regroup_is_for_teachers_and_keeps_old_groups_when_the_ai_fails(pool: PgPool) {
     let s1 = summary("該拉桿", "理由甲");
     let ai = FakeAi::with(vec![

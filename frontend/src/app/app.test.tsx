@@ -214,7 +214,8 @@ describe('app shell', () => {
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')
     expect(await screen.findByRole('heading', { name: 'Choose a topic' })).toBeInTheDocument()
     await waitFor(() => expect(updates).toEqual([{ language: 'en' }]))
-    expect(document.documentElement.lang).toBe('en')
+    // <html lang> 由 I18nProvider 的 useEffect 設定：畫面換了語言之後才會更新，要等它而不是立刻斷言
+    await waitFor(() => expect(document.documentElement.lang).toBe('en'))
     expect(localStorage.getItem('lang')).toBe('en')
   })
 
@@ -224,7 +225,8 @@ describe('app shell', () => {
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: 'Elegir un tema' })).toBeInTheDocument()
-    expect(document.documentElement.lang).toBe('es')
+    // 同上：<html lang> 在被動效果裡更新，畫面出現西班牙文時它不一定已經更新（CI 上偶發看到 zh-TW）
+    await waitFor(() => expect(document.documentElement.lang).toBe('es'))
   })
 
   it('shows the disabled page when the account has been disabled', async () => {
@@ -278,5 +280,20 @@ describe('sidebar stays in view on long pages', () => {
     expect(aside).not.toBeNull()
     for (const c of classes.split(' ')) expect(aside).toHaveClass(c)
     expect(aside).toHaveClass('md:overflow-y-auto')
+  })
+})
+
+describe('app shell: AI usage', () => {
+  it('shows the signed-in user\'s AI usage in the sidebar', async () => {
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/me/usage', () => HttpResponse.json({ used: 5, limit: 200, window_secs: 86400, resets_in_secs: 100 })))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('meter', { name: 'AI 用量' })).toHaveAttribute('aria-valuenow', '5')
+  })
+
+  it('shows it for teachers too', async () => {
+    mockMe(makeMe({ teacher: true }))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('meter', { name: 'AI 用量' })).toBeInTheDocument()
   })
 })

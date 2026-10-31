@@ -254,7 +254,7 @@ impl FromRequest<AppState> for AudioBody {
     )
 )]
 pub(crate) async fn transcribe(
-    _: RequireStudent,
+    RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Query(q): Query<TranscribeQuery>,
     headers: HeaderMap,
@@ -270,12 +270,17 @@ pub(crate) async fn transcribe(
     if body.0.is_empty() {
         return Err(ApiError::bad_request("invalid_audio", "需要音訊內容"));
     }
+    // 驗證通過才扣 AI 用量；沒有得到結果就退回
+    let slot = state.charge_ai(cu.user.id)?;
     let text = state
         .voice
         // 請求本體獨占時直接取得緩衝，不複製（最多 10 MB）
         .transcribe(Vec::from(body.0), mime, language)
         .await
-        .map_err(voice_error)?;
+        .map_err(|e| {
+            state.refund_ai(cu.user.id, slot);
+            voice_error(e)
+        })?;
     Ok(Json(Transcript { text }))
 }
 
@@ -295,7 +300,7 @@ pub(crate) struct SpeechBody {
     responses((status = 200, description = "audio/mpeg", content_type = "audio/mpeg", body = AudioBytes), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn speech(
-    _: RequireStudent,
+    RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Json(b): Json<SpeechBody>,
 ) -> Result<Response, ApiError> {
@@ -305,10 +310,10 @@ pub(crate) async fn speech(
     if text.is_empty() || text.chars().count() > MAX_SPEECH_CHARS {
         return Err(ApiError::bad_request("invalid_text", "文字長度不符"));
     }
-    let audio = state
-        .voice
-        .speak(text, language)
-        .await
-        .map_err(voice_error)?;
+    let slot = state.charge_ai(cu.user.id)?;
+    let audio = state.voice.speak(text, language).await.map_err(|e| {
+        state.refund_ai(cu.user.id, slot);
+        voice_error(e)
+    })?;
     Ok(([(header::CONTENT_TYPE, "audio/mpeg")], audio).into_response())
 }

@@ -3,6 +3,7 @@
  * 或找不到對話語言的語音時，改用 OpenAI（經後端 `/api/voice/speech`，前端不接觸 OpenAI）。
  * 找語音的順序：完全相符的地區，其次是同語言的其他地區（例如 `zh-*`）。
  */
+import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { isAbortError } from '@/lib/api'
 
 export type Speaker = {
@@ -96,6 +97,7 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
         body: JSON.stringify({ text, language: conversationLang }),
         signal: ctrl.signal,
       })
+        .finally(markAiUsageStale)
         .then(async (res) => {
           if (!res.ok) throw new SpeechUnavailableError()
           url = URL.createObjectURL(await res.blob())

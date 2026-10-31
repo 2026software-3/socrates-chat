@@ -304,6 +304,14 @@ describe('ConversationPage: sending', () => {
     expect(screen.getAllByText('新的想法')).toHaveLength(1)
   })
 
+  it('ai_usage_exceeded says the AI usage limit was reached', async () => {
+    mockDetail(makeDetail())
+    server.use(http.post('/api/conversations/c1/messages', () => postSse(errorFrame('ai_usage_exceeded'))))
+    renderPage()
+    await send('新的想法')
+    expect(await screen.findByText('AI 用量已達上限，請稍後再試。')).toBeInTheDocument()
+  })
+
   it('shows the network error text when the connection drops mid-stream', async () => {
     mockDetail(makeDetail())
     server.use(

@@ -742,10 +742,21 @@ async fn translation_fixture(
     ai: std::sync::Arc<FakeAi>,
     limit: Option<(usize, Duration)>,
 ) -> (Router, Actors, String) {
+    translation_fixture_with_config(pool, ai, limit, test_config()).await
+}
+
+/// 同上，但用指定的設定建立 app。前置步驟（登入、建立對話、等總結）也用這份設定，
+/// 所以不要放短的請求逾時（`short_timeout()`）：機器忙碌時前置步驟會回 408（#427）。
+async fn translation_fixture_with_config(
+    pool: PgPool,
+    ai: std::sync::Arc<FakeAi>,
+    limit: Option<(usize, Duration)>,
+    config: Config,
+) -> (Router, Actors, String) {
     register_fixture_pool(&pool);
     let mut state = socrates_chat_backend::AppState::new(
         pool.clone(),
-        test_config(),
+        config,
         std::sync::Arc::new(FakeIdentity),
         ai,
     );
@@ -814,6 +825,31 @@ async fn translation_is_not_cut_off_by_the_general_request_timeout(pool: PgPool)
     let (status, body) = translate(&short_app, &a, &conv).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["stance"], "Would pull");
+}
+
+#[sqlx::test]
+async fn translation_counts_against_the_ai_usage_limit_and_failures_are_refunded(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let config = Config {
+        ai_usage_max: 1,
+        ..test_config()
+    };
+    let (app, a, conv) = translation_fixture_with_config(pool, ai.clone(), None, config).await;
+    set_teacher_language(&app, &a, "en").await;
+
+    // AI 失敗：不扣額度
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
+    // 成功一次後用完；再按被擋，而且不碰 AI
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    let before = ai.request_count();
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "ai_usage_exceeded");
+    assert_eq!(ai.request_count(), before);
 }
 
 #[sqlx::test]

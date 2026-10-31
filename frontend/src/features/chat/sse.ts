@@ -1,4 +1,5 @@
 import { ApiError, apiErrorFrom, isAbortError } from '@/lib/api'
+import { markAiUsageStale } from '@/lib/ai-usage-events'
 import type { SentMessage, StreamDone } from '@/lib/types'
 
 /** 一個完整的 SSE 事件框。 */
@@ -120,6 +121,15 @@ function isSentMessage(p: unknown): p is SentMessage {
  * 沒有 AI 回覆，這時串流正常結束。
  */
 async function* openStream(url: string, init: RequestInit, signal?: AbortSignal): AsyncGenerator<SendEvent> {
+  try {
+    yield* openStreamUnnotified(url, init, signal)
+  } finally {
+    // 不論串流怎麼結束（完成、後端錯誤、中斷）都通知用量顯示重新載入
+    markAiUsageStale()
+  }
+}
+
+async function* openStreamUnnotified(url: string, init: RequestInit, signal?: AbortSignal): AsyncGenerator<SendEvent> {
   let res: Response
   try {
     res = await fetch(url, {

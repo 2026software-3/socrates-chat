@@ -80,6 +80,8 @@ pub fn test_config() -> Config {
         trusted_proxies: vec![],
         login_rate_burst: socrates_chat_backend::login_rate_limit::DEFAULT_BURST,
         login_rate_replenish: socrates_chat_backend::login_rate_limit::DEFAULT_REPLENISH,
+        ai_usage_max: 1000,
+        ai_usage_window: Duration::from_secs(3600),
         frontend_dir: None,
         openai_keys: Arc::new(KeyPool::new(vec!["test-key".to_string()]).unwrap()),
         openai_model: "test-model".to_string(),

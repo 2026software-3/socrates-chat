@@ -389,7 +389,7 @@ pub(crate) async fn send_message(
     // 回合數與階段取自上面鎖住該列的 UPDATE；其餘欄位建立後不變，不必重新查詢
     conversation.turn_count = turn;
     conversation.stage = stage;
-    reply::begin_stream(state, conversation, first).await
+    reply::begin_stream(state, cu.user.id, conversation, first).await
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
