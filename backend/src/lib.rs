@@ -150,7 +150,11 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/openapi.json", get(openapi_json))
-        .merge(auth::routes(state.config.trusted_proxies.clone()))
+        .merge(auth::routes(
+            state.config.trusted_proxies.clone(),
+            state.config.login_rate_burst,
+            state.config.login_rate_replenish,
+        ))
         .merge(roster::routes())
         .merge(classrooms::routes())
         .merge(accounts::routes())
