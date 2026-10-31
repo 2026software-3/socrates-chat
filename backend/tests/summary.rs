@@ -742,10 +742,21 @@ async fn translation_fixture(
     ai: std::sync::Arc<FakeAi>,
     limit: Option<(usize, Duration)>,
 ) -> (Router, Actors, String) {
+    translation_fixture_with_config(pool, ai, limit, test_config()).await
+}
+
+/// 同上，但用指定的設定建立 app。前置步驟（登入、建立對話、等總結）也用這份設定，
+/// 所以不要放短的請求逾時（`short_timeout()`）：機器忙碌時前置步驟會回 408（#427）。
+async fn translation_fixture_with_config(
+    pool: PgPool,
+    ai: std::sync::Arc<FakeAi>,
+    limit: Option<(usize, Duration)>,
+    config: Config,
+) -> (Router, Actors, String) {
     register_fixture_pool(&pool);
     let mut state = socrates_chat_backend::AppState::new(
         pool.clone(),
-        test_config(),
+        config,
         std::sync::Arc::new(FakeIdentity),
         ai,
     );
