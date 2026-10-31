@@ -1,6 +1,8 @@
 //! `GET /api/summaries` 的分頁、篩選與權限（#285）。資料皆為合成資料。
 mod common;
 use axum::http::StatusCode;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use common::Script::{Fail, Reply};
 use common::*;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -44,26 +46,6 @@ async fn seed_ready(
     .execute(pool)
     .await
     .unwrap();
-}
-
-/// 依 next_cursor 走完所有頁，回傳每頁內容。
-async fn all_pages(app: &axum::Router, base: &str, cookie: &str) -> Vec<Value> {
-    let sep = if base.contains('?') { '&' } else { '?' };
-    let mut path = base.to_string();
-    let mut pages = Vec::new();
-    loop {
-        let res = send(app, get(&path, Some(cookie))).await;
-        assert_eq!(res.status(), StatusCode::OK, "{path}");
-        let page = json_body(res).await;
-        let next = page["next_cursor"].as_str().map(str::to_string);
-        pages.push(page);
-        assert!(pages.len() <= 20, "too many pages");
-        match next {
-            Some(cursor) => path = format!("{base}{sep}cursor={cursor}"),
-            None => break,
-        }
-    }
-    pages
 }
 
 fn ids(pages: &[Value]) -> Vec<String> {
@@ -134,53 +116,91 @@ async fn paginates_in_stable_order_without_duplicates_or_gaps(pool: PgPool) {
     assert_eq!(pages[0]["items"][0]["stance"], "Synthetic stance");
 }
 
+const GOOD: &str = "{\"stance\":\"Synthetic stance\",\"reasons\":\"Synthetic reasons\"}";
+
+/// 輪詢到學生這場對話的總結不再是 pending 為止，回傳最終狀態。
+async fn settled_status(app: &axum::Router, cookie: &str, conv: &str) -> String {
+    for _ in 0..100 {
+        let path = format!("/api/conversations/{conv}/summary");
+        let status = json_body(send(app, get(&path, Some(cookie))).await).await["status"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        if status != "pending" {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("summary stayed pending");
+}
+
 #[sqlx::test]
-async fn summary_ready_between_pages_appears_on_the_first_page_without_shifting_others(
+async fn summary_retried_between_pages_appears_on_the_first_page_without_shifting_others(
     pool: PgPool,
 ) {
-    let app = test_app(pool.clone());
+    // 第一輪（含自動重試）兩次都失敗，翻頁之間手動重試成功
+    let ai = FakeAi::with(vec![Fail, Fail, Reply(vec![GOOD])]);
+    let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
-    let (s1, _, expected) = seed_many(&pool, &a.classroom).await;
-    let first = json_body(send(&app, get("/api/summaries?limit=3", Some(&a.teacher))).await).await;
-    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    let (_, _, expected) = seed_many(&pool, &a.classroom).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "Synthetic message").await;
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/end"),
+            Some(&a.student),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    assert_eq!(settled_status(&app, &a.student, &conv).await, "failed");
+    // 這場對話比其他所有對話都早結束
+    sqlx::query("UPDATE conversations SET ended_at = '2025-12-31T00:00:00Z' WHERE id = $1")
+        .bind(conv.parse::<Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    // 翻頁之間，一場最早結束的對話這時才產生總結（例如重試成功）
-    let late = Uuid::from_u128(8);
-    sqlx::query(
-        "INSERT INTO conversations (id, user_id, classroom_id, title, status, ended_at)
-         VALUES ($1, $2, $3, 'Topic A', 'ended', '2025-12-31T00:00:00Z')",
+    let first = json_body(send(&app, get("/api/summaries?limit=3", Some(&a.teacher))).await).await;
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/summary/retry"),
+            Some(&a.student),
+            None,
+        ),
     )
-    .bind(late)
-    .bind(s1)
-    .bind(a.classroom.parse::<Uuid>().unwrap())
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO summaries (conversation_id, status, stance, reasons, completed_at)
-         VALUES ($1, 'ready', 'Synthetic stance', 'Synthetic reasons', now())",
-    )
-    .bind(late)
-    .execute(&pool)
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    assert_eq!(settled_status(&app, &a.student, &conv).await, "ready");
 
     // 往後翻：原有的總結不重複、不遺漏，順序不受影響
-    let mut pages = vec![first];
-    let mut next = Some(cursor);
-    while let Some(cursor) = next {
-        let path = format!("/api/summaries?limit=3&cursor={cursor}");
-        let page = json_body(send(&app, get(&path, Some(&a.teacher))).await).await;
-        next = page["next_cursor"].as_str().map(str::to_string);
-        pages.push(page);
-    }
-    let seen = ids(&pages);
+    let pages = pages_after(&app, "/api/summaries?limit=3", &a.teacher, first).await;
     let want: Vec<String> = expected.iter().map(|e| e.0.to_string()).collect();
-    assert_eq!(seen, want);
-    // 重新開啟列表：新完成的總結在第一頁最上面
+    assert_eq!(ids(&pages), want);
+    // 重新開啟列表：重試成功的總結在第一頁最上面
     let reopened =
         json_body(send(&app, get("/api/summaries?limit=3", Some(&a.teacher))).await).await;
-    assert_eq!(reopened["items"][0]["conversation_id"], late.to_string());
+    assert_eq!(reopened["items"][0]["conversation_id"], conv);
+}
+
+#[sqlx::test]
+async fn cursor_from_the_previous_sort_key_is_rejected(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    // 改依 completed_at 排序前產生的游標，種類是 "summaries"
+    let key = ("2026-01-01T00:00:00Z", Uuid::from_u128(1), "x");
+    let old = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&(1u8, "summaries", key)).unwrap());
+    let res = send(
+        &app,
+        get(&format!("/api/summaries?cursor={old}"), Some(&a.teacher)),
+    )
+    .await;
+    assert_json_error(res, StatusCode::BAD_REQUEST, "invalid_cursor").await;
 }
 
 #[sqlx::test]

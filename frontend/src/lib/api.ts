@@ -71,6 +71,11 @@ export function isApiError(e: unknown): e is ApiError {
   return e instanceof ApiError
 }
 
+/** 分頁游標已失效（重送同一個游標不會成功，要從第一頁重新開始）。 */
+export function isInvalidCursor(e: unknown): boolean {
+  return isApiError(e) && e.code === 'invalid_cursor'
+}
+
 /** fetch 被 `AbortSignal` 中止時丟出的錯誤。 */
 export function isAbortError(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError'

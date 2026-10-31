@@ -171,4 +171,22 @@ describe('ConversationListPage', () => {
     expect(cursors).toEqual([null, 'opaque+/=', null])
   })
 
+  it('retries an invalid cursor from the first page instead of the same cursor', async () => {
+    mockMe(makeMe({ student: true }))
+    const cursors: (string | null)[] = []
+    server.use(http.get('/api/conversations', ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      cursors.push(cursor)
+      return cursor
+        ? apiError(400, 'invalid_cursor')
+        : HttpResponse.json({ items: [makeConversation({ title: 'First page' })], next_cursor: 'stale' })
+    }))
+    renderApp(null, { route: '/conversations' })
+    await userEvent.click(await screen.findByRole('button', { name: '下一頁' }))
+    expect(await screen.findByText('分頁連結已失效，請重新開啟列表。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重試' }))
+    await screen.findByRole('link', { name: '開啟對話：First page' })
+    expect(screen.queryByRole('button', { name: '上一頁' })).not.toBeInTheDocument()
+    expect(cursors).toEqual([null, 'stale', null])
+  })
 })

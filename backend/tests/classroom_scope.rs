@@ -93,7 +93,7 @@ async fn list(app: &Router, path: &str, cookie: &str) -> Value {
     // 分頁列表讀完所有頁再回傳全部項目；其餘端點直接回傳
     let body = json_body(res).await;
     if body.get("items").is_some() {
-        return all_items(app, path, cookie).await;
+        return items_of(&pages_after(app, path, cookie, body).await);
     }
     body
 }
