@@ -11,6 +11,7 @@ import {
   type RecognizerEvents,
 } from '@/features/chat/voice/recognizer'
 import { createSpeaker } from '@/features/chat/voice/speaker'
+import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import { FakeAudioContext, FakeWorkletNode, feed, installAudioGraph, installMediaDevices, noiseSource, removeMediaDevices, voicedSource } from '@/test/fake-audio'
 import { makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -310,6 +311,15 @@ describe('speech synthesis (S-05.3)', () => {
     expect(await first).toBe(false)
     await new Promise((r) => setTimeout(r, 0))
     expect(spoken.map((u) => u.text)).toEqual(['舊的回覆', '新的回覆'])
+  })
+
+  it('refreshes the AI usage display after backend speech, even when it fails (S-03)', async () => {
+    const stale = vi.fn()
+    window.addEventListener(AI_USAGE_STALE_EVENT, stale)
+    server.use(http.post('/api/voice/speech', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
+    await expect(createSpeaker('zh-TW', 'zh-TW').speak('你好')).rejects.toThrow()
+    window.removeEventListener(AI_USAGE_STALE_EVENT, stale)
+    expect(stale).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a start event that arrives after a stop', async () => {
@@ -754,8 +764,23 @@ describe('barge-in during AI playback (S-05.5)', () => {
     const { tracks } = installMediaDevices()
     const { view } = await untilSpeaking()
     await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    const recognizers = FakeRecognition.instances.length
     view.unmount()
     expect(tracks[0].readyState).toBe('ended')
+    expect(FakeAudioContext.last.close).toHaveBeenCalled()
+    await new Promise((r) => setTimeout(r, 20))
+    // 播放被中斷時不能把回合交給已經不存在的畫面
+    expect(FakeRecognition.instances).toHaveLength(recognizers)
+  })
+
+  it('releases the audio context when the voice conversation cannot start', async () => {
+    installMediaDevices()
+    mockChat()
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.fail('not-allowed')
+    expect(await screen.findByText(/無法使用麥克風/u)).toBeInTheDocument()
     expect(FakeAudioContext.last.close).toHaveBeenCalled()
   })
 

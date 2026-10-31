@@ -102,6 +102,39 @@ describe('barge-in monitor', () => {
     expect(liveWhenFired).toBe('ended')
   })
 
+  it('does not keep the context running while nothing is being monitored', async () => {
+    installMediaDevices()
+    const { m } = monitor()
+    m.unlock()
+    expect(FakeAudioContext.last.resume).toHaveBeenCalledTimes(1) // 手勢內真的喚醒過
+    await settle()
+    expect(FakeAudioContext.last.state).toBe('suspended')
+  })
+
+  it('leaves the context alone if monitoring began while unlocking', async () => {
+    installMediaDevices()
+    const { m } = monitor()
+    m.unlock()
+    m.start('element')
+    await settle()
+    expect(FakeAudioContext.last.state).toBe('running')
+  })
+
+  it('resumes even when the context still looks running during a pending suspend', async () => {
+    installMediaDevices()
+    const { m } = monitor()
+    m.start('element')
+    await settle()
+    const ctx = FakeAudioContext.last
+    // suspend 還沒生效：state 維持 running，順序全靠 Promise 佇列
+    ctx.suspend.mockImplementationOnce(() => Promise.resolve())
+    ctx.resume.mockClear()
+    m.stop()
+    m.start('element')
+    await settle()
+    expect(ctx.resume).toHaveBeenCalled()
+  })
+
   it('does not claim to be listening until audio really flows', async () => {
     installMediaDevices()
     const { m, statuses } = monitor()

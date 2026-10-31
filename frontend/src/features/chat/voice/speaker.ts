@@ -7,6 +7,7 @@
  */
 import type { PlaybackPath } from '@/features/chat/voice/audio/barge-in'
 import { createPlaybackQueue } from '@/features/chat/voice/audio/playback-queue'
+import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { isAbortError } from '@/lib/api'
 
 export type Speaker = {
@@ -82,7 +83,7 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, language: conversationLang }),
         signal,
-      })
+      }).finally(markAiUsageStale)
       if (!res.ok) throw new SpeechUnavailableError()
       url = URL.createObjectURL(await res.blob())
       if (signal.aborted) return

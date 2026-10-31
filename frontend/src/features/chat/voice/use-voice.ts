@@ -236,7 +236,11 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
           setPhase('idle')
           setNotice(kind)
           // 無法收音就不要停在語音對話模式
-          if (kind === 'permission' || kind === 'device' || kind === 'unavailable') setMode('off')
+          if (kind === 'permission' || kind === 'device' || kind === 'unavailable') {
+            setMode('off')
+            monitorRef.current?.close()
+            monitorRef.current = undefined
+          }
         },
       })
       recRef.current = rec
@@ -308,6 +312,9 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   // 離開頁面或對話結束時關掉收音與播放
   useEffect(
     () => () => {
+      // 先讓進行中的回合失效：播放被中斷後不能再把回合交給已經不存在的畫面
+      modeRef.current = 'off'
+      speakTurnRef.current += 1
       recRef.current?.stop()
       speakerRef.current?.stop()
       monitorRef.current?.close()

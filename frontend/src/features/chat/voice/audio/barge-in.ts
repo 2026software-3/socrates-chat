@@ -93,9 +93,10 @@ export function createBargeInMonitor({ onSpeech, onStatus, stages = [] }: Option
     return ctx
   }
 
-  const resume = (c: AudioContext) => {
-    if (c.state !== 'running') c.resume().catch((e: unknown) => console.warn('[voice] audio context did not resume:', e))
-  }
+  const suspend = (c: AudioContext) => c.suspend().catch((e: unknown) => console.warn('[voice] audio context did not suspend:', e))
+
+  // 不看 `state`：前一次 suspend 可能還沒生效，呼叫順序才可靠
+  const resume = (c: AudioContext) => c.resume().catch((e: unknown) => console.warn('[voice] audio context did not resume:', e))
 
   /** 放棄目前這輪監聽；`r` 已經不是目前這輪時什麼都不做。 */
   function abandon(r: Run, failure: BargeInFailure, cause?: unknown) {
@@ -175,7 +176,7 @@ export function createBargeInMonitor({ onSpeech, onStatus, stages = [] }: Option
     if (r) {
       release(r)
       // 兩次播放之間不留著執行中的 AudioContext，避免佔用音訊工作階段
-      ctx?.suspend().catch((e: unknown) => console.warn('[voice] audio context did not suspend:', e))
+      if (ctx) void suspend(ctx)
     }
     if (status.state === 'starting' || status.state === 'monitoring') publish({ state: 'idle' })
   }
@@ -183,8 +184,14 @@ export function createBargeInMonitor({ onSpeech, onStatus, stages = [] }: Option
   return {
     unlock() {
       const context = ensureContext()
-      if (context) resume(context)
-      else fail('unsupported')
+      if (!context) {
+        fail('unsupported')
+        return
+      }
+      // 手勢內喚醒一次就夠；沒在監聽時不留著執行，避免佔用音訊工作階段
+      void resume(context).then(() => {
+        if (!run && ctx === context) suspend(context)
+      })
     },
     start(path) {
       stop()
