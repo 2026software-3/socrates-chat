@@ -18,8 +18,9 @@
 
 ## 登入
 
+- `POST /api/auth/login`：`{ account, password }`，`account` 接受**學號或電子郵件**（含 `@` 以電子郵件比對，否則以學號比對，大小寫不分、前後空白忽略；舊欄位名稱 `email` 仍可使用）。成功回 `{ must_change_password }` 並設定 `sid` cookie；失敗一律 `401 invalid_credentials`（帳號不存在、格式不符與密碼錯誤相同），密碼正確但帳號已停用才回 `403 account_disabled`。沒有電子郵件的學生只能用學號登入。限流記錄只存登入帳號輸入的雜湊。稽核日誌的登入紀錄，對象沒有電子郵件時以帳號 UUID 識別。
 - 沒有註冊 API：內建帳號只由系統建立（管理者重設密碼、教師或管理者匯入修課名單、部署時的 `ADMIN_INITIAL_PASSWORD`）。
-- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一信箱從同一個 IP 連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`（別的 IP 的少量失敗不會鎖住本人）；同一信箱不論 IP 累計失敗 30 次（暫定值）則在所有 IP 鎖定 15 分鐘；另外每個來源 IP 有請求頻率限制（連續 60 個、之後平均每秒 2 個，暫定值），超過同樣回 `429 too_many_attempts`。
+- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一個登入帳號輸入（學號或電子郵件，先去前後空白；含 `@` 轉小寫，否則轉大寫，因此大小寫不能繞過）從同一個 IP 連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`（別的 IP 的少量失敗不會鎖住本人）；同一個登入帳號輸入不論 IP 累計失敗 30 次（暫定值）則在所有 IP 鎖定 15 分鐘；另外每個來源 IP 有請求頻率限制（連續 60 個、之後平均每秒 2 個，暫定值），超過同樣回 `429 too_many_attempts`。
 - Google 回呼成功設定 `sid` cookie 並導回 `APP_BASE_URL`；失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`）。
 - 用臨時密碼登入時 `must_change_password` 為 `true`：前端導向改密碼頁，除了 `GET /api/me`、改密碼與登出，其他 API 都回 `password_change_required`。旗標在 session 上，不在使用者上。
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
@@ -51,13 +52,13 @@
 
 修課名單屬於教室（S-14、S-01.4）；名單端點的路徑都帶教室 ID，由教室的建立者或管理者操作。其他教師存取他人的教室，與教室不存在、ID 格式不正確一律回相同的 `404 not_found`；學生、名單外帳號回 `403`，未登入回 `401`。
 
-- `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依帳號 UUID 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；排序鍵不因補上電子郵件而改變；原本以電子郵件為鍵的游標失效，請重新從第一頁開始。
-- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, email_updated, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；`email_updated` 是補上電子郵件的筆數，`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields`、`invalid_format`、`student_id_conflict` 或 `email_conflict`，不回顯姓名、學號。`credentials` 包含 `{ student_id, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
+- `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依帳號 UUID 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；排序鍵不隨電子郵件變動；原本以電子郵件為鍵的游標失效，請重新從第一頁開始。
+- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；匯入沒有電子郵件欄，不會設定或修改任何帳號的電子郵件；`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields` 或 `invalid_format`（包含多出欄位，例如舊格式的電子郵件欄），不回顯姓名、學號。`credentials` 包含 `{ student_id, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
 - `DELETE /api/classrooms/{id}/roster/{email}`：路徑參數可用學生信箱或帳號 UUID，只移出這間教室；原本就不在這間教室名單內回 `404`。學生仍在其他教室的名單時保有學生權限；不在任何教室名單內時，登入後看到 `403 not_enrolled`（尚未開通）。
 - `GET /api/classrooms/{id}/students?limit=&cursor=&q=`（#333）：該教室名單上的學生與帳號狀態（包含 `student_id` 學號，僅該教室的教師與管理者可存取），依帳號 UUID 排序分頁，回 `{ items, next_cursor, total }`。`q` 搜尋電子郵件與顯示名稱（不分大小寫的子字串，前後空白忽略，最多 100 字元；`%`、`_` 當一般字元），由後端對所有頁搜尋，不比對對話內容或其他欄位；空白或過長回 `400 invalid_filter`。`total` 是符合同一個 `q` 的學生總數，每一頁都帶，不受游標影響。舊版以電子郵件為鍵的游標失效，請從第一頁開始。游標綁定產生它時的 `q`（正規化後的雜湊，不含姓名或電子郵件）：換了 `q` 還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
 - `GET /api/dashboard/class` 的 `students_total`：教師為自己建立的所有教室內不重複的學生數，管理者為全部教室。
 - 舊的 `/api/roster*` 與 `/api/students`（列表）已移除；`DELETE /api/students/{email}` 仍是全域的帳號刪除，路徑可用帳號 UUID 或電子郵件，會一併移除該帳號在所有教室的名單項目。教師只能刪除完全屬於自己建立的教室的學生，其餘（含他人教室的學生、同時在他人教室的學生）回與不存在相同的 `404`；管理者不受限。此範圍是暫定的保守做法，**待需求方確認**（S-02.5，見 `decisions.md`「尚未決定」）。
-- 匯入只新增、不移除；每行依序為姓名、學號、電子郵件，沒有標題列。姓名與學號必填，姓名去前後空白後最多 30 個 Unicode 字元；學號為八位數字加一個英文字母並轉大寫；電子郵件選填，有值時轉小寫。支援 CSV 引號與跳脫；每筆資料必須在同一行，不支援引號內跨行欄位。
+- 匯入只新增、不移除；每行依序為姓名、學號兩欄，沒有標題列。姓名與學號必填，姓名去前後空白後最多 30 個 Unicode 字元；學號為八位數字加一個英文字母並轉大寫；多出的欄位（含舊格式的電子郵件欄）整行回 `invalid_format`。支援 CSV 引號與跳脫；每筆資料必須在同一行，不支援引號內跨行欄位。
 - 匯入結果的 `credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次）。**教師與管理者匯入都會建立帳號並回臨時密碼**（2026-10 修訂，規格見 `S-08.2-auth-verification.md`；原為只有管理者匯入才建立、教師匯入時為空陣列，實作隨 #393）；已有帳號（例如其他教室已匯入過的學號）與教師／管理者的信箱不在其中。
 - 移出名單不刪資料（重新加回後照舊）。
 - 刪除學生帳號：使用 DELETE，JSON body 的 `confirm_student_id` 必須與學生學號相同（去前後空白、不分大小寫），不接受電子郵件確認（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
@@ -116,7 +117,7 @@
 
 - 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
 
-- `GET /api/summaries?limit=&cursor=&student=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依總結完成時間新到舊（`completed_at DESC, conversation_id ASC`）回 `{ items, next_cursor }`：翻頁期間才完成（或重試成功）的總結一定排在第一頁最上面，已列出的項目不會重複或被跳過，重新開啟列表就看得到；項目的 `ended_at` 仍是對話結束時間。`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
+- `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依總結完成時間新到舊（`completed_at DESC, conversation_id ASC`）回 `{ items, next_cursor }`：翻頁期間才完成（或重試成功）的總結一定排在第一頁最上面，已列出的項目不會重複或被跳過，重新開啟列表就看得到；項目的 `ended_at` 仍是對話結束時間。`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
 - `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
 - `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
 - 兩個篩選可同時使用，也可與分頁一起用（換篩選時要從第一頁開始，舊游標會被拒絕）。格式錯誤（`student` 不是 UUID、`student` 或 `topic` 為空白）回 `400 invalid_filter`；格式正確但沒有符合的學生或題目，回空頁 `{ "items": [], "next_cursor": null }`，不洩漏學生或題目是否存在。

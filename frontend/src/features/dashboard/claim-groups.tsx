@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { errorText, useI18n, useT } from '@/i18n'
+import { ConfirmDialog } from '@/features/chat/confirm-dialog'
+import { useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { ActivityDistribution } from '@/lib/types'
 
@@ -15,6 +15,7 @@ export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: Act
   const { lang } = useI18n()
   const pct = useMemo(() => new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 }), [lang])
   const [pending, setPending] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<unknown>()
   const total = activity.claims.reduce((n, g) => n + g.count, 0)
 
@@ -23,6 +24,7 @@ export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: Act
     setError(undefined)
     try {
       await api.post('/api/dashboard/class/regroup', { activity_id: activity.activity_id })
+      setConfirming(false)
       onChanged()
     } catch (e) {
       setError(e)
@@ -82,14 +84,21 @@ export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: Act
       {canRegroup && (activity.claims.length > 0 || activity.ungrouped > 0) ? (
         <div className="space-y-2">
           <p className="text-muted-foreground text-xs">{t('dashboard.claims.regroupHelp')}</p>
-          <Button variant="outline" size="sm" disabled={pending} onClick={() => void regroup()}>
+          <Button variant="outline" size="sm" disabled={pending} onClick={() => { setError(undefined); setConfirming(true) }}>
             {pending ? t('dashboard.claims.regrouping') : t('dashboard.claims.regroup')}
           </Button>
-          {error ? (
-            <Alert variant="destructive" role="alert">
-              <AlertDescription>{errorText(t, error)}</AlertDescription>
-            </Alert>
-          ) : null}
+          <ConfirmDialog
+            open={confirming}
+            onOpenChange={setConfirming}
+            title={t('dashboard.claims.regroupTitle')}
+            description={t('dashboard.claims.regroupBody')}
+            confirmLabel={t('dashboard.claims.regroup')}
+            pending={pending}
+            error={error}
+            onConfirm={() => void regroup()}
+          >
+            <span className="text-muted-foreground">{t('dashboard.claims.regroupNote')}</span>
+          </ConfirmDialog>
         </div>
       ) : null}
     </section>

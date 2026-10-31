@@ -80,6 +80,7 @@ fn app_with_openai_voice(pool: PgPool, base_url: &str) -> Router {
     config.openai_base_url = base_url.to_string();
     config.openai_stt_model = Some("stt-test".into());
     let voice = Arc::new(OpenAiVoice::from_config(&config));
+    register_fixture_pool(&pool);
     app(AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![])).with_voice(voice))
 }
 

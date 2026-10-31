@@ -1,4 +1,5 @@
 import { Link } from 'react-router'
+import { PageHeader } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -36,10 +37,7 @@ export function AdminHome() {
 
   return (
     <div className="space-y-6">
-      <div className="from-primary/10 to-background space-y-1 rounded-xl border bg-gradient-to-br p-6">
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{t('admin.home.title')}</h1>
-        <p className="text-muted-foreground max-w-prose text-sm">{t('admin.home.tagline')}</p>
-      </div>
+      <PageHeader title={t('admin.home.title')} description={t('admin.home.tagline')} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <OpsCard
           to="/admin/teachers"

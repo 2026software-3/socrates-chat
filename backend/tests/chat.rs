@@ -370,14 +370,11 @@ async fn ended_conversation_rejects_new_messages(pool: PgPool) {
 async fn conversation_content_is_owner_only(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    send(
+    import_roster(
         &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{}/roster/import", a.classroom),
-            Some(&a.admin),
-            Some(json!({"text": "學生,12000007A,other@example.com"})),
-        ),
+        &a.admin,
+        &a.classroom,
+        "學生,12000007A,other@example.com",
     )
     .await;
     let other = login_as(&app, "sub-other", "other@example.com").await;

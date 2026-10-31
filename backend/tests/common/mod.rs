@@ -24,7 +24,7 @@ use socrates_chat_backend::{
     identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
     key_pool::KeyPool,
 };
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use tower::ServiceExt;
 
 pub const APP_URL: &str = "https://app.test";
@@ -93,6 +93,7 @@ pub fn test_config() -> Config {
         ai_first_token_timeout: Duration::from_millis(200),
         ai_total_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
+        demo_mode: false,
     }
 }
 
@@ -166,7 +167,21 @@ pub fn test_app_with_ai(pool: PgPool, ai: Arc<FakeAi>) -> Router {
     test_app_with_config(pool, ai, test_config())
 }
 
+thread_local! {
+    /// 這個測試最近一次建立 app 時的資料庫連線設定，給 `import_roster` 夾具模擬「學生自己填了電子郵件」。
+    /// 只存連線設定、不存連線池：連線池留在 thread-local 會讓測試資料庫的連線拖到執行緒結束才釋放。
+    /// sqlx 測試在自己的執行緒上用單執行緒 runtime 跑，所以不同測試不會互相覆蓋。
+    static FIXTURE_DB: std::cell::RefCell<Option<std::sync::Arc<sqlx::postgres::PgConnectOptions>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 不經 `test_app` 自己組 `AppState` 的測試要先呼叫，讓 `import_roster` 找得到資料庫。
+pub fn register_fixture_pool(pool: &PgPool) {
+    FIXTURE_DB.with(|o| *o.borrow_mut() = Some(pool.connect_options()));
+}
+
 pub fn test_app_with_config(pool: PgPool, ai: Arc<FakeAi>, config: Config) -> Router {
+    register_fixture_pool(&pool);
     app(AppState::new(pool, config, Arc::new(FakeIdentity), ai))
 }
 
@@ -202,26 +217,40 @@ pub async fn json_body(res: Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// 依 `next_cursor` 讀完分頁列表的所有頁，回傳全部項目；每頁都必須是 200。
-/// 只讀第一頁的測試在測資超過一頁時會靜默漏掉資料。
-pub async fn all_items(app: &Router, path: &str, cookie: &str) -> Value {
-    let sep = if path.contains('?') { '&' } else { '?' };
-    let mut items = Vec::new();
-    let mut next: Option<String> = None;
-    loop {
-        let url = match &next {
-            Some(cursor) => format!("{path}{sep}cursor={cursor}"),
-            None => path.to_string(),
-        };
+/// 接著已讀到的第一頁，依 `next_cursor` 讀完其餘各頁，回傳每頁內容（含第一頁）；每頁都必須是 200。
+pub async fn pages_after(app: &Router, base: &str, cookie: &str, first: Value) -> Vec<Value> {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let mut pages = vec![first];
+    while let Some(cursor) = pages.last().unwrap()["next_cursor"].as_str() {
+        assert!(pages.len() < 30, "too many pages");
+        let url = format!("{base}{sep}cursor={cursor}");
         let res = send(app, get(&url, Some(cookie))).await;
-        assert!(res.status().is_success(), "{url}: {}", res.status());
-        let page = json_body(res).await;
-        items.extend(page["items"].as_array().unwrap().iter().cloned());
-        next = page["next_cursor"].as_str().map(str::to_string);
-        if next.is_none() {
-            return Value::Array(items);
-        }
+        assert_eq!(res.status(), StatusCode::OK, "{url}");
+        pages.push(json_body(res).await);
     }
+    pages
+}
+
+/// 依 `next_cursor` 走完分頁列表的所有頁，回傳每頁內容。
+pub async fn all_pages(app: &Router, base: &str, cookie: &str) -> Vec<Value> {
+    let res = send(app, get(base, Some(cookie))).await;
+    assert_eq!(res.status(), StatusCode::OK, "{base}");
+    pages_after(app, base, cookie, json_body(res).await).await
+}
+
+/// 把各頁的 `items` 攤平成一個陣列。只讀第一頁的測試在測資超過一頁時會靜默漏掉資料。
+pub fn items_of(pages: &[Value]) -> Value {
+    Value::Array(
+        pages
+            .iter()
+            .flat_map(|p| p["items"].as_array().unwrap().iter().cloned())
+            .collect(),
+    )
+}
+
+/// 讀完分頁列表的所有頁，回傳全部項目。
+pub async fn all_items(app: &Router, base: &str, cookie: &str) -> Value {
+    items_of(&all_pages(app, base, cookie).await)
 }
 
 /// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
@@ -326,46 +355,93 @@ pub async fn create_classroom(app: &Router, cookie: &str, name: &str) -> String 
 }
 
 /// 把文字名單匯入指定教室（`cookie` 為該教室的教師或管理者），回傳回應。
-/// 其他功能的測試夾具由信箱建立固定的合成學號；匯入契約測試直接傳三欄。
-pub fn fixture_roster(text: &str) -> String {
-    text.lines()
-        .map(|line| {
-            if line.contains(',') {
-                return line.to_string();
-            }
-            use sha2::{Digest, Sha256};
-            let email = line.trim().to_ascii_lowercase();
-            let digest = Sha256::digest(email.as_bytes());
-            let number =
-                u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 100_000_000;
-            let student_id = if email == "student@example.com" {
-                "10000000A".to_string()
-            } else {
-                format!("{number:08}A")
-            };
-            format!("測試學生,{student_id},{email}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
+/// 匯入只收「姓名,學號」。其他功能的測試夾具仍以信箱列出學生（Google 登入靠信箱比對帳號）：
+/// 單獨一個信箱會產生固定的合成學號，`姓名,學號,信箱` 則原樣使用；匯入成功後，
+/// 直接在資料庫替這些帳號填上信箱，模擬學生自己填寫電子郵件（匯入本身不會設定信箱）。
 pub async fn import_roster(
     app: &Router,
     cookie: &str,
     classroom: &str,
     text: &str,
 ) -> Response<Body> {
-    let text = fixture_roster(text);
-    send(
+    import_roster_as(app, Some(cookie), classroom, text).await
+}
+
+/// 同 `import_roster`，但 `cookie` 可為空（測試未登入的情況）。
+pub async fn import_roster_as(
+    app: &Router,
+    cookie: Option<&str>,
+    classroom: &str,
+    text: &str,
+) -> Response<Body> {
+    let (text, emails) = fixture_roster(text);
+    let response = send(
         app,
         json_req(
             "POST",
             &format!("/api/classrooms/{classroom}/roster/import"),
-            Some(cookie),
+            cookie,
             Some(serde_json::json!({"text": text})),
         ),
     )
-    .await
+    .await;
+    if response.status().is_success() {
+        let options = FIXTURE_DB
+            .with(|o| o.borrow().clone())
+            .expect("先呼叫 test_app 建立 app");
+        let mut conn = sqlx::PgConnection::connect_with(&options).await.unwrap();
+        for (student_id, email) in emails {
+            sqlx::query("UPDATE users SET email = $1 WHERE student_id = $2 AND email IS NULL")
+                .bind(email)
+                .bind(student_id)
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+        conn.close().await.unwrap();
+    }
+    response
+}
+
+/// 夾具由信箱導出的固定合成學號。
+pub fn fixture_student_id(email: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let email = email.trim().to_ascii_lowercase();
+    if email == "student@example.com" {
+        return "10000000A".to_string();
+    }
+    let digest = Sha256::digest(email.as_bytes());
+    let number = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 100_000_000;
+    format!("{number:08}A")
+}
+
+/// 回傳送給匯入 API 的兩欄文字，以及要替帳號填上的（學號, 信箱）。
+fn fixture_roster(text: &str) -> (String, Vec<(String, String)>) {
+    let mut lines = Vec::new();
+    let mut emails = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() == 1 && !line.contains('@') {
+            // 刻意寫壞的行原樣送出，讓匯入把它當錯誤列
+            lines.push(line.to_string());
+            continue;
+        }
+        let (name, student_id, email) = if fields.len() >= 2 {
+            (
+                fields[0].to_string(),
+                fields[1].to_ascii_uppercase(),
+                fields.get(2).copied().unwrap_or("").to_ascii_lowercase(),
+            )
+        } else {
+            let email = line.trim().to_ascii_lowercase();
+            ("測試學生".to_string(), fixture_student_id(&email), email)
+        };
+        lines.push(format!("{name},{student_id}"));
+        if !email.is_empty() {
+            emails.push((student_id, email));
+        }
+    }
+    (lines.join("\n"), emails)
 }
 
 /// 教師建立一個題目，回傳 id。

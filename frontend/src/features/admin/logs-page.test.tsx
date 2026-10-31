@@ -32,6 +32,19 @@ describe('LogsPage', () => {
     }
   })
 
+  it('puts the log inside a scroll area so long logs can be scrolled up and down', async () => {
+    server.use(
+      http.get('/api/admin/logs', () => HttpResponse.json({ items: [entry], capacity: 500 })),
+    )
+
+    renderApp(<LogsPage />)
+
+    const table = await screen.findByRole('table', { name: '近期 request log' })
+    const viewport = table.closest('[data-slot="scroll-area-viewport"]')
+    expect(viewport).not.toBeNull()
+    expect(viewport?.closest('[data-slot="scroll-area"]')).not.toBeNull()
+  })
+
   it('keeps the log on screen and does not cancel a poll that takes longer than five seconds', async () => {
     const later = { ...entry, request_id: '22222222-2222-4222-8222-222222222222', route: '/api/admin/later' }
     let calls = 0

@@ -21,6 +21,7 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { LoadMore } from '@/components/load-more'
@@ -88,6 +89,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
             <Textarea
               id="roster-text"
               rows={6}
+              placeholder={t('teacher.roster.textPlaceholder')}
               value={text}
               onChange={(e) => setText(e.target.value)}
               className="font-mono"
@@ -132,10 +134,10 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
               {result.invalid.length > 0 ? (
                 <ul className="text-destructive space-y-0.5 text-sm break-all">
                   {result.invalid.map((i) => (
-                    <li key={`${i.line}-${i.value}`}>
+                    <li key={`${i.line}-${i.reason}`}>
                       {t('teacher.roster.invalidLine', {
                         line: i.line,
-                        value: i.value,
+                        value: t(`teacher.roster.reason.${i.reason}`),
                       })}
                     </li>
                   ))}
@@ -150,14 +152,14 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>{t('teacher.roster.credsEmail')}</TableHead>
+                        <TableHead>{t('teacher.roster.credsStudentId')}</TableHead>
                         <TableHead>{t('teacher.roster.credsPassword')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {result.credentials.map((c) => (
-                        <TableRow key={c.email}>
-                          <TableCell className="break-all">{c.email}</TableCell>
+                        <TableRow key={c.student_id}>
+                          <TableCell className="break-all">{c.student_id}</TableCell>
                           <TableCell className="font-mono">{c.temporary_password}</TableCell>
                         </TableRow>
                       ))}
@@ -167,7 +169,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.email},${c.temporary_password}`).join('\n'))}
+                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.student_id},${c.temporary_password}`).join('\n'))}
                   >
                     {isCopied ? t('teacher.roster.credsCopied') : t('teacher.roster.credsCopyAll')}
                   </Button>
@@ -244,8 +246,9 @@ export function RosterPage() {
 }
 
 /** 單一教室的學生名單與操作。 */
-function ClassroomRoster({ classroom }: { classroom: Classroom }) {
+export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const t = useT()
+  const base = useClassroomsBase()
   // 搜尋與人數都由後端計算：送出搜尋後從第一頁重新載入，其餘頁按「載入更多」才取
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
@@ -305,7 +308,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         <Button
           variant="outline"
           size="sm"
-          aria-label={t('admin.reset.resetPassword', { email: s.email ?? s.student_id })}
+          aria-label={t('admin.reset.resetPassword', { email: s.email })}
           onClick={() => setToReset(s.email ?? undefined)}
         >
           {t('admin.reset.resetConfirm')}
@@ -351,6 +354,16 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
       </Button>
     </>
   )
+
+  /** 有帳號的學生可點進去看他的討論情形。 */
+  const studentLink = (s: StudentRow) =>
+    s.id ? (
+      <Link to={`${base}/${classroom.id}/students/${s.id}`} className="underline-offset-4 hover:underline">
+        {s.email ?? s.student_id}
+      </Link>
+    ) : (
+      s.email ?? s.student_id
+    )
 
   const target = action?.email ?? ''
   const closeDialog = (o: boolean) => {
@@ -401,7 +414,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                     return (
                       <li key={s.email ?? s.id ?? s.student_id} className="space-y-3 rounded-lg border p-3">
                         <div className="space-y-1">
-                          <p className="font-medium break-all">{s.email ?? s.student_id}</p>
+                          <p className="font-medium break-all">{studentLink(s)}</p>
                           {s.display_name ? <p className="text-muted-foreground text-sm">{s.display_name}</p> : null}
                           <div className="flex flex-wrap items-center gap-2 text-sm">
                             <StatusBadge status={status} />
@@ -430,7 +443,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                       {students.map((s) => (
                         <TableRow key={s.email ?? s.id ?? s.student_id}>
                           <TableCell className="break-all">
-                            {s.email ?? s.student_id}
+                            {studentLink(s)}
                             {s.display_name ? <span className="text-muted-foreground block text-xs">{s.display_name}</span> : null}
                           </TableCell>
                           <TableCell>

@@ -20,8 +20,8 @@ const OUT_DIR = resolve(process.env.OUT_DIR ?? join(here, '../../docs/demo'))
 const RAW_DIR = join(here, '.raw')
 const SIZE = { width: 1280, height: 800 }
 
-const STUDENT = { email: 'student1@example.com', password: 'Student-Demo-2026' }
-const TEACHER = { email: 'teacher@example.com', password: 'Teacher-Demo-2026' }
+const STUDENT = { email: '11500001A', password: 'Student-Demo-2026' }
+const TEACHER = { email: 'demo.teacher@example.com', password: 'Teacher-Demo-2026' }
 const TURNS = [
   '我會拉下拉桿，因為犧牲一個人救五個人，整體損失比較小。',
   '我想每條生命的價值應該是一樣的，所以人數多的一邊比較重要。',
@@ -76,7 +76,7 @@ async function scrollDown(page, step = 250) {
 async function login(page, { email, password }) {
   await page.goto(`${BASE_URL}/login`)
   await pause(page, 800)
-  await type(page, page.getByLabel('電子郵件'), email)
+  await type(page, page.getByLabel('學號或電子郵件'), email)
   await type(page, page.getByLabel('密碼'), password)
   await click(page, page.getByRole('button', { name: '登入', exact: true }))
   await page.waitForURL((url) => !url.pathname.startsWith('/login'))

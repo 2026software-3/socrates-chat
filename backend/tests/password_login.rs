@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use socrates_chat_backend::{auth_store, password};
 use sqlx::PgPool;
 
-const GOOD_PASSWORD: &str = "Correct-Horse-9";
+/// 每次執行都產生新的密碼，不在原始碼寫死密碼值。
+static GOOD_PASSWORD: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("Good-{}", uuid::Uuid::new_v4()));
 
 async fn login(app: &axum::Router, email: &str, pw: &str) -> axum::http::Response<Body> {
     send(
@@ -185,7 +187,7 @@ async fn there_is_no_registration_endpoint(pool: PgPool) {
                 "POST",
                 path,
                 None,
-                Some(json!({"email": "new@example.com", "password": GOOD_PASSWORD})),
+                Some(json!({"email": "new@example.com", "password": GOOD_PASSWORD.as_str()})),
             ),
         )
         .await;
@@ -232,7 +234,7 @@ async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
     assert_eq!(json_body(me).await["must_change_password"], true);
 
     assert_eq!(
-        change(&app, &cookie, &temp, GOOD_PASSWORD).await,
+        change(&app, &cookie, &temp, GOOD_PASSWORD.as_str()).await,
         StatusCode::NO_CONTENT
     );
     let res = send(
@@ -243,7 +245,7 @@ async fn temporary_password_must_be_changed_before_other_apis(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::OK);
     // 新密碼可登入，舊的臨時密碼不行
     assert_eq!(
-        login(&app, "teacher@example.com", GOOD_PASSWORD)
+        login(&app, "teacher@example.com", GOOD_PASSWORD.as_str())
             .await
             .status(),
         StatusCode::OK
@@ -262,7 +264,7 @@ async fn change_password_validates_input(pool: PgPool) {
     let cookie = session_cookie(&login(&app, "teacher@example.com", &temp).await).unwrap();
 
     assert_eq!(
-        change(&app, &cookie, "wrong-current", GOOD_PASSWORD).await,
+        change(&app, &cookie, "wrong-current", GOOD_PASSWORD.as_str()).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -280,7 +282,7 @@ async fn change_password_validates_input(pool: PgPool) {
             "POST",
             "/api/auth/change-password",
             None,
-            Some(json!({"current_password": temp, "new_password": GOOD_PASSWORD})),
+            Some(json!({"current_password": temp, "new_password": GOOD_PASSWORD.as_str()})),
         ),
     )
     .await;
@@ -301,7 +303,7 @@ async fn changing_password_keeps_current_session_and_drops_others(pool: PgPool) 
     let other = session_cookie(&login(&app, "teacher@example.com", &temp).await).unwrap();
 
     assert_eq!(
-        change(&app, &current, &temp, GOOD_PASSWORD).await,
+        change(&app, &current, &temp, GOOD_PASSWORD.as_str()).await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
@@ -318,7 +320,8 @@ async fn changing_password_keeps_current_session_and_drops_others(pool: PgPool) 
 async fn admin_reset_invalidates_existing_sessions_and_unlocks(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
-    let teacher = account_with_password(&app, &admin, "teacher@example.com", GOOD_PASSWORD).await;
+    let teacher =
+        account_with_password(&app, &admin, "teacher@example.com", GOOD_PASSWORD.as_str()).await;
     for _ in 0..5 {
         login(&app, "teacher@example.com", "bad-password").await;
     }
@@ -334,7 +337,7 @@ async fn admin_reset_invalidates_existing_sessions_and_unlocks(pool: PgPool) {
         StatusCode::OK
     );
     assert_eq!(
-        login(&app, "teacher@example.com", GOOD_PASSWORD)
+        login(&app, "teacher@example.com", GOOD_PASSWORD.as_str())
             .await
             .status(),
         StatusCode::UNAUTHORIZED
@@ -382,14 +385,12 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
     let (_teacher, room) = seed_classroom(&app, &admin).await;
-    let res = send(
+    // 夾具在匯入後替帳號填上信箱，模擬學生自己填寫；這裡測的是臨時密碼的機制
+    let res = import_roster(
         &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{room}/roster/import"),
-            Some(&admin),
-            Some(json!({"text": "甲,11000001A,S1@example.com\n乙,11000002A,s2@example.com"})),
-        ),
+        &admin,
+        &room,
+        "甲,11000001A,S1@example.com\n乙,11000002A,s2@example.com",
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -411,7 +412,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
     assert_eq!(res.status(), StatusCode::OK);
     let cookie = session_cookie(&res).unwrap();
     assert_eq!(
-        change(&app, &cookie, temp, GOOD_PASSWORD).await,
+        change(&app, &cookie, temp, GOOD_PASSWORD.as_str()).await,
         StatusCode::NO_CONTENT
     );
     // 名單內學生可以進入學生功能
@@ -420,44 +421,36 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
     assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
 
     // 再次匯入：已存在的人不會被重新發臨時密碼
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{room}/roster/import"),
-            Some(&admin),
-            Some(json!({"text": "甲,11000001A,s1@example.com"})),
-        ),
-    )
-    .await;
+    let res = import_roster(&app, &admin, &room, "甲,11000001A,s1@example.com").await;
     let body = json_body(res).await;
     assert_eq!(body["added"], 0);
     assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
     assert_eq!(
-        login(&app, "s1@example.com", GOOD_PASSWORD).await.status(),
+        login(&app, "s1@example.com", GOOD_PASSWORD.as_str())
+            .await
+            .status(),
         StatusCode::OK
     );
 }
 
 #[sqlx::test]
-async fn roster_import_does_not_overwrite_an_existing_account(pool: PgPool) {
-    let app = test_app(pool);
+async fn roster_import_does_not_touch_an_existing_google_account(pool: PgPool) {
+    let app = test_app(pool.clone());
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
     let (_teacher, room) = seed_classroom(&app, &admin).await;
     login_as(&app, "sub-s", "student@example.com").await; // 已用 Google 登入過、沒有密碼
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{room}/roster/import"),
-            Some(&admin),
-            Some(json!({"text": "學生,10000000A,student@example.com"})),
-        ),
-    )
-    .await;
+    let res = import_roster_as(&app, Some(&admin), &room, "學生,10000000A").await;
     let body = json_body(res).await;
+    // 匯入沒有電子郵件欄，不會把學號連到信箱相同的 Google 帳號，而是另建一個學生帳號
     assert_eq!(body["added"], 1);
-    assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
+    assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
+    let google: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT student_id, google_sub FROM users WHERE email = 'student@example.com'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(google, (None, Some("sub-s".into())));
 }
 
 #[sqlx::test]
@@ -552,10 +545,10 @@ fn password_hash_round_trips_and_temporary_passwords_are_random() {
 async fn password_changed_by_the_owner_survives_google_binding(pool: PgPool) {
     let app = test_app(pool);
     let admin = login_as(&app, "sub-admin", "admin@example.com").await;
-    account_with_password(&app, &admin, "student@example.com", GOOD_PASSWORD).await;
+    account_with_password(&app, &admin, "student@example.com", GOOD_PASSWORD.as_str()).await;
     login_as(&app, "sub-s", "student@example.com").await;
     assert_eq!(
-        login(&app, "student@example.com", GOOD_PASSWORD)
+        login(&app, "student@example.com", GOOD_PASSWORD.as_str())
             .await
             .status(),
         StatusCode::OK
@@ -576,68 +569,19 @@ async fn google_login_does_not_inherit_the_must_change_gate(pool: PgPool) {
 async fn teachers_importing_the_roster_get_student_credentials(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{}/roster/import", a.classroom),
-            Some(&a.teacher),
-            Some(json!({"text": "學生,11000003A,newstudent@example.com"})),
-        ),
-    )
-    .await;
+    let res = import_roster_as(&app, Some(&a.teacher), &a.classroom, "學生,11000003A").await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = json_body(res).await;
     assert_eq!(body["added"], 1);
     assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
-    // 教師匯入會建立帳號並取得一次性密碼
-    let (n,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM users WHERE email = 'newstudent@example.com'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // 教師匯入會建立帳號並取得一次性密碼；帳號沒有電子郵件
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM users WHERE student_id = '11000003A' AND email IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(n, 1);
-    assert_eq!(
-        login(&app, "newstudent@example.com", "anything-at-all")
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-#[sqlx::test]
-async fn roster_import_never_creates_accounts_for_staff_emails(pool: PgPool) {
-    let app = test_app(pool.clone());
-    let a = seed_actors(&app).await;
-    // 教師、設定中的管理者信箱就算被放進名單，也不在這裡替他們建帳號
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{}/roster/import", a.classroom),
-            Some(&a.admin),
-            Some(json!({"text": "甲,12000001A,other-teacher@example.com\n乙,12000002A,admin2@example.com\n丙,12000003A,regular@example.com"})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK);
-    // other-teacher 與 admin2 先登錄為教師／管理者信箱
-    sqlx::query("INSERT INTO teachers (email) VALUES ('other-teacher@example.com')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{}/roster/import", a.classroom),
-            Some(&a.admin),
-            Some(json!({"text": "甲,12000001A,other-teacher@example.com\n乙,12000004A,teacher@example.com\n丙,12000005A,admin@example.com"})),
-        ),
-    )
-    .await;
-    let body = json_body(res).await;
-    assert_eq!(body["credentials"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test]

@@ -6,10 +6,10 @@ import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 describe('built-in login', () => {
-  it('shows an email/password form next to the Google button', async () => {
+  it('shows an account/password form next to the Google button', async () => {
     mockMe(null)
     renderApp(null, { route: '/login' })
-    expect(await screen.findByLabelText('電子郵件')).toBeInTheDocument()
+    expect(await screen.findByLabelText('學號或電子郵件')).toBeInTheDocument()
     expect(screen.getByLabelText('密碼')).toHaveAttribute('type', 'password')
     expect(screen.getByRole('button', { name: '登入' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '使用 Google 登入' })).toBeInTheDocument()
@@ -27,21 +27,39 @@ describe('built-in login', () => {
       }),
     )
     renderApp(null, { route: '/login' })
-    await userEvent.type(await screen.findByLabelText('電子郵件'), 'a@example.com')
+    await userEvent.type(await screen.findByLabelText('學號或電子郵件'), 'a@example.com')
     await userEvent.type(screen.getByLabelText('密碼'), 'password-123')
     await userEvent.click(screen.getByRole('button', { name: '登入' }))
     expect(await screen.findByRole('navigation', { name: 'main' })).toBeInTheDocument()
-    expect(body).toEqual({ email: 'a@example.com', password: 'password-123' })
+    expect(body).toEqual({ account: 'a@example.com', password: 'password-123' })
+  })
+
+  it('lets a student sign in with a student id', async () => {
+    let body: unknown
+    server.use(
+      http.get('/api/me', () => apiError(401, 'unauthorized')),
+      http.post('/api/auth/login', async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json({ must_change_password: true })
+      }),
+    )
+    renderApp(null, { route: '/login' })
+    const account = await screen.findByLabelText('學號或電子郵件')
+    expect(account).toHaveAttribute('type', 'text')
+    await userEvent.type(account, ' 12345678a ')
+    await userEvent.type(screen.getByLabelText('密碼'), 'password-123')
+    await userEvent.click(screen.getByRole('button', { name: '登入' }))
+    await waitFor(() => expect(body).toEqual({ account: '12345678a', password: 'password-123' }))
   })
 
   it.each([
-    ['invalid_credentials', 401, '電子郵件或密碼錯誤。'],
+    ['invalid_credentials', 401, '學號、電子郵件或密碼錯誤。'],
     ['too_many_attempts', 429, '嘗試次數過多，請 15 分鐘後再試。'],
   ])('shows a translated message for %s', async (code, status, text) => {
     mockMe(null)
     server.use(http.post('/api/auth/login', () => apiError(status, code)))
     renderApp(null, { route: '/login' })
-    await userEvent.type(await screen.findByLabelText('電子郵件'), 'a@example.com')
+    await userEvent.type(await screen.findByLabelText('學號或電子郵件'), 'a@example.com')
     await userEvent.type(screen.getByLabelText('密碼'), 'wrong-password')
     await userEvent.click(screen.getByRole('button', { name: '登入' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(text)
@@ -101,5 +119,40 @@ describe('forced password change', () => {
     await userEvent.type(screen.getByLabelText('確認新密碼'), 'new-password-1')
     await userEvent.click(screen.getByRole('button', { name: '更改密碼' }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(text))
+  })
+})
+
+describe('demo accounts panel', () => {
+  const accounts = [
+    { role: 'teacher', label: '示範教師', account: 'demo.teacher@example.com', password: 'Teacher-Demo-2026', language: 'zh-TW' },
+    { role: 'student', label: '王小明', account: '11500001A', password: 'Student-Demo-2026', language: 'zh-TW' },
+    { role: 'student', label: 'Emma Carter', account: '11500009J', password: 'Student-Demo-2026', language: 'en' },
+  ]
+
+  it('is hidden when the backend is not in demo mode', async () => {
+    mockMe(null)
+    renderApp(null, { route: '/login' })
+    await screen.findByLabelText('學號或電子郵件')
+    expect(screen.queryByText('示範帳號')).not.toBeInTheDocument()
+  })
+
+  it('fills the account and password without submitting', async () => {
+    let posted = false
+    mockMe(null)
+    server.use(
+      http.get('/api/demo/accounts', () => HttpResponse.json({ accounts })),
+      http.post('/api/auth/login', () => {
+        posted = true
+        return HttpResponse.json({ must_change_password: false })
+      }),
+    )
+    renderApp(null, { route: '/login' })
+    await userEvent.click(await screen.findByRole('button', { name: /示範教師/ }))
+    expect(screen.getByLabelText('學號或電子郵件')).toHaveValue('demo.teacher@example.com')
+    expect(screen.getByLabelText('密碼')).toHaveValue('Teacher-Demo-2026')
+    await userEvent.click(screen.getByRole('button', { name: /Emma Carter/ }))
+    expect(screen.getByLabelText('學號或電子郵件')).toHaveValue('11500009J')
+    expect(screen.getByLabelText('密碼')).toHaveValue('Student-Demo-2026')
+    expect(posted).toBe(false)
   })
 })

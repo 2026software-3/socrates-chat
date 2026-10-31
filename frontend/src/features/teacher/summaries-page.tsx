@@ -1,11 +1,13 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { api, isApiError } from '@/lib/api'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
+import { api, isInvalidCursor } from '@/lib/api'
 import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
@@ -22,8 +24,10 @@ function Field({ label, value }: { label: string; value: string | null }) {
   )
 }
 
-function SummaryCard({ row }: { row: TeacherSummary }) {
+/** 一場對話的總結卡片；學生姓名預設連到該學生在這間教室的討論情形。 */
+export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; linkStudent?: boolean }) {
   const t = useT()
+  const base = useClassroomsBase()
   const { lang } = useI18n()
   const [translation, setTranslation] = useState<SummaryTranslation | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
@@ -55,7 +59,15 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
             <div className="min-w-0">
-              <p className="font-medium break-words">{row.student_name ?? t('teacher.summaries.unnamed')}</p>
+              <p className="font-medium break-words">
+                {linkStudent ? (
+                  <Link to={`${base}/${row.classroom_id}/students/${row.student_id}`} className="underline-offset-4 hover:underline">
+                    {row.student_name ?? t('teacher.summaries.unnamed')}
+                  </Link>
+                ) : (
+                  (row.student_name ?? t('teacher.summaries.unnamed'))
+                )}
+              </p>
               <p className="text-muted-foreground text-sm break-all">{row.student_email}</p>
             </div>
             <div className="sm:text-right">
@@ -161,12 +173,11 @@ function SummaryList({
   const data = summaries.data?.items
   const nextCursor = summaries.data?.next_cursor
   // 失效的游標（例如部署後游標版本改變）重試也不會成功，改從第一頁開始
-  const staleCursor = isApiError(summaries.error) && summaries.error.code === 'invalid_cursor'
 
   return (
     <>
       {summaries.loading && !data ? <LoadingBlock /> : null}
-      {summaries.error ? <ErrorBlock error={summaries.error} onRetry={staleCursor ? onRestart : summaries.reload} /> : null}
+      {summaries.error ? <ErrorBlock error={summaries.error} onRetry={isInvalidCursor(summaries.error) ? onRestart : summaries.reload} /> : null}
       {data && data.length === 0 ? <EmptyBlock>{search ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
       {data && data.length > 0 ? (
         <ul className="space-y-3">

@@ -48,19 +48,23 @@ CREATE TABLE oauth_login_states (
     state         text PRIMARY KEY,
     nonce         text NOT NULL,
     pkce_verifier text NOT NULL,
+    -- 不為空表示這是「已登入學生連結 Google 帳號」的流程，回呼時必須仍是同一位使用者的 session
+    link_user_id  uuid REFERENCES users (id) ON DELETE CASCADE,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- 內建登入的失敗限流：以（電子郵件, 來源 IP）為單位計（#295）。電子郵件不論帳號是否存在都計，避免洩漏；
--- 別的 IP 亂試不會鎖住本人，同一個 IP（例如校園 NAT）下不同信箱也互不影響。
+-- 內建登入的失敗限流：以（登入帳號輸入, 來源 IP）為單位計（#295，S-08.2）。登入帳號輸入是學號或電子郵件，
+-- 不論帳號是否存在都計，避免洩漏；別的 IP 亂試不會鎖住本人，同一個 IP（例如校園 NAT）下不同帳號也互不影響。
+-- login_key 是正規化後的登入帳號輸入（去前後空白；含 @ 者轉小寫，否則轉大寫）的 SHA-256 十六進位，
+-- 不存學號或電子郵件明文（學號屬敏感欄位，S-02.2）。
 -- ip 是 client_ip::rate_limit_key 的結果（IPv6 為 /64 前綴），沒有連線資訊時為空字串；
--- ip = '*' 的列是這個信箱在所有 IP 的累計，用來限制分散式的猜密碼。
+-- ip = '*' 的列是這個登入帳號輸入在所有 IP 的累計，用來限制分散式的猜密碼。
 -- IP 屬個資，保存期限待與 S-02.5 對齊；目前每次記錄失敗時順便清掉一天前的舊資料。
 CREATE TABLE login_failures (
-    email          text NOT NULL CHECK (email = lower(email)),
+    login_key      text NOT NULL CHECK (login_key ~ '^[0-9a-f]{64}$'),
     ip             text NOT NULL DEFAULT '',
     failures       integer NOT NULL DEFAULT 0,
     locked_until   timestamptz,
     last_failed_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (email, ip)
+    PRIMARY KEY (login_key, ip)
 );

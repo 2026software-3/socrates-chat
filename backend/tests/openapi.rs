@@ -9,7 +9,12 @@ use sqlx::PgPool;
 
 #[sqlx::test]
 async fn every_documented_operation_is_routed_and_protected(pool: PgPool) {
-    let app = test_app(pool);
+    // 示範帳號端點只在 DEMO_MODE 下存在（否則 404），所以用示範模式檢查路由
+    let config = socrates_chat_backend::config::Config {
+        demo_mode: true,
+        ..test_config()
+    };
+    let app = test_app_with_config(pool, FakeAi::with(vec![]), config);
     let res = send(&app, get("/api/openapi.json", None)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let doc = json_body(res).await;

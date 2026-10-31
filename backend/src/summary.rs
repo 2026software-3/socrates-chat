@@ -434,6 +434,8 @@ pub(crate) struct SummaryQuery {
     classroom: ClassroomFilter,
     /// 學生的使用者 ID（即列表項目的 `student_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
     student: Option<String>,
+    /// 討論活動的 ID；只看這個活動的對話
+    activity: Option<String>,
     /// 對話複製來的題目標題，完全相符但不分大小寫（以標題分題目，與論點分布、主張分組一致）
     topic: Option<String>,
     /// 搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串），涵蓋所有頁
@@ -462,6 +464,7 @@ fn like_pattern(q: &str) -> String {
 
 struct Filters<'a> {
     student: Option<Uuid>,
+    activity: Option<Uuid>,
     topic: Option<&'a str>,
     search: Option<String>,
     /// 篩選條件的指紋；放進游標，換條件後沿用舊游標會被拒絕。
@@ -472,12 +475,14 @@ struct Filters<'a> {
 fn fingerprint(
     classroom: Option<Uuid>,
     student: Option<Uuid>,
+    activity: Option<Uuid>,
     topic: Option<&str>,
     q: Option<&str>,
 ) -> String {
     let normalized = (
         classroom,
         student,
+        activity,
         topic.map(str::to_lowercase),
         q.map(str::to_lowercase),
     );
@@ -494,6 +499,10 @@ impl SummaryQuery {
             .map(Uuid::parse_str)
             .transpose()
             .map_err(|_| invalid())?;
+        let activity = match self.activity.as_deref() {
+            None => None,
+            Some(a) => Some(Uuid::parse_str(a).map_err(|_| invalid())?),
+        };
         let topic = match self.topic.as_deref() {
             None => None,
             Some(t) if t.trim().is_empty() => return Err(invalid()),
@@ -508,9 +517,10 @@ impl SummaryQuery {
         };
         Ok(Filters {
             student,
+            activity,
             topic,
             search: q.map(like_pattern),
-            fingerprint: fingerprint(classroom, student, topic, q),
+            fingerprint: fingerprint(classroom, student, activity, topic, q),
         })
     }
 }
@@ -524,9 +534,10 @@ impl SummaryQuery {
     summary = "教室內學生已完成對話的總結（不含原文；不含個人練習）",
     params(
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
-        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 classroom_id／student／topic／q 有效，換條件要從第一頁開始"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 classroom_id／student／activity／topic／q 有效，換條件要從第一頁開始"),
         ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
         ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
+        ("activity" = Option<Uuid>, Query, description = "只看這個討論活動的對話（活動 ID）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
@@ -541,6 +552,7 @@ pub(crate) async fn list(
     let classroom = filtered_classroom(&state, &cu, &query.classroom).await?;
     let Filters {
         student,
+        activity,
         topic,
         search,
         fingerprint,
@@ -572,8 +584,9 @@ pub(crate) async fn list(
                 OR c.title ILIKE $6 ESCAPE '\\')
            AND ($7::timestamptz IS NULL
                 OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
+           AND ($9::uuid IS NULL OR c.activity_id = $9)
          ORDER BY s.completed_at DESC, s.conversation_id ASC
-         LIMIT $9",
+         LIMIT $10",
     )
     .bind(cu.roles.admin)
     .bind(cu.user.id)
@@ -583,6 +596,7 @@ pub(crate) async fn list(
     .bind(search)
     .bind(after_time)
     .bind(after_id)
+    .bind(activity)
     .bind((limit + 1) as i64)
     .fetch_all(&state.pool)
     .await?;

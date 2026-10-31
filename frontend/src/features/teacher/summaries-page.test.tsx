@@ -11,6 +11,7 @@ import { server } from '@/test/server'
 function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
   return {
     conversation_id: 'c1',
+    classroom_id: 'room-1',
     title: '電車難題',
     ended_at: '2026-03-05T10:00:00Z',
     student_id: 's1',
@@ -203,7 +204,8 @@ describe('SummariesPage', () => {
     setup()
     await screen.findByText('王小明')
     expect(screen.getByText(/教師看不到學生的對話原文/)).toBeInTheDocument()
-    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    // 學生姓名連到學生頁；沒有任何連到對話原文的連結
+    for (const link of screen.queryAllByRole('link')) expect(link.getAttribute('href')).not.toMatch(/conversations/)
     expect(seen.some((p) => p.startsWith('/api/conversations'))).toBe(false)
   })
 

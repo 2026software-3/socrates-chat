@@ -50,6 +50,7 @@ pub mod classrooms;
 pub mod client_ip;
 pub mod config;
 pub mod dashboard;
+pub mod demo;
 pub mod error;
 pub mod identity;
 pub mod key_pool;
@@ -162,6 +163,7 @@ pub fn app(state: AppState) -> Router {
         .merge(summary::routes())
         .merge(voice::routes())
         .merge(points::routes())
+        .merge(demo::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(

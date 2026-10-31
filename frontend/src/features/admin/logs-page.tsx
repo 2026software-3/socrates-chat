@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Badge } from '@/components/ui/badge'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Table,
   TableBody,
@@ -26,6 +27,9 @@ type RequestLogPage = {
   items: RequestLogEntry[]
   capacity: number
 }
+
+/** 表頭固定在捲動區頂端，捲動長記錄時仍看得到欄位名稱。 */
+const STICKY_HEAD = 'sticky top-0 z-10 bg-background'
 
 /** 一次讀取超過這個時間仍沒有回應，就視為卡住並重新發出。 */
 const STALL_MS = 30_000
@@ -86,42 +90,44 @@ export function LogsPage() {
       {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
       {data?.items.length === 0 ? <EmptyBlock>{t('admin.logs.empty')}</EmptyBlock> : null}
       {data?.items.length ? (
-        <Table aria-label={t('admin.logs.table')}>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t('admin.logs.time')}</TableHead>
-              <TableHead>{t('admin.logs.method')}</TableHead>
-              <TableHead>{t('admin.logs.route')}</TableHead>
-              <TableHead>{t('admin.logs.status')}</TableHead>
-              <TableHead>{t('admin.logs.duration')}</TableHead>
-              <TableHead>{t('admin.logs.errorCode')}</TableHead>
-              <TableHead>{t('admin.logs.requestId')}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.items.map((entry) => (
-              <TableRow key={entry.request_id}>
-                <TableCell>
-                  <time dateTime={entry.created_at}>{date.format(new Date(entry.created_at))}</time>
-                </TableCell>
-                <TableCell className="font-mono">{entry.method}</TableCell>
-                <TableCell>
-                  <code>{entry.route}</code>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={statusVariant(entry.status)}>{entry.status}</Badge>
-                </TableCell>
-                <TableCell>{entry.duration_ms} ms</TableCell>
-                <TableCell>
-                  <code>{entry.error_code ?? '—'}</code>
-                </TableCell>
-                <TableCell>
-                  <code>{entry.request_id}</code>
-                </TableCell>
+        <ScrollArea type="auto" className="h-[60vh] rounded-md border">
+          <Table aria-label={t('admin.logs.table')}>
+            <TableHeader>
+              <TableRow>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.time')}</TableHead>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.method')}</TableHead>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.route')}</TableHead>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.status')}</TableHead>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.duration')}</TableHead>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.errorCode')}</TableHead>
+                <TableHead className={STICKY_HEAD}>{t('admin.logs.requestId')}</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {data.items.map((entry) => (
+                <TableRow key={entry.request_id}>
+                  <TableCell>
+                    <time dateTime={entry.created_at}>{date.format(new Date(entry.created_at))}</time>
+                  </TableCell>
+                  <TableCell className="font-mono">{entry.method}</TableCell>
+                  <TableCell>
+                    <code>{entry.route}</code>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={statusVariant(entry.status)}>{entry.status}</Badge>
+                  </TableCell>
+                  <TableCell>{entry.duration_ms} ms</TableCell>
+                  <TableCell>
+                    <code>{entry.error_code ?? '—'}</code>
+                  </TableCell>
+                  <TableCell>
+                    <code>{entry.request_id}</code>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </ScrollArea>
       ) : null}
     </Page>
   )

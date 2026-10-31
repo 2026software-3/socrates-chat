@@ -744,6 +744,7 @@ async fn translation_fixture_with_config(
     limit: Option<(usize, Duration)>,
     config: Config,
 ) -> (Router, Actors, String) {
+    register_fixture_pool(&pool);
     let mut state = socrates_chat_backend::AppState::new(
         pool.clone(),
         config,
