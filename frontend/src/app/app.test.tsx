@@ -214,7 +214,8 @@ describe('app shell', () => {
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')
     expect(await screen.findByRole('heading', { name: 'Choose a topic' })).toBeInTheDocument()
     await waitFor(() => expect(updates).toEqual([{ language: 'en' }]))
-    expect(document.documentElement.lang).toBe('en')
+    // <html lang> 由 I18nProvider 的 useEffect 設定：畫面換了語言之後才會更新，要等它而不是立刻斷言
+    await waitFor(() => expect(document.documentElement.lang).toBe('en'))
     expect(localStorage.getItem('lang')).toBe('en')
   })
 
@@ -224,7 +225,8 @@ describe('app shell', () => {
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: 'Elegir un tema' })).toBeInTheDocument()
-    expect(document.documentElement.lang).toBe('es')
+    // 同上：<html lang> 在被動效果裡更新，畫面出現西班牙文時它不一定已經更新（CI 上偶發看到 zh-TW）
+    await waitFor(() => expect(document.documentElement.lang).toBe('es'))
   })
 
   it('shows the disabled page when the account has been disabled', async () => {
