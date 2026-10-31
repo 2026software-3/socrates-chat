@@ -78,6 +78,8 @@ pub fn test_config() -> Config {
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
         trusted_proxies: vec![],
+        login_rate_burst: socrates_chat_backend::login_rate_limit::DEFAULT_BURST,
+        login_rate_replenish: socrates_chat_backend::login_rate_limit::DEFAULT_REPLENISH,
         ai_usage_max: 1000,
         ai_usage_window: Duration::from_secs(3600),
         frontend_dir: None,
