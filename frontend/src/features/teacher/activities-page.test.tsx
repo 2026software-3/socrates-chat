@@ -102,6 +102,27 @@ describe('ActivitiesPanel', () => {
     expect(screen.queryByRole('button', { name: '載入更多' })).not.toBeInTheDocument()
   })
 
+  it('restarts from the first page when load more hits an invalid cursor', async () => {
+    const cursors: (string | null)[] = []
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics)),
+      http.get('/api/activities', ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        cursors.push(cursor)
+        return cursor ? apiError(400, 'invalid_cursor') : pageOf([act()], 'stale')
+      }),
+    )
+    setup()
+    expect(await screen.findByText('第一週討論')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '載入更多' }))
+    expect(await screen.findByText('分頁連結已失效，請重新開啟列表。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重試' }))
+    await waitFor(() => expect(screen.queryByText('分頁連結已失效，請重新開啟列表。')).not.toBeInTheDocument())
+    expect(screen.getByText('第一週討論')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '載入更多' })).toBeInTheDocument()
+    expect(cursors).toEqual([null, 'stale', null])
+  })
+
   it('shows loading, then an empty state', async () => {
     mockList([])
     setup()
