@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch'
 import type { BargeInStatus } from '@/features/chat/voice/audio/barge-in'
 import { PROCESSING_FEATURES, type FeatureStatus, type ProcessingFeature } from '@/features/chat/voice/audio/microphone'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
-import { useVoice, type VoiceHost, type VoicePhase, type VoiceReply } from '@/features/chat/voice/use-voice'
+import { useVoice, type VoiceHost, type VoiceNotice, type VoicePhase, type VoiceReply } from '@/features/chat/voice/use-voice'
 import { useT, type MessageKey } from '@/i18n'
 
 /** 各階段的狀態文字；`idle` 另外處理（對話模式顯示「暫停」）。 */
@@ -56,6 +56,9 @@ const MONITOR_STATE: Record<BargeInStatus['state'], MessageKey> = {
   monitoring: 'voice.audio.state.monitoring',
   failed: 'voice.audio.state.failed',
 }
+
+/** 只是說明，不是錯誤。 */
+const INFO_NOTICES: VoiceNotice[] = ['hint', 'bargeIn', 'queuedSend']
 
 /** 學生回報語音問題時看這裡：瀏覽器回報的狀態，不代表實際效果（S-05.5）。 */
 function AudioDiagnostics({ status }: { status: BargeInStatus }) {
@@ -221,7 +224,7 @@ export function VoiceControls({
       ) : null}
 
       {v.notice ? (
-        <Alert role="status" variant={v.notice === 'hint' || v.notice === 'bargeIn' ? 'default' : 'destructive'}>
+        <Alert role="status" variant={INFO_NOTICES.includes(v.notice) ? 'default' : 'destructive'}>
           <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
             <span>{t(`voice.notice.${v.notice}`)}</span>
             <Button type="button" size="sm" variant="ghost" onClick={v.dismissNotice}>

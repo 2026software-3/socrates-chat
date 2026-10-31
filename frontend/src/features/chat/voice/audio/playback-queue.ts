@@ -14,6 +14,8 @@ export type PlayChunk<C> = (chunk: C, signal: AbortSignal) => Promise<void>
 export type PlaybackQueueOptions<C> = {
   /** 播放前把排隊中的片段併進目前片段；回傳 `undefined` 表示不合併。 */
   merge?: (chunk: C, next: C) => C | undefined
+  /** 回傳 `true` 時片段先留在佇列，等回覆結束才播；回覆結束後不再詢問。 */
+  hold?: () => boolean
 }
 
 export type PlaybackQueue<C> = {
@@ -38,7 +40,7 @@ type Turn<C> = {
   fail: (e: unknown) => void
 }
 
-export function createPlaybackQueue<C>(play: PlayChunk<C>, { merge }: PlaybackQueueOptions<C> = {}): PlaybackQueue<C> {
+export function createPlaybackQueue<C>(play: PlayChunk<C>, { merge, hold }: PlaybackQueueOptions<C> = {}): PlaybackQueue<C> {
   let current: Turn<C> | undefined
 
   function nextChunk(chunks: C[]): C {
@@ -56,7 +58,7 @@ export function createPlaybackQueue<C>(play: PlayChunk<C>, { merge }: PlaybackQu
     if (turn.pumping) return
     turn.pumping = true
     try {
-      while (current === turn && turn.chunks.length > 0) {
+      while (current === turn && turn.chunks.length > 0 && (turn.closed || !hold?.())) {
         await play(nextChunk(turn.chunks), turn.ctrl.signal)
       }
     } catch (e) {
@@ -111,6 +113,8 @@ export function createPlaybackQueue<C>(play: PlayChunk<C>, { merge }: PlaybackQu
       if (turn.chunks.length === 0 && !turn.pumping) {
         current = undefined
         turn.settle('finished')
+      } else {
+        void pump(turn)
       }
       return turn.outcome
     },

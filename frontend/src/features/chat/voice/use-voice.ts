@@ -52,7 +52,18 @@ function clearAllTimers(t: Timers) {
  * - `speaking`：播放 AI 語音
  */
 export type VoicePhase = 'idle' | 'listening' | 'countdown' | 'review' | 'transcribing' | 'waiting' | 'speaking'
-export type VoiceNotice = 'permission' | 'device' | 'unavailable' | 'failed' | 'speechFailed' | 'hint' | 'bargeIn'
+export type VoiceNotice =
+  | 'permission'
+  | 'device'
+  | 'unavailable'
+  | 'failed'
+  | 'speechFailed'
+  | 'hint'
+  | 'bargeIn'
+  | 'queuedSend'
+
+/** 關於上一次播放的提示：學生還要看到，開始收音時不清掉，下一次播放才清。 */
+const aboutPlayback = (n: VoiceNotice | undefined) => n === 'bargeIn' || n === 'speechFailed'
 
 /** 最新一則 AI 回覆；`text` 是目前累積的全文。 */
 export type VoiceReply = { id: string; text: string; status: 'running' | 'complete' | 'failed' }
@@ -160,8 +171,10 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     }
     stopRecognizer()
     setPhase('waiting')
-    if (replyRef.current?.status === 'running') {
+    const replyStatus = replyRef.current?.status
+    if (replyStatus === 'running' || replyStatus === 'failed') {
       pendingSendRef.current = true
+      if (replyStatus === 'failed') setNotice('queuedSend')
       return
     }
     // 等輸入框的文字更新完再送出
@@ -209,8 +222,8 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       const existing = hostRef.current.getText().trim()
       baseRef.current = existing ? `${existing} ` : ''
       spokenRef.current = ''
-      // 改用備援辨識也會走到這裡，請學生再說一次的提示要留到學生真的開口
-      setNotice((n) => (n === 'bargeIn' ? n : undefined))
+      // 播放失敗或被打斷後會走到這裡，改用備援辨識時也是
+      setNotice((n) => (aboutPlayback(n) ? n : undefined))
       const rec: Recognizer = createRecognizer(pickRecognitionSource(), speechLang(lang), lang, {
         onText: (text, final) => {
           const first = spokenRef.current === ''
@@ -269,7 +282,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       sourceRef.current = rec.source
       setPhase('listening')
       setMode(m)
-      timers.current.hint = window.setTimeout(() => setNotice('hint'), HINT_AFTER_MS)
+      timers.current.hint = window.setTimeout(() => setNotice((n) => (n === 'speechFailed' ? n : 'hint')), HINT_AFTER_MS)
       rec.start()
     },
     [armSilence, keepListening, setMode, setPhase, startCountdown, stopRecognizer, submit],
@@ -284,7 +297,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     async (play: (onStart: (path: PlaybackPath) => void) => Promise<boolean>) => {
       stopRecognizer()
       setPhase('speaking')
-      setNotice((n) => (n === 'bargeIn' ? undefined : n))
+      setNotice((n) => (aboutPlayback(n) ? undefined : n))
       bargedInRef.current = false
       replyAbandonedRef.current = false
       const turn = ++speakTurnRef.current
@@ -356,20 +369,28 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     [ensureSpeaker, speakReply],
   )
 
+  /** 排隊中的訊息看回覆的結果決定去留；學生已經往下說了，這段期間的回覆（包含重試的）只顯示文字。 */
+  const settleQueuedSend = useCallback((r: VoiceReply) => {
+    handledReplyRef.current = r.id
+    if (r.status === 'failed') {
+      // 輸入框被鎖住，繞過它會在失敗的回覆後疊上新訊息：繼續排隊，等學生重試成功
+      setNotice('queuedSend')
+      return
+    }
+    setNotice((n) => (n === 'queuedSend' ? undefined : n))
+    if (r.status === 'complete') {
+      pendingSendRef.current = false
+      window.setTimeout(() => hostRef.current.send(), 0)
+    }
+  }, [])
+
   useEffect(() => {
     replyRef.current = reply
     lastReplyRef.current = reply?.status === 'complete' ? reply : undefined
     if (!reply) return
-    if (pendingSendRef.current) {
-      if (reply.status === 'running') return
-      pendingSendRef.current = false
-      handledReplyRef.current = reply.id
-      // 回覆失敗時輸入框被鎖住：文字留在輸入框，等學生重試
-      if (reply.status === 'complete') window.setTimeout(() => hostRef.current.send(), 0)
-      return
-    }
-    feedReply(reply)
-  }, [feedReply, reply])
+    if (pendingSendRef.current) settleQueuedSend(reply)
+    else feedReply(reply)
+  }, [feedReply, reply, settleQueuedSend])
 
   const stopAll = useCallback(() => {
     stopRecognizer()

@@ -67,6 +67,36 @@ describe('playback queue', () => {
     expect(s.played).toEqual(['a', 'b+c'])
   })
 
+  it('holds chunks while asked to, then plays them once the response is closed', async () => {
+    const s = sink()
+    let held = false
+    const q = createPlaybackQueue(s.play, { hold: () => held, merge: (a, b) => `${a}+${b}` })
+    q.begin('r1')
+    q.enqueue('r1', 'a')
+    held = true
+    q.enqueue('r1', 'b')
+    await s.endCurrent()
+    q.enqueue('r1', 'c')
+    await s.tick()
+    expect(s.played).toEqual(['a'])
+    const done = q.finish('r1')
+    await s.tick()
+    expect(s.played).toEqual(['a', 'b+c'])
+    await s.endCurrent()
+    await expect(done).resolves.toBe('finished')
+  })
+
+  it('drops held chunks when interrupted', async () => {
+    const s = sink()
+    const q = createPlaybackQueue(s.play, { hold: () => true })
+    const outcome = q.begin('r1')
+    q.enqueue('r1', 'a')
+    q.interrupt()
+    await expect(outcome).resolves.toBe('interrupted')
+    await s.tick()
+    expect(s.played).toEqual([])
+  })
+
   it('keeps chunks apart when the merge declines', async () => {
     const s = sink()
     const q = createPlaybackQueue(s.play, { merge: () => undefined })

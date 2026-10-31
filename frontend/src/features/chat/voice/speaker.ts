@@ -5,11 +5,12 @@
  *
  * 播放都經過 `PlaybackQueue`：打斷後，等待中的語音載入或網路請求都不會再發出聲音（S-05.5）。
  *
- * 後端合成每次都扣一筆 AI 用量，所以逐句送進來時，播放期間累積的句子會合併成一次請求；
- * 瀏覽器語音不計費，一句一句唸。
+ * 後端合成每次都扣一筆與對話共用的 AI 用量，所以一則回覆有請求上限：排隊的句子合併成一次請求，
+ * 只剩最後一次時等回覆結束才發，不管生成多慢都不會超過。瀏覽器語音不計費，一句一句唸。
  */
 import type { PlaybackPath } from '@/features/chat/voice/audio/barge-in'
 import { createPlaybackQueue } from '@/features/chat/voice/audio/playback-queue'
+import { BACKEND_SPEECH_MAX_REQUESTS } from '@/features/chat/voice/config'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { isAbortError } from '@/lib/api'
 
@@ -58,6 +59,9 @@ export class SpeechUnavailableError extends Error {}
 type Chunk = { text: string; onStart?: (path: PlaybackPath) => void }
 
 export function createSpeaker(lang: string, conversationLang: string): Speaker {
+  let usesBackend = false
+  let backendRequests = 0 // 這一輪已發出的請求，失敗的也算：上限是為了擋住重複請求
+
   /** 回傳 `false` 表示這個瀏覽器不能唸，要改用後端。 */
   async function speakWithBrowser({ text, onStart }: Chunk, signal: AbortSignal): Promise<boolean> {
     const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined
@@ -87,6 +91,7 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
   }
 
   async function speakWithBackend({ text, onStart }: Chunk, signal: AbortSignal): Promise<void> {
+    backendRequests += 1
     let url: string | undefined
     try {
       const res = await fetch('/api/voice/speech', {
@@ -124,19 +129,22 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
     }
   }
 
-  let usesBackend = false
   const queue = createPlaybackQueue<Chunk>(
     async (chunk, signal) => {
       usesBackend = !(await speakWithBrowser(chunk, signal))
       if (usesBackend && !signal.aborted) await speakWithBackend(chunk, signal)
     },
-    { merge: (chunk, next) => (usesBackend ? { ...chunk, text: `${chunk.text} ${next.text}` } : undefined) },
+    {
+      merge: (chunk, next) => (usesBackend ? { ...chunk, text: `${chunk.text} ${next.text}` } : undefined),
+      hold: () => usesBackend && backendRequests >= BACKEND_SPEECH_MAX_REQUESTS - 1,
+    },
   )
   let turn = 0
 
   function open(onStart?: (path: PlaybackPath) => void): SpeechTurn {
     const id = String(++turn)
     const outcome = queue.begin(id)
+    backendRequests = 0
     let started = false
     const startOnce = (path: PlaybackPath) => {
       if (started) return
