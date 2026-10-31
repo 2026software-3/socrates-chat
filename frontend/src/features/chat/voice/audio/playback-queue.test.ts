@@ -21,6 +21,64 @@ function sink() {
 }
 
 describe('playback queue', () => {
+  it('reports an interruption before the response has been closed', async () => {
+    const s = sink()
+    const q = createPlaybackQueue(s.play)
+    const outcome = q.begin('r1')
+    q.enqueue('r1', 'a')
+    q.interrupt()
+    await expect(outcome).resolves.toBe('interrupted')
+  })
+
+  it('waits for later chunks when it runs dry before the response is closed', async () => {
+    const s = sink()
+    const q = createPlaybackQueue(s.play)
+    const outcome = q.begin('r1')
+    q.enqueue('r1', 'a')
+    await s.endCurrent()
+    let settled = false
+    void outcome.then(() => (settled = true))
+    await s.tick()
+    expect(settled).toBe(false)
+    q.enqueue('r1', 'b')
+    await s.endCurrent()
+    expect(s.played).toEqual(['a', 'b'])
+    void q.finish('r1')
+    await expect(outcome).resolves.toBe('finished')
+  })
+
+  it('finishes when closed after the last chunk has already played', async () => {
+    const s = sink()
+    const q = createPlaybackQueue(s.play)
+    q.begin('r1')
+    q.enqueue('r1', 'a')
+    await s.endCurrent()
+    await expect(q.finish('r1')).resolves.toBe('finished')
+  })
+
+  it('merges waiting chunks into one when asked to', async () => {
+    const s = sink()
+    const q = createPlaybackQueue(s.play, { merge: (a, b) => `${a}+${b}` })
+    q.begin('r1')
+    q.enqueue('r1', 'a')
+    q.enqueue('r1', 'b')
+    q.enqueue('r1', 'c')
+    await s.endCurrent()
+    expect(s.played).toEqual(['a', 'b+c'])
+  })
+
+  it('keeps chunks apart when the merge declines', async () => {
+    const s = sink()
+    const q = createPlaybackQueue(s.play, { merge: () => undefined })
+    q.begin('r1')
+    q.enqueue('r1', 'a')
+    q.enqueue('r1', 'b')
+    q.enqueue('r1', 'c')
+    await s.endCurrent()
+    await s.endCurrent()
+    expect(s.played).toEqual(['a', 'b', 'c'])
+  })
+
   it('plays chunks of a response in order, one at a time', async () => {
     const s = sink()
     const q = createPlaybackQueue(s.play)

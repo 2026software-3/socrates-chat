@@ -21,19 +21,20 @@ const PHASE_STATUS: Record<Exclude<VoicePhase, 'idle'>, MessageKey> = {
   speaking: 'voice.status.speaking',
 }
 
-/** 最新一則已完成的 AI 回覆（AI 還在回覆時為 undefined）；用字串讓 selector 結果穩定。 */
+/** 最新一則 AI 回覆，包含還在生成的內容；用字串讓 selector 結果穩定。 */
 function useLatestReply(): VoiceReply | undefined {
-  const key = useAuiState((s) => {
+  const reply = useAuiState((s) => {
     const last = s.thread.messages.at(-1)
-    if (s.thread.isRunning || last?.role !== 'assistant' || last.status?.type !== 'complete') return undefined
+    if (last?.role !== 'assistant') return undefined
     const text = last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
-    return text ? `${last.id}\u0000${text}` : undefined
+    const status: VoiceReply['status'] = s.thread.isRunning
+      ? 'running'
+      : last.status?.type === 'incomplete'
+        ? 'failed'
+        : 'complete'
+    return JSON.stringify({ id: last.id, text, status } satisfies VoiceReply)
   })
-  return useMemo(() => {
-    if (!key) return undefined
-    const i = key.indexOf('\u0000')
-    return { id: key.slice(0, i), text: key.slice(i + 1) }
-  }, [key])
+  return useMemo(() => (reply ? (JSON.parse(reply) as VoiceReply) : undefined), [reply])
 }
 
 const FEATURE_LABEL: Record<ProcessingFeature, string> = {
@@ -212,7 +213,7 @@ export function VoiceControls({
           </Button>
         </div>
       ) : null}
-      {converse && reply && (v.phase === 'idle' || listening) ? (
+      {converse && reply?.status === 'complete' && reply.text && (v.phase === 'idle' || listening) ? (
         <Button type="button" size="sm" variant="ghost" onClick={v.replay}>
           <RotateCcw aria-hidden />
           {t('voice.replay')}

@@ -4,17 +4,29 @@
  * 找語音的順序：完全相符的地區，其次是同語言的其他地區（例如 `zh-*`）。
  *
  * 播放都經過 `PlaybackQueue`：打斷後，等待中的語音載入或網路請求都不會再發出聲音（S-05.5）。
+ *
+ * 後端合成每次都扣一筆 AI 用量，所以逐句送進來時，播放期間累積的句子會合併成一次請求；
+ * 瀏覽器語音不計費，一句一句唸。
  */
 import type { PlaybackPath } from '@/features/chat/voice/audio/barge-in'
 import { createPlaybackQueue } from '@/features/chat/voice/audio/playback-queue'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { isAbortError } from '@/lib/api'
 
+/** 邊生成邊唸的一則回覆。 */
+export type SpeechTurn = {
+  /** 加入一段文字；這一輪已被打斷時回傳 `false`，文字被丟棄。 */
+  say: (text: string) => boolean
+  /** 不會再有新的文字；唸完後 `finished` 才會 resolve。 */
+  end: () => void
+  /** 全部唸完時為 `true`，被 `stop` 或下一輪中斷時為 `false`；播放失敗時 reject。 */
+  finished: Promise<boolean>
+}
+
 export type Speaker = {
-  /**
-   * 播放文字；播完時 resolve，被 `stop` 中斷也會 resolve（`false`）。
-   * `onStart` 在真正開始發聲時呼叫，並告知發聲途徑。
-   */
+  /** 開始一輪；`onStart` 在這一輪真正開始發聲時呼叫一次，並告知發聲途徑。 */
+  open: (onStart?: (path: PlaybackPath) => void) => SpeechTurn
+  /** 一次唸完整段文字；結果同 `SpeechTurn.finished`。 */
   speak: (text: string, onStart?: (path: PlaybackPath) => void) => Promise<boolean>
   stop: () => void
 }
@@ -112,17 +124,39 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
     }
   }
 
-  const queue = createPlaybackQueue<Chunk>(async (chunk, signal) => {
-    if (!(await speakWithBrowser(chunk, signal)) && !signal.aborted) await speakWithBackend(chunk, signal)
-  })
+  let usesBackend = false
+  const queue = createPlaybackQueue<Chunk>(
+    async (chunk, signal) => {
+      usesBackend = !(await speakWithBrowser(chunk, signal))
+      if (usesBackend && !signal.aborted) await speakWithBackend(chunk, signal)
+    },
+    { merge: (chunk, next) => (usesBackend ? { ...chunk, text: `${chunk.text} ${next.text}` } : undefined) },
+  )
   let turn = 0
 
+  function open(onStart?: (path: PlaybackPath) => void): SpeechTurn {
+    const id = String(++turn)
+    const outcome = queue.begin(id)
+    let started = false
+    const startOnce = (path: PlaybackPath) => {
+      if (started) return
+      started = true
+      onStart?.(path)
+    }
+    return {
+      say: (text) => queue.enqueue(id, { text, onStart: startOnce }),
+      end: () => void queue.finish(id),
+      finished: outcome.then((o) => o === 'finished'),
+    }
+  }
+
   return {
-    async speak(text, onStart) {
-      const id = String(++turn)
-      queue.begin(id)
-      queue.enqueue(id, { text, onStart })
-      return (await queue.finish(id)) === 'finished'
+    open,
+    speak(text, onStart) {
+      const speech = open(onStart)
+      speech.say(text)
+      speech.end()
+      return speech.finished
     },
     stop() {
       queue.interrupt()

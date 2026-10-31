@@ -102,7 +102,7 @@ function installSynthesis(voices: FakeVoice[], opts: { autoEnd?: boolean } = { a
   }
   Object.assign(window, { speechSynthesis: synth })
   Object.assign(globalThis, { SpeechSynthesisUtterance: FakeUtterance })
-  return { spoken, synth }
+  return { spoken, synth, endCurrent: () => current?.onend?.() }
 }
 
 function removeSynthesis() {
@@ -345,6 +345,70 @@ describe('speech synthesis (S-05.3)', () => {
     expect(onStart).toHaveBeenCalledExactlyOnceWith('synthesis')
   })
 
+  it('speaks sentences as they arrive and opens the turn only once', async () => {
+    const { spoken, endCurrent } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    const onStart = vi.fn()
+    const turn = createSpeaker('zh-TW', 'zh-TW').open(onStart)
+    turn.say('第一句。')
+    await waitFor(() => expect(spoken).toHaveLength(1))
+    turn.say('第二句。')
+    endCurrent()
+    await waitFor(() => expect(spoken.map((s) => s.text)).toEqual(['第一句。', '第二句。']))
+    expect(onStart).toHaveBeenCalledTimes(1) // 重新呼叫會讓開口偵測整個重來
+    turn.end()
+    endCurrent()
+    await expect(turn.finished).resolves.toBe(true)
+  })
+
+  it('refuses later sentences once the turn has been stopped', async () => {
+    const { spoken } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    const speaker = createSpeaker('zh-TW', 'zh-TW')
+    const turn = speaker.open()
+    turn.say('第一句。')
+    await waitFor(() => expect(spoken).toHaveLength(1))
+    speaker.stop()
+    await expect(turn.finished).resolves.toBe(false)
+    expect(turn.say('太晚了。')).toBe(false)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(spoken).toHaveLength(1)
+  })
+
+  it('merges sentences that wait for the backend, so a reply costs few AI calls', async () => {
+    installSynthesis([])
+    const bodies: { text: string }[] = []
+    server.use(
+      http.post('/api/voice/speech', async ({ request }) => {
+        bodies.push((await request.json()) as { text: string })
+        return new HttpResponse(new Blob(['mp3']), { headers: { 'Content-Type': 'audio/mpeg' } })
+      }),
+    )
+    const playing: { end: () => void }[] = []
+    class FakeAudio {
+      onended: (() => void) | null = null
+      onerror: (() => void) | null = null
+      play() {
+        playing.push({ end: () => this.onended?.() })
+        return Promise.resolve()
+      }
+      pause() {}
+    }
+    vi.stubGlobal('Audio', FakeAudio)
+    URL.createObjectURL = vi.fn(() => 'blob:fake')
+    URL.revokeObjectURL = vi.fn()
+    const turn = createSpeaker('zh-TW', 'zh-TW').open()
+    turn.say('第一句。')
+    await waitFor(() => expect(playing).toHaveLength(1))
+    turn.say('第二句。')
+    turn.say('第三句。')
+    turn.end()
+    playing[0].end()
+    await waitFor(() => expect(playing).toHaveLength(2))
+    expect(bodies.map((b) => b.text)).toEqual(['第一句。', '第二句。 第三句。'])
+    playing[1].end()
+    await expect(turn.finished).resolves.toBe(true)
+    vi.unstubAllGlobals()
+  })
+
   it('rejects when neither the browser nor the backend can speak', async () => {
     server.use(http.post('/api/voice/speech', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
     await expect(createSpeaker('zh-TW', 'zh-TW').speak('你好')).rejects.toThrow()
@@ -381,6 +445,42 @@ function mockChat(lang: string = 'zh-TW', reply = 'AI 的追問') {
     }),
   )
   return posted
+}
+
+/** 回覆由測試逐段推送，用來重現「AI 還在生成」的狀態。 */
+function mockStreamingChat() {
+  const enc = new TextEncoder()
+  const posted: Posted[] = []
+  let stream: ReadableStreamDefaultController<Uint8Array> | undefined
+  server.use(
+    http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ language: 'zh-TW' }, []))),
+    http.post('/api/conversations/c1/messages', async ({ request }) => {
+      const body = (await request.json()) as Posted
+      posted.push(body)
+      const saved = { id: `srv-${posted.length}`, role: 'student', ...body, question_type: null, created_at: '2026-03-05T08:01:00Z', auto_ended: false }
+      return new HttpResponse(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            stream = c
+            c.enqueue(enc.encode(`event: message\ndata: ${JSON.stringify(saved)}\n\n`))
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      )
+    }),
+  )
+  return {
+    posted,
+    push: (frame: string) => stream?.enqueue(enc.encode(frame)),
+    finish: () => {
+      stream?.enqueue(enc.encode(done))
+      stream?.close()
+    },
+    fail: () => {
+      stream?.enqueue(enc.encode('event: error\ndata: {"code":"ai_unavailable"}\n\n'))
+      stream?.close()
+    },
+  }
 }
 
 function renderChat() {
@@ -639,6 +739,145 @@ describe('microphone problems in the OpenAI fallback (S-05.5)', () => {
   })
 })
 
+describe('speaking the reply while it is generated (S-05.2)', () => {
+  const texts = (spoken: { text: string }[]) => spoken.map((s) => s.text)
+
+  /** 學生說完一句，AI 開始生成。 */
+  async function untilGenerating() {
+    installRecognition()
+    const synthesis = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    const chat = mockStreamingChat()
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.say('開始', true)
+    await waitFor(() => expect(chat.posted).toHaveLength(1))
+    return { ...synthesis, chat }
+  }
+
+  it('starts at the first sentence and listens only after the whole reply was spoken', async () => {
+    const { chat, spoken, endCurrent } = await untilGenerating()
+    chat.push(delta('你為什麼'))
+    chat.push(delta('這樣想？如果'))
+    await waitFor(() => expect(texts(spoken)).toEqual(['你為什麼這樣想？']))
+    const recognizers = FakeRecognition.instances.length
+
+    endCurrent() // 下一句還沒生成：停在播放階段等它
+    await new Promise((r) => setTimeout(r, 20))
+    expect(FakeRecognition.instances).toHaveLength(recognizers)
+
+    chat.push(delta('換成別人呢？'))
+    chat.finish()
+    await waitFor(() => expect(texts(spoken)).toEqual(['你為什麼這樣想？', '如果換成別人呢？']))
+    expect(FakeRecognition.instances).toHaveLength(recognizers)
+
+    endCurrent()
+    await waitFor(() => expect(FakeRecognition.instances.length).toBeGreaterThan(recognizers))
+    expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
+  })
+
+  it('keeps showing the waiting state until a whole sentence is ready', async () => {
+    const { chat, spoken } = await untilGenerating()
+    chat.push(delta('還沒講完的'))
+    expect(await screen.findByText('還沒講完的')).toBeInTheDocument()
+    expect(spoken).toEqual([])
+    expect(screen.queryByRole('button', { name: '停止播放' })).not.toBeInTheDocument()
+  })
+
+  it('stopping mid-generation drops the rest and hands the turn over at once', async () => {
+    const { chat, spoken } = await untilGenerating()
+    chat.push(delta('第一句。第二句。第'))
+    await waitFor(() => expect(texts(spoken)).toEqual(['第一句。']))
+    await userEvent.click(screen.getByRole('button', { name: '停止播放' }))
+    expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
+
+    chat.push(delta('三句。'))
+    chat.finish()
+    expect(await screen.findByText(/第三句/u)).toBeInTheDocument() // 文字照常顯示
+    await new Promise((r) => setTimeout(r, 20))
+    expect(texts(spoken)).toEqual(['第一句。'])
+  })
+
+  it('replays the whole reply after it was interrupted', async () => {
+    const { chat, spoken } = await untilGenerating()
+    chat.push(delta('第一句。第二句。'))
+    await waitFor(() => expect(spoken).toHaveLength(1))
+    await userEvent.click(screen.getByRole('button', { name: '停止播放' }))
+    chat.finish()
+    await userEvent.click(await screen.findByRole('button', { name: '重播' }))
+    await waitFor(() => expect(texts(spoken)).toEqual(['第一句。', '第一句。第二句。']))
+  })
+
+  it('holds the next message until the interrupted reply has finished generating', async () => {
+    const { chat, spoken, endCurrent } = await untilGenerating()
+    chat.push(delta('第一句。第二句。第'))
+    await waitFor(() => expect(spoken).toHaveLength(1))
+    await userEvent.click(screen.getByRole('button', { name: '停止播放' }))
+    await screen.findByText('聆聽中…請說話')
+
+    FakeRecognition.last.say('等等我有問題', true)
+    await userEvent.click(await screen.findByRole('button', { name: '立即送出' }))
+    // 這時送出會中止還在生成的串流，後端卻繼續生成
+    await new Promise((r) => setTimeout(r, 20))
+    expect(chat.posted).toHaveLength(1)
+
+    chat.push(delta('三句。'))
+    chat.finish()
+    await waitFor(() => expect(chat.posted).toHaveLength(2))
+    expect(chat.posted[1].content).toBe('等等我有問題')
+
+    chat.push(delta('新的回覆。'))
+    chat.finish()
+    await waitFor(() => expect(texts(spoken)).toEqual(['第一句。', '新的回覆。']))
+    endCurrent()
+    expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
+  })
+
+  it('stops and does not take the turn when the reply fails midway', async () => {
+    const { chat, spoken, synth } = await untilGenerating()
+    chat.push(delta('第一句。第二句。第'))
+    await waitFor(() => expect(spoken).toHaveLength(1))
+    const recognizers = FakeRecognition.instances.length
+    chat.fail()
+    await waitFor(() => expect(synth.cancel).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(texts(spoken)).toEqual(['第一句。']) // 這則回覆已作廢，第二句不該唸出來
+    expect(FakeRecognition.instances).toHaveLength(recognizers) // 輸入框被鎖住，等學生重試
+    expect(screen.queryByRole('button', { name: '停止播放' })).not.toBeInTheDocument()
+  })
+
+  it('reads the retried reply from the start after a midway failure', async () => {
+    const { chat, spoken, endCurrent } = await untilGenerating()
+    server.use(http.get('/api/conversations/c1/stream', () => sse(delta('重新回覆。'), done)))
+    chat.push(delta('第一句。第二句。第'))
+    await waitFor(() => expect(spoken).toHaveLength(1))
+    chat.fail()
+    await userEvent.click(await screen.findByRole('button', { name: '重試' }))
+    await waitFor(() => expect(texts(spoken)).toEqual(['第一句。', '重新回覆。']))
+    endCurrent()
+    expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
+  })
+
+  it('does not read out a reply that was already generating when the conversation started', async () => {
+    installRecognition()
+    const { spoken } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }])
+    const chat = mockStreamingChat()
+    renderChat()
+    await userEvent.type(await input(), '打字發問')
+    await userEvent.click(screen.getByRole('button', { name: '送出' }))
+    await waitFor(() => expect(chat.posted).toHaveLength(1))
+    chat.push(delta('第一句。第'))
+    await screen.findByText(/第一句/u)
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.say('插話', true)
+    await userEvent.click(await screen.findByRole('button', { name: '立即送出' }))
+    chat.push(delta('二句。'))
+    chat.finish()
+    await waitFor(() => expect(chat.posted).toHaveLength(2))
+    expect(spoken).toEqual([])
+  })
+})
+
 describe('barge-in during AI playback (S-05.5)', () => {
   beforeEach(() => {
     installAudioGraph()
@@ -702,6 +941,45 @@ describe('barge-in during AI playback (S-05.5)', () => {
     await waitFor(() => expect(screen.getByText('聆聽中…請說話')).toBeInTheDocument())
     FakeRecognition.last.say('我是說', false)
     await waitFor(() => expect(screen.queryByText(/請再說一次/u)).not.toBeInTheDocument())
+  })
+
+  it('keeps one microphone open across the sentences of a streamed reply', async () => {
+    const { getUserMedia } = installMediaDevices()
+    const { spoken, endCurrent } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    const chat = mockStreamingChat()
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.say('開始', true)
+    await waitFor(() => expect(chat.posted).toHaveLength(1))
+    chat.push(delta('第一句。第二句。第三句'))
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    endCurrent()
+    await waitFor(() => expect(spoken).toHaveLength(2))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(FakeWorkletNode.instances).toHaveLength(1)
+  })
+
+  it('interrupts between sentences while the reply is still generating', async () => {
+    installMediaDevices()
+    const { spoken, endCurrent } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    const chat = mockStreamingChat()
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.say('開始', true)
+    await waitFor(() => expect(chat.posted).toHaveLength(1))
+    chat.push(delta('第一句。第'))
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    endCurrent() // 播完第一句，下一句還沒生成
+    await new Promise((r) => setTimeout(r, 10))
+    studentSpeaks()
+    expect(await screen.findByText(/請再說一次/u)).toBeInTheDocument()
+    chat.push(delta('二句。'))
+    chat.finish()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(spoken).toHaveLength(1)
   })
 
   it('stays off until the student turns it on', async () => {
