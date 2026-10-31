@@ -387,6 +387,14 @@ pub(crate) async fn translate(
             "翻譯太頻繁，請稍後再試",
         ));
     };
+    // 同時計入每位使用者的 AI 用量；翻譯頻率限制先擋，這裡超過才回 ai_usage_exceeded
+    let usage_slot = match state.charge_ai(cu.user.id) {
+        Ok(slot) => slot,
+        Err(e) => {
+            state.translation_limit.refund(cu.user.id, slot);
+            return Err(e);
+        }
+    };
     let req = AiRequest {
         system: build_summary_translation_prompt(&language),
         messages: vec![ChatTurn {
@@ -401,6 +409,7 @@ pub(crate) async fn translate(
     let Some(translated) = translated else {
         // 沒有得到譯文就不扣額度：AI 當機時的重試不該把教師鎖在外面
         state.translation_limit.refund(cu.user.id, slot);
+        state.refund_ai(cu.user.id, usage_slot);
         return Err(ApiError::new(
             StatusCode::BAD_GATEWAY,
             "ai_unavailable",

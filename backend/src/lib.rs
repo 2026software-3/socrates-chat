@@ -40,6 +40,7 @@ macro_rules! generation_unclaimed {
 pub mod accounts;
 pub mod activity_store;
 pub mod ai;
+pub mod ai_usage;
 pub mod auth;
 pub mod auth_store;
 pub mod catalog;
@@ -67,7 +68,7 @@ pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
-pub(crate) mod translation_limit;
+pub(crate) mod user_limit;
 pub mod voice;
 
 /// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
@@ -104,7 +105,9 @@ pub struct AppState {
     /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
     pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
     /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
-    pub(crate) translation_limit: Arc<translation_limit::TranslationLimiter>,
+    pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
+    /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
+    pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
 }
 
 impl AppState {
@@ -115,6 +118,10 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let ai_usage = Arc::new(user_limit::UserLimiter::new(
+            config.ai_usage_max,
+            config.ai_usage_window,
+        ));
         Self {
             pool,
             config: Arc::new(config),
@@ -125,6 +132,7 @@ impl AppState {
             live: Arc::default(),
             request_logs: Arc::default(),
             translation_limit: Arc::default(),
+            ai_usage,
         }
     }
 
@@ -135,7 +143,7 @@ impl AppState {
 
     /// 換掉教師翻譯的頻率限制（測試用）。
     pub fn with_translation_limit(mut self, max: usize, window: std::time::Duration) -> Self {
-        self.translation_limit = Arc::new(translation_limit::TranslationLimiter::new(max, window));
+        self.translation_limit = Arc::new(user_limit::UserLimiter::new(max, window));
         self
     }
 }
@@ -164,6 +172,7 @@ pub fn app(state: AppState) -> Router {
         .merge(voice::routes())
         .merge(points::routes())
         .merge(demo::routes())
+        .merge(ai_usage::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(

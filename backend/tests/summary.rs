@@ -818,6 +818,31 @@ async fn translation_is_not_cut_off_by_the_general_request_timeout(pool: PgPool)
 }
 
 #[sqlx::test]
+async fn translation_counts_against_the_ai_usage_limit_and_failures_are_refunded(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let config = Config {
+        ai_usage_max: 1,
+        ..test_config()
+    };
+    let (app, a, conv) = translation_fixture_with_config(pool, ai.clone(), None, config).await;
+    set_teacher_language(&app, &a, "en").await;
+
+    // AI 失敗：不扣額度
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
+    // 成功一次後用完；再按被擋，而且不碰 AI
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    let before = ai.request_count();
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "ai_usage_exceeded");
+    assert_eq!(ai.request_count(), before);
+}
+
+#[sqlx::test]
 async fn translation_that_grows_past_the_summary_limit_is_not_silently_truncated(pool: PgPool) {
     // 2000 字的中文理由翻成拉丁字母常常超過 2000 字元；不能被總結欄位的上限悄悄截斷
     let ai = FakeAi::with(vec![

@@ -1,7 +1,7 @@
-//! 教師「翻譯總結」每人的頻率限制。
+//! 每人的滑動時間窗額度：教師「翻譯總結」的頻率限制，以及每位使用者的 AI 用量上限（`ai_usage`）共用。
 //!
-//! 翻譯結果不保存，每次按下都會呼叫一次 AI；沒有限制的話，重複點擊或腳本會讓 AI 費用無上限。
-//! 只計入真的呼叫 AI 且得到譯文的請求（語言相同直接回傳的不算，失敗的會退回額度）。
+//! 每次按下都會呼叫一次 AI；沒有限制的話，重複點擊或腳本會讓 AI 費用無上限。
+//! 只計入真的呼叫 AI 且得到結果的請求（失敗的會退回額度）。
 //! 計數放在記憶體：重啟後歸零，多個實例各自計算（部署方式尚未決定，S-09），所以實際上限是每個實例各自的額度。
 
 use std::{
@@ -15,25 +15,34 @@ use uuid::Uuid;
 use crate::mutex::lock;
 
 /// 每個教師在一個時間窗內最多可呼叫幾次 AI 翻譯。暫定值，待需求方確認。
-pub const DEFAULT_MAX: usize = 30;
-/// 計算額度的時間窗。暫定值，待需求方確認。
-pub const DEFAULT_WINDOW: Duration = Duration::from_secs(600);
+pub const TRANSLATION_MAX: usize = 30;
+/// 計算翻譯額度的時間窗。暫定值，待需求方確認。
+pub const TRANSLATION_WINDOW: Duration = Duration::from_secs(600);
 /// 記錄的使用者數超過這個數字時，順手清掉已經沒有有效記錄的人，避免記憶體無限成長。
 const SWEEP_ABOVE: usize = 1024;
 
-pub struct TranslationLimiter {
+/// 某位使用者目前的用量。
+#[derive(Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub used: usize,
+    pub max: usize,
+    pub window: Duration,
+    pub resets_in: Option<Duration>,
+}
+
+pub struct UserLimiter {
     max: usize,
     window: Duration,
     hits: Mutex<HashMap<Uuid, VecDeque<Instant>>>,
 }
 
-impl Default for TranslationLimiter {
+impl Default for UserLimiter {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX, DEFAULT_WINDOW)
+        Self::new(TRANSLATION_MAX, TRANSLATION_WINDOW)
     }
 }
 
-impl TranslationLimiter {
+impl UserLimiter {
     pub fn new(max: usize, window: Duration) -> Self {
         Self {
             max,
@@ -56,6 +65,28 @@ impl TranslationLimiter {
             && let Some(i) = queue.iter().position(|t| *t == slot)
         {
             queue.remove(i);
+        }
+    }
+
+    /// 目前時間窗內已用的次數，以及最早那一筆還要多久才過期（也就是多久後會空出一個額度）；沒有記錄時為 `None`。
+    pub fn snapshot(&self, user: Uuid) -> Snapshot {
+        self.snapshot_at(user, Instant::now())
+    }
+
+    fn snapshot_at(&self, user: Uuid, now: Instant) -> Snapshot {
+        let hits = lock(&self.hits);
+        let live = |t: &&Instant| now.saturating_duration_since(**t) < self.window;
+        let queue = hits.get(&user);
+        let used = queue.map_or(0, |q| q.iter().filter(live).count());
+        let resets_in = queue.and_then(|q| q.iter().find(live)).map(|oldest| {
+            self.window
+                .saturating_sub(now.saturating_duration_since(*oldest))
+        });
+        Snapshot {
+            used,
+            max: self.max,
+            window: self.window,
+            resets_in,
         }
     }
 
@@ -83,7 +114,7 @@ mod tests {
 
     #[test]
     fn allows_up_to_max_per_window_then_recovers() {
-        let limiter = TranslationLimiter::new(2, Duration::from_secs(60));
+        let limiter = UserLimiter::new(2, Duration::from_secs(60));
         let user = Uuid::new_v4();
         let t0 = Instant::now();
         assert!(limiter.try_acquire_at(user, t0));
@@ -99,8 +130,27 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reports_live_usage_and_when_the_oldest_slot_frees() {
+        let limiter = UserLimiter::new(3, Duration::from_secs(60));
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let t0 = Instant::now();
+        assert_eq!(limiter.snapshot_at(a, t0).used, 0);
+        assert_eq!(limiter.snapshot_at(a, t0).resets_in, None);
+        assert!(limiter.try_acquire_at(a, t0));
+        assert!(limiter.try_acquire_at(a, t0 + Duration::from_secs(20)));
+        let s = limiter.snapshot_at(a, t0 + Duration::from_secs(30));
+        assert_eq!((s.used, s.max), (2, 3));
+        assert_eq!(s.resets_in, Some(Duration::from_secs(30)));
+        // 最早那筆過期後只剩一筆
+        let s = limiter.snapshot_at(a, t0 + Duration::from_secs(70));
+        assert_eq!(s.used, 1);
+        assert_eq!(s.resets_in, Some(Duration::from_secs(10)));
+        assert_eq!(limiter.snapshot_at(b, t0).used, 0, "別人不受影響");
+    }
+
+    #[test]
     fn refund_gives_back_the_slot_only_for_that_user() {
-        let limiter = TranslationLimiter::new(1, Duration::from_secs(60));
+        let limiter = UserLimiter::new(1, Duration::from_secs(60));
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         let now = Instant::now();
         assert!(limiter.try_acquire_at(a, now));
@@ -113,7 +163,7 @@ mod tests {
 
     #[test]
     fn refund_with_overlapping_requests_keeps_the_other_requests_slot() {
-        let limiter = TranslationLimiter::new(2, Duration::from_secs(60));
+        let limiter = UserLimiter::new(2, Duration::from_secs(60));
         let user = Uuid::new_v4();
         let t0 = Instant::now();
         // 請求 A 在 t0 取得額度，請求 B 在 t0+30 取得；A 還沒結束時 B 已經開始
@@ -130,7 +180,7 @@ mod tests {
 
     #[test]
     fn limits_each_user_separately() {
-        let limiter = TranslationLimiter::new(1, Duration::from_secs(60));
+        let limiter = UserLimiter::new(1, Duration::from_secs(60));
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         let now = Instant::now();
         assert!(limiter.try_acquire_at(a, now));

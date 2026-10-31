@@ -78,6 +78,8 @@ pub fn test_config() -> Config {
         cookie_secure: true,
         listen_addr: "127.0.0.1:0".to_string(),
         trusted_proxies: vec![],
+        ai_usage_max: 1000,
+        ai_usage_window: Duration::from_secs(3600),
         frontend_dir: None,
         openai_keys: Arc::new(KeyPool::new(vec!["test-key".to_string()]).unwrap()),
         openai_model: "test-model".to_string(),
