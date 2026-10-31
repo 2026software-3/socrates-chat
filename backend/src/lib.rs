@@ -181,6 +181,11 @@ pub fn app(state: AppState) -> Router {
         ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn_with_state(state.clone(), request_id))
+        // 真正的最外層：所有回應（含錯誤與 CSRF 拒絕）都補上安全標頭
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_headers,
+        ))
         .with_state(state)
 }
 
@@ -357,4 +362,51 @@ async fn check_origin(
         }
     }
     Ok(next.run(req).await)
+}
+
+/// 一般頁面（SPA 與 API）的 CSP：只允許同源資源。樣式需 `'unsafe-inline'`（React 的 `style` 屬性）；
+/// `blob:` 給語音播放與圖片預覽。
+const CSP_DEFAULT: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; \
+object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+/// `/api/docs` 的 Redoc 頁面有行內初始化 script，且用 blob worker，只有這個路徑放寬。
+const CSP_API_DOCS: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; \
+connect-src 'self'; worker-src blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+/// HSTS 一年。不加 `includeSubDomains`／`preload`：網域可能是共用的（例如 Tailscale 的 ts.net）。
+const HSTS: &str = "max-age=31536000";
+
+/// 安全回應標頭：CSP、`X-Frame-Options`、`nosniff`、`Referrer-Policy`；
+/// 只有 `APP_BASE_URL` 是 https 時才送 HSTS（http 開發環境送了會讓瀏覽器之後拒絕 http）。
+async fn security_headers(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    let csp = if path == "/api/docs" || path.starts_with("/api/docs/") {
+        CSP_API_DOCS
+    } else {
+        CSP_DEFAULT
+    };
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if state.config.app_base_url.starts_with("https://") {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS),
+        );
+    }
+    res
 }
