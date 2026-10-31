@@ -118,22 +118,6 @@ async fn paginates_in_stable_order_without_duplicates_or_gaps(pool: PgPool) {
 
 const GOOD: &str = "{\"stance\":\"Synthetic stance\",\"reasons\":\"Synthetic reasons\"}";
 
-/// 輪詢到學生這場對話的總結不再是 pending 為止，回傳最終狀態。
-async fn settled_status(app: &axum::Router, cookie: &str, conv: &str) -> String {
-    for _ in 0..100 {
-        let path = format!("/api/conversations/{conv}/summary");
-        let status = json_body(send(app, get(&path, Some(cookie))).await).await["status"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        if status != "pending" {
-            return status;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!("summary stayed pending");
-}
-
 #[sqlx::test]
 async fn summary_retried_between_pages_appears_on_the_first_page_without_shifting_others(
     pool: PgPool,
@@ -156,7 +140,10 @@ async fn summary_retried_between_pages_appears_on_the_first_page_without_shiftin
     )
     .await;
     assert_eq!(res.status(), StatusCode::ACCEPTED);
-    assert_eq!(settled_status(&app, &a.student, &conv).await, "failed");
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "failed"
+    );
     // 這場對話比其他所有對話都早結束
     sqlx::query("UPDATE conversations SET ended_at = '2025-12-31T00:00:00Z' WHERE id = $1")
         .bind(conv.parse::<Uuid>().unwrap())
@@ -176,7 +163,10 @@ async fn summary_retried_between_pages_appears_on_the_first_page_without_shiftin
     )
     .await;
     assert_eq!(res.status(), StatusCode::ACCEPTED);
-    assert_eq!(settled_status(&app, &a.student, &conv).await, "ready");
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "ready"
+    );
 
     // 往後翻：原有的總結不重複、不遺漏，順序不受影響
     let pages = pages_after(&app, "/api/summaries?limit=3", &a.teacher, first).await;
