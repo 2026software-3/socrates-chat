@@ -45,6 +45,8 @@ pub struct Config {
     pub openai_model: String,
     /// 主模型被限流（429）時依序改用的模型；空表示不啟用備援
     pub openai_fallback_models: Vec<String>,
+    /// 推理強度（`OPENAI_REASONING_EFFORT`，例如 `high`）；沒設定就不送
+    pub openai_reasoning_effort: Option<String>,
     pub openai_base_url: String,
     /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
     pub openai_stt_base_url: Option<String>,
@@ -267,6 +269,10 @@ impl Config {
             openai_fallback_models: parse_model_list(
                 &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
             ),
+            openai_reasoning_effort: env::var("OPENAI_REASONING_EFFORT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
             openai_stt_base_url: env::var("OPENAI_STT_BASE_URL")
