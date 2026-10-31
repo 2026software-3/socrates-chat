@@ -35,15 +35,16 @@ export const BARGE_IN_DETECTOR: Record<EchoRisk, { calibrationMs: number; margin
   high: { calibrationMs: 1000, marginDb: 14, minVoicedMs: 360 },
 }
 
-/** 語音偏好存在這個裝置的 localStorage（只是個人偏好，不影響後端），預設開啟。 */
+/** 語音偏好存在這個裝置的 localStorage（只是個人偏好，不影響後端）。 */
 const AUTO_SEND_KEY = 'voice.autoSend'
 const BARGE_IN_KEY = 'voice.bargeIn'
 
-function loadFlag(key: string): boolean {
+function loadFlag(key: string, fallback: boolean): boolean {
   try {
-    return localStorage.getItem(key) !== 'false'
+    const stored = localStorage.getItem(key)
+    return stored === null ? fallback : stored === 'true'
   } catch {
-    return true
+    return fallback
   }
 }
 
@@ -55,7 +56,8 @@ function saveFlag(key: string, on: boolean) {
   }
 }
 
-export const loadAutoSend = () => loadFlag(AUTO_SEND_KEY)
+export const loadAutoSend = () => loadFlag(AUTO_SEND_KEY, true)
 export const saveAutoSend = (on: boolean) => saveFlag(AUTO_SEND_KEY, on)
-export const loadBargeIn = () => loadFlag(BARGE_IN_KEY)
+/** 預設關閉：iOS 實機驗證通過之前，播放時不主動開麥克風（S-05.5）。 */
+export const loadBargeIn = () => loadFlag(BARGE_IN_KEY, false)
 export const saveBargeIn = (on: boolean) => saveFlag(BARGE_IN_KEY, on)

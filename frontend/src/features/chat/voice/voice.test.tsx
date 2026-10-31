@@ -644,6 +644,8 @@ describe('barge-in during AI playback (S-05.5)', () => {
     installAudioGraph()
     installRecognition()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // 預設關閉，這組測試都是學生自己開啟之後的行為
+    localStorage.setItem('voice.bargeIn', 'true')
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -690,13 +692,35 @@ describe('barge-in during AI playback (S-05.5)', () => {
     expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
   })
 
-  it('does not open the microphone when the switch is off', async () => {
+  it('asks the student to say it again after speaking interrupted the AI', async () => {
+    installMediaDevices()
+    await untilSpeaking()
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    studentSpeaks()
+    expect(await screen.findByText(/請再說一次/u)).toBeInTheDocument()
+    // 學生重新開口後提示就沒有用了
+    await waitFor(() => expect(screen.getByText('聆聽中…請說話')).toBeInTheDocument())
+    FakeRecognition.last.say('我是說', false)
+    await waitFor(() => expect(screen.queryByText(/請再說一次/u)).not.toBeInTheDocument())
+  })
+
+  it('stays off until the student turns it on', async () => {
     const { getUserMedia } = installMediaDevices()
-    localStorage.setItem('voice.bargeIn', 'false')
+    localStorage.removeItem('voice.bargeIn')
     await untilSpeaking()
     await new Promise((r) => setTimeout(r, 20))
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(screen.getByRole('switch', { name: '開口打斷 AI' })).not.toBeChecked()
+    expect(screen.queryByTestId('voice-audio-diagnostics')).not.toBeInTheDocument()
+  })
+
+  it('remembers that the student turned it on', async () => {
+    const { getUserMedia } = installMediaDevices()
+    localStorage.removeItem('voice.bargeIn')
+    await untilSpeaking()
+    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
+    expect(localStorage.getItem('voice.bargeIn')).toBe('true')
+    expect(getUserMedia).not.toHaveBeenCalled() // 這一輪已開始播放，下一輪才生效
   })
 
   it('turning the switch off during playback releases the microphone at once', async () => {
@@ -791,5 +815,6 @@ describe('barge-in during AI playback (S-05.5)', () => {
     await userEvent.click(screen.getByRole('button', { name: '停止播放' }))
     expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
     expect(tracks[0].readyState).toBe('ended')
+    expect(screen.queryByText(/請再說一次/u)).not.toBeInTheDocument() // 按鈕打斷沒有漏字
   })
 })

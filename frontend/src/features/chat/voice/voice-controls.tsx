@@ -220,7 +220,7 @@ export function VoiceControls({
       ) : null}
 
       {v.notice ? (
-        <Alert role="status" variant={v.notice === 'hint' ? 'default' : 'destructive'}>
+        <Alert role="status" variant={v.notice === 'hint' || v.notice === 'bargeIn' ? 'default' : 'destructive'}>
           <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
             <span>{t(`voice.notice.${v.notice}`)}</span>
             <Button type="button" size="sm" variant="ghost" onClick={v.dismissNotice}>

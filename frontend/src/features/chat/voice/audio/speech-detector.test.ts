@@ -3,9 +3,10 @@ import { createSpeechDetector } from '@/features/chat/voice/audio/speech-detecto
 import { feed, noiseSource, voicedSource } from '@/test/fake-audio'
 
 const CONFIG = { calibrationMs: 600, marginDb: 8, minVoicedMs: 240 }
+const HIGH_RISK = { calibrationMs: 1000, marginDb: 14, minVoicedMs: 360 }
 
-function run(sampleRate: number) {
-  const detector = createSpeechDetector(CONFIG)
+function run(sampleRate: number, config = CONFIG) {
+  const detector = createSpeechDetector(config)
   const state = { firedAt: undefined as number | undefined, t: 0 }
   const play = (source: (ms: number) => Float32Array, ms: number) =>
     feed(source, ms, (samples) => {
@@ -56,6 +57,66 @@ describe('speech detector', () => {
     play(noiseSource(rate, -65), 1000)
     play(voicedSource(rate, -30), 1500)
     expect(state.firedAt).toBeUndefined()
+  })
+
+  it('does not fire when echo returns after a pause longer than the level window', () => {
+    const { play, state } = run(rate)
+    play(voicedSource(rate, -30), 1500)
+    play(noiseSource(rate, -65), 3500)
+    play(voicedSource(rate, -30), 1500)
+    expect(state.firedAt).toBeUndefined()
+  })
+
+  it('does not fire when a high-risk echo returns after a long pause', () => {
+    const { play, state } = run(rate, HIGH_RISK)
+    play(voicedSource(rate, -30), 2000)
+    play(noiseSource(rate, -65), 5000)
+    play(voicedSource(rate, -30), 2000)
+    expect(state.firedAt).toBeUndefined()
+  })
+
+  it('does not fire when the AI voice steps up after a quiet calibration', () => {
+    const { play, state } = run(rate)
+    play(voicedSource(rate, -40), 800)
+    play(voicedSource(rate, -28), 2000)
+    expect(state.firedAt).toBeUndefined()
+  })
+
+  it('does not fire when a high-risk AI voice steps up after a quiet calibration', () => {
+    const { play, state } = run(rate, HIGH_RISK)
+    play(voicedSource(rate, -44), 1200)
+    play(voicedSource(rate, -24), 2000)
+    expect(state.firedAt).toBeUndefined()
+  })
+
+  it('follows a gradual rise in the AI voice', () => {
+    const { play, state } = run(rate)
+    play(voicedSource(rate, -44), 800)
+    for (let db = -43; db <= -20; db += 1) play(voicedSource(rate, db), 200)
+    expect(state.firedAt).toBeUndefined()
+  })
+
+  it('still fires on a different voice right after the AI voice rose', () => {
+    const { play, state } = run(rate)
+    play(voicedSource(rate, -40), 800)
+    play(voicedSource(rate, -30, 230), 500)
+    expect(state.firedAt).toBeDefined()
+  })
+
+  it('still fires on a same-pitch voice that is far louder than the echo', () => {
+    const { play, state } = run(rate)
+    play(voicedSource(rate, -40), 800)
+    play(voicedSource(rate, -20), 500)
+    expect(state.firedAt).toBeDefined()
+  })
+
+  it('a cough right after calibration does not blind the rest of the turn', () => {
+    const { play, state } = run(rate)
+    play(noiseSource(rate, -60), 700)
+    play(voicedSource(rate, -20), 160)
+    play(noiseSource(rate, -60), 3500)
+    play(voicedSource(rate, -25), 500)
+    expect(state.firedAt).toBeDefined()
   })
 
   it('fires when the student talks clearly over residual echo', () => {

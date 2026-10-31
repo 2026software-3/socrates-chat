@@ -51,7 +51,7 @@ function clearAllTimers(t: Timers) {
  * - `speaking`：播放 AI 語音
  */
 export type VoicePhase = 'idle' | 'listening' | 'countdown' | 'review' | 'transcribing' | 'waiting' | 'speaking'
-export type VoiceNotice = 'permission' | 'device' | 'unavailable' | 'failed' | 'speechFailed' | 'hint'
+export type VoiceNotice = 'permission' | 'device' | 'unavailable' | 'failed' | 'speechFailed' | 'hint' | 'bargeIn'
 
 export type VoiceReply = { id: string; text: string }
 
@@ -60,8 +60,9 @@ export type VoiceReply = { id: string; text: string }
  *
  * - `dictate`：辨識文字即時填入輸入框，學生確認或編輯後自己送出（S-05.1）。
  * - `converse`：AI 回覆自動播放；播完自動收音；靜音 3 秒進入 3 秒倒數後自動送出
- *   （可關閉自動送出，只用按鈕）。播放時麥克風只在瀏覽器內偵測開口（S-05.5），
- *   偵測到就打斷播放並換回辨識器；辨識器本身仍不在播放時運作，避免把 AI 的聲音錄成學生發言。
+ *   （可關閉自動送出，只用按鈕）。學生開啟「開口打斷」後，播放時麥克風只在瀏覽器內偵測開口
+ *   （S-05.5），偵測到就打斷播放、換回辨識器並請學生再說一次，因為偵測期間的聲音沒有進辨識器；
+ *   辨識器本身仍不在播放時運作，避免把 AI 的聲音錄成學生發言。
  * 備援的 OpenAI 辨識沒有即時文字也沒有靜音偵測，需按按鈕結束發言。
  */
 export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
@@ -82,6 +83,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const monitorRef = useRef<BargeInMonitor>(undefined)
   const bargeInRef = useRef(bargeIn)
   const speakTurnRef = useRef(0)
+  const bargedInRef = useRef(false)
   const baseRef = useRef('')
   const sourceRef = useRef<RecognitionSource>('speech-browser')
   const startRef = useRef<(m: Exclude<VoiceMode, 'off'>) => void>(() => {})
@@ -118,7 +120,10 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const ensureMonitor = useCallback((): BargeInMonitor => {
     monitorRef.current ??= createBargeInMonitor({
       // 中斷播放後，`speakReply` 接手把回合交給學生
-      onSpeech: () => speakerRef.current?.stop(),
+      onSpeech: () => {
+        bargedInRef.current = true
+        speakerRef.current?.stop()
+      },
       onStatus: setAudioStatus,
     })
     return monitorRef.current
@@ -189,11 +194,13 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       const existing = hostRef.current.getText().trim()
       baseRef.current = existing ? `${existing} ` : ''
       spokenRef.current = ''
-      setNotice(undefined)
+      // 改用備援辨識也會走到這裡，請學生再說一次的提示要留到學生真的開口
+      setNotice((n) => (n === 'bargeIn' ? n : undefined))
       const rec: Recognizer = createRecognizer(pickRecognitionSource(), speechLang(lang), lang, {
         onText: (text, final) => {
           const first = spokenRef.current === ''
           spokenRef.current = text
+          setNotice((n) => (n === 'bargeIn' ? undefined : n))
           hostRef.current.setText(baseRef.current + text)
           hostRef.current.onSource(rec.source)
           if (phaseRef.current === 'countdown') keepListening()
@@ -262,6 +269,8 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     async (r: VoiceReply, thenListen: boolean) => {
       stopRecognizer()
       setPhase('speaking')
+      setNotice((n) => (n === 'bargeIn' ? undefined : n))
+      bargedInRef.current = false
       const turn = ++speakTurnRef.current
       // 只有語音對話才監聽開口；開始發聲才開麥克風，音量校準才會對到 AI 的聲音
       const monitor = bargeInRef.current && modeRef.current === 'converse' ? ensureMonitor() : undefined
@@ -285,6 +294,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       }
       if (thenListen || failed) startListening('converse')
       else setPhase('idle')
+      if (bargedInRef.current) setNotice('bargeIn')
     },
     [ensureMonitor, ensureSpeaker, setPhase, startListening, stopRecognizer],
   )
