@@ -7,6 +7,7 @@
  * 這裡不記錄任何辨識內容。
  */
 import { markAiUsageStale } from '@/lib/ai-usage-events'
+import { MicrophoneError, openMicrophone, type Microphone } from '@/features/chat/voice/audio/microphone'
 import { ApiError, apiErrorFrom } from '@/lib/api'
 
 export type RecognitionSource = 'speech-browser' | 'speech-openai'
@@ -19,11 +20,14 @@ export type RecognizerEvents = {
   /**
    * - `permission`：使用者拒絕麥克風權限
    * - `fallback`：瀏覽器辨識不可用，呼叫端應改用 OpenAI 備援重新開始
+   * - `device`：沒有麥克風、麥克風被占用或中途被拔除
    * - `unavailable`：備援服務沒有啟用
    * - `failed`：其他失敗
    */
-  onError: (kind: 'permission' | 'fallback' | 'unavailable' | 'failed') => void
+  onError: (kind: RecognizerError) => void
 }
+
+export type RecognizerError = 'permission' | 'fallback' | 'device' | 'unavailable' | 'failed'
 
 export type Recognizer = {
   source: RecognitionSource
@@ -194,16 +198,34 @@ function recorderMime(): string | undefined {
   return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((m) => MediaRecorder.isTypeSupported?.(m))
 }
 
+function microphoneFailure(e: unknown): RecognizerError | undefined {
+  if (!(e instanceof MicrophoneError)) return 'failed'
+  switch (e.kind) {
+    case 'aborted':
+      return undefined // 呼叫端已停止，`stop` 會負責收尾
+    case 'permission':
+      return 'permission'
+    case 'no-device':
+    case 'busy':
+      return 'device'
+    case 'unsupported':
+      return 'unavailable'
+    case 'failed':
+      return 'failed'
+  }
+}
+
 /** 備援辨識：錄音到停止為止，再整段送後端辨識（沒有即時文字，也沒有自動靜音偵測，需手動結束）。 */
 export function createOpenAiRecognizer(conversationLang: string, ev: RecognizerEvents): Recognizer {
   let recorder: MediaRecorder | undefined
-  let stream: MediaStream | undefined
+  let mic: Microphone | undefined
   let chunks: Blob[] = []
   let cancelled = false
+  const opening = new AbortController()
 
   function release() {
-    stream?.getTracks().forEach((t) => t.stop())
-    stream = undefined
+    mic?.close()
+    mic = undefined
   }
 
   return {
@@ -211,20 +233,23 @@ export function createOpenAiRecognizer(conversationLang: string, ev: RecognizerE
     start() {
       cancelled = false
       chunks = []
-      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      if (typeof MediaRecorder === 'undefined') {
         ev.onError('unavailable')
         return
       }
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
-        .then((s) => {
-          if (cancelled) {
-            s.getTracks().forEach((t) => t.stop())
-            return
-          }
-          stream = s
+      openMicrophone({
+        signal: opening.signal,
+        // 錄音中麥克風消失：丟掉這段，讓畫面回到可操作的狀態
+        onEnded() {
+          cancelled = true
+          ev.onError('device')
+          if (recorder?.state !== 'inactive') recorder?.stop()
+        },
+      })
+        .then((opened) => {
+          mic = opened
           const mime = recorderMime()
-          recorder = new MediaRecorder(s, mime ? { mimeType: mime } : undefined)
+          recorder = new MediaRecorder(opened.stream, mime ? { mimeType: mime } : undefined)
           recorder.ondataavailable = (e) => {
             if (e.data.size > 0) chunks.push(e.data)
           }
@@ -247,13 +272,18 @@ export function createOpenAiRecognizer(conversationLang: string, ev: RecognizerE
           }
           recorder.start()
         })
-        .catch(() => ev.onError('permission'))
+        .catch((e: unknown) => {
+          release()
+          const kind = microphoneFailure(e)
+          if (kind) ev.onError(kind)
+        })
     },
     stop() {
       if (recorder && recorder.state !== 'inactive') {
         recorder.stop()
       } else {
         cancelled = true
+        opening.abort()
         release()
         ev.onEnd()
       }

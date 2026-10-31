@@ -11,6 +11,7 @@ import {
   type RecognizerEvents,
 } from '@/features/chat/voice/recognizer'
 import { createSpeaker } from '@/features/chat/voice/speaker'
+import { FakeAudioContext, FakeWorkletNode, feed, installAudioGraph, installMediaDevices, noiseSource, removeMediaDevices, voicedSource } from '@/test/fake-audio'
 import { makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -71,6 +72,7 @@ class FakeUtterance {
   voice: unknown
   lang = ''
   text: string
+  onstart: (() => void) | null = null
   onend: (() => void) | null = null
   onerror: ((e: { error: string }) => void) | null = null
   constructor(text: string) {
@@ -90,11 +92,12 @@ function installSynthesis(voices: FakeVoice[], opts: { autoEnd?: boolean } = { a
     speak: (u: FakeUtterance) => {
       current = u
       spoken.push({ text: u.text, lang: u.lang })
+      u.onstart?.()
       if (opts.autoEnd) setTimeout(() => u.onend?.(), 5)
     },
-    cancel: () => {
+    cancel: vi.fn(() => {
       current?.onerror?.({ error: 'canceled' })
-    },
+    }),
   }
   Object.assign(window, { speechSynthesis: synth })
   Object.assign(globalThis, { SpeechSynthesisUtterance: FakeUtterance })
@@ -250,6 +253,88 @@ describe('speech synthesis (S-05.3)', () => {
     vi.unstubAllGlobals()
   })
 
+  it('stays silent when stopped while the voices are still loading (S-05.5)', async () => {
+    const { synth, spoken } = installSynthesis([])
+    const voices = [{ lang: 'zh-TW', name: 'tw' }]
+    let loaded: () => void = () => {}
+    synth.getVoices = () => []
+    synth.addEventListener = ((_: string, fn: () => void) => {
+      loaded = fn
+    }) as typeof synth.addEventListener
+    const speaker = createSpeaker('zh-TW', 'zh-TW')
+    const done = speaker.speak('太晚了')
+    await new Promise((r) => setTimeout(r, 0))
+    speaker.stop()
+    expect(await done).toBe(false)
+    synth.getVoices = () => voices
+    loaded()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(spoken).toEqual([])
+  })
+
+  it('never plays backend audio that arrives after a stop (S-05.5)', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    server.use(
+      http.post('/api/voice/speech', async () => {
+        await gate
+        return new HttpResponse(new Uint8Array([1]), { headers: { 'Content-Type': 'audio/mpeg' } })
+      }),
+    )
+    const played: string[] = []
+    vi.stubGlobal(
+      'Audio',
+      class {
+        constructor(src: string) {
+          played.push(src)
+        }
+      },
+    )
+    const speaker = createSpeaker('zh-TW', 'zh-TW')
+    const done = speaker.speak('太晚了')
+    await new Promise((r) => setTimeout(r, 10))
+    speaker.stop()
+    expect(await done).toBe(false)
+    release()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(played).toEqual([])
+    vi.unstubAllGlobals()
+  })
+
+  it('a new reply replaces the one still playing', async () => {
+    const { spoken } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    const speaker = createSpeaker('zh-TW', 'zh-TW')
+    const first = speaker.speak('舊的回覆')
+    await new Promise((r) => setTimeout(r, 0))
+    void speaker.speak('新的回覆')
+    expect(await first).toBe(false)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(spoken.map((u) => u.text)).toEqual(['舊的回覆', '新的回覆'])
+  })
+
+  it('ignores a start event that arrives after a stop', async () => {
+    const { synth } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }])
+    let utterance: FakeUtterance | undefined
+    synth.speak = (u: FakeUtterance) => {
+      utterance = u
+    }
+    const onStart = vi.fn()
+    const speaker = createSpeaker('zh-TW', 'zh-TW')
+    const done = speaker.speak('你好', onStart)
+    await new Promise((r) => setTimeout(r, 0))
+    speaker.stop()
+    await done
+    utterance?.onstart?.()
+    expect(onStart).not.toHaveBeenCalled()
+  })
+
+  it('reports when and how playback really started', async () => {
+    installSynthesis([{ lang: 'zh-TW', name: 'tw' }])
+    const onStart = vi.fn()
+    await createSpeaker('zh-TW', 'zh-TW').speak('你好', onStart)
+    expect(onStart).toHaveBeenCalledExactlyOnceWith('synthesis')
+  })
+
   it('rejects when neither the browser nor the backend can speak', async () => {
     server.use(http.post('/api/voice/speech', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
     await expect(createSpeaker('zh-TW', 'zh-TW').speak('你好')).rejects.toThrow()
@@ -357,11 +442,7 @@ describe('voice input (S-05.1: confirm before sending)', () => {
         return HttpResponse.json({ text: '備援辨識的文字' })
       }),
     )
-    const stopTrack = vi.fn()
-    Object.defineProperty(navigator, 'mediaDevices', {
-      configurable: true,
-      value: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop: stopTrack }] }) },
-    })
+    const { tracks, getUserMedia } = installMediaDevices()
     class FakeRecorder {
       static isTypeSupported = () => true
       state: 'inactive' | 'recording' = 'inactive'
@@ -385,20 +466,19 @@ describe('voice input (S-05.1: confirm before sending)', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: '訊息輸入' })).toHaveValue('備援辨識的文字'))
     expect(upload).toMatchObject({ type: 'audio/webm', size: 10 })
     expect(upload?.url).toContain('language=zh-TW')
-    expect(stopTrack).toHaveBeenCalled() // 釋放麥克風，不保留音訊
+    expect(tracks[0].stop).toHaveBeenCalled() // 釋放麥克風，不保留音訊
+    // 備援錄音也用瀏覽器原生前處理（S-05.5）
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
     await userEvent.click(screen.getByRole('button', { name: '送出' }))
     await waitFor(() => expect(posted).toEqual([{ content: '備援辨識的文字', source: 'speech-openai' }]))
     vi.unstubAllGlobals()
-    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined })
+    removeMediaDevices()
   })
 
   it('tells the student to type when the fallback service is not enabled', async () => {
     mockChat()
     server.use(http.post('/api/voice/transcribe', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
-    Object.defineProperty(navigator, 'mediaDevices', {
-      configurable: true,
-      value: { getUserMedia: () => Promise.resolve({ getTracks: () => [] }) },
-    })
+    installMediaDevices()
     class FakeRecorder {
       static isTypeSupported = () => true
       state: 'inactive' | 'recording' = 'inactive'
@@ -421,7 +501,7 @@ describe('voice input (S-05.1: confirm before sending)', () => {
     await userEvent.click(await screen.findByRole('button', { name: '結束錄音' }))
     expect(await screen.findByText(/目前無法使用語音/u)).toBeInTheDocument()
     vi.unstubAllGlobals()
-    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined })
+    removeMediaDevices()
   })
 })
 
@@ -500,5 +580,191 @@ describe('voice conversation (S-05.2: turn taking)', () => {
     await userEvent.click(await screen.findByRole('button', { name: '結束語音對話' }))
     expect(screen.queryByText('聆聽中…請說話')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '語音對話' })).toBeInTheDocument()
+  })
+})
+
+describe('microphone problems in the OpenAI fallback (S-05.5)', () => {
+  class IdleRecorder {
+    static isTypeSupported = () => true
+    state: 'inactive' | 'recording' = 'inactive'
+    mimeType = 'audio/webm'
+    ondataavailable: ((e: { data: Blob }) => void) | null = null
+    onstop: (() => void) | null = null
+    start() {
+      this.state = 'recording'
+    }
+    stop() {
+      this.state = 'inactive'
+      this.onstop?.()
+    }
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    removeMediaDevices()
+  })
+
+  it('does not blame permissions when there is no microphone', async () => {
+    mockChat()
+    vi.stubGlobal('MediaRecorder', IdleRecorder)
+    installMediaDevices({ getUserMedia: () => Promise.reject(new DOMException('x', 'NotFoundError')) })
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音輸入' }))
+    expect(await screen.findByText(/找不到可用的麥克風/u)).toBeInTheDocument()
+    expect(screen.queryByText(/允許麥克風權限/u)).not.toBeInTheDocument()
+  })
+
+  it('tells the student when the microphone is unplugged mid-recording', async () => {
+    mockChat()
+    vi.stubGlobal('MediaRecorder', IdleRecorder)
+    const { tracks } = installMediaDevices()
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音輸入' }))
+    await waitFor(() => expect(tracks).toHaveLength(1))
+    tracks[0].unplug()
+    expect(await screen.findByText(/找不到可用的麥克風/u)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '語音輸入' })).toBeInTheDocument()
+  })
+})
+
+describe('barge-in during AI playback (S-05.5)', () => {
+  beforeEach(() => {
+    installAudioGraph()
+    installRecognition()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    removeMediaDevices()
+  })
+
+  /** 進入語音對話並讓 AI 開始唸，停在播放中。 */
+  async function untilSpeaking() {
+    const synthesis = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    mockChat()
+    const view = renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.say('開始', true)
+    await waitFor(() => expect(synthesis.spoken).toHaveLength(1))
+    return { ...synthesis, view }
+  }
+
+  function studentSpeaks() {
+    const emit = (s: Float32Array) => FakeWorkletNode.last.emit(s)
+    feed(noiseSource(48_000, -60), 1200, emit)
+    feed(voicedSource(48_000, -20), 600, emit)
+  }
+
+  it('keeps capturing while the AI speaks, without running the recognizer', async () => {
+    const { tracks } = installMediaDevices()
+    await untilSpeaking()
+    const recognizers = FakeRecognition.instances.length
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    expect(tracks[0].readyState).toBe('live')
+    expect(FakeRecognition.instances).toHaveLength(recognizers)
+  })
+
+  it('speaking stops the playback, frees the microphone, and hands the turn over', async () => {
+    const { tracks } = installMediaDevices()
+    const { synth } = await untilSpeaking()
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    const recognizers = FakeRecognition.instances.length
+    studentSpeaks()
+    expect(synth.cancel).toHaveBeenCalled()
+    expect(tracks[0].readyState).toBe('ended')
+    await waitFor(() => expect(FakeRecognition.instances.length).toBeGreaterThan(recognizers))
+    expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
+  })
+
+  it('does not open the microphone when the switch is off', async () => {
+    const { getUserMedia } = installMediaDevices()
+    localStorage.setItem('voice.bargeIn', 'false')
+    await untilSpeaking()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(screen.getByRole('switch', { name: '開口打斷 AI' })).not.toBeChecked()
+  })
+
+  it('turning the switch off during playback releases the microphone at once', async () => {
+    const { tracks } = installMediaDevices()
+    await untilSpeaking()
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
+    expect(tracks[0].readyState).toBe('ended')
+    expect(FakeAudioContext.last.close).toHaveBeenCalled()
+    expect(localStorage.getItem('voice.bargeIn')).toBe('false')
+  })
+
+  it('does not reopen anything when the switch goes off before the AI starts speaking', async () => {
+    const { getUserMedia } = installMediaDevices()
+    const { synth } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
+    let utterance: FakeUtterance | undefined
+    synth.speak = (u: FakeUtterance) => {
+      utterance = u
+    }
+    mockChat()
+    renderChat()
+    await input()
+    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
+    FakeRecognition.last.say('開始', true)
+    await waitFor(() => expect(utterance).toBeDefined())
+    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
+    utterance?.onstart?.()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(FakeAudioContext.instances.filter((c) => c.state !== 'closed')).toEqual([])
+  })
+
+  it('keeps playing and offers the button when the microphone is denied', async () => {
+    installMediaDevices({ getUserMedia: () => Promise.reject(new DOMException('x', 'NotAllowedError')) })
+    await untilSpeaking()
+    expect(await screen.findByText(/開口偵測: 無法使用/u)).toBeInTheDocument()
+    expect(screen.getByText('AI 正在說話…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '停止播放' })).toBeInTheDocument()
+    expect(screen.queryByText(/無法使用麥克風/u)).not.toBeInTheDocument()
+  })
+
+  it('shows what the browser reported, and warns that speechSynthesis is high risk', async () => {
+    installMediaDevices({
+      supported: { echoCancellation: true },
+      settings: { echoCancellation: true },
+    })
+    await untilSpeaking()
+    const panel = await screen.findByTestId('voice-audio-diagnostics')
+    await waitFor(() => expect(panel).toHaveTextContent('AEC: 已開啟（瀏覽器回報）'))
+    expect(panel).toHaveTextContent('NS: 不支援')
+    expect(panel).toHaveTextContent(/建議戴耳機/u)
+  })
+
+  it('still releases everything when the voice conversation ends during playback', async () => {
+    const { tracks } = installMediaDevices()
+    await untilSpeaking()
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    await userEvent.click(screen.getByRole('button', { name: '結束語音對話' }))
+    expect(tracks[0].readyState).toBe('ended')
+    expect(FakeWorkletNode.last.disconnect).toHaveBeenCalled()
+    expect(FakeAudioContext.last.close).toHaveBeenCalled()
+  })
+
+  it('releases everything when the page goes away during playback', async () => {
+    const { tracks } = installMediaDevices()
+    const { view } = await untilSpeaking()
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    view.unmount()
+    expect(tracks[0].readyState).toBe('ended')
+    expect(FakeAudioContext.last.close).toHaveBeenCalled()
+  })
+
+  it('the manual button still interrupts while detection is running', async () => {
+    const { tracks } = installMediaDevices()
+    await untilSpeaking()
+    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
+    await userEvent.click(screen.getByRole('button', { name: '停止播放' }))
+    expect(await screen.findByText('聆聽中…請說話')).toBeInTheDocument()
+    expect(tracks[0].readyState).toBe('ended')
   })
 })

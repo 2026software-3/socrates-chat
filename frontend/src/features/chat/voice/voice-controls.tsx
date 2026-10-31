@@ -5,6 +5,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import type { BargeInStatus } from '@/features/chat/voice/audio/barge-in'
+import { PROCESSING_FEATURES, type FeatureStatus, type ProcessingFeature } from '@/features/chat/voice/audio/microphone'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { useVoice, type VoiceHost, type VoicePhase, type VoiceReply } from '@/features/chat/voice/use-voice'
 import { useT, type MessageKey } from '@/i18n'
@@ -32,6 +34,51 @@ function useLatestReply(): VoiceReply | undefined {
     const i = key.indexOf('\u0000')
     return { id: key.slice(0, i), text: key.slice(i + 1) }
   }, [key])
+}
+
+const FEATURE_LABEL: Record<ProcessingFeature, string> = {
+  echoCancellation: 'AEC',
+  noiseSuppression: 'NS',
+  autoGainControl: 'AGC',
+}
+
+const FEATURE_STATUS: Record<FeatureStatus, MessageKey> = {
+  active: 'voice.audio.active',
+  inactive: 'voice.audio.inactive',
+  unreported: 'voice.audio.unreported',
+  unsupported: 'voice.audio.unsupported',
+}
+
+const MONITOR_STATE: Record<BargeInStatus['state'], MessageKey> = {
+  idle: 'voice.audio.state.idle',
+  starting: 'voice.audio.state.starting',
+  monitoring: 'voice.audio.state.monitoring',
+  failed: 'voice.audio.state.failed',
+}
+
+/** 學生回報語音問題時看這裡：瀏覽器回報的狀態，不代表實際效果（S-05.5）。 */
+function AudioDiagnostics({ status }: { status: BargeInStatus }) {
+  const t = useT()
+  const { microphone, echoRisk, failure } = status
+  return (
+    <details className="text-muted-foreground px-2 text-xs" data-testid="voice-audio-diagnostics">
+      <summary className="cursor-pointer">{t('voice.audio.title')}</summary>
+      <ul className="mt-1 space-y-0.5">
+        <li>
+          {t('voice.audio.monitor')}: {t(MONITOR_STATE[status.state])}
+          {failure ? ` (${failure})` : ''}
+        </li>
+        {microphone
+          ? PROCESSING_FEATURES.map((f) => (
+              <li key={f}>
+                {FEATURE_LABEL[f]}: {t(FEATURE_STATUS[microphone.features[f].status])}
+              </li>
+            ))
+          : null}
+        {echoRisk === 'high' ? <li>{t('voice.audio.echoHigh')}</li> : null}
+      </ul>
+    </details>
+  )
 }
 
 /**
@@ -107,13 +154,22 @@ export function VoiceControls({
         {sendButton}
       </div>
       {converse ? (
-        <div className="flex items-center gap-2 px-2">
-          <Switch id="voice-auto-send" checked={v.autoSend} onCheckedChange={v.setAutoSend} />
-          <Label htmlFor="voice-auto-send" className="text-xs sm:text-sm">
-            {t('voice.autoSend')}
-          </Label>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-2">
+          <div className="flex items-center gap-2">
+            <Switch id="voice-auto-send" checked={v.autoSend} onCheckedChange={v.setAutoSend} />
+            <Label htmlFor="voice-auto-send" className="text-xs sm:text-sm">
+              {t('voice.autoSend')}
+            </Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch id="voice-barge-in" checked={v.bargeIn} onCheckedChange={v.setBargeIn} />
+            <Label htmlFor="voice-barge-in" className="text-xs sm:text-sm">
+              {t('voice.bargeIn')}
+            </Label>
+          </div>
         </div>
       ) : null}
+      {converse && v.bargeIn ? <AudioDiagnostics status={v.audioStatus} /> : null}
 
       {status ? (
         <p role="status" aria-live="polite" className="text-muted-foreground text-sm">
