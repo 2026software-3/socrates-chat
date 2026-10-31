@@ -390,6 +390,45 @@ async fn one_ip_flooding_the_login_endpoint_is_rate_limited(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn burst_and_replenish_interval_come_from_the_config(pool: PgPool) {
+    let mut config = test_config();
+    config.login_rate_burst = 3;
+    config.login_rate_replenish = std::time::Duration::from_millis(500);
+    let app = test_app_with_config(pool, FakeAi::with(vec![]), config);
+    for i in 0..3 {
+        assert_ne!(
+            cheap_request(&app, "198.51.100.8", None).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "request #{i}"
+        );
+    }
+    assert_eq!(
+        cheap_request(&app, "198.51.100.8", None).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "burst of 3 is used up"
+    );
+    // 過一個回補間隔後只回補一個請求
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    assert_ne!(
+        cheap_request(&app, "198.51.100.8", None).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "one request is replenished"
+    );
+    assert_eq!(
+        cheap_request(&app, "198.51.100.8", None).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "only one"
+    );
+}
+
+// 一個班（效能目標 60 人）同時登入不能被誤擋；持續速率不得比每 3 秒一個更寬鬆。
+// 編譯期斷言：改了預設值讓它們不成立，整個測試目標就編譯不過。
+const _: () = {
+    assert!(socrates_chat_backend::login_rate_limit::DEFAULT_BURST >= 60);
+    assert!(socrates_chat_backend::login_rate_limit::DEFAULT_REPLENISH.as_secs() >= 3);
+};
+
+#[sqlx::test]
 async fn the_rate_limit_is_per_forwarded_client_behind_a_trusted_proxy(pool: PgPool) {
     let app = test_app_with_config(pool, FakeAi::with(vec![]), config_trusting("127.0.0.0/8"));
     for _ in 0..BURST {

@@ -28,6 +28,10 @@ pub struct Config {
     /// 受信任的反向代理網段（`TRUSTED_PROXIES`，逗號分隔的 CIDR）。只有 TCP 對端落在這些網段時，
     /// 才採用 `X-Forwarded-For` 作為來源 IP；預設為空，一律用 TCP 對端（S-08.2 登入限流）。
     pub trusted_proxies: Vec<crate::client_ip::Cidr>,
+    /// 登入請求頻率限制（`LOGIN_RATE_BURST`、`LOGIN_RATE_REPLENISH_SECS`）：每個來源 IP 一次最多連續幾個，
+    /// 之後每隔多久回補一個。預設值見 `login_rate_limit`（暫定，待需求方確認）。
+    pub login_rate_burst: u32,
+    pub login_rate_replenish: Duration,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
     /// AI 服務的 API key 池（`OPENAI_API_KEYS`、`.apikeylist`）；對話與語音共用，冷卻狀態也共用。
@@ -204,6 +208,17 @@ impl Config {
                 "REQUEST_TIMEOUT_SECS must be at least 1".into(),
             ));
         }
+        let login_rate_burst: u32 =
+            parse_or("LOGIN_RATE_BURST", crate::login_rate_limit::DEFAULT_BURST)?;
+        let login_rate_replenish_secs: u64 = parse_or(
+            "LOGIN_RATE_REPLENISH_SECS",
+            crate::login_rate_limit::DEFAULT_REPLENISH.as_secs(),
+        )?;
+        if login_rate_burst == 0 || login_rate_replenish_secs == 0 {
+            return Err(ConfigError(
+                "LOGIN_RATE_BURST and LOGIN_RATE_REPLENISH_SECS must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
@@ -222,6 +237,8 @@ impl Config {
                 &env::var("TRUSTED_PROXIES").unwrap_or_default(),
             )
             .map_err(|e| ConfigError(format!("invalid TRUSTED_PROXIES: {e}")))?,
+            login_rate_burst,
+            login_rate_replenish: Duration::from_secs(login_rate_replenish_secs),
             frontend_dir: env::var("FRONTEND_DIR")
                 .ok()
                 .filter(|v| !v.is_empty())
