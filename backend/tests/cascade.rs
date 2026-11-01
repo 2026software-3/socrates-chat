@@ -288,6 +288,21 @@ async fn the_voice_socket_is_unavailable_until_configured(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
+#[sqlx::test]
+async fn the_conversation_says_whether_server_voice_is_available(pool: PgPool) {
+    for (config, available) in [(test_config(), false), (enabled(), true)] {
+        let r = rig(pool.clone(), vec![], config);
+        let a = seed_actors(&r.app).await;
+        let conv = start_conversation(&r.app, &a).await;
+        let res = send(
+            &r.app,
+            get(&format!("/api/conversations/{conv}"), Some(&a.student)),
+        )
+        .await;
+        assert_eq!(json_body(res).await["voice_realtime"], available);
+    }
+}
+
 #[test]
 fn the_browser_cannot_change_the_session_or_reach_other_controls() {
     assert!(allow_client_event("input_audio_buffer.append"));

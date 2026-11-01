@@ -108,6 +108,8 @@ pub(crate) struct Detail {
     messages: Vec<Message>,
     /// AI 回覆正在產生；可用 `GET /api/conversations/{id}/stream` 接上
     generating: bool,
+    /// 伺服器端語音對話已啟用，可連 `GET /api/conversations/{id}/voice`
+    voice_realtime: bool,
 }
 
 #[utoipa::path(
@@ -300,6 +302,7 @@ pub(crate) async fn detail(
         conversation,
         messages,
         generating,
+        voice_realtime: state.config.cascade_realtime_url.is_some(),
     }))
 }
 

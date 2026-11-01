@@ -1,4 +1,4 @@
-//! 語音對話實驗：把 sglang-omni 的 Streaming Cascade 接到現有的對話流程。預設關閉。
+//! 伺服器端語音對話：把 sglang-omni 的 Streaming Cascade 接到現有的對話流程。預設關閉。
 //!
 //! 瀏覽器只連 `GET /api/conversations/{id}/voice`，這裡檢查身分後轉送到 cascade 的
 //! `/v1/realtime`。cascade 辨識出學生的話後呼叫內部的 `/v1/chat/completions`，
@@ -9,8 +9,7 @@
 //! system message 的開頭。這個值只有後端知道，瀏覽器不能送 `session.update`，
 //! 也看不到回傳的 `session.*`。
 //!
-//! 音訊只轉送、不保存，也不寫日誌（S-05.4）。這條路會把音訊送到伺服器，與 S-05.5
-//! 「開口偵測只在瀏覽器內」不同，規格尚未修訂，不能直接啟用給學生。
+//! 音訊只轉送、不保存，也不寫日誌（S-05.4）。音訊上傳已由需求方接受（S-05.5）。
 
 use std::{
     collections::{HashMap, HashSet},
