@@ -50,8 +50,8 @@ CREATE TABLE messages (
     seq             bigint GENERATED ALWAYS AS IDENTITY,
     role            text NOT NULL CHECK (role IN ('student', 'ai')),
     content         text NOT NULL,
-    -- 學生訊息的來源：文字、瀏覽器語音、OpenAI 語音（S-05.4）
-    source          text NOT NULL DEFAULT 'text' CHECK (source IN ('text', 'speech-browser', 'speech-openai')),
+    -- 學生訊息的來源：文字、瀏覽器語音、OpenAI 語音（S-05.4）、語音對話實驗（cascade）
+    source          text NOT NULL DEFAULT 'text' CHECK (source IN ('text', 'speech-browser', 'speech-openai', 'speech-cascade')),
     -- AI 回覆的規則版本，例如 v1/zh-TW（S-03.2）
     rules_version   text,
     -- AI 追問類型（S-03.2）

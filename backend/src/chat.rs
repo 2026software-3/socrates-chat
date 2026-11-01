@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::sse::Event,
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -334,10 +335,37 @@ pub(crate) async fn send_message(
         Some("speech-openai") => "speech-openai",
         Some(_) => return Err(ApiError::bad_request("invalid_source", "訊息來源不正確")),
     };
+    match submit_message(&state, cu.user.id, id, content, source).await? {
+        Submitted::Ended(first) => Ok(reply::single_event(first)),
+        Submitted::Reply {
+            conversation,
+            first,
+        } => reply::begin_stream(state, cu.user.id, conversation, first).await,
+    }
+}
+
+/// `submit_message` 的結果。
+pub(crate) enum Submitted {
+    /// 達回合上限：對話已結束，不產生回覆。
+    Ended(Event),
+    /// 已保存並取得產生回覆的權利；`first` 是保存好的學生訊息事件。
+    Reply {
+        conversation: Conversation,
+        first: Event,
+    },
+}
+
+/// 保存學生訊息並更新回合數；文字與語音對話共用。
+pub(crate) async fn submit_message(
+    state: &AppState,
+    user: Uuid,
+    id: Uuid,
+    content: &str,
+    source: &str,
+) -> Result<Submitted, ApiError> {
     // 封存檢查與寫入在同一個交易內，教室列的共享鎖持續到提交
     let mut tx = state.pool.begin().await?;
-    let mut conversation =
-        crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
+    let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
@@ -384,12 +412,15 @@ pub(crate) async fn send_message(
     );
     if auto_ended {
         summary::spawn_generation(state.clone(), id, 1);
-        return Ok(reply::single_event(first));
+        return Ok(Submitted::Ended(first));
     }
     // 回合數與階段取自上面鎖住該列的 UPDATE；其餘欄位建立後不變，不必重新查詢
     conversation.turn_count = turn;
     conversation.stage = stage;
-    reply::begin_stream(state, cu.user.id, conversation, first).await
+    Ok(Submitted::Reply {
+        conversation,
+        first,
+    })
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

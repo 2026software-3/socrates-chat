@@ -63,7 +63,7 @@ export type Conversation = {
 }
 
 export type MessageRole = 'student' | 'ai'
-export type MessageSource = 'text' | 'speech-browser' | 'speech-openai'
+export type MessageSource = 'text' | 'speech-browser' | 'speech-openai' | 'speech-cascade'
 
 export type Message = {
   id: string

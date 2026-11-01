@@ -45,6 +45,7 @@ export const voiceMessages = defineMessages({
     'error.voice_unavailable': '語音服務尚未啟用。',
     'error.voice_failed': '語音服務暫時無法使用。',
     'error.speech_busy': '語音合成忙碌中，請稍後再試。',
+    'error.voice_session_active': '已有進行中的語音對話。',
   },
   en: {
     'voice.dictate.start': 'Voice input',
@@ -90,6 +91,7 @@ export const voiceMessages = defineMessages({
     'error.voice_unavailable': 'The voice service is not enabled.',
     'error.voice_failed': 'The voice service is temporarily unavailable.',
     'error.speech_busy': 'Speech synthesis is busy. Please try again shortly.',
+    'error.voice_session_active': 'A voice conversation is already in progress.',
   },
   es: {
     'voice.dictate.start': 'Entrada de voz',
@@ -135,5 +137,6 @@ export const voiceMessages = defineMessages({
     'error.voice_unavailable': 'El servicio de voz no está habilitado.',
     'error.voice_failed': 'El servicio de voz no está disponible temporalmente.',
     'error.speech_busy': 'La síntesis de voz está ocupada. Inténtalo de nuevo en un momento.',
+    'error.voice_session_active': 'Ya hay una conversación de voz en curso.',
   },
 })

@@ -66,6 +66,8 @@ struct Live {
     /// 已送出的回覆文字；新接上的連線先收到這一段
     text: String,
     watchers: Vec<EventTx>,
+    /// 語音對話收回覆文字的通道；回覆結束時關閉。
+    tap: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// 一次回覆產生的紀錄，由產生回覆的工作持有。
@@ -79,6 +81,9 @@ impl LiveReply {
     fn delta(&self, text: &str) {
         let mut live = lock(&self.live);
         live.text.push_str(text);
+        if let Some(tap) = &live.tap {
+            let _ = tap.send(text.to_string());
+        }
         let ev = delta_event(text);
         live.watchers.retain(|w| w.send(ev.clone()).is_ok());
     }
@@ -90,10 +95,16 @@ impl LiveReplies {
         lock(&self.0).contains_key(&id)
     }
 
-    fn start(&self, id: Uuid, watcher: EventTx) -> LiveReply {
+    fn start(
+        &self,
+        id: Uuid,
+        watcher: EventTx,
+        tap: Option<mpsc::UnboundedSender<String>>,
+    ) -> LiveReply {
         let live = Arc::new(Mutex::new(Live {
             text: String::new(),
             watchers: vec![watcher],
+            tap,
         }));
         lock(&self.0).insert(id, live.clone());
         LiveReply { id, live }
@@ -109,7 +120,9 @@ impl LiveReplies {
         {
             replies.remove(&reply.id);
         }
-        for w in lock(&reply.live).watchers.drain(..) {
+        let mut live = lock(&reply.live);
+        live.tap = None;
+        for w in live.watchers.drain(..) {
             let _ = w.send(last.clone());
         }
     }
@@ -204,6 +217,7 @@ pub(crate) async fn stream(
         conversation,
         messages,
         None,
+        None,
     ))
 }
 
@@ -223,12 +237,39 @@ pub async fn begin_stream(
             conversation,
             messages,
             Some(first),
+            None,
         )),
         Err(e) => {
             release_generation(&state, conversation.id).await;
             Err(e)
         }
     }
+}
+
+/// 與 `begin_stream` 相同，但回覆文字走回傳的通道（語音對話用）；通道關閉表示回覆結束。
+pub(crate) async fn begin_text_stream(
+    state: AppState,
+    user: Uuid,
+    conversation: Conversation,
+    first: Event,
+) -> Result<mpsc::UnboundedReceiver<String>, ApiError> {
+    let messages = match load_messages(&state, conversation.id).await {
+        Ok(messages) => messages,
+        Err(e) => {
+            release_generation(&state, conversation.id).await;
+            return Err(e);
+        }
+    };
+    let (tap, text) = mpsc::unbounded_channel();
+    drop(spawn_stream(
+        state,
+        user,
+        conversation,
+        messages,
+        Some(first),
+        Some(tap),
+    ));
+    Ok(text)
 }
 
 /// 只送出一個事件就結束的串流（例如達回合上限、沒有 AI 回覆時）。
@@ -243,13 +284,14 @@ fn spawn_stream(
     conversation: Conversation,
     messages: Vec<Message>,
     first: Option<Event>,
+    tap: Option<mpsc::UnboundedSender<String>>,
 ) -> EventStream {
     let (tx, rx) = mpsc::unbounded_channel();
     if let Some(first) = first {
         let _ = tx.send(first);
     }
     let id = conversation.id;
-    let reply = state.live.start(id, tx);
+    let reply = state.live.start(id, tx, tap);
     tokio::spawn(
         async move {
             // 每位使用者的 AI 用量上限：用完時學生訊息已保存，但不呼叫 AI，以 error 事件結束（之後可重試）
@@ -491,9 +533,9 @@ mod tests {
         let id = Uuid::new_v4();
         let (old_tx, mut old_rx) = mpsc::unbounded_channel();
         let (new_tx, mut new_rx) = mpsc::unbounded_channel();
-        let old = replies.start(id, old_tx);
+        let old = replies.start(id, old_tx, None);
         // 舊回覆釋放 claim 之後、送出最後事件之前，新回覆已開始
-        let new = replies.start(id, new_tx);
+        let new = replies.start(id, new_tx, None);
 
         replies.finish(old, event("error", json!({"code": "ai_unavailable"})));
         // 舊回覆的連線收到自己的最後事件後結束

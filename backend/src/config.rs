@@ -55,6 +55,10 @@ pub struct Config {
     pub openai_tts_model: Option<String>,
     /// 語音合成的聲音名稱。
     pub openai_tts_voice: String,
+    /// 語音對話實驗：cascade 的 `/v1/realtime` 位址；沒設定就不開放（見 `cascade`）。
+    pub cascade_realtime_url: Option<String>,
+    /// cascade 呼叫內部 LLM 端點用的共用密鑰。
+    pub cascade_llm_token: Option<String>,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -277,6 +281,10 @@ impl Config {
             openai_tts_base_url: env::var("OPENAI_TTS_BASE_URL")
                 .ok()
                 .filter(|v| !v.is_empty()),
+            cascade_realtime_url: env::var("CASCADE_REALTIME_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_llm_token: env::var("CASCADE_LLM_TOKEN").ok().filter(|v| !v.is_empty()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")
