@@ -20,7 +20,7 @@
 
 ## cascade 設定
 
-cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），範本是 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)：複製後改成自己的環境。範本的結構與實測用的設定完全相同，只有路徑與參考音三處換成佔位，沒有密鑰。必要的欄位：
+cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），範本是 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)：複製後改成自己的環境。範本的結構與實測用的設定相同，差別只有：路徑與參考音三處換成佔位，`dialog` 不設 `system_prompt`（見下表），沒有密鑰。必要的欄位：
 
 | 欄位 | 值 | 說明 |
 | --- | --- | --- |
@@ -30,6 +30,7 @@ cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），�
 | `stages.vad.factory.silence_duration_ms` | `1000` | 預設 160 ms 時學生一停頓就被切成新的一句 |
 | `session_nodes.asr` | `kind: openai_transcription`、`language: zh`、`response_format: json` | `base_url` 指向轉接層，轉給 `scripts/whisper-server.py` |
 | `session_nodes.tts` | `kind: openai_speech`、`language: Chinese`、`reference_audio_path`、`reference_text` | `base_url` 指向轉接層；參考音要自己準備且逐字稿一致，只限本機評估 |
+| `session_nodes.dialog` | 不設 `system_prompt` | 後端建立每場語音時以 `instructions` 覆蓋它，AI 的提示與歷史由後端提供，這裡寫了也不會送給 OpenAI；留著人設文字只會誤導 |
 | `session_nodes.aligner` | `method: sentence` | 打斷時裁切到句子邊界，`heard_chars` 靠它的進度 |
 
 其餘節點與連線（`inputs`、`session_publish`）照範本，不要改。後端這一端要設 `CASCADE_REALTIME_URL`（cascade 的 `/v1/realtime`）與 `CASCADE_LLM_TOKEN`。

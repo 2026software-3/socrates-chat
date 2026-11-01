@@ -41,7 +41,8 @@ session_nodes:
       - "input:session"
       - {kind: control, source: input, event: interrupt}
       - {kind: control, source: aligner, event: reply.progress}
-    system_prompt: 你是蘇格拉底式的學習夥伴，用一兩句繁體中文追問學生的理由，不要代答。
+    # 不設 system_prompt：後端建立每場語音時會以 instructions 覆蓋它（那是辨識這場語音的一次性代號），
+    # 實際的 AI 提示與歷史都由後端的回覆流程提供，cascade 這邊的文字不會送給 OpenAI
   llm:
     kind: openai_chat
     inputs:
