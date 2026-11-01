@@ -113,9 +113,11 @@
 
 ## 教師檢視
 
-教師檢視學生的總結**不含對話原文**（S-02.1）。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
+教師檢視學生的總結，並可打開自己教室內已結束的活動對話原文（S-02.1，2026-11 需求方決定）。總結列表本身不含原文。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
 
-- 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
+- `GET /api/summaries/{conversation_id}/messages`：教師唯讀檢視一場對話的完整訊息，回 `{ conversation_id, classroom_id, title, language, student_id, student_name, ended_at, messages }`，`messages` 欄位與 `GET /api/conversations/{id}` 的訊息相同（依序、含 `source`）。只限對話屬於自己建立的教室、且已結束的活動對話；個人練習、進行中的對話、他人教室的對話與不存在的 ID 一律回 `404`（不區分原因）；學生與名單外帳號回 `403`，未登入 `401`。管理者可呼叫但每則 `content` 一律是固定字串 `message`（S-02.2）。此端點不呼叫 AI；日誌不記錄訊息內容。
+
+- 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件（教師雖然看得到原文，翻譯請求仍只含總結兩個欄位）；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
 
 - `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
 - `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。

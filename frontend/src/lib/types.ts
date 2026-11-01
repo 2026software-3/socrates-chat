@@ -108,6 +108,18 @@ export type TeacherSummary = {
   claim?: string | null
 }
 
+/** 教師唯讀檢視的一場已結束活動對話（GET /api/summaries/{id}/messages）；管理者的 content 一律是 `message`。 */
+export type Transcript = {
+  conversation_id: string
+  classroom_id: string
+  title: string
+  language: Lang
+  ended_at: string
+  student_id: string
+  student_name: string | null
+  messages: Message[]
+}
+
 /** 教師明確觸發、僅保留在目前頁面的總結翻譯。 */
 export type SummaryTranslation = {
   language: Lang
