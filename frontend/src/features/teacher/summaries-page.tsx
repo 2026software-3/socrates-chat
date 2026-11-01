@@ -86,6 +86,12 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
             <Field label={t('teacher.summaries.stance')} value={visible.stance} />
             <Field label={t('teacher.summaries.reasons')} value={visible.reasons} />
           </dl>
+          <Link
+            to={`${base}/${row.classroom_id}/conversations/${row.conversation_id}`}
+            className="text-sm underline-offset-4 hover:underline"
+          >
+            {t('teacher.summaries.viewTranscript')}
+          </Link>
           {translationError ? (
             <p role="alert" className="text-destructive text-sm">
               {errorText(t, translationError)}
@@ -106,7 +112,7 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
   )
 }
 
-/** 教師：學生的 AI 總結列表。只有總結，沒有也不請求對話原文（S-02.1）。依後端的不透明游標前後翻頁；搜尋交給後端（`q`），涵蓋所有頁。 */
+/** 教師：學生的 AI 總結列表。列表只載入總結，對話原文要點進去才請求（S-02.1）。依後端的不透明游標前後翻頁；搜尋交給後端（`q`），涵蓋所有頁。 */
 export function SummariesPage() {
   const t = useT()
   const [draft, setDraft] = useState('')

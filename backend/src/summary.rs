@@ -2,7 +2,8 @@
 //!
 //! 對話結束後在背景產生總結；學生輪詢 `GET .../summary` 看狀態。AI 失敗或結果不完整時
 //! 狀態為 `failed`，可用重試端點再試一次（F-08.4）。總結不可由學生修改。
-//! 教師只看得到總結，看不到對話原文；管理者介面一律遮蔽（以 `message` 取代）。
+//! 教師看得到自己教室的總結，也能唯讀打開已結束的活動對話原文（S-02.1，2026-11 需求方決定）；
+//! 管理者介面一律遮蔽（以 `message` 取代）。
 
 use axum::{
     Json, Router,
@@ -26,7 +27,7 @@ use crate::{
         rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
-    chat::owned_conversation,
+    chat::{Message, load_messages, owned_conversation},
     classrooms::{ClassroomFilter, filtered_classroom},
     error::{ApiError, db_error_class},
     pagination::{self, Page, Pagination},
@@ -41,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/summary", get(get_summary))
         .route("/api/conversations/{id}/summary/retry", post(retry))
         .route("/api/summaries", get(list))
+        .route("/api/summaries/{id}/messages", get(transcript))
         .route("/api/summaries/{id}/translation", post(translate))
 }
 
@@ -420,6 +422,79 @@ pub(crate) async fn translate(
         language,
         stance: translated.stance,
         reasons: translated.reasons,
+    }))
+}
+
+/// 教師唯讀檢視的對話原文：對話本身的識別資訊加上全部訊息。
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct Transcript {
+    conversation_id: Uuid,
+    classroom_id: Uuid,
+    title: String,
+    language: String,
+    ended_at: DateTime<Utc>,
+    student_id: Uuid,
+    student_name: Option<String>,
+    messages: Vec<Message>,
+}
+
+#[derive(FromRow)]
+struct TranscriptHead {
+    classroom_id: Uuid,
+    title: String,
+    language: String,
+    ended_at: DateTime<Utc>,
+    student_id: Uuid,
+    student_name: Option<String>,
+}
+
+/// 自己管理的教室內、已結束的活動對話的完整訊息（唯讀）。
+/// 個人練習、進行中的對話、他人教室的對話與不存在的 ID 一律 404，不區分原因（S-02.1、S-14）。
+/// 管理者看到的訊息內容一律是 `message`（S-02.2）。此處不呼叫 AI，也不記錄訊息內容。
+#[utoipa::path(
+    get,
+    path = "/api/summaries/{id}/messages",
+    tag = "summaries",
+    summary = "教室內學生已結束對話的完整訊息（唯讀；不含個人練習）",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses((status = 200, description = "對話與全部訊息；管理者的 content 一律是 message", body = Transcript), crate::error::CommonErrors)
+)]
+pub(crate) async fn transcript(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Transcript>, ApiError> {
+    // 內連接教室：classroom_id 為空的個人練習無法被比對到
+    let head: TranscriptHead = sqlx::query_as(
+        "SELECT c.classroom_id, c.title, c.language, c.ended_at,
+                u.id AS student_id, u.display_name AS student_name
+         FROM conversations c
+         JOIN classrooms cl ON cl.id = c.classroom_id AND ($2 OR cl.created_by = $3)
+         JOIN users u ON u.id = c.user_id
+         WHERE c.id = $1 AND c.ended_at IS NOT NULL",
+    )
+    .bind(id)
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let mut messages = load_messages(&state, id).await?;
+    // 管理者身分優先：訊息屬敏感欄位，即使同一帳號也是教師（S-02.2）
+    if cu.roles.admin {
+        for m in &mut messages {
+            m.content = MASKED.into();
+        }
+    }
+    Ok(Json(Transcript {
+        conversation_id: id,
+        classroom_id: head.classroom_id,
+        title: head.title,
+        language: head.language,
+        ended_at: head.ended_at,
+        student_id: head.student_id,
+        student_name: head.student_name,
+        messages,
     }))
 }
 

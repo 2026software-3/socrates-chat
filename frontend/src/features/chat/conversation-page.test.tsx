@@ -83,7 +83,7 @@ describe('ConversationPage: loading', () => {
     expect(screen.getByText('你說的「應該」是依據什麼原則呢？')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '訊息輸入' })).toBeInTheDocument()
     expect(screen.getByText('回合：1')).toBeInTheDocument()
-    expect(screen.getByText('教師只會看到學習總結，看不到對話原文。')).toBeInTheDocument()
+    expect(screen.getByText('教師可以看到你在活動中的對話內容與學習總結；個人練習不會被看到。')).toBeInTheDocument()
   })
 
   it('never shows question_type or other metadata', async () => {
