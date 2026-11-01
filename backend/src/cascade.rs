@@ -69,11 +69,10 @@ const UNAVAILABLE: ApiError = ApiError::new(
 );
 
 pub fn routes() -> Router<AppState> {
-    let internal = |path: &str| format!("{INTERNAL_PREFIX}v1/{path}");
     Router::new()
         .route("/api/conversations/{id}/voice", get(socket))
-        .route(&internal("models"), get(models))
-        .route(&internal("chat/completions"), post(chat))
+        .route("/internal/cascade/v1/models", get(models))
+        .route("/internal/cascade/v1/chat/completions", post(chat))
 }
 
 /// 放進 `instructions` 的文字，也是 system message 的開頭。
