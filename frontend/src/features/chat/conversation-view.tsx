@@ -13,6 +13,7 @@ import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
 import { SummaryPanel } from '@/features/chat/summary-panel'
 import { useT } from '@/i18n'
+import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { api } from '@/lib/api'
 import type { ConversationDetail, ConversationStatus } from '@/lib/types'
 
@@ -82,6 +83,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
       turns: voiceTurns,
       appendStudent: (text) => runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] }),
       onSettled() {
+        markAiUsageStale()
         // 語音回合沒有 SSE 的 done 事件；達回合上限而結束時也靠這裡切成唯讀
         api
           .get<ConversationDetail>(`/api/conversations/${detail.id}`)

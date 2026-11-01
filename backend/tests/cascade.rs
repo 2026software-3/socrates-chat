@@ -222,6 +222,79 @@ async fn a_spoken_turn_runs_the_normal_reply_pipeline(pool: PgPool) {
     assert_eq!(usage["used"], 1);
 }
 
+/// 依序送出兩輪 cascade 的請求，回傳資料庫裡這兩則學生訊息。
+async fn saved_speech(pool: PgPool, first: Value, second: Value) -> Vec<String> {
+    let r = rig(
+        pool.clone(),
+        vec![Reply(REPLY.to_vec()), Reply(REPLY.to_vec())],
+        enabled(),
+    );
+    let a = seed_actors(&r.app).await;
+    let conv = start_conversation(&r.app, &a).await;
+    let id: Uuid = conv.parse().unwrap();
+    let session = r
+        .state
+        .voice_sessions
+        .open(owner(&pool, &conv).await, id)
+        .unwrap();
+    let system = voice_session_prompt(session.token());
+    for mut body in [first, second] {
+        body["messages"][0]["content"] = json!(system);
+        let res = send(&r.app, llm_req(Some(SECRET), body)).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        text_of(res).await;
+    }
+    let detail = send(
+        &r.app,
+        get(&format!("/api/conversations/{conv}"), Some(&a.student)),
+    )
+    .await;
+    json_body(detail).await["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["source"] == "speech-cascade")
+        .map(|m| m["content"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn history(messages: &[(&str, &str)]) -> Value {
+    let mut all = vec![json!({"role": "system", "content": ""})];
+    all.extend(
+        messages
+            .iter()
+            .map(|(role, content)| json!({"role": role, "content": content})),
+    );
+    json!({"model": "rust", "stream": true, "messages": all})
+}
+
+#[sqlx::test]
+async fn a_turn_cascade_joined_after_an_unheard_reply_is_saved_once(pool: PgPool) {
+    let saved = saved_speech(
+        pool,
+        history(&[("user", "合成的第一句")]),
+        // 回覆一個字都沒被聽到：cascade 把回覆移除，前後兩句以空格併成一則
+        history(&[("user", "合成的第一句 合成的第二句")]),
+    )
+    .await;
+    assert_eq!(saved, ["合成的第一句", "合成的第二句"]);
+}
+
+#[sqlx::test]
+async fn a_student_repeating_themselves_is_not_trimmed(pool: PgPool) {
+    let saved = saved_speech(
+        pool,
+        history(&[("user", "合成的第一句")]),
+        history(&[
+            ("user", "合成的第一句"),
+            ("assistant", "你為什麼這樣認為？"),
+            ("user", "合成的第一句 我再說一次"),
+        ]),
+    )
+    .await;
+    assert_eq!(saved, ["合成的第一句", "合成的第一句 我再說一次"]);
+}
+
 #[sqlx::test]
 async fn a_user_has_one_voice_session_and_closing_frees_it(pool: PgPool) {
     let r = rig(pool, vec![], enabled());

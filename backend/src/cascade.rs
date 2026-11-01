@@ -92,9 +92,17 @@ pub fn allow_server_event(kind: &str) -> bool {
     !matches!(kind, "session.created" | "session.updated")
 }
 
+struct Live {
+    user: Uuid,
+    conversation: Uuid,
+    /// cascade 上一次送來的學生發言與歷史中的學生訊息數
+    spoken: String,
+    user_turns: usize,
+}
+
 #[derive(Default)]
 struct Sessions {
-    by_token: HashMap<String, (Uuid, Uuid)>,
+    by_token: HashMap<String, Live>,
     users: HashSet<Uuid>,
 }
 
@@ -110,9 +118,15 @@ impl VoiceSessions {
             return None;
         }
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        sessions
-            .by_token
-            .insert(token.clone(), (user, conversation));
+        sessions.by_token.insert(
+            token.clone(),
+            Live {
+                user,
+                conversation,
+                spoken: String::new(),
+                user_turns: 0,
+            },
+        );
         Some(VoiceSession {
             sessions: self.clone(),
             token,
@@ -122,7 +136,29 @@ impl VoiceSessions {
 
     /// 代號對應的（學生、對話）。
     pub fn lookup(&self, token: &str) -> Option<(Uuid, Uuid)> {
-        lock(&self.0).by_token.get(token).copied()
+        lock(&self.0)
+            .by_token
+            .get(token)
+            .map(|live| (live.user, live.conversation))
+    }
+
+    /// 這次發言中還沒存過的部分。回覆一個字都沒被聽到時，cascade 會移除回覆，把前後兩句以空格
+    /// 併成一則，學生訊息數也就不會增加；兩個條件都成立才去掉舊的部分，學生重複自己的話不受影響。
+    pub fn new_speech(&self, token: &str, content: &str, user_turns: usize) -> String {
+        let mut sessions = lock(&self.0);
+        let Some(live) = sessions.by_token.get_mut(token) else {
+            return content.to_string();
+        };
+        let fresh = (user_turns <= live.user_turns && !live.spoken.is_empty())
+            .then(|| content.strip_prefix(live.spoken.as_str()))
+            .flatten()
+            .and_then(|rest| rest.strip_prefix(' '))
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(content)
+            .to_string();
+        live.spoken = content.to_string();
+        live.user_turns = user_turns;
+        fresh
     }
 }
 
@@ -363,9 +399,11 @@ async fn chat(
     if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
         return Err(ApiError::bad_request("invalid_message", "訊息長度不符"));
     }
+    let user_turns = body.messages.iter().filter(|m| m.role == "user").count();
+    let content = state.voice_sessions.new_speech(token, content, user_turns);
     let mut attempts = 0;
     let submitted = loop {
-        match submit_message(&state, user, id, content, SOURCE).await {
+        match submit_message(&state, user, id, &content, SOURCE).await {
             Err(e) if e.code == "reply_in_progress" && attempts < REPLY_WAIT_ATTEMPTS => {
                 attempts += 1;
                 tokio::time::sleep(REPLY_WAIT_STEP).await;

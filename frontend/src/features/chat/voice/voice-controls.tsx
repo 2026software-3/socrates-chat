@@ -126,6 +126,8 @@ export function VoiceControls({
   const t = useT()
   const aui = useAui()
   const reply = useLatestReply()
+  // 回覆還在產生，或最後一則學生訊息還沒有回覆：語音回合會和它搶同一個對話串
+  const replyPending = useAuiState((s) => s.thread.isRunning || s.thread.messages.at(-1)?.role === 'user')
 
   const host: VoiceHost = {
     language,
@@ -182,8 +184,7 @@ export function VoiceControls({
           className="shrink-0 rounded-full px-3"
           aria-label={converse ? t('voice.converse.stop') : t('voice.converse.start')}
           aria-pressed={converse}
-          // 回覆還在串流時開始，新的語音回合會和它搶同一個對話串
-          disabled={disabled || (rt.available && !live && reply?.status === 'running')}
+          disabled={disabled || (rt.available && !live && replyPending)}
           onClick={toggleConversation}
         >
           <Volume2 aria-hidden />

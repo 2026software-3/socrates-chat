@@ -4,8 +4,9 @@ import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationPage } from '@/features/chat/conversation-page'
-import { makeDetail } from '@/features/chat/test-data'
+import { makeDetail, makeMessage } from '@/features/chat/test-data'
 import { createRealtimeSession, type RealtimeCallbacks } from '@/features/chat/voice/realtime/realtime-session'
+import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import type { ConversationDetail } from '@/lib/types'
 import { makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -100,6 +101,22 @@ describe('server voice conversation', () => {
     act(() => cb.onSettled())
     await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument())
     expect(session.close).toHaveBeenCalled()
+  })
+
+  it('refreshes the usage meter after a turn', async () => {
+    const { cb } = await startLive()
+    const stale = vi.fn()
+    window.addEventListener(AI_USAGE_STALE_EVENT, stale)
+    act(() => cb.onSettled())
+    window.removeEventListener(AI_USAGE_STALE_EVENT, stale)
+    expect(stale).toHaveBeenCalledTimes(1)
+  })
+
+  it('cannot start while the last student message is unanswered', async () => {
+    const messages = [makeMessage({ id: 'm1', role: 'student', content: '還沒有回覆的訊息' })]
+    renderPage(makeDetail({ voice_realtime: true }, messages))
+    expect(await startButton()).toBeDisabled()
+    expect(await screen.findByRole('button', { name: '重試' })).toBeInTheDocument()
   })
 
   it('the speak button interrupts the AI', async () => {
