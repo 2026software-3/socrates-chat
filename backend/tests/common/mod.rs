@@ -87,6 +87,7 @@ pub fn test_config() -> Config {
         openai_model: "test-model".to_string(),
         openai_base_url: "http://127.0.0.1:1".to_string(),
         openai_stt_base_url: None,
+        openai_tts_base_url: None,
         openai_fallback_models: vec![],
         openai_stt_model: None,
         openai_tts_model: None,
