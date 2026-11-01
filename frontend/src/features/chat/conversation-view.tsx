@@ -5,12 +5,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
 import { useMessageSource } from '@/features/chat/use-message-source'
+import type { RealtimeHost } from '@/features/chat/voice/realtime/use-realtime-voice'
+import { createVoiceTurns } from '@/features/chat/voice/realtime/voice-turn'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { ChatThread } from '@/features/chat/chat-thread'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
 import { SummaryPanel } from '@/features/chat/summary-panel'
 import { useT } from '@/i18n'
+import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { api } from '@/lib/api'
 import type { ConversationDetail, ConversationStatus } from '@/lib/types'
 
@@ -39,11 +42,14 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   // 下一則學生訊息的輸入來源：語音輸入後送出時記錄為語音（S-05.4），送出後回到文字
   const messageSource = useMessageSource()
 
+  const voiceTurns = useMemo(() => createVoiceTurns(), [])
+
   const adapter = useMemo(
     () =>
       createChatAdapter({
         conversationId: detail.id,
         takeSource: messageSource.take,
+        takeVoiceTurn: voiceTurns.take,
         persistedIds: detail.messages.filter((m) => m.role === 'student').map((m) => m.id),
         // 達回合上限：對話已自動結束、總結產生中，不會有串流
         onSent: (sent) => {
@@ -53,9 +59,11 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
         onDone: (done) => {
           setStage(done.stage)
           setSuggestEnd(done.suggest_end)
+          // AI 的結束語：討論已結束、總結產生中
+          if (done.ended) setStatus('ended')
         },
       }),
-    [detail, messageSource],
+    [detail, messageSource, voiceTurns],
   )
   const initialMessages = useMemo(() => toInitialMessages(detail), [detail])
   const runtime = useLocalRuntime(adapter, { initialMessages })
@@ -68,6 +76,28 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
     resumed.current = true
     runtime.thread.startRun({ parentId: last.id })
   }, [detail, runtime])
+
+  // 伺服器端語音的辨識與聲音目前只有中文（見 docs/specs/cascade-voice-spike.md）
+  const realtime = useMemo<RealtimeHost | undefined>(() => {
+    if (!detail.voice_realtime || detail.language !== 'zh-TW') return undefined
+    return {
+      conversationId: detail.id,
+      turns: voiceTurns,
+      appendStudent: (text) => runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] }),
+      onSettled() {
+        markAiUsageStale()
+        // 語音回合沒有 SSE 的 done 事件；達回合上限而結束時也靠這裡切成唯讀
+        api
+          .get<ConversationDetail>(`/api/conversations/${detail.id}`)
+          .then((d) => {
+            setStage(d.stage)
+            setSuggestEnd(d.converge_ready)
+            setStatus(d.status)
+          })
+          .catch((e: unknown) => console.warn('[voice] could not refresh the conversation:', e))
+      },
+    }
+  }, [detail, runtime, voiceTurns])
 
   const ended = status === 'ended'
 
@@ -116,6 +146,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           composerDisabled={ending}
           language={detail.language}
           onVoiceSource={(s: RecognitionSource) => messageSource.set(s)}
+          realtime={realtime}
         />
         {ended ? (
           <div className="space-y-4 px-4 pb-6 md:px-8">

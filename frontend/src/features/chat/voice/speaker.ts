@@ -4,17 +4,31 @@
  * 找語音的順序：完全相符的地區，其次是同語言的其他地區（例如 `zh-*`）。
  *
  * 播放都經過 `PlaybackQueue`：打斷後，等待中的語音載入或網路請求都不會再發出聲音（S-05.5）。
+ *
+ * 後端走 OpenAI 時每次都扣一筆與對話共用的 AI 用量，所以一則回覆有請求上限：排隊的句子合併成
+ * 一次請求，只剩最後一次時等回覆結束才發，不管生成多慢都不會超過。瀏覽器語音不計費，一句一句唸。
+ * 後端走自架模型時回應帶 `X-Speech-Pacing: sentence`：不計費，長文也會讓模型失控，所以同樣逐句送。
  */
 import type { PlaybackPath } from '@/features/chat/voice/audio/barge-in'
 import { createPlaybackQueue } from '@/features/chat/voice/audio/playback-queue'
+import { BACKEND_SPEECH_MAX_REQUESTS } from '@/features/chat/voice/config'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { isAbortError } from '@/lib/api'
 
+/** 邊生成邊唸的一則回覆。 */
+export type SpeechTurn = {
+  /** 加入一段文字；這一輪已被打斷時回傳 `false`，文字被丟棄。 */
+  say: (text: string) => boolean
+  /** 不會再有新的文字；唸完後 `finished` 才會 resolve。 */
+  end: () => void
+  /** 全部唸完時為 `true`，被 `stop` 或下一輪中斷時為 `false`；播放失敗時 reject。 */
+  finished: Promise<boolean>
+}
+
 export type Speaker = {
-  /**
-   * 播放文字；播完時 resolve，被 `stop` 中斷也會 resolve（`false`）。
-   * `onStart` 在真正開始發聲時呼叫，並告知發聲途徑。
-   */
+  /** 開始一輪；`onStart` 在這一輪真正開始發聲時呼叫一次，並告知發聲途徑。 */
+  open: (onStart?: (path: PlaybackPath) => void) => SpeechTurn
+  /** 一次唸完整段文字；結果同 `SpeechTurn.finished`。 */
   speak: (text: string, onStart?: (path: PlaybackPath) => void) => Promise<boolean>
   stop: () => void
 }
@@ -46,6 +60,10 @@ export class SpeechUnavailableError extends Error {}
 type Chunk = { text: string; onStart?: (path: PlaybackPath) => void }
 
 export function createSpeaker(lang: string, conversationLang: string): Speaker {
+  let usesBackend = false
+  let backendRequests = 0 // 這一輪已發出的請求，失敗的也算：上限是為了擋住重複請求
+  let perSentence = false // 後端要求逐句送；第一個回應前未知，先照有上限處理
+
   /** 回傳 `false` 表示這個瀏覽器不能唸，要改用後端。 */
   async function speakWithBrowser({ text, onStart }: Chunk, signal: AbortSignal): Promise<boolean> {
     const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined
@@ -75,6 +93,7 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
   }
 
   async function speakWithBackend({ text, onStart }: Chunk, signal: AbortSignal): Promise<void> {
+    backendRequests += 1
     let url: string | undefined
     try {
       const res = await fetch('/api/voice/speech', {
@@ -85,6 +104,7 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
         signal,
       }).finally(markAiUsageStale)
       if (!res.ok) throw new SpeechUnavailableError()
+      perSentence = res.headers.get('X-Speech-Pacing') === 'sentence'
       url = URL.createObjectURL(await res.blob())
       if (signal.aborted) return
       const src = url
@@ -112,17 +132,43 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
     }
   }
 
-  const queue = createPlaybackQueue<Chunk>(async (chunk, signal) => {
-    if (!(await speakWithBrowser(chunk, signal)) && !signal.aborted) await speakWithBackend(chunk, signal)
-  })
+  const queue = createPlaybackQueue<Chunk>(
+    async (chunk, signal) => {
+      usesBackend = !(await speakWithBrowser(chunk, signal))
+      if (usesBackend && !signal.aborted) await speakWithBackend(chunk, signal)
+    },
+    {
+      merge: (chunk, next) =>
+        usesBackend && !perSentence ? { ...chunk, text: `${chunk.text} ${next.text}` } : undefined,
+      hold: () => usesBackend && !perSentence && backendRequests >= BACKEND_SPEECH_MAX_REQUESTS - 1,
+    },
+  )
   let turn = 0
 
+  function open(onStart?: (path: PlaybackPath) => void): SpeechTurn {
+    const id = String(++turn)
+    const outcome = queue.begin(id)
+    backendRequests = 0
+    let started = false
+    const startOnce = (path: PlaybackPath) => {
+      if (started) return
+      started = true
+      onStart?.(path)
+    }
+    return {
+      say: (text) => queue.enqueue(id, { text, onStart: startOnce }),
+      end: () => void queue.finish(id),
+      finished: outcome.then((o) => o === 'finished'),
+    }
+  }
+
   return {
-    async speak(text, onStart) {
-      const id = String(++turn)
-      queue.begin(id)
-      queue.enqueue(id, { text, onStart })
-      return (await queue.finish(id)) === 'finished'
+    open,
+    speak(text, onStart) {
+      const speech = open(onStart)
+      speech.say(text)
+      speech.end()
+      return speech.finished
     },
     stop() {
       queue.interrupt()

@@ -43,6 +43,7 @@ pub mod ai;
 pub mod ai_usage;
 pub mod auth;
 pub mod auth_store;
+pub mod cascade;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
@@ -100,6 +101,10 @@ pub struct AppState {
     pub ai: Arc<dyn AiProvider>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
+    /// 自架語音同時進行中的使用者（S-05.5）。
+    pub(crate) speech_slots: Arc<voice::SpeechSlots>,
+    /// 進行中的語音對話（實驗，見 `cascade`）。
+    pub voice_sessions: Arc<cascade::VoiceSessions>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
     /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
@@ -129,6 +134,8 @@ impl AppState {
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
             voice,
+            speech_slots: Arc::default(),
+            voice_sessions: Arc::default(),
             live: Arc::default(),
             request_logs: Arc::default(),
             translation_limit: Arc::default(),
@@ -174,6 +181,7 @@ pub fn app(state: AppState) -> Router {
         .merge(request_logs::routes())
         .merge(summary::routes())
         .merge(voice::routes())
+        .merge(cascade::routes())
         .merge(points::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
@@ -365,7 +373,8 @@ async fn check_origin(
     next: Next,
 ) -> Result<Response, ApiError> {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if !safe {
+    // 內部端點只認共用密鑰、不看 cookie，瀏覽器帶不上身分，沒有 CSRF 問題
+    if !safe && !req.uri().path().starts_with(cascade::INTERNAL_PREFIX) {
         let origin = req
             .headers()
             .get(header::ORIGIN)

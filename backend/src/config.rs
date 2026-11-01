@@ -45,14 +45,22 @@ pub struct Config {
     pub openai_model: String,
     /// 主模型被限流（429）時依序改用的模型；空表示不啟用備援
     pub openai_fallback_models: Vec<String>,
+    /// 推理強度（`OPENAI_REASONING_EFFORT`，例如 `high`）；沒設定就不送
+    pub openai_reasoning_effort: Option<String>,
     pub openai_base_url: String,
     /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
     pub openai_stt_base_url: Option<String>,
+    /// 語音合成專用的自架服務 base URL；有設定時不送 OpenAI 金鑰、不扣 AI 用量（S-05.5）。
+    pub openai_tts_base_url: Option<String>,
     /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     pub openai_stt_model: Option<String>,
     pub openai_tts_model: Option<String>,
     /// 語音合成的聲音名稱。
     pub openai_tts_voice: String,
+    /// 語音對話實驗：cascade 的 `/v1/realtime` 位址；沒設定就不開放（見 `cascade`）。
+    pub cascade_realtime_url: Option<String>,
+    /// cascade 呼叫內部 LLM 端點用的共用密鑰。
+    pub cascade_llm_token: Option<String>,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -267,11 +275,22 @@ impl Config {
             openai_fallback_models: parse_model_list(
                 &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
             ),
+            openai_reasoning_effort: env::var("OPENAI_REASONING_EFFORT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
             openai_stt_base_url: env::var("OPENAI_STT_BASE_URL")
                 .ok()
                 .filter(|v| !v.is_empty()),
+            openai_tts_base_url: env::var("OPENAI_TTS_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_realtime_url: env::var("CASCADE_REALTIME_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_llm_token: env::var("CASCADE_LLM_TOKEN").ok().filter(|v| !v.is_empty()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")

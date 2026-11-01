@@ -95,7 +95,8 @@ async fn typed_and_spoken_messages_are_masked_only_on_the_way_out(pool: PgPool) 
     let reqs = ai.requests.lock().unwrap().clone();
     assert_eq!(reqs.len(), 3);
     for req in &reqs {
-        assert_eq!(req.messages.last().unwrap().content, MASKED);
+        // 到了收尾回合，後面會接上收尾指令
+        assert!(req.messages.last().unwrap().content.starts_with(MASKED));
     }
     assert_no_originals(&reqs);
     // 系統提示說明佔位詞
