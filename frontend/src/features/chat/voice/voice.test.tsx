@@ -374,13 +374,15 @@ describe('speech synthesis (S-05.3)', () => {
   })
 
   /** 沒有瀏覽器語音：合成走後端，每段的播放由測試結束。 */
-  function installBackendSpeech() {
+  function installBackendSpeech({ selfHosted = false } = {}) {
     installSynthesis([])
     const bodies: { text: string }[] = []
+    const headers: Record<string, string> = { 'Content-Type': 'audio/mpeg' }
+    if (selfHosted) headers['X-Speech-Pacing'] = 'sentence'
     server.use(
       http.post('/api/voice/speech', async ({ request }) => {
         bodies.push((await request.json()) as { text: string })
-        return new HttpResponse(new Blob(['mp3']), { headers: { 'Content-Type': 'audio/mpeg' } })
+        return new HttpResponse(new Blob(['mp3']), { headers })
       }),
     )
     const playing: { end: () => void }[] = []
@@ -417,6 +419,49 @@ describe('speech synthesis (S-05.3)', () => {
     expect(bodies.map((b) => b.text)).toEqual(['一。', '二。', '三。 四。 五。 六。'])
     playing[2].end()
     await expect(turn.finished).resolves.toBe(true)
+    vi.unstubAllGlobals()
+  })
+
+  it('has no request cap on a self-hosted backend: every sentence is its own request', async () => {
+    const { bodies, playing } = installBackendSpeech({ selfHosted: true })
+    const turn = createSpeaker('zh-TW', 'zh-TW').open()
+    const sentences = ['一。', '二。', '三。', '四。', '五。', '六。']
+    for (const [i, sentence] of sentences.entries()) {
+      turn.say(sentence)
+      await waitFor(() => expect(playing).toHaveLength(i + 1))
+      playing[i].end()
+    }
+    turn.end()
+    await expect(turn.finished).resolves.toBe(true)
+    expect(bodies.map((b) => b.text)).toEqual(sentences)
+    vi.unstubAllGlobals()
+  })
+
+  it('never merges waiting sentences on a self-hosted backend, even in the next reply', async () => {
+    const { bodies, playing } = installBackendSpeech({ selfHosted: true })
+    const speaker = createSpeaker('zh-TW', 'zh-TW')
+    const first = speaker.open()
+    first.say('一。')
+    first.say('二。')
+    first.say('三。')
+    first.end()
+    for (const i of [0, 1, 2]) {
+      await waitFor(() => expect(playing).toHaveLength(i + 1))
+      playing[i].end()
+    }
+    await first.finished
+    expect(bodies.map((b) => b.text)).toEqual(['一。', '二。', '三。'])
+
+    const second = speaker.open()
+    second.say('四。')
+    second.say('五。')
+    second.end()
+    await waitFor(() => expect(playing).toHaveLength(4))
+    playing[3].end()
+    await waitFor(() => expect(playing).toHaveLength(5))
+    playing[4].end()
+    await second.finished
+    expect(bodies.map((b) => b.text)).toEqual(['一。', '二。', '三。', '四。', '五。'])
     vi.unstubAllGlobals()
   })
 

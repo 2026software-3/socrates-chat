@@ -21,8 +21,8 @@ export const MAX_UTTERANCE_MS = 60_000
 export const HINT_AFTER_MS = 30_000
 
 /**
- * 一則回覆最多發幾次後端語音合成（S-05.5）。每次都扣一筆與對話共用的 AI 用量，
- * 第一次搶開頭的速度，最後一次留到回覆結束，把剩下的文字一次帶走。
+ * 後端走 OpenAI 時，一則回覆最多發幾次語音合成（S-05.5）。每次都扣一筆與對話共用的 AI 用量，
+ * 第一次搶開頭的速度，最後一次留到回覆結束，把剩下的文字一次帶走。自架模型不受此限。
  */
 export const BACKEND_SPEECH_MAX_REQUESTS = 3
 

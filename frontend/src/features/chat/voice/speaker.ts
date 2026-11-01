@@ -5,8 +5,9 @@
  *
  * 播放都經過 `PlaybackQueue`：打斷後，等待中的語音載入或網路請求都不會再發出聲音（S-05.5）。
  *
- * 後端合成每次都扣一筆與對話共用的 AI 用量，所以一則回覆有請求上限：排隊的句子合併成一次請求，
- * 只剩最後一次時等回覆結束才發，不管生成多慢都不會超過。瀏覽器語音不計費，一句一句唸。
+ * 後端走 OpenAI 時每次都扣一筆與對話共用的 AI 用量，所以一則回覆有請求上限：排隊的句子合併成
+ * 一次請求，只剩最後一次時等回覆結束才發，不管生成多慢都不會超過。瀏覽器語音不計費，一句一句唸。
+ * 後端走自架模型時回應帶 `X-Speech-Pacing: sentence`：不計費，長文也會讓模型失控，所以同樣逐句送。
  */
 import type { PlaybackPath } from '@/features/chat/voice/audio/barge-in'
 import { createPlaybackQueue } from '@/features/chat/voice/audio/playback-queue'
@@ -61,6 +62,7 @@ type Chunk = { text: string; onStart?: (path: PlaybackPath) => void }
 export function createSpeaker(lang: string, conversationLang: string): Speaker {
   let usesBackend = false
   let backendRequests = 0 // 這一輪已發出的請求，失敗的也算：上限是為了擋住重複請求
+  let perSentence = false // 後端要求逐句送；第一個回應前未知，先照有上限處理
 
   /** 回傳 `false` 表示這個瀏覽器不能唸，要改用後端。 */
   async function speakWithBrowser({ text, onStart }: Chunk, signal: AbortSignal): Promise<boolean> {
@@ -102,6 +104,7 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
         signal,
       }).finally(markAiUsageStale)
       if (!res.ok) throw new SpeechUnavailableError()
+      perSentence = res.headers.get('X-Speech-Pacing') === 'sentence'
       url = URL.createObjectURL(await res.blob())
       if (signal.aborted) return
       const src = url
@@ -135,8 +138,9 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
       if (usesBackend && !signal.aborted) await speakWithBackend(chunk, signal)
     },
     {
-      merge: (chunk, next) => (usesBackend ? { ...chunk, text: `${chunk.text} ${next.text}` } : undefined),
-      hold: () => usesBackend && backendRequests >= BACKEND_SPEECH_MAX_REQUESTS - 1,
+      merge: (chunk, next) =>
+        usesBackend && !perSentence ? { ...chunk, text: `${chunk.text} ${next.text}` } : undefined,
+      hold: () => usesBackend && !perSentence && backendRequests >= BACKEND_SPEECH_MAX_REQUESTS - 1,
     },
   )
   let turn = 0
