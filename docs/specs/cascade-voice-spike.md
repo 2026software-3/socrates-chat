@@ -13,10 +13,28 @@
 
 - 瀏覽器只連 Rust，不直連 cascade 或 AI 服務。Rust 檢查登入、對話擁有者與 Origin，只放行音訊相關事件。
 - `CASCADE_REALTIME_URL`、`CASCADE_LLM_TOKEN` 都設了才啟用，缺任何一個，對話詳情的 `voice_realtime` 是 `false`，`/voice` 回 `503 voice_unavailable`。只設網址會讓學生按得到即時語音，但 cascade 呼叫內部 LLM 端點被拒絕而等不到回覆，所以兩者綁在一起。
-- `CASCADE_LLM_TOKEN` 是部署方自己產生的共用密碼（例如 `openssl rand -hex 32`），不是 OpenAI 金鑰；同一個值要填在後端環境變數與 cascade 設定檔 LLM 節點的 `api_key`，cascade 以 `Authorization: Bearer` 送給 `/internal/cascade/v1/*`。內部端點只認這個密鑰，不看 cookie；不得進版控。
+- `CASCADE_LLM_TOKEN` 是部署方自己產生的共用密碼（例如 `openssl rand -hex 32`），不是 OpenAI 金鑰；同一個值要同時是後端的環境變數 `CASCADE_LLM_TOKEN`，以及啟動 cascade 的行程的同名環境變數（`launch.yaml` 的 LLM 節點用 `api_key_env` 指向它，檔案裡不寫密碼），cascade 以 `Authorization: Bearer` 送給 `/internal/cascade/v1/*`。內部端點只認這個密鑰，不看 cookie；不得進版控。
 - cascade 沒有逐會話傳身分的管道，由 Rust 把一次性代號放進 `instructions`，成為 system message 開頭，再由內部 LLM 端點解析。瀏覽器不能送 `session.update`，也收不到 `session.*`。
 - OpenAI 收到的是專案自己的提示與資料庫歷史，cascade 的 system prompt 與歷史都不會送出。
 - TTS 前要有轉接層：cascade 不送 `max_new_tokens`，也不做繁轉簡，直連會踩中暴走條件。
+
+## cascade 設定
+
+cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），範本是 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)：複製後改成自己的環境。範本的結構與實測用的設定完全相同，只有路徑與參考音三處換成佔位，沒有密鑰。必要的欄位：
+
+| 欄位 | 值 | 說明 |
+| --- | --- | --- |
+| 環境變數 `CASCADE_LLM_TOKEN`（cascade 行程） | 與後端相同的共用密碼 | 不寫在檔案裡；與後端的值不同時，內部 LLM 端點回 401，學生等不到回覆 |
+| `session_nodes.llm.base_url` | 後端的 `/internal/cascade/v1` | 後端的 `/models` 回報的名稱是 `socrates`，`model` 填同名 |
+| `session_nodes.llm.api_key_env` | `CASCADE_LLM_TOKEN` | 環境變數的名稱，不是密碼本身 |
+| `stages.vad.factory.silence_duration_ms` | `1000` | 預設 160 ms 時學生一停頓就被切成新的一句 |
+| `session_nodes.asr` | `kind: openai_transcription`、`language: zh`、`response_format: json` | `base_url` 指向轉接層，轉給 `scripts/whisper-server.py` |
+| `session_nodes.tts` | `kind: openai_speech`、`language: Chinese`、`reference_audio_path`、`reference_text` | `base_url` 指向轉接層；參考音要自己準備且逐字稿一致，只限本機評估 |
+| `session_nodes.aligner` | `method: sentence` | 打斷時裁切到句子邊界，`heard_chars` 靠它的進度 |
+
+其餘節點與連線（`inputs`、`session_publish`）照範本，不要改。後端這一端要設 `CASCADE_REALTIME_URL`（cascade 的 `/v1/realtime`）與 `CASCADE_LLM_TOKEN`。
+
+轉接層（`tts_adapter.py`，本機評估是 `127.0.0.1:8103`）目前不在 repo：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並補上 `max_new_tokens` 與繁轉簡；要在別的機器重現，需要另外取得。
 
 ## 前端行為
 
