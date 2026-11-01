@@ -18,6 +18,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // 要比 testing-library 的 asyncUtilTimeout（src/test/setup.ts，5 秒）長，否則等不到就先被單一測試逾時截斷
+    testTimeout: 15_000,
     // 固定時區，避免日期斷言隨機器時區而變
     env: { TZ: 'UTC' },
   },

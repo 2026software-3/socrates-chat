@@ -40,6 +40,7 @@ macro_rules! generation_unclaimed {
 pub mod accounts;
 pub mod activity_store;
 pub mod ai;
+pub mod ai_usage;
 pub mod auth;
 pub mod auth_store;
 pub mod catalog;
@@ -67,7 +68,7 @@ pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
-pub(crate) mod translation_limit;
+pub(crate) mod user_limit;
 pub mod voice;
 
 /// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
@@ -104,7 +105,9 @@ pub struct AppState {
     /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
     pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
     /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
-    pub(crate) translation_limit: Arc<translation_limit::TranslationLimiter>,
+    pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
+    /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
+    pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
 }
 
 impl AppState {
@@ -115,6 +118,10 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let ai_usage = Arc::new(user_limit::UserLimiter::new(
+            config.ai_usage_max,
+            config.ai_usage_window,
+        ));
         Self {
             pool,
             config: Arc::new(config),
@@ -125,6 +132,7 @@ impl AppState {
             live: Arc::default(),
             request_logs: Arc::default(),
             translation_limit: Arc::default(),
+            ai_usage,
         }
     }
 
@@ -135,7 +143,7 @@ impl AppState {
 
     /// 換掉教師翻譯的頻率限制（測試用）。
     pub fn with_translation_limit(mut self, max: usize, window: std::time::Duration) -> Self {
-        self.translation_limit = Arc::new(translation_limit::TranslationLimiter::new(max, window));
+        self.translation_limit = Arc::new(user_limit::UserLimiter::new(max, window));
         self
     }
 }
@@ -150,7 +158,11 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/openapi.json", get(openapi_json))
-        .merge(auth::routes(state.config.trusted_proxies.clone()))
+        .merge(auth::routes(
+            state.config.trusted_proxies.clone(),
+            state.config.login_rate_burst,
+            state.config.login_rate_replenish,
+        ))
         .merge(roster::routes())
         .merge(classrooms::routes())
         .merge(accounts::routes())
@@ -164,6 +176,7 @@ pub fn app(state: AppState) -> Router {
         .merge(voice::routes())
         .merge(points::routes())
         .merge(demo::routes())
+        .merge(ai_usage::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
@@ -181,6 +194,11 @@ pub fn app(state: AppState) -> Router {
         ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
         .layer(middleware::from_fn_with_state(state.clone(), request_id))
+        // 真正的最外層：所有回應（含錯誤與 CSRF 拒絕）都補上安全標頭
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_headers,
+        ))
         .with_state(state)
 }
 
@@ -357,4 +375,51 @@ async fn check_origin(
         }
     }
     Ok(next.run(req).await)
+}
+
+/// 一般頁面（SPA 與 API）的 CSP：只允許同源資源。樣式需 `'unsafe-inline'`（React 的 `style` 屬性）；
+/// `blob:` 給語音播放與圖片預覽。
+const CSP_DEFAULT: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; \
+object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+/// `/api/docs` 的 Redoc 頁面有行內初始化 script，且用 blob worker，只有這個路徑放寬。
+const CSP_API_DOCS: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; \
+connect-src 'self'; worker-src blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+/// HSTS 一年。不加 `includeSubDomains`／`preload`：網域可能是共用的（例如 Tailscale 的 ts.net）。
+const HSTS: &str = "max-age=31536000";
+
+/// 安全回應標頭：CSP、`X-Frame-Options`、`nosniff`、`Referrer-Policy`；
+/// 只有 `APP_BASE_URL` 是 https 時才送 HSTS（http 開發環境送了會讓瀏覽器之後拒絕 http）。
+async fn security_headers(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    let csp = if path == "/api/docs" || path.starts_with("/api/docs/") {
+        CSP_API_DOCS
+    } else {
+        CSP_DEFAULT
+    };
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if state.config.app_base_url.starts_with("https://") {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS),
+        );
+    }
+    res
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/lib/api'
 import type { StreamDone } from '@/lib/types'
 import { SseParser, readSseFrames, sendMessage, streamReply, type ReplyEvent } from '@/features/chat/sse'
+import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import { server } from '@/test/server'
 
 const enc = new TextEncoder()
@@ -214,5 +215,29 @@ describe('sendMessage', () => {
       })(),
     ).rejects.toMatchObject({ code: 'network' })
     expect(seen).toEqual(['sent'])
+  })
+})
+
+describe('reply streams: AI usage refresh', () => {
+  it('announces that the AI usage may have changed when a reply stream ends, successful or not', async () => {
+    const frames = (...f: string[]) =>
+      new HttpResponse(streamOf(f.map((x) => enc.encode(x))), { headers: { 'Content-Type': 'text/event-stream' } })
+    server.use(
+      http.get('/api/conversations/ok/stream', () =>
+        frames('event: delta\ndata: {"text":"x"}\n\n', 'event: done\ndata: {"message_id":"m","question_type":"q","stage":1,"suggest_end":false}\n\n'),
+      ),
+      http.get('/api/conversations/over/stream', () => frames('event: error\ndata: {"code":"ai_usage_exceeded"}\n\n')),
+    )
+    let n = 0
+    const on = () => (n += 1)
+    window.addEventListener(AI_USAGE_STALE_EVENT, on)
+    try {
+      await collect(streamReply('ok'))
+      expect(n).toBe(1)
+      await expect(collect(streamReply('over'))).rejects.toMatchObject({ code: 'ai_usage_exceeded' })
+      expect(n).toBe(2)
+    } finally {
+      window.removeEventListener(AI_USAGE_STALE_EVENT, on)
+    }
   })
 })

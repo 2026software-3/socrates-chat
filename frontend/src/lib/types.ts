@@ -209,3 +209,12 @@ export type Page<T> = { items: T[]; next_cursor: string | null }
 
 /** 學生列表的一頁；`total` 是符合搜尋條件的學生總數，每一頁都帶。 */
 export type StudentPage = Page<StudentRow> & { total: number }
+
+/** `GET /api/me/usage`：滑動時間窗內自己的 AI 用量。 */
+export type AiUsage = {
+  used: number
+  limit: number
+  window_secs: number
+  /** 最早那一次呼叫還要幾秒滑出時間窗（多久後會空出一個額度）；尚未使用時為 null。 */
+  resets_in_secs: number | null
+}

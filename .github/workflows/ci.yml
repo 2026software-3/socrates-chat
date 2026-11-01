@@ -42,6 +42,20 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
 
+  # 相依套件已知漏洞；豁免清單與理由在 backend/.cargo/audit.toml
+  backend-audit:
+    name: Backend (cargo audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
   backend:
     name: Backend (test, coverage)
     runs-on: ubuntu-latest

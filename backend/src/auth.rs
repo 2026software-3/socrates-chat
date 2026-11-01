@@ -32,14 +32,23 @@ const COOKIE_NAME: &str = "sid";
 /// 帳號已被管理者停用（S-01.3）：登入後看到「帳號已停用」。
 const ACCOUNT_DISABLED: ApiError = ApiError::forbidden("account_disabled", "帳號已停用");
 
-pub fn routes(trusted_proxies: Vec<client_ip::Cidr>) -> Router<AppState> {
+pub fn routes(
+    trusted_proxies: Vec<client_ip::Cidr>,
+    login_burst: u32,
+    login_replenish: std::time::Duration,
+) -> Router<AppState> {
     Router::new()
         .route("/api/auth/google/login", get(login))
         .route("/api/auth/google/link", get(link_start))
         .route("/api/auth/google/callback", get(callback))
         .route(
             "/api/auth/login",
-            login_rate_limit::apply(post(password_login), trusted_proxies),
+            login_rate_limit::apply(
+                post(password_login),
+                trusted_proxies,
+                login_burst,
+                login_replenish,
+            ),
         )
         .route("/api/auth/change-password", post(change_password))
         .route("/api/admin/users/reset-password", post(reset_password))

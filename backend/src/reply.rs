@@ -198,7 +198,13 @@ pub(crate) async fn stream(
         release_generation(&state, id).await;
         return Err(ApiError::conflict("nothing_to_reply", "沒有待回覆的訊息"));
     }
-    Ok(spawn_stream(state, conversation, messages, None))
+    Ok(spawn_stream(
+        state,
+        cu.user.id,
+        conversation,
+        messages,
+        None,
+    ))
 }
 
 /// 學生訊息剛保存、且呼叫端已取得產生權利（`generating_since`）時，開始串流 AI 回覆。
@@ -206,11 +212,18 @@ pub(crate) async fn stream(
 /// 載入失敗時釋放 claim 並回傳錯誤。
 pub async fn begin_stream(
     state: AppState,
+    user: Uuid,
     conversation: Conversation,
     first: Event,
 ) -> Result<EventStream, ApiError> {
     match load_messages(&state, conversation.id).await {
-        Ok(messages) => Ok(spawn_stream(state, conversation, messages, Some(first))),
+        Ok(messages) => Ok(spawn_stream(
+            state,
+            user,
+            conversation,
+            messages,
+            Some(first),
+        )),
         Err(e) => {
             release_generation(&state, conversation.id).await;
             Err(e)
@@ -226,6 +239,7 @@ pub fn single_event(first: Event) -> EventStream {
 
 fn spawn_stream(
     state: AppState,
+    user: Uuid,
     conversation: Conversation,
     messages: Vec<Message>,
     first: Option<Event>,
@@ -238,10 +252,28 @@ fn spawn_stream(
     let reply = state.live.start(id, tx);
     tokio::spawn(
         async move {
-            let last = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| event("error", json!({"code": "internal"})));
+            // 每位使用者的 AI 用量上限：用完時學生訊息已保存，但不呼叫 AI，以 error 事件結束（之後可重試）
+            let last = match state.charge_ai(user) {
+                Err(_) => event("error", json!({"code": crate::ai_usage::EXCEEDED_CODE})),
+                Ok(slot) => {
+                    let result =
+                        AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
+                            .catch_unwind()
+                            .await;
+                    match result {
+                        Ok(Ok(done)) => done,
+                        // 沒有得到回覆：不扣額度，AI 當機時的重試不該把學生鎖在外面
+                        Ok(Err(error)) => {
+                            state.refund_ai(user, slot);
+                            error
+                        }
+                        Err(_) => {
+                            state.refund_ai(user, slot);
+                            event("error", json!({"code": "internal"}))
+                        }
+                    }
+                }
+            };
             // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
             release_generation(&state, id).await;
             state.live.finish(reply, last);
@@ -277,7 +309,7 @@ async fn generate(
     conv: &Conversation,
     messages: Vec<Message>,
     reply: &LiveReply,
-) -> Event {
+) -> Result<Event, Event> {
     let mut req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
@@ -316,11 +348,11 @@ async fn generate(
         }
     }
     let Some((text, meta)) = outcome else {
-        return event("error", json!({"code": "ai_unavailable"}));
+        return Err(event("error", json!({"code": "ai_unavailable"})));
     };
 
     match save_reply(state, conv, &text, &meta).await {
-        Ok(Some(saved)) => event(
+        Ok(Some(saved)) => Ok(event(
             "done",
             json!({
                 "message_id": saved.message_id,
@@ -329,12 +361,12 @@ async fn generate(
                 "suggest_end": saved.converge_ready,
                 "ended": saved.ended,
             }),
-        ),
+        )),
         // 對話在串流期間已結束或已有回覆
-        Ok(None) => event("error", json!({"code": "conflict"})),
+        Ok(None) => Err(event("error", json!({"code": "conflict"}))),
         Err(e) => {
             tracing::error!(class = %crate::error::db_error_class(&e), "failed to save AI reply");
-            event("error", json!({"code": "internal"}))
+            Err(event("error", json!({"code": "internal"})))
         }
     }
 }

@@ -736,7 +736,7 @@ async fn orphaned_pending_summaries_are_failed_on_startup(pool: PgPool) {
     );
 }
 
-/// 學生結束一場繁體中文對話並等總結完成，教師的語言改成英文，回傳 (app, actors, 對話 id, 翻譯路徑)。
+/// 學生結束一場繁體中文對話並等總結完成，回傳 (app, actors, 對話 id)。
 async fn translation_fixture(
     pool: PgPool,
     ai: std::sync::Arc<FakeAi>,
@@ -745,6 +745,8 @@ async fn translation_fixture(
     translation_fixture_with_config(pool, ai, limit, test_config()).await
 }
 
+/// 同上，但用指定的設定建立 app。前置步驟（登入、建立對話、等總結）也用這份設定，
+/// 所以不要放短的請求逾時（`short_timeout()`）：機器忙碌時前置步驟會回 408（#427）。
 async fn translation_fixture_with_config(
     pool: PgPool,
     ai: std::sync::Arc<FakeAi>,
@@ -810,11 +812,44 @@ async fn translation_is_not_cut_off_by_the_general_request_timeout(pool: PgPool)
         Reply(vec![GOOD]),
         Paced(vec![translation_reply(10)], Duration::from_millis(500)),
     ]);
-    let (app, a, conv) = translation_fixture_with_config(pool, ai, None, short_timeout()).await;
+    // 登入、建立資料等前置步驟用一般設定完成（300ms 的逾時在機器忙碌時會讓前置步驟回 408），
+    // 只有被測的翻譯請求換成短逾時的 app。session 存在資料庫，cookie 兩個 app 通用；兩個 app 共用同一個 AI 佇列
+    let (app, a, conv) = translation_fixture(pool.clone(), ai.clone(), None).await;
     set_teacher_language(&app, &a, "en").await;
-    let (status, body) = translate(&app, &a, &conv).await;
+    let short_app = socrates_chat_backend::app(socrates_chat_backend::AppState::new(
+        pool,
+        short_timeout(),
+        std::sync::Arc::new(FakeIdentity),
+        ai,
+    ));
+    let (status, body) = translate(&short_app, &a, &conv).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["stance"], "Would pull");
+}
+
+#[sqlx::test]
+async fn translation_counts_against_the_ai_usage_limit_and_failures_are_refunded(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let config = Config {
+        ai_usage_max: 1,
+        ..test_config()
+    };
+    let (app, a, conv) = translation_fixture_with_config(pool, ai.clone(), None, config).await;
+    set_teacher_language(&app, &a, "en").await;
+
+    // AI 失敗：不扣額度
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
+    // 成功一次後用完；再按被擋，而且不碰 AI
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    let before = ai.request_count();
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "ai_usage_exceeded");
+    assert_eq!(ai.request_count(), before);
 }
 
 #[sqlx::test]
