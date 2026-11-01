@@ -288,19 +288,26 @@ async fn the_voice_socket_is_unavailable_until_configured(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
+async fn voice_realtime_flag(pool: PgPool, config: Config) -> Value {
+    let r = rig(pool, vec![], config);
+    let a = seed_actors(&r.app).await;
+    let conv = start_conversation(&r.app, &a).await;
+    let res = send(
+        &r.app,
+        get(&format!("/api/conversations/{conv}"), Some(&a.student)),
+    )
+    .await;
+    json_body(res).await["voice_realtime"].clone()
+}
+
 #[sqlx::test]
-async fn the_conversation_says_whether_server_voice_is_available(pool: PgPool) {
-    for (config, available) in [(test_config(), false), (enabled(), true)] {
-        let r = rig(pool.clone(), vec![], config);
-        let a = seed_actors(&r.app).await;
-        let conv = start_conversation(&r.app, &a).await;
-        let res = send(
-            &r.app,
-            get(&format!("/api/conversations/{conv}"), Some(&a.student)),
-        )
-        .await;
-        assert_eq!(json_body(res).await["voice_realtime"], available);
-    }
+async fn the_conversation_says_when_server_voice_is_on(pool: PgPool) {
+    assert_eq!(voice_realtime_flag(pool, enabled()).await, true);
+}
+
+#[sqlx::test]
+async fn the_conversation_says_when_server_voice_is_off(pool: PgPool) {
+    assert_eq!(voice_realtime_flag(pool, test_config()).await, false);
 }
 
 #[test]
