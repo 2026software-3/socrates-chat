@@ -462,6 +462,72 @@ pub(crate) async fn submit_message(
     })
 }
 
+/// 把學生接著說的話併回上一則學生訊息，回合數不變，並取得產生回覆的權利。
+/// 上一則 AI 回覆確定有被聽到（`heard_chars` 大於 0）時回傳 `None`：那是新的一輪。
+/// 還沒有紀錄不算聽到：cascade 併句代表它已移除回覆，回報可能還在路上。
+pub(crate) async fn rejoin_message(
+    state: &AppState,
+    user: Uuid,
+    id: Uuid,
+    content: &str,
+) -> Result<Option<Submitted>, ApiError> {
+    let mut tx = state.pool.begin().await?;
+    let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
+    if conversation.status != "active" {
+        return Err(ApiError::conflict("conversation_ended", "對話已結束"));
+    }
+    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
+        "UPDATE conversations SET generating_since = now()
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+        " RETURNING turn_count, stage",
+    ))
+    .bind(id)
+    .bind(state.config.generation_stale_secs())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((turn, stage)) = turn else {
+        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+    };
+    let last: Option<(String, Option<i32>)> = sqlx::query_as(
+        "SELECT role, heard_chars FROM messages
+         WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if last.is_some_and(|(role, heard)| role == "ai" && heard.is_some_and(|h| h > 0)) {
+        return Ok(None);
+    }
+    let m = sqlx::query_as(
+        "UPDATE messages SET content = $2
+         WHERE id = (
+             SELECT id FROM messages WHERE conversation_id = $1 AND role = 'student'
+             ORDER BY seq DESC LIMIT 1
+         )
+         RETURNING id, role, content, source, question_type, created_at",
+    )
+    .bind(id)
+    .bind(content)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let first = reply::event(
+        "message",
+        serde_json::to_value(SentMessage {
+            message: m,
+            auto_ended: false,
+        })
+        .map_err(|_| ApiError::internal())?,
+    );
+    conversation.turn_count = turn;
+    conversation.stage = stage;
+    Ok(Some(Submitted::Reply {
+        conversation,
+        first,
+    }))
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct SentMessage {
     #[serde(flatten)]

@@ -39,7 +39,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from faster_whisper import WhisperModel
 from whisper_echo import is_prompt_echo, pick_prompt
-from whisper_text import normalize
+from whisper_text import keep_segment, normalize, strip_credits
 
 MODEL = os.environ.get("WHISPER_MODEL", "base")
 DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
@@ -74,8 +74,10 @@ def transcribe(file: UploadFile = File(...), model_name: str = Form("", alias="m
     audio = file.file.read()
     used_prompt = pick_prompt(prompt, INITIAL_PROMPT)
     segments, info = model.transcribe(io.BytesIO(audio), language=language or None, beam_size=5,
-                                    initial_prompt=used_prompt, vad_filter=VAD)
-    text = normalize("".join(s.text for s in segments).strip(), info.language)
+                                    initial_prompt=used_prompt, vad_filter=VAD,
+                                    condition_on_previous_text=False)
+    spoken = "".join(s.text for s in segments if keep_segment(s.no_speech_prob, s.avg_logprob))
+    text = strip_credits(normalize(spoken.strip(), info.language))
     echoed = is_prompt_echo(text, used_prompt)
     if echoed:
         text = ""

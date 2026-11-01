@@ -44,7 +44,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     auth::RequireStudent,
-    chat::{MAX_MESSAGE_CHARS, Submitted, submit_message},
+    chat::{MAX_MESSAGE_CHARS, Submitted, rejoin_message, submit_message},
     error::ApiError,
     mutex::lock,
     reply::{ReplyText, begin_text_stream, save_heard},
@@ -221,6 +221,67 @@ pub fn heard_chars(event: &serde_json::Value) -> Option<usize> {
     }
 }
 
+/// 句內沒有時間資訊時用的語速，取自實測的 TTS（29 字約 7.9 秒）。
+const CHARS_PER_SECOND: f64 = 3.5;
+/// 少於這個字數聽不出內容，算沒聽到。
+const MIN_HEARD_CHARS: usize = 4;
+
+/// 算出學生聽到幾個字。cascade 的 `heard` 只到整句，蘇格拉底式回覆常常整則就是一句，
+/// 所以用每句的進度與瀏覽器回報的播放位置，在句內按比例推算。
+#[derive(Default)]
+pub struct HeardTracker {
+    /// 這則回覆到每句結尾的（字元數、音訊毫秒）
+    progress: Vec<(usize, f64)>,
+    played_ms: Option<f64>,
+}
+
+impl HeardTracker {
+    pub fn from_client(&mut self, event: &serde_json::Value) {
+        if event_kind(event) == Some("conversation.item.truncate") {
+            self.played_ms = event["audio_end_ms"].as_f64();
+        }
+    }
+
+    /// 這個事件代表學生聽到的字元數時回傳。
+    pub fn from_cascade(&mut self, event: &serde_json::Value) -> Option<usize> {
+        match event_kind(event)? {
+            "response.created" => {
+                *self = Self::default();
+                None
+            }
+            "sglang.response.progress" => {
+                let text_end = event["text_end"].as_u64()? as usize;
+                self.progress.push((text_end, event["audio_ms"].as_f64()?));
+                None
+            }
+            _ => heard_chars(event).map(|chars| match event_kind(event) {
+                Some("sglang.response.heard") => chars.max(self.estimate()),
+                _ => chars,
+            }),
+        }
+    }
+
+    fn estimate(&self) -> usize {
+        let Some(played) = self.played_ms else {
+            return 0;
+        };
+        let mut before = (0, 0.0);
+        let mut chars = None;
+        for &(text_end, audio_ms) in &self.progress {
+            if played <= audio_ms {
+                let part = (played - before.1) / (audio_ms - before.1).max(1.0);
+                chars = Some(before.0 + (part * (text_end - before.0) as f64) as usize);
+                break;
+            }
+            before = (text_end, audio_ms);
+        }
+        let chars = chars.unwrap_or_else(|| {
+            before.0 + ((played - before.1) / 1000.0 * CHARS_PER_SECOND) as usize
+        });
+        if chars < MIN_HEARD_CHARS { 0 } else { chars }
+    }
+}
+
 /// 記下學生聽到多少；回覆還在產生時等它存好再寫。
 pub async fn record_heard(state: &AppState, conversation: Uuid, chars: usize) {
     if !state.live.cut(conversation, chars) {
@@ -301,6 +362,7 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
     let Some(mut notices) = session.take_notices() else {
         return;
     };
+    let mut heard = HeardTracker::default();
     let Ok((cascade, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
         tracing::warn!("cannot reach the voice cascade");
         return;
@@ -327,8 +389,13 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
         tokio::select! {
             frame = from_client.next() => match frame {
                 Some(Ok(ClientFrame::Text(text))) => {
-                    let allowed = parse_event(&text)
-                        .is_some_and(|e| event_kind(&e).is_some_and(allow_client_event));
+                    let event = parse_event(&text);
+                    if let Some(event) = &event {
+                        heard.from_client(event);
+                    }
+                    let allowed = event
+                        .as_ref()
+                        .is_some_and(|e| event_kind(e).is_some_and(allow_client_event));
                     if allowed && to_cascade.send(CascadeFrame::text(text.as_str())).await.is_err() {
                         break;
                     }
@@ -339,7 +406,7 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
             frame = from_cascade.next() => match frame {
                 Some(Ok(CascadeFrame::Text(text))) => {
                     let event = parse_event(&text);
-                    if let Some(chars) = event.as_ref().and_then(heard_chars) {
+                    if let Some(chars) = event.as_ref().and_then(|e| heard.from_cascade(e)) {
                         record_heard(&state, session.conversation, chars).await;
                     }
                     let allowed = event
@@ -512,9 +579,21 @@ async fn spoken_turn(
         .ok_or(ApiError::not_found())?;
     let _turn = turn_lock.lock().await;
     let fresh = state.voice_sessions.new_speech(token, content, user_turns);
+    let joined = fresh != content;
     let mut attempts = 0;
     let submitted = loop {
-        match submit_message(state, user, id, &fresh, SOURCE, true).await {
+        // 回覆沒被聽到又接著說：是同一句話被切開，併回去，不多算一回合
+        let rejoined = if joined {
+            rejoin_message(state, user, id, content).await
+        } else {
+            Ok(None)
+        };
+        let result = match rejoined {
+            Ok(Some(submitted)) => Ok(submitted),
+            Ok(None) => submit_message(state, user, id, &fresh, SOURCE, true).await,
+            Err(e) => Err(e),
+        };
+        match result {
             Err(e) if e.code == "reply_in_progress" && attempts < REPLY_WAIT_ATTEMPTS => {
                 attempts += 1;
                 tokio::time::sleep(REPLY_WAIT_STEP).await;

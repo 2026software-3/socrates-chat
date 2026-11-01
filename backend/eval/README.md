@@ -21,7 +21,7 @@
 | 項目 | 位置／目前版本 |
 | --- | --- |
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
-| 提示詞版本 | `rules_version(language)`：`v1.12/zh-TW`、`v1.12/en`、`v1.12/es`（v1.12 加入依對話語言輸出的三語提示與版本後綴；下方紀錄為 v1.10 的結果，v1.11／v1.12 尚未用真實模型重新評估，三種語言都是） |
+| 提示詞版本 | `rules_version(language)`：`v1.13/zh-TW`、`v1.13/en`、`v1.13/es`（v1.12 加入依對話語言輸出的三語提示與版本後綴，v1.13 改為 AI 主動收尾；下方紀錄為 v1.10 的結果，v1.11／v1.12 尚未用真實模型重新評估，三種語言都是） |
 | 評估 runner | `backend/examples/try_f07.rs`（`--lang` 選擇語言，預設 `zh-TW`） |
 | 評估程式版本 | `EVALUATOR_VERSION`：`f07-eval-v5`（v5 加入評估語言） |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT`（只有繁體中文版；三種語言共用，見下方限制） |

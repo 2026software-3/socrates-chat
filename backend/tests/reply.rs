@@ -164,7 +164,7 @@ async fn english_conversation_uses_an_english_prompt_and_version(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, "v1.12/en");
+    assert_eq!(version, "v1.13/en");
 }
 
 #[sqlx::test]
@@ -308,6 +308,81 @@ async fn stream_rejects_ended_conversation(pool: PgPool) {
     assert_eq!(s.ai.request_count(), 0);
 }
 
+const CLOSING: &str =
+    "謝謝你的討論，今天就到這裡。<<<META>>>{\"question_type\":\"wrap_up\",\"advance\":false}";
+
+async fn summary_rows(s: &Setup) -> Value {
+    let res = send(
+        &s.app,
+        get(
+            &format!("/api/conversations/{}/summary", s.conv),
+            Some(&s.a.student),
+        ),
+    )
+    .await;
+    json_body(res).await
+}
+
+#[sqlx::test]
+async fn a_closing_reply_at_the_wrap_up_turn_ends_the_discussion(pool: PgPool) {
+    // 測試設定的 wrap_up_turn = 3
+    let s = setup(
+        pool,
+        vec![
+            Reply(REPLY.to_vec()),
+            Reply(REPLY.to_vec()),
+            Reply(vec![CLOSING]),
+            Reply(vec!["<<<META>>>{}"]),
+        ],
+    )
+    .await;
+    say(&s, "一").await;
+    say(&s, "二").await;
+    let done = say(&s, "三").await.last().unwrap().1.clone();
+    assert_eq!(done["ended"], true);
+    assert_eq!(detail(&s).await["status"], "ended");
+    assert!(summary_rows(&s).await["status"].is_string());
+}
+
+#[sqlx::test]
+async fn an_early_closing_reply_does_not_end_the_discussion(pool: PgPool) {
+    let s = setup(pool, vec![Reply(vec![CLOSING])]).await;
+    let done = say(&s, "一").await.last().unwrap().1.clone();
+    assert_eq!(done["ended"], false);
+    assert_eq!(detail(&s).await["status"], "active");
+}
+
+#[sqlx::test]
+async fn a_closing_reply_once_converged_ends_the_discussion(pool: PgPool) {
+    let adv = || {
+        Reply(vec![
+            "問題？<<<META>>>{\"question_type\":\"reason\",\"advance\":true}",
+        ])
+    };
+    let config = Config {
+        wrap_up_turn: 15,
+        max_turns: 20,
+        ..test_config()
+    };
+    let s = setup_with_config(
+        pool,
+        vec![
+            adv(),
+            adv(),
+            Reply(vec![
+                "謝謝你的討論。<<<META>>>{\"question_type\":\"wrap_up\",\"advance\":true}",
+            ]),
+        ],
+        config,
+    )
+    .await;
+    say(&s, "一").await;
+    say(&s, "二").await;
+    let done = say(&s, "三").await.last().unwrap().1.clone();
+    assert_eq!(done["ended"], true);
+    assert_eq!(detail(&s).await["status"], "ended");
+}
+
 #[sqlx::test]
 async fn prompt_asks_to_wrap_up_from_configured_turn(pool: PgPool) {
     // 測試設定的 wrap_up_turn = 3
@@ -324,8 +399,8 @@ async fn prompt_asks_to_wrap_up_from_configured_turn(pool: PgPool) {
         say(&s, t).await;
     }
     let reqs = s.ai.requests.lock().unwrap();
-    assert!(!reqs[1].system.contains("開始引導學生整理"));
-    assert!(reqs[2].system.contains("開始引導學生整理"));
+    assert!(!reqs[1].system.contains("這次請直接收尾"));
+    assert!(reqs[2].system.contains("這次請直接收尾"));
     // 第三次請求帶著完整歷史：學生、AI、學生、AI、學生
     assert_eq!(reqs[2].messages.len(), 5);
 }

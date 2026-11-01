@@ -59,6 +59,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
         onDone: (done) => {
           setStage(done.stage)
           setSuggestEnd(done.suggest_end)
+          if (done.ended) setStatus('ended')
         },
       }),
     [detail, messageSource, voiceTurns],

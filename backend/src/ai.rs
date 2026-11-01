@@ -14,14 +14,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
 /// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
-/// v1.12：對話、總結與主張分組依對話語言輸出，版本後綴記錄語言。
-pub const RULES_VERSION: &str = "v1.12/zh-TW";
+/// v1.13：對話、總結與主張分組依對話語言輸出，版本後綴記錄語言。
+pub const RULES_VERSION: &str = "v1.13/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.12/en",
-        "es" => "v1.12/es",
+        "en" => "v1.13/en",
+        "es" => "v1.13/es",
         _ => RULES_VERSION,
     }
 }
@@ -213,7 +213,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         }
     };
     let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\n目前討論已進行很多回合：請開始引導學生整理自己的結論，並提議收尾。"
+        "\n討論回合已足夠：這次請直接收尾，不要再提問，也不要請學生總結。用一兩句話感謝學生並說明討論到此結束，question_type 標 wrap_up。"
     } else {
         ""
     };
@@ -221,7 +221,8 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         "你是一位蘇格拉底式的哲學討論引導者，只使用繁體中文與學生對話。\n\
          討論題目：{title}\n題目說明：{desc}\n\n\
         規則：\n\
-        - 每次回覆只問一個問題，以追問引導學生思考。\n\
+        - 每次回覆只問一個問題，以追問引導學生思考（收尾時除外）。\n\
+        - 第 3 階段且學生已回應至少一個反例或對立觀點時，不要再提問，直接收尾：question_type 標 wrap_up，advance 標 true。\n\
         - 不替學生下結論，不表達自己的立場。\n\
         - 語氣中立、尊重，回覆簡短；離題時引導回主題。\n\
         - 方括號大寫詞（[EMAIL]、[PHONE]、[NATIONAL_ID]、[STUDENT_ID]）是系統遮蔽掉的個人資料：不要追問或猜測內容，也不要照抄，繼續以題目為主討論。\n\n\
@@ -238,7 +239,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - assumption：檢查學生論證中已使用的前提、概括或推論是否可靠。前提可以明說，也可以隱含，不限於未說出口的假設。例如檢查「A 是否足以推出 B」「是否只有 A 才會造成 B」。若提出具體例外情境，或要求學生找出能挑戰原則的情境，則考慮 counterexample。\n\
         - counterexample：提出可辨識的假設個案或例外情境，要求學生判斷原有原則在該情境下是否仍成立；或要求學生自己找出能挑戰原則的反例或例外情境。模型提出情境時須說明情境條件，不需要是真實事件；要求學生找反例時，不必先替學生給出情境。僅抽象地問「一定成立嗎」且未要求找出情境，屬於 assumption。情境中存在價值衝突，不代表一定是 perspective。\n\
         - perspective：要求學生比較不同立場的考量，或權衡相互衝突的價值、利益，包括決定優先順序、兼顧方式及取捨界線。核心是「這些不同考量應如何比較或取捨」。若前文已明確指出衝突雙方，而追問要求建立或評估該衝突中的合理限制、優先順序或權重標準，即使沒有再次列出雙方，也屬於 perspective。前文有衝突不會讓所有追問都變成 perspective，仍須檢查實際要求的思考操作。只確認學生指的是哪個立場，仍屬於 clarify；只比較兩個詞的意思或兩項工作的難度，不因此屬於 perspective。\n\
-        - wrap_up：要求學生整理或回顧已討論的立場、理由、修正或尚存問題。核心是回顧整合，不是引入新的探究。\n\
+        - wrap_up：不提問，用一兩句話簡短回顧討論並結束。不替學生下結論，也不要求學生再回答或總結。\n\
         \n\
         分類衝突：\n\
         先辨認主要思考操作，不因附帶的「為什麼」「請說明」改變分類。\n\
@@ -322,7 +323,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
         }
     };
     let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\nThe discussion has gone on for many turns. Begin helping the student synthesize a conclusion and suggest wrapping up."
+        "\nThe discussion has had enough turns. Close it directly now: do not ask anything more and do not ask the student to summarize. In one or two sentences, thank the student and say the discussion ends here, with question_type set to wrap_up."
     } else {
         ""
     };
@@ -330,7 +331,8 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
         "You are a Socratic philosophy discussion facilitator. Respond to the student only in English.\n\
          Discussion topic: {title}\nTopic description: {desc}\n\n\
          Rules:\n\
-         - Ask exactly one question in each response and use follow-up questions to guide the student's thinking.\n\
+         - Ask exactly one question in each response and use follow-up questions to guide the student's thinking, except when closing.\n\
+         - In stage 3, once the student has responded to at least one counterexample or opposing view, stop asking and close directly: set question_type to wrap_up and advance to true.\n\
          - Do not reach conclusions for the student or express your own position.\n\
          - Stay neutral and respectful, keep the response concise, and guide digressions back to the topic.\n\
          - Uppercase terms in brackets ([EMAIL], [PHONE], [NATIONAL_ID], [STUDENT_ID]) are personal data masked by the system. Do not ask about, guess, or repeat their contents; continue discussing the topic.\n\n\
@@ -345,7 +347,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          - assumption: test whether a premise, generalization, or inference used in the student's argument is reliable. It may be explicit or implicit. Examples include testing whether A is enough to imply B or whether only A could cause B. If the question gives a concrete exception or asks the student to find a challenging case, consider counterexample.\n\
          - counterexample: present an identifiable hypothetical case or exception and ask whether the original principle still holds, or ask the student to find a counterexample or exception. A case proposed by you must state its conditions, but need not be a real event. Merely asking abstractly whether something always holds, without seeking a case, is assumption. A value conflict inside a case does not automatically make it perspective.\n\
          - perspective: ask the student to compare considerations from different positions or weigh conflicting values or interests, including priority, accommodation, and limits. The core operation is “how should these considerations be compared or traded off?”. If the preceding context already identifies both sides of a conflict, a request for a reasonable limit, priority, or weighting standard is perspective even without restating both sides. A conflict in the context does not make every question perspective. Merely identifying a position is clarify; merely comparing word meanings or task difficulty is not perspective.\n\
-         - wrap_up: ask the student to synthesize or review positions, reasons, revisions, or remaining questions already discussed. Its core is reflective integration, not a new line of inquiry.\n\n\
+         - wrap_up: ask nothing; briefly recap the discussion in one or two sentences and end it. Do not conclude for the student or ask them to answer or summarize.\n\
          Classification conflicts:\n\
          Identify the main thinking operation first; incidental wording such as “why” or “explain” does not change the type.\n\
          Only when the main operation genuinely fits more than one type, use this priority: wrap_up > perspective > counterexample > assumption > reason > clarify. This priority does not constrain which questioning strategy you choose.\n\n\
@@ -401,7 +403,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
         }
     };
     let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\nLa discusión ya lleva muchos turnos. Empieza a ayudar al estudiante a sintetizar su conclusión y propón cerrar la conversación."
+        "\nLa discusión ya tiene suficientes turnos. Ciérrala directamente ahora: no hagas más preguntas ni pidas al estudiante que resuma. En una o dos frases, agradécele e indica que la discusión termina aquí, con question_type como wrap_up."
     } else {
         ""
     };
@@ -409,7 +411,8 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
         "Eres un facilitador socrático de debates filosóficos. Responde al estudiante únicamente en español.\n\
          Tema de discusión: {title}\nDescripción del tema: {desc}\n\n\
          Reglas:\n\
-         - Haz exactamente una pregunta en cada respuesta y usa preguntas de seguimiento para guiar el pensamiento del estudiante.\n\
+         - Haz exactamente una pregunta en cada respuesta y usa preguntas de seguimiento para guiar el pensamiento del estudiante (salvo al cerrar).\n\
+         - En la etapa 3, cuando el estudiante ya haya respondido a un contraejemplo o a una perspectiva opuesta, no hagas más preguntas y cierra directamente: marca question_type como wrap_up y advance como true.\n\
          - No saques conclusiones por el estudiante ni expreses tu propia postura.\n\
          - Mantén un tono neutral y respetuoso, responde con brevedad y reconduce las digresiones hacia el tema.\n\
          - Los términos en mayúsculas entre corchetes ([EMAIL], [PHONE], [NATIONAL_ID], [STUDENT_ID]) son datos personales ocultados por el sistema. No preguntes por ellos, no intentes adivinarlos ni los repitas; continúa con el tema.\n\n\
@@ -424,7 +427,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          - assumption: comprueba si una premisa, generalización o inferencia usada en el argumento es fiable. Puede ser explícita o implícita. Por ejemplo, comprueba si A basta para implicar B o si solo A puede causar B. Si presentas una excepción concreta o pides encontrar un caso que desafíe el principio, considera counterexample.\n\
          - counterexample: presenta un caso hipotético o una excepción identificable y pregunta si el principio original sigue siendo válido, o pide al estudiante encontrar un contraejemplo o una excepción. Si propones el caso, indica sus condiciones; no tiene que ser un hecho real. Preguntar de forma abstracta si algo siempre es válido, sin pedir un caso, es assumption. Que un caso contenga valores en conflicto no lo convierte automáticamente en perspective.\n\
          - perspective: pide comparar consideraciones de posturas distintas o sopesar valores o intereses en conflicto, incluidas prioridades, formas de conciliación y límites. La operación central es “¿cómo deben compararse o equilibrarse estas consideraciones?”. Si el contexto ya identifica ambos lados del conflicto, pedir un límite razonable, una prioridad o un criterio de ponderación es perspective aunque no se repitan ambos lados. La existencia de un conflicto no convierte todas las preguntas en perspective. Identificar una postura sigue siendo clarify; comparar significados o la dificultad de dos tareas no basta.\n\
-         - wrap_up: pide sintetizar o revisar posturas, razones, revisiones o preguntas pendientes ya discutidas. Su núcleo es la integración reflexiva, no abrir una investigación nueva.\n\n\
+         - wrap_up: no preguntes nada; recapitula brevemente la discusión en una o dos frases y termínala. No concluyas por el estudiante ni le pidas responder o resumir.\n\
          Conflictos de clasificación:\n\
          Identifica primero la operación principal de pensamiento; palabras accesorias como “por qué” o “explica” no cambian el tipo.\n\
          Solo cuando la operación principal encaje de verdad en más de un tipo, usa esta prioridad: wrap_up > perspective > counterexample > assumption > reason > clarify. Esta prioridad no limita la estrategia de pregunta que elijas.\n\n\
@@ -1657,7 +1660,9 @@ mod tests {
         // 6. 到達指定回合後，應開始引導收尾。
         let p = build_system_prompt(&PromptContext { turn: 15, ..c });
 
-        assert!(p.contains("開始引導學生整理"));
+        assert!(p.contains("直接收尾"));
+        assert!(p.contains("不要再提問"));
+        assert!(!p.contains("開始引導學生整理"));
     }
 
     #[test]

@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use socrates_chat_backend::{
     AppState, app,
     cascade::{
-        VoiceSession, allow_client_event, allow_server_event, heard_chars, record_heard,
-        voice_session_prompt,
+        HeardTracker, VoiceSession, allow_client_event, allow_server_event, heard_chars,
+        record_heard, voice_session_prompt,
     },
     config::Config,
 };
@@ -280,7 +280,8 @@ async fn a_turn_cascade_joined_after_an_unheard_reply_is_saved_once(pool: PgPool
         history(&[("user", "合成的第一句 合成的第二句")]),
     )
     .await;
-    assert_eq!(saved, ["合成的第一句", "合成的第二句"]);
+    // 回覆沒被聽到，接著說的是同一句話：併回原本那則，不多算一回合
+    assert_eq!(saved, ["合成的第一句 合成的第二句"]);
 }
 
 #[sqlx::test]
@@ -306,6 +307,7 @@ struct Voice {
     id: Uuid,
     session: VoiceSession,
     system: String,
+    pool: PgPool,
 }
 
 async fn voice(pool: PgPool, scripts: Vec<Script>) -> Voice {
@@ -326,6 +328,7 @@ async fn voice(pool: PgPool, scripts: Vec<Script>) -> Voice {
         id,
         session,
         system,
+        pool,
     }
 }
 
@@ -481,7 +484,23 @@ async fn a_late_join_waits_for_the_turn_before_it(pool: PgPool) {
     text_of(first).await;
     text_of(a).await;
     text_of(b).await;
-    assert_eq!(v.speech().await, ["第一句", "第二句", "第三句"]);
+    assert_eq!(v.speech().await, ["第一句", "第二句 第三句"]);
+}
+
+#[sqlx::test]
+async fn a_partly_heard_reply_keeps_the_turns_apart(pool: PgPool) {
+    let v = voice(
+        pool,
+        vec![Reply(vec!["聽到一部分的回覆"]), Reply(REPLY.to_vec())],
+    )
+    .await;
+    text_of(v.say(&[("user", "第一句")]).await).await;
+    record_heard(&v.r.state, v.id, 4).await;
+
+    // cascade 只算整句所以仍會併句，但學生其實聽到一部分，接著說的是回應
+    text_of(v.say(&[("user", "第一句 第二句")]).await).await;
+    assert_eq!(v.speech().await, ["第一句", "第二句"]);
+    assert!(v.detail().await.iter().any(|m| m.1 == "聽到一部"));
 }
 
 #[sqlx::test]
@@ -542,8 +561,15 @@ async fn a_reply_nobody_heard_leaves_the_history(pool: PgPool) {
     let res = v.say(&[("user", "第一句 第二句")]).await;
     assert_eq!(res.status(), StatusCode::OK);
     text_of(res).await;
-    assert_eq!(v.speech().await, ["第一句", "第二句"]);
+    assert_eq!(v.speech().await, ["第一句 第二句"]);
     let request = v.r.ai.requests.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(request.messages.last().unwrap().content, "第一句 第二句");
+    let turns: i32 = sqlx::query_scalar("SELECT turn_count FROM conversations WHERE id = $1")
+        .bind(v.id)
+        .fetch_one(&v.pool)
+        .await
+        .unwrap();
+    assert_eq!(turns, 1);
     assert!(
         !request
             .messages
@@ -635,6 +661,71 @@ fn cascade_events_say_how_much_was_heard() {
         heard_chars(&json!({"type": "response.output_audio.delta"})),
         None
     );
+}
+
+fn progress(text_end: u64, audio_ms: f64) -> Value {
+    json!({"type": "sglang.response.progress", "text_end": text_end, "audio_ms": audio_ms})
+}
+
+fn truncate(audio_end_ms: f64) -> Value {
+    json!({"type": "conversation.item.truncate", "audio_end_ms": audio_end_ms})
+}
+
+fn heard(text_end: u64) -> Value {
+    json!({"type": "sglang.response.heard", "text_end": text_end})
+}
+
+#[test]
+fn a_cut_inside_a_sentence_counts_the_part_that_played() {
+    let mut t = HeardTracker::default();
+    t.from_cascade(&progress(30, 8000.0));
+    t.from_client(&truncate(6000.0));
+    assert_eq!(t.from_cascade(&heard(0)), Some(22));
+}
+
+#[test]
+fn a_cut_in_a_later_sentence_starts_from_the_sentence_before() {
+    let mut t = HeardTracker::default();
+    t.from_cascade(&progress(10, 3000.0));
+    t.from_cascade(&progress(30, 7000.0));
+    t.from_client(&truncate(5000.0));
+    assert_eq!(t.from_cascade(&heard(10)), Some(20));
+}
+
+#[test]
+fn a_cut_past_the_known_audio_estimates_from_the_speaking_rate() {
+    let mut t = HeardTracker::default();
+    t.from_client(&truncate(2000.0));
+    assert_eq!(t.from_cascade(&heard(0)), Some(7));
+
+    let mut t = HeardTracker::default();
+    t.from_cascade(&progress(10, 3000.0));
+    t.from_client(&truncate(4000.0));
+    assert_eq!(t.from_cascade(&heard(10)), Some(13));
+}
+
+#[test]
+fn a_blip_of_audio_does_not_count_as_heard() {
+    let mut t = HeardTracker::default();
+    t.from_client(&truncate(500.0));
+    assert_eq!(t.from_cascade(&heard(0)), Some(0));
+}
+
+#[test]
+fn a_new_reply_starts_a_new_timeline() {
+    let mut t = HeardTracker::default();
+    t.from_cascade(&progress(30, 8000.0));
+    t.from_cascade(&json!({"type": "response.created"}));
+    t.from_client(&truncate(2000.0));
+    assert_eq!(t.from_cascade(&heard(0)), Some(7));
+}
+
+#[test]
+fn the_tracker_never_goes_below_what_cascade_reports() {
+    let mut t = HeardTracker::default();
+    t.from_cascade(&progress(30, 8000.0));
+    t.from_client(&truncate(1000.0));
+    assert_eq!(t.from_cascade(&heard(12)), Some(12));
 }
 
 #[sqlx::test]
