@@ -432,7 +432,7 @@ async fn generate(
             })
             .collect(),
     };
-    // 歷史裡一長串追問會蓋過系統提示，所以也放在模型最後讀到的地方；只在請求裡，不寫進紀錄
+    // 歷史裡一長串追問會蓋過系統提示，所以收尾指令也放在模型最後讀到的地方；只在請求裡，不寫進紀錄
     if conv.turn_count >= state.config.wrap_up_turn as i32
         && let Some(last) = req.messages.last_mut()
     {

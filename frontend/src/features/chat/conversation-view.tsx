@@ -59,6 +59,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
         onDone: (done) => {
           setStage(done.stage)
           setSuggestEnd(done.suggest_end)
+          // AI 的結束語：討論已結束、總結產生中
           if (done.ended) setStatus('ended')
         },
       }),
