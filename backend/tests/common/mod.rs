@@ -91,6 +91,7 @@ pub fn test_config() -> Config {
         cascade_realtime_url: None,
         cascade_llm_token: None,
         openai_fallback_models: vec![],
+        openai_reasoning_effort: None,
         openai_stt_model: None,
         openai_tts_model: None,
         openai_tts_voice: "alloy".to_string(),
