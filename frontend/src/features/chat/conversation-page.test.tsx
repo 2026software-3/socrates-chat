@@ -211,6 +211,21 @@ describe('ConversationPage: sending', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: '訊息輸入' })).toBeEnabled())
   })
 
+  it('switches to the read-only ended view when the AI closes the discussion', async () => {
+    mockDetail(makeDetail())
+    server.use(
+      http.post('/api/conversations/c1/messages', () =>
+        postSse(delta('謝謝你的討論。'), doneFrame({ ended: true })),
+      ),
+    )
+    mockSummaries(makeSummary())
+    renderPage()
+    await send('我的想法')
+    expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
+    expect(screen.getByText('這場對話已結束，只能閱讀。')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: '訊息輸入' })).not.toBeInTheDocument()
+  })
+
   it('switches to the read-only ended view when sending hits conversation_ended', async () => {
     mockDetail(makeDetail())
     server.use(http.post('/api/conversations/c1/messages', () => apiError(409, 'conversation_ended')))

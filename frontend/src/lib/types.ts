@@ -200,6 +200,8 @@ export type StreamDone = {
   question_type: string | null
   stage: 1 | 2 | 3
   suggest_end: boolean
+  /** AI 這則是結束語：討論已結束、總結產生中。 */
+  ended?: boolean
 }
 
 /** Keyset 分頁列表。 */

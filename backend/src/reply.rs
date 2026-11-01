@@ -38,7 +38,7 @@ use crate::{
     AppState,
     ai::{
         AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta, build_system_prompt,
-        parse_meta, rules_version,
+        closing_instruction, parse_meta, rules_version,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, load_messages},
@@ -278,7 +278,7 @@ async fn generate(
     messages: Vec<Message>,
     reply: &LiveReply,
 ) -> Event {
-    let req = AiRequest {
+    let mut req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
             description: &conv.description,
@@ -295,6 +295,13 @@ async fn generate(
             })
             .collect(),
     };
+    // 歷史裡一長串追問會蓋過系統提示，所以收尾指令也放在模型最後讀到的地方；只在請求裡，不寫進紀錄
+    if conv.turn_count >= state.config.wrap_up_turn as i32
+        && let Some(last) = req.messages.last_mut()
+    {
+        last.content.push_str("\n\n");
+        last.content.push_str(closing_instruction(&conv.language));
+    }
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
@@ -320,6 +327,7 @@ async fn generate(
                 "question_type": meta.question_type,
                 "stage": saved.stage,
                 "suggest_end": saved.converge_ready,
+                "ended": saved.ended,
             }),
         ),
         // 對話在串流期間已結束或已有回覆
@@ -388,9 +396,12 @@ struct Saved {
     message_id: Uuid,
     stage: i16,
     converge_ready: bool,
+    ended: bool,
 }
 
 /// 保存 AI 回覆並更新階段；對話已結束或最後一則已不是學生訊息時不保存。
+/// 模型判斷可以收尾、且確實符合收斂條件或到了收尾回合時，這則回覆就是結束語：直接結束討論
+/// 並產生總結，不再等學生回應（S-03.3）。封存教室中的對話一律不收尾（S-14）。
 async fn save_reply(
     state: &AppState,
     conv: &Conversation,
@@ -440,11 +451,34 @@ async fn save_reply(
     .bind(converge_ready)
     .fetch_one(&mut *tx)
     .await?;
+    let closing = meta.question_type.as_deref() == Some("wrap_up")
+        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+    let writable = match conv.classroom_id {
+        Some(room) if closing => crate::classrooms::ensure_writable(&mut *tx, room)
+            .await
+            .is_ok(),
+        _ => true,
+    };
+    let ended = if closing && writable {
+        // 這次產生已完成：先放掉自己的 claim，否則會被當成 AI 還在回覆
+        sqlx::query("UPDATE conversations SET generating_since = NULL WHERE id = $1")
+            .bind(conv.id)
+            .execute(&mut *tx)
+            .await?;
+        crate::summary::end_conversation(&mut tx, conv.id, state.config.generation_stale_secs())
+            .await?
+    } else {
+        false
+    };
     tx.commit().await?;
+    if ended {
+        crate::summary::spawn_generation(state.clone(), conv.id, 1);
+    }
     Ok(Some(Saved {
         message_id,
         stage: new_stage,
         converge_ready,
+        ended,
     }))
 }
 
