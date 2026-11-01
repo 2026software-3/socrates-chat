@@ -413,6 +413,39 @@ describe('realtime session', () => {
     expect(cb.onClosed).toHaveBeenCalledWith('lost')
   })
 
+  describe('logging a server error code', () => {
+    const logged = async (code: unknown) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await connected()
+        FakeSocket.last.event({ type: 'error', sglang: { fatal: false }, error: { code } })
+        return warn.mock.calls.flat().map(String).join(' ')
+      } finally {
+        warn.mockRestore()
+      }
+    }
+
+    it('logs a well-formed code as is', async () => {
+      expect(await logged('invalid_request')).toContain('invalid_request')
+    })
+
+    it.each([
+      ['a line break that forges another entry', 'x\n[voice] forged entry'],
+      ['a carriage return', 'x\r[voice] forged entry'],
+      ['an escape sequence', 'x\u001b[31mred'],
+      ['an over-long value', 'a'.repeat(65)],
+      ['a non-string value', { nested: 'object' }],
+      ['an empty string', ''],
+    ])('does not echo %s from the server', async (_name, code) => {
+      const out = await logged(code)
+      expect(out).toContain('unknown')
+      expect(out).not.toContain('forged')
+      expect([...out].filter((ch) => ch.charCodeAt(0) < 32)).toEqual([])
+      expect(out).not.toContain('aaaaaaaa')
+      expect(out).not.toContain('object')
+    })
+  })
+
   it.each([
     ['permission', 'permission'],
     ['no-device', 'device'],

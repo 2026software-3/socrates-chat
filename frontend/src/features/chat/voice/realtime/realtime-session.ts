@@ -85,6 +85,9 @@ const microphoneReason = (e: unknown): RealtimeCloseReason => {
   }
 }
 
+/** 伺服器給的錯誤碼要進 console：只放行短的英數底線字串，其餘（換行、控制字元、過長）一律不照印。 */
+const loggableCode = (code: unknown): string => (typeof code === 'string' && /^[\w.-]{1,64}$/.test(code) ? code : 'unknown')
+
 /** 必須在使用者手勢內呼叫：AudioContext 要在這裡喚醒，之後才能沒有手勢地播放。 */
 export function createRealtimeSession(conversationId: string, cb: RealtimeCallbacks, interruptible: boolean): RealtimeSession {
   const ctrl = new AbortController()
@@ -212,7 +215,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         fail('replyFailed')
         break
       case 'error':
-        console.warn('[voice] realtime error:', event.error?.code)
+        console.warn('[voice] realtime error:', loggableCode(event.error?.code))
         if (event.sglang?.fatal) fail('lost')
         break
       default:
