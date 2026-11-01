@@ -38,7 +38,7 @@ use crate::{
     AppState,
     ai::{
         AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta, build_system_prompt,
-        parse_meta, rules_version,
+        closing_instruction, parse_meta, rules_version,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, heard_only, load_messages},
@@ -415,7 +415,7 @@ async fn generate(
     messages: Vec<Message>,
     reply: &LiveReply,
 ) -> Result<Event, Event> {
-    let req = AiRequest {
+    let mut req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
             description: &conv.description,
@@ -432,6 +432,13 @@ async fn generate(
             })
             .collect(),
     };
+    // 歷史裡一長串追問會蓋過系統提示，所以也放在模型最後讀到的地方；只在請求裡，不寫進紀錄
+    if conv.turn_count >= state.config.wrap_up_turn as i32
+        && let Some(last) = req.messages.last_mut()
+    {
+        last.content.push_str("\n\n");
+        last.content.push_str(closing_instruction(&conv.language));
+    }
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;

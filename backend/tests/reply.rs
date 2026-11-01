@@ -398,11 +398,24 @@ async fn prompt_asks_to_wrap_up_from_configured_turn(pool: PgPool) {
     for t in ["一", "二", "三"] {
         say(&s, t).await;
     }
-    let reqs = s.ai.requests.lock().unwrap();
+    let reqs = s.ai.requests.lock().unwrap().clone();
     assert!(!reqs[1].system.contains("這次請直接收尾"));
     assert!(reqs[2].system.contains("這次請直接收尾"));
+    // 歷史裡的追問會蓋過系統提示，所以模型最後讀到的也要是收尾指令；但不寫進紀錄
+    assert_eq!(reqs[1].messages.last().unwrap().content, "二");
+    let last = &reqs[2].messages.last().unwrap().content;
+    assert!(last.starts_with("三"));
+    assert!(last.contains("這次請直接收尾"));
     // 第三次請求帶著完整歷史：學生、AI、學生、AI、學生
     assert_eq!(reqs[2].messages.len(), 5);
+    let saved = detail(&s).await;
+    assert!(
+        saved["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["content"] == "三")
+    );
 }
 
 #[sqlx::test]

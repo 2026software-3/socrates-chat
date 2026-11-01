@@ -192,6 +192,21 @@ pub struct PromptContext<'a> {
     pub language: &'a str,
 }
 
+/// 到了收尾回合時給模型的指令。
+pub fn closing_instruction(language: &str) -> &'static str {
+    match language {
+        "en" => {
+            "Exception for this response (overrides every rule above): the discussion has had enough turns. Close it directly now: do not ask anything more and do not ask the student to summarize. Replace the first part with a one- or two-sentence closing that thanks the student and says the discussion ends here, with no question anywhere. question_type must be wrap_up."
+        }
+        "es" => {
+            "Excepción para esta respuesta (prevalece sobre todas las reglas anteriores): la discusión ya tiene suficientes turnos. Ciérrala directamente ahora: no hagas más preguntas ni pidas al estudiante que resuma. Sustituye la primera parte por un cierre de una o dos frases que agradezca al estudiante e indique que la discusión termina aquí, sin ninguna pregunta. question_type debe ser wrap_up."
+        }
+        _ => {
+            "本次例外（優先於上面所有規則）：討論回合已足夠，這次請直接收尾，不要再提問，也不要請學生總結。第一部分改為一兩句結束語：感謝學生並說明討論到此結束，全文不得出現問句。question_type 必須標 wrap_up。"
+        }
+    }
+}
+
 pub fn build_system_prompt(c: &PromptContext) -> String {
     match c.language {
         "en" => build_system_prompt_en(c),
@@ -213,9 +228,9 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         }
     };
     let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\n討論回合已足夠：這次請直接收尾，不要再提問，也不要請學生總結。用一兩句話感謝學生並說明討論到此結束，question_type 標 wrap_up。"
+        format!("\n{}", closing_instruction("zh-TW"))
     } else {
-        ""
+        String::new()
     };
     format!(
         "你是一位蘇格拉底式的哲學討論引導者，只使用繁體中文與學生對話。\n\
@@ -280,7 +295,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         \n\
         上述 assumption 或 perspective 問題即使附加「為什麼」，分類也不會變成 reason。\n\
         \n\
-        目前階段（階段只進不退）：{stage}{wrap}\n\n\
+        目前階段（階段只進不退）：{stage}\n\n\
         輸出格式（每次回覆都必須完整遵守）：\n\
         第一部分：給學生看的簡短追問。\n\
         第二部分：另起一行，輸出 {delim}。\n\
@@ -301,7 +316,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"學生尚未說明公平的意思。\"}}\n\
         \n\
         現在請回覆實際對話。只輸出一份完整回覆：學生看的追問、獨立一行的 {delim}、獨立一行的 JSON。\n\
-        追問句結束不代表本次輸出結束；必須接著輸出分隔標記和 JSON，JSON 結束後才完成。\n",
+        追問句結束不代表本次輸出結束；必須接著輸出分隔標記和 JSON，JSON 結束後才完成。\n{wrap}",
         title = c.title,
         desc = c.description,
         stage = stage,
@@ -323,9 +338,9 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
         }
     };
     let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\nThe discussion has had enough turns. Close it directly now: do not ask anything more and do not ask the student to summarize. In one or two sentences, thank the student and say the discussion ends here, with question_type set to wrap_up."
+        format!("\n{}", closing_instruction("en"))
     } else {
-        ""
+        String::new()
     };
     format!(
         "You are a Socratic philosophy discussion facilitator. Respond to the student only in English.\n\
@@ -368,7 +383,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          Question: “Can you think of a situation in which following the rule would be unreasonable?” → counterexample, because it asks the student to find a case.\n\
          Question: “Does that principle necessarily apply in every situation?” → assumption, because it tests the generalization abstractly without asking for a case.\n\n\
          An assumption or perspective question remains that type even if it also says “why”.\n\n\
-         Current stage (stages never move backward): {stage}{wrap}\n\n\
+         Current stage (stages never move backward): {stage}\n\n\
          Output format (follow it completely in every response):\n\
          Part 1: one concise follow-up question visible to the student, in English.\n\
          Part 2: on a new line, output {delim}.\n\
@@ -381,7 +396,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          What specifically do you mean by “fair”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"The student has not explained what fairness means.\"}}\n\n\
-         Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n",
+         Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n{wrap}",
         title = c.title,
         desc = c.description,
         stage = stage,
@@ -403,9 +418,9 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
         }
     };
     let wrap = if c.turn >= c.wrap_up_turn as i32 {
-        "\nLa discusión ya tiene suficientes turnos. Ciérrala directamente ahora: no hagas más preguntas ni pidas al estudiante que resuma. En una o dos frases, agradécele e indica que la discusión termina aquí, con question_type como wrap_up."
+        format!("\n{}", closing_instruction("es"))
     } else {
-        ""
+        String::new()
     };
     format!(
         "Eres un facilitador socrático de debates filosóficos. Responde al estudiante únicamente en español.\n\
@@ -448,7 +463,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          Pregunta: «¿Puedes imaginar una situación en la que cumplir la regla resulte irrazonable?» → counterexample, porque pide encontrar un caso.\n\
          Pregunta: «¿Ese principio se aplica necesariamente en toda situación?» → assumption, porque comprueba la generalización de forma abstracta sin pedir un caso.\n\n\
          Una pregunta assumption o perspective conserva su tipo aunque también diga “por qué”.\n\n\
-         Etapa actual (las etapas nunca retroceden): {stage}{wrap}\n\n\
+         Etapa actual (las etapas nunca retroceden): {stage}\n\n\
          Formato de salida (síguelo por completo en cada respuesta):\n\
          Parte 1: una pregunta breve visible para el estudiante, en español.\n\
          Parte 2: en una línea nueva, escribe {delim}.\n\
@@ -461,7 +476,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          ¿Qué quieres decir concretamente con “justa”?\n\
          {delim}\n\
          {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"El estudiante todavía no ha explicado qué significa la justicia.\"}}\n\n\
-         Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n",
+         Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n{wrap}",
         title = c.title,
         desc = c.description,
         stage = stage,
@@ -1601,6 +1616,42 @@ mod tests {
         assert_eq!(d.push(b"data: \xff\xfe\n"), Err(AiError));
         let mut d = SseDecoder::default();
         assert_eq!(d.push(b"data: {oops\n"), Err(AiError));
+    }
+
+    #[test]
+    fn the_closing_instruction_comes_after_the_output_format() {
+        // 真模型會照最後的格式指示繼續追問，所以收尾必須是提示詞的最後一段並明言優先
+        for (language, marker) in [
+            ("zh-TW", "本次例外"),
+            ("en", "Exception for this response"),
+            ("es", "Excepción para esta respuesta"),
+        ] {
+            let p = build_system_prompt(&PromptContext {
+                title: "T",
+                description: "D",
+                stage: 2,
+                turn: 15,
+                wrap_up_turn: 15,
+                language,
+            });
+            let at = p.find(marker).unwrap_or_else(|| panic!("{language}"));
+            assert!(at > p.find(META_DELIM).unwrap(), "{language}");
+            assert!(
+                !p[at..].contains('{'),
+                "{language}: 收尾之後不該再有格式範例"
+            );
+            assert!(p[at..].contains("wrap_up"), "{language}");
+
+            let early = build_system_prompt(&PromptContext {
+                title: "T",
+                description: "D",
+                stage: 2,
+                turn: 14,
+                wrap_up_turn: 15,
+                language,
+            });
+            assert!(!early.contains(marker), "{language}");
+        }
     }
 
     #[test]
