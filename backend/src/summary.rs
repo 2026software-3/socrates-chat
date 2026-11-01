@@ -172,9 +172,13 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
 }
 
 async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, sqlx::Error> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT role, content FROM messages WHERE conversation_id = $1 ORDER BY seq",
-    )
+    let rows: Vec<(String, String)> = sqlx::query_as(concat!(
+        "SELECT role, ",
+        crate::chat::heard_content!(),
+        " FROM messages WHERE conversation_id = $1 AND ",
+        crate::chat::heard_only!(),
+        " ORDER BY seq",
+    ))
     .bind(id)
     .fetch_all(&state.pool)
     .await?;

@@ -92,6 +92,7 @@ function callbacks(): Mocked<RealtimeCallbacks> {
     onTranscript: vi.fn<RealtimeCallbacks['onTranscript']>(),
     onReplyDelta: vi.fn<RealtimeCallbacks['onReplyDelta']>(),
     onReplyEnd: vi.fn<RealtimeCallbacks['onReplyEnd']>(),
+    onReplyFailed: vi.fn<RealtimeCallbacks['onReplyFailed']>(),
     onSettled: vi.fn<RealtimeCallbacks['onSettled']>(),
     onClosed: vi.fn<RealtimeCallbacks['onClosed']>(),
   }
@@ -239,6 +240,38 @@ describe('realtime session', () => {
     expect(cb.onReplyEnd).toHaveBeenCalledTimes(1)
     expect(cb.onSettled).toHaveBeenCalledTimes(1)
     session.close()
+  })
+
+  it('reports only the current reply when a later reply is interrupted', async () => {
+    const session = await connected()
+    const ws = FakeSocket.last
+    const ctx = audio.instances[0] as unknown as { currentTime: number }
+    for (const id of ['resp_1', 'resp_2']) {
+      ws.event(created(id))
+      ws.event(audioDelta(id, 1000))
+      ws.event(done(id))
+      ctx.currentTime += 2
+      audio.sources.at(-1)?.onended?.()
+    }
+    ws.event(created('resp_3'))
+    ws.event(audioDelta('resp_3', 1000))
+    ctx.currentTime += 0.3
+    ws.event({ type: 'input_audio_buffer.speech_started' })
+    const [truncate] = ws.ofType('conversation.item.truncate')
+    expect(truncate.audio_end_ms).toBeLessThan(500)
+    session.close()
+  })
+
+  it('ends the session when the server says the turn failed', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    ws.event(created('resp_1'))
+    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
+    ws.event({ type: 'socrates.turn.failed' })
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
+    expect(micClose).toHaveBeenCalled()
+    expect(cb.onReplyFailed.mock.invocationCallOrder[0]).toBeLessThan(cb.onReplyEnd.mock.invocationCallOrder[0])
   })
 
   it('settles when interrupted after the server already finished the reply', async () => {

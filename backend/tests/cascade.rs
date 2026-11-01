@@ -13,7 +13,10 @@ use common::*;
 use serde_json::{Value, json};
 use socrates_chat_backend::{
     AppState, app,
-    cascade::{allow_client_event, allow_server_event, voice_session_prompt},
+    cascade::{
+        VoiceSession, allow_client_event, allow_server_event, heard_chars, record_heard,
+        voice_session_prompt,
+    },
     config::Config,
 };
 use sqlx::PgPool;
@@ -293,6 +296,345 @@ async fn a_student_repeating_themselves_is_not_trimmed(pool: PgPool) {
     )
     .await;
     assert_eq!(saved, ["合成的第一句", "合成的第一句 我再說一次"]);
+}
+
+/// 一場開好語音會話的對話。
+struct Voice {
+    r: Rig,
+    a: Actors,
+    conv: String,
+    id: Uuid,
+    session: VoiceSession,
+    system: String,
+}
+
+async fn voice(pool: PgPool, scripts: Vec<Script>) -> Voice {
+    let r = rig(pool.clone(), scripts, enabled());
+    let a = seed_actors(&r.app).await;
+    let conv = start_conversation(&r.app, &a).await;
+    let id: Uuid = conv.parse().unwrap();
+    let session = r
+        .state
+        .voice_sessions
+        .open(owner(&pool, &conv).await, id)
+        .unwrap();
+    let system = voice_session_prompt(session.token());
+    Voice {
+        r,
+        a,
+        conv,
+        id,
+        session,
+        system,
+    }
+}
+
+impl Voice {
+    async fn say(&self, messages: &[(&str, &str)]) -> axum::response::Response {
+        let mut body = history(messages);
+        body["messages"][0]["content"] = json!(self.system);
+        send(&self.r.app, llm_req(Some(SECRET), body)).await
+    }
+
+    async fn detail(&self) -> Vec<(String, String)> {
+        let path = format!("/api/conversations/{}", self.conv);
+        let res = send(&self.r.app, get(&path, Some(&self.a.student))).await;
+        json_body(res).await["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                (
+                    m["role"].as_str().unwrap().to_string(),
+                    m["content"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    async fn speech(&self) -> Vec<String> {
+        let path = format!("/api/conversations/{}", self.conv);
+        let res = send(&self.r.app, get(&path, Some(&self.a.student))).await;
+        json_body(res).await["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["source"] == "speech-cascade")
+            .map(|m| m["content"].as_str().unwrap().to_string())
+            .collect()
+    }
+}
+
+#[sqlx::test]
+async fn a_failed_reply_tells_the_browser_and_refuses_the_next_turn(pool: PgPool) {
+    let mut v = voice(pool, vec![Fail, Fail, Reply(REPLY.to_vec())]).await;
+    let mut notices = v.session.take_notices().unwrap();
+
+    let res = v.say(&[("user", "合成的第一句")]).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(!deltas(&text_of(res).await).is_empty());
+    assert!(
+        notices
+            .recv()
+            .await
+            .unwrap()
+            .contains("socrates.turn.failed")
+    );
+
+    // 上一句還沒有回覆：另一個分頁或用戶端也不能再疊上去
+    let res = v
+        .say(&[
+            ("user", "合成的第一句"),
+            ("assistant", "x"),
+            ("user", "第二句"),
+        ])
+        .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"]["code"], "unanswered_message");
+    assert_eq!(v.speech().await, ["合成的第一句"]);
+    assert_eq!(v.r.ai.request_count(), 2);
+}
+
+#[sqlx::test]
+async fn a_reply_failing_midway_is_not_a_finished_turn(pool: PgPool) {
+    let mut v = voice(pool, vec![FailAfter(vec!["你為什麼"])]).await;
+    let mut notices = v.session.take_notices().unwrap();
+
+    let res = v.say(&[("user", "合成的第一句")]).await;
+    assert_eq!(deltas(&text_of(res).await), "你為什麼");
+    assert!(
+        notices
+            .recv()
+            .await
+            .unwrap()
+            .contains("socrates.turn.failed")
+    );
+    assert_eq!(v.detail().await.last().unwrap().0, "student");
+}
+
+#[sqlx::test]
+async fn a_finished_turn_sends_no_notice(pool: PgPool) {
+    let mut v = voice(pool, vec![Reply(REPLY.to_vec())]).await;
+    let mut notices = v.session.take_notices().unwrap();
+    text_of(v.say(&[("user", "合成的第一句")]).await).await;
+    assert!(notices.try_recv().is_err());
+}
+
+#[sqlx::test]
+async fn a_refused_turn_stays_part_of_the_next_join(pool: PgPool) {
+    let v = voice(
+        pool.clone(),
+        vec![Reply(REPLY.to_vec()), Reply(REPLY.to_vec())],
+    )
+    .await;
+    text_of(v.say(&[("user", "第一句")]).await).await;
+
+    let set_status = |status: &'static str| {
+        sqlx::query("UPDATE conversations SET status = $1 WHERE id = $2")
+            .bind(status)
+            .bind(v.id)
+            .execute(&pool)
+    };
+    set_status("ended").await.unwrap();
+    let res = v
+        .say(&[("user", "第一句"), ("assistant", "x"), ("user", "第二句")])
+        .await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    set_status("active").await.unwrap();
+
+    // 第二句沒有存到；cascade 把它併進下一句時不能當成已存過
+    let res = v
+        .say(&[
+            ("user", "第一句"),
+            ("assistant", "x"),
+            ("user", "第二句 第三句"),
+        ])
+        .await;
+    text_of(res).await;
+    assert_eq!(v.speech().await, ["第一句", "第二句 第三句"]);
+}
+
+#[sqlx::test]
+async fn a_late_join_waits_for_the_turn_before_it(pool: PgPool) {
+    let pace = std::time::Duration::from_millis(100);
+    let v = voice(
+        pool,
+        vec![
+            Paced(vec!["回", "覆", "一"], pace),
+            Reply(REPLY.to_vec()),
+            Reply(REPLY.to_vec()),
+        ],
+    )
+    .await;
+    // 第一輪的回覆還在產生，後兩個請求都得等它
+    let first = v.say(&[("user", "第一句")]).await;
+    let second = [("user", "第一句"), ("assistant", "x"), ("user", "第二句")];
+    let joined = [
+        ("user", "第一句"),
+        ("assistant", "x"),
+        ("user", "第二句 第三句"),
+    ];
+    let (a, b) = tokio::join!(v.say(&second), async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        v.say(&joined).await
+    });
+    text_of(first).await;
+    text_of(a).await;
+    text_of(b).await;
+    assert_eq!(v.speech().await, ["第一句", "第二句", "第三句"]);
+}
+
+#[sqlx::test]
+async fn the_ai_and_the_api_see_only_what_was_heard(pool: PgPool) {
+    let v = voice(
+        pool.clone(),
+        vec![
+            Reply(vec!["你聽到這句。沒聽到這句。"]),
+            Reply(REPLY.to_vec()),
+        ],
+    )
+    .await;
+    text_of(v.say(&[("user", "第一句")]).await).await;
+
+    record_heard(&v.r.state, v.id, 5).await;
+
+    let ai = |d: Vec<(String, String)>| d.into_iter().rfind(|m| m.0 == "ai").unwrap().1;
+    assert_eq!(ai(v.detail().await), "你聽到這句");
+    text_of(
+        v.say(&[
+            ("user", "第一句"),
+            ("assistant", "你聽到這句"),
+            ("user", "第二句"),
+        ])
+        .await,
+    )
+    .await;
+    let request = v.r.ai.requests.lock().unwrap().last().cloned().unwrap();
+    assert!(request.messages.iter().any(|m| m.content == "你聽到這句"));
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("沒聽到"))
+    );
+
+    // 完整回覆仍留在資料庫供稽核
+    let full: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM messages WHERE content LIKE '%沒聽到%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(full, 1);
+}
+
+#[sqlx::test]
+async fn a_reply_nobody_heard_leaves_the_history(pool: PgPool) {
+    let v = voice(
+        pool,
+        vec![Reply(vec!["完全沒聽到的回覆"]), Reply(REPLY.to_vec())],
+    )
+    .await;
+    text_of(v.say(&[("user", "第一句")]).await).await;
+
+    record_heard(&v.r.state, v.id, 0).await;
+
+    // cascade 也把回覆移除並併句；這不是未回覆的訊息，要能繼續
+    let res = v.say(&[("user", "第一句 第二句")]).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    text_of(res).await;
+    assert_eq!(v.speech().await, ["第一句", "第二句"]);
+    let request = v.r.ai.requests.lock().unwrap().last().cloned().unwrap();
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("沒聽到"))
+    );
+    assert!(!v.detail().await.iter().any(|m| m.1.contains("沒聽到")));
+}
+
+#[sqlx::test]
+async fn the_summary_sees_only_what_was_heard(pool: PgPool) {
+    let v = voice(
+        pool,
+        vec![
+            Reply(vec!["你聽到這句。沒聽到這句。"]),
+            Reply(vec!["合成的總結"]),
+        ],
+    )
+    .await;
+    text_of(v.say(&[("user", "第一句")]).await).await;
+    record_heard(&v.r.state, v.id, 5).await;
+
+    let path = format!("/api/conversations/{}/end", v.conv);
+    let res = send(&v.r.app, json_req("POST", &path, Some(&v.a.student), None)).await;
+    assert!(res.status().is_success());
+    for _ in 0..100 {
+        if v.r.ai.request_count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let request = v.r.ai.requests.lock().unwrap().last().cloned().unwrap();
+    let all: String = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(all.contains("你聽到這句"));
+    assert!(!all.contains("沒聽到"));
+}
+
+#[sqlx::test]
+async fn a_cut_during_generation_applies_when_the_reply_is_saved(pool: PgPool) {
+    let pace = std::time::Duration::from_millis(100);
+    let v = voice(
+        pool,
+        vec![Paced(vec!["你聽到這句。", "沒聽到這句。"], pace)],
+    )
+    .await;
+    let res = v.say(&[("user", "第一句")]).await;
+
+    record_heard(&v.r.state, v.id, 5).await;
+
+    text_of(res).await;
+    let ai = v.detail().await.into_iter().rfind(|m| m.0 == "ai").unwrap();
+    assert_eq!(ai.1, "你聽到這句");
+}
+
+#[sqlx::test]
+async fn an_unheard_reply_can_be_generated_again(pool: PgPool) {
+    let v = voice(
+        pool,
+        vec![
+            Reply(vec!["完全沒聽到的回覆"]),
+            Reply(vec!["重新產生的回覆"]),
+        ],
+    )
+    .await;
+    text_of(v.say(&[("user", "第一句")]).await).await;
+    record_heard(&v.r.state, v.id, 0).await;
+
+    let path = format!("/api/conversations/{}/stream", v.conv);
+    let res = send(&v.r.app, get(&path, Some(&v.a.student))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    text_of(res).await;
+    let ai = v.detail().await.into_iter().rfind(|m| m.0 == "ai").unwrap();
+    assert_eq!(ai.1, "重新產生的回覆");
+}
+
+#[test]
+fn cascade_events_say_how_much_was_heard() {
+    let heard = json!({"type": "sglang.response.heard", "text_end": 12});
+    assert_eq!(heard_chars(&heard), Some(12));
+    let cancelled = json!({"type": "response.done", "response": {"status": "cancelled"}});
+    assert_eq!(heard_chars(&cancelled), Some(0));
+    let finished = json!({"type": "response.done", "response": {"status": "completed"}});
+    assert_eq!(heard_chars(&finished), None);
+    assert_eq!(
+        heard_chars(&json!({"type": "response.output_audio.delta"})),
+        None
+    );
 }
 
 #[sqlx::test]

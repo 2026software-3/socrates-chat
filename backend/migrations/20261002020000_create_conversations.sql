@@ -58,6 +58,8 @@ CREATE TABLE messages (
     question_type   text,
     -- 模型對「是否達到進入下一階段條件」的判斷理由，供稽核與評估，不回傳給學生（S-03.2）
     advance_reason  text,
+    -- 語音回覆被打斷時學生聽到的字元數；content 留完整回覆供稽核，0 表示一個字都沒聽到
+    heard_chars     integer,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 

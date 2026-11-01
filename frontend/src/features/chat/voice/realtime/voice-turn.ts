@@ -5,6 +5,8 @@
 export type VoiceTurn = {
   push: (text: string) => void
   end: () => void
+  /** 這一輪沒有存成回覆：讀取端看完已到的文字後會收到錯誤。 */
+  fail: () => void
 }
 
 export type VoiceTurns = {
@@ -20,6 +22,7 @@ export function createVoiceTurns(): VoiceTurns {
     begin() {
       const queue: string[] = []
       let ended = false
+      let failed = false
       let wake: (() => void) | undefined
       const notify = () => {
         wake?.()
@@ -30,6 +33,7 @@ export function createVoiceTurns(): VoiceTurns {
           for (;;) {
             const text = queue.shift()
             if (text !== undefined) yield text
+            else if (failed) throw new Error('voice turn failed')
             else if (ended) return
             else await new Promise<void>((resolve) => (wake = resolve))
           }
@@ -43,6 +47,12 @@ export function createVoiceTurns(): VoiceTurns {
         },
         end() {
           ended = true
+          notify()
+        },
+        fail() {
+          if (ended) return
+          ended = true
+          failed = true
           notify()
         },
       }

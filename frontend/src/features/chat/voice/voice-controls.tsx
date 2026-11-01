@@ -127,7 +127,10 @@ export function VoiceControls({
   const aui = useAui()
   const reply = useLatestReply()
   // 回覆還在產生，或最後一則學生訊息還沒有回覆：語音回合會和它搶同一個對話串
-  const replyPending = useAuiState((s) => s.thread.isRunning || s.thread.messages.at(-1)?.role === 'user')
+  const replyPending = useAuiState((s) => {
+    const last = s.thread.messages.at(-1)
+    return s.thread.isRunning || last?.role === 'user' || last?.status?.type === 'incomplete'
+  })
 
   const host: VoiceHost = {
     language,

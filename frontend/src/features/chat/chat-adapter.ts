@@ -48,10 +48,15 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
       if (voiceTurn) {
         persisted.add(last.id)
         let text = ''
-        for await (const delta of voiceTurn) {
-          if (abortSignal.aborted) return
-          text += delta
-          yield { content: [{ type: 'text', text }] }
+        try {
+          for await (const delta of voiceTurn) {
+            if (abortSignal.aborted) return
+            text += delta
+            yield { content: [{ type: 'text', text }] }
+          }
+        } catch {
+          // 學生訊息已保存，重試只會重開串流
+          yield { status: { type: 'incomplete', reason: 'error', error: 'ai_unavailable' } }
         }
         return
       }

@@ -21,9 +21,10 @@ export type RealtimePhase = 'connecting' | 'listening' | 'transcribing' | 'waiti
 /**
  * - `unreachable`：連不上（服務沒開、另一個分頁在用、權限不符），可改用其他語音方式
  * - `lost`：對話中斷線
+ * - `replyFailed`：這一輪沒有存成回覆，要先重試才能繼續
  * - `permission`／`device`／`unavailable`：麥克風或瀏覽器問題
  */
-export type RealtimeCloseReason = 'unreachable' | 'lost' | 'permission' | 'device' | 'unavailable'
+export type RealtimeCloseReason = 'unreachable' | 'lost' | 'replyFailed' | 'permission' | 'device' | 'unavailable'
 
 export type RealtimeCallbacks = {
   onPhase: (phase: RealtimePhase) => void
@@ -31,6 +32,8 @@ export type RealtimeCallbacks = {
   onTranscript: (text: string) => void
   onReplyDelta: (text: string) => void
   onReplyEnd: () => void
+  /** 伺服器說這一輪失敗；在 `onReplyEnd` 之前呼叫，接著以 `replyFailed` 關閉。 */
+  onReplyFailed: () => void
   /** 這一輪結束且已唸完（或被打斷）：可以同步對話狀態。 */
   onSettled: () => void
   /** 非 `close()` 造成的結束；之後不會再有任何回呼。 */
@@ -148,6 +151,8 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
   function settle() {
     if (closed || !reply || !reply.serverDone || player.busy()) return
     reply = undefined
+    // 同一個播放器跨回合使用，打斷時回報的時間只能算當前這則回覆
+    player.clear()
     phase('listening')
     cb.onSettled()
   }
@@ -201,6 +206,10 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
           endText(reply)
           settle()
         }
+        break
+      case 'socrates.turn.failed':
+        cb.onReplyFailed()
+        fail('replyFailed')
         break
       case 'error':
         console.warn('[voice] realtime error:', event.error?.code)

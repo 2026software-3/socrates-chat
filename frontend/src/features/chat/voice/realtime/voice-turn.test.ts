@@ -27,6 +27,20 @@ describe('createVoiceTurns', () => {
     expect(await reading).toEqual(['一', '二'])
   })
 
+  it('fails after the text that already arrived', async () => {
+    const turns = createVoiceTurns()
+    const turn = turns.begin()
+    turn.push('一')
+    turn.fail()
+    const out: string[] = []
+    await expect(
+      (async () => {
+        for await (const t of turns.take()!) out.push(t)
+      })(),
+    ).rejects.toThrow()
+    expect(out).toEqual(['一'])
+  })
+
   it('ignores text after the end', async () => {
     const turns = createVoiceTurns()
     const turn = turns.begin()

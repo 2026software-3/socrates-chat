@@ -148,6 +148,25 @@ describe('server voice conversation', () => {
     expect(createRealtimeSession).toHaveBeenCalledTimes(1)
   })
 
+  it('marks a failed turn for retry and stops the voice session', async () => {
+    const { cb } = await startLive()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('合成的語音發言')
+    })
+    await screen.findByText('合成的語音發言')
+    act(() => cb.onReplyDelta('唸到一半'))
+    await screen.findByText('唸到一半')
+    act(() => {
+      cb.onReplyFailed()
+      cb.onReplyEnd()
+      cb.onClosed('replyFailed')
+    })
+    expect(await screen.findByText(/這一輪沒有成功/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '重試' })).toBeInTheDocument()
+    expect(await startButton()).toBeDisabled()
+  })
+
   it('offers a restart after a dropped connection', async () => {
     const { cb } = await startLive()
     act(() => cb.onClosed('lost'))
