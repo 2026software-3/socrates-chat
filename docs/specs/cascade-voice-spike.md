@@ -12,7 +12,8 @@
 ```
 
 - 瀏覽器只連 Rust，不直連 cascade 或 AI 服務。Rust 檢查登入、對話擁有者與 Origin，只放行音訊相關事件。
-- `CASCADE_REALTIME_URL`、`CASCADE_LLM_TOKEN` 都設了才啟用；內部端點只認共用密鑰，不看 cookie。
+- `CASCADE_REALTIME_URL`、`CASCADE_LLM_TOKEN` 都設了才啟用，缺任何一個，對話詳情的 `voice_realtime` 是 `false`，`/voice` 回 `503 voice_unavailable`。只設網址會讓學生按得到即時語音，但 cascade 呼叫內部 LLM 端點被拒絕而等不到回覆，所以兩者綁在一起。
+- `CASCADE_LLM_TOKEN` 是部署方自己產生的共用密碼（例如 `openssl rand -hex 32`），不是 OpenAI 金鑰；同一個值要填在後端環境變數與 cascade 設定檔 LLM 節點的 `api_key`，cascade 以 `Authorization: Bearer` 送給 `/internal/cascade/v1/*`。內部端點只認這個密鑰，不看 cookie；不得進版控。
 - cascade 沒有逐會話傳身分的管道，由 Rust 把一次性代號放進 `instructions`，成為 system message 開頭，再由內部 LLM 端點解析。瀏覽器不能送 `session.update`，也收不到 `session.*`。
 - OpenAI 收到的是專案自己的提示與資料庫歷史，cascade 的 system prompt 與歷史都不會送出。
 - TTS 前要有轉接層：cascade 不送 `max_new_tokens`，也不做繁轉簡，直連會踩中暴走條件。

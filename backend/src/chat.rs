@@ -321,7 +321,7 @@ pub(crate) async fn detail(
         conversation,
         messages,
         generating,
-        voice_realtime: state.config.cascade_realtime_url.is_some(),
+        voice_realtime: state.config.cascade_voice_url().is_some(),
     }))
 }
 

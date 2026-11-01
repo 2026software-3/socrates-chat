@@ -816,6 +816,60 @@ async fn the_conversation_says_when_server_voice_is_off(pool: PgPool) {
     assert_eq!(voice_realtime_flag(pool, test_config()).await, false);
 }
 
+// 兩個設定缺一個就不能啟用：只有網址時 cascade 的 LLM 呼叫全被拒絕，學生會看到按得到卻等不到回覆
+fn only_the_url() -> Config {
+    Config {
+        cascade_llm_token: None,
+        ..enabled()
+    }
+}
+
+fn only_the_token() -> Config {
+    Config {
+        cascade_realtime_url: None,
+        ..enabled()
+    }
+}
+
+#[sqlx::test]
+async fn the_conversation_hides_server_voice_without_the_token(pool: PgPool) {
+    assert_eq!(voice_realtime_flag(pool, only_the_url()).await, false);
+}
+
+#[sqlx::test]
+async fn the_conversation_hides_server_voice_without_the_url(pool: PgPool) {
+    assert_eq!(voice_realtime_flag(pool, only_the_token()).await, false);
+}
+
+async fn voice_socket_error(pool: PgPool, config: Config) -> (StatusCode, Value) {
+    let r = rig(pool, vec![], config);
+    let a = seed_actors(&r.app).await;
+    let conv = start_conversation(&r.app, &a).await;
+    let res = send(
+        &r.app,
+        get(
+            &format!("/api/conversations/{conv}/voice"),
+            Some(&a.student),
+        ),
+    )
+    .await;
+    (res.status(), json_body(res).await)
+}
+
+#[sqlx::test]
+async fn the_voice_socket_is_unavailable_without_the_token(pool: PgPool) {
+    let (status, body) = voice_socket_error(pool, only_the_url()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"]["code"], "voice_unavailable");
+}
+
+#[sqlx::test]
+async fn the_voice_socket_is_unavailable_without_the_url(pool: PgPool) {
+    let (status, body) = voice_socket_error(pool, only_the_token()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"]["code"], "voice_unavailable");
+}
+
 #[test]
 fn the_browser_cannot_change_the_session_or_reach_other_controls() {
     assert!(allow_client_event("input_audio_buffer.append"));

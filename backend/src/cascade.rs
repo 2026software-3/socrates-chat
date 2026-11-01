@@ -318,7 +318,7 @@ pub(crate) async fn socket(
     headers: HeaderMap,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Result<Response, ApiError> {
-    let Some(url) = state.config.cascade_realtime_url.clone() else {
+    let Some(url) = state.config.cascade_voice_url().map(str::to_owned) else {
         return Err(UNAVAILABLE);
     };
     let conversation = {

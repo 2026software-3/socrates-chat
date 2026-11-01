@@ -210,6 +210,15 @@ impl Config {
         (self.ai_total_timeout + Duration::from_secs(60)).max(self.request_timeout)
     }
 
+    /// 伺服器端語音對話的 cascade 位址：網址與共用密鑰要同時設定才有值。
+    /// 只有網址時 cascade 呼叫內部 LLM 端點會被拒絕，學生按得到即時語音卻等不到回覆。
+    pub fn cascade_voice_url(&self) -> Option<&str> {
+        match (&self.cascade_realtime_url, &self.cascade_llm_token) {
+            (Some(url), Some(_)) => Some(url),
+            _ => None,
+        }
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
