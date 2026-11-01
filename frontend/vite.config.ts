@@ -11,7 +11,7 @@ export default defineConfig({
   },
   server: {
     // 前端與 API 同網域部署（S-08.1）；開發時把 /api 轉給本機的 Rust 後端
-    proxy: { '/api': 'http://127.0.0.1:3000' },
+    proxy: { '/api': { target: 'http://127.0.0.1:3000', ws: true } },
   },
   test: {
     environment: 'jsdom',

@@ -3,8 +3,9 @@
 
 後端設 OPENAI_STT_BASE_URL=http://127.0.0.1:8000/v1、OPENAI_STT_MODEL=whisper-base 即可使用。
 音訊只在記憶體中處理，不寫入磁碟；記錄只含時間與 GPU 記憶體，不含辨識文字。
+中文一律輸出臺灣繁體：模型對同一段音訊有時給繁體、有時給簡體，見 whisper_text.py。
 
-依賴：pip install faster-whisper fastapi uvicorn python-multipart nvidia-ml-py "av>=14,<16"
+依賴：pip install faster-whisper fastapi uvicorn python-multipart nvidia-ml-py "av>=14,<16" opencc-python-reimplemented
 GPU 需要 cuBLAS／cuDNN 9（pip 的 nvidia-cublas-cu12、nvidia-cudnn-cu12 即可，路徑會自動加入）。
 
 環境變數：WHISPER_MODEL（預設 base）、WHISPER_DEVICE（cuda／cpu，預設 cuda）、
@@ -38,6 +39,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from faster_whisper import WhisperModel
 from whisper_echo import is_prompt_echo, pick_prompt
+from whisper_text import keep_segment, normalize, strip_credits
 
 MODEL = os.environ.get("WHISPER_MODEL", "base")
 DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
@@ -72,8 +74,10 @@ def transcribe(file: UploadFile = File(...), model_name: str = Form("", alias="m
     audio = file.file.read()
     used_prompt = pick_prompt(prompt, INITIAL_PROMPT)
     segments, info = model.transcribe(io.BytesIO(audio), language=language or None, beam_size=5,
-                                    initial_prompt=used_prompt, vad_filter=VAD)
-    text = "".join(s.text for s in segments).strip()
+                                    initial_prompt=used_prompt, vad_filter=VAD,
+                                    condition_on_previous_text=False)
+    spoken = "".join(s.text for s in segments if keep_segment(s.no_speech_prob, s.avg_logprob))
+    text = strip_credits(normalize(spoken.strip(), info.language))
     echoed = is_prompt_echo(text, used_prompt)
     if echoed:
         text = ""
