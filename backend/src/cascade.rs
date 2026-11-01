@@ -341,8 +341,7 @@ async fn chat(
     body: Result<Json<ChatBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     check_secret(&state, &headers)?;
-    let Json(body) =
-        body.map_err(|_| ApiError::bad_request("invalid_message", "訊息長度不符"))?;
+    let Json(body) = body.map_err(|_| ApiError::bad_request("invalid_message", "訊息長度不符"))?;
     let token = body
         .messages
         .iter()
