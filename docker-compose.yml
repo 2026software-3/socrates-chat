@@ -73,6 +73,8 @@ services:
     volumes:
       - cascade_cache:/root/.cache
       - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
+      # cascade 的 TTS 節點把參考音「路徑」傳給 TTS 服務，由 TTS 自己讀檔，所以兩個容器都要掛同一個 /refs
+      - ${CASCADE_REFS_DIR:-./cascade-refs}:/refs:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
       interval: 10s
