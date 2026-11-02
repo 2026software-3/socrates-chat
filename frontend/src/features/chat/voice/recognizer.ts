@@ -6,7 +6,7 @@
  * 音訊不保存：瀏覽器模式的音訊不經過我們的後端；OpenAI 備援只在記憶體中上傳，沒有任何存放。
  * 這裡不記錄任何辨識內容。
  */
-import { ApiError } from '@/lib/api'
+import { ApiError, apiErrorFrom } from '@/lib/api'
 
 export type RecognitionSource = 'speech-browser' | 'speech-openai'
 
@@ -181,15 +181,7 @@ export async function transcribeViaBackend(blob: Blob, conversationLang: string)
   } catch {
     throw new ApiError(0, 'network', '')
   }
-  if (!res.ok) {
-    let code = 'internal'
-    try {
-      code = (await res.json())?.error?.code ?? code
-    } catch {
-      // 非 JSON
-    }
-    throw new ApiError(res.status, code, res.headers.get('x-request-id') ?? '')
-  }
+  if (!res.ok) throw await apiErrorFrom(res)
   const data = (await res.json()) as { text?: string }
   return (data.text ?? '').trim()
 }

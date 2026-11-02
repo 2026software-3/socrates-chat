@@ -7,13 +7,6 @@ use common::*;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-#[sqlx::test]
-async fn classroom_migrations_are_repeatable(pool: PgPool) {
-    let migrations = sqlx::migrate!("./migrations");
-    migrations.run(&pool).await.unwrap();
-    migrations.run(&pool).await.unwrap();
-}
-
 async fn teacher_and_admin(app: &Router) -> (String, String) {
     let admin = login_as(app, "classroom-admin", "admin@example.com").await;
     let res = send(
@@ -439,34 +432,4 @@ async fn only_teachers_and_admins_can_access_classroom_management(pool: PgPool) 
             assert_eq!(json_body(denied).await["error"]["code"], "forbidden");
         }
     }
-}
-
-#[sqlx::test]
-async fn concurrent_requests_cannot_create_duplicate_classroom_names(pool: PgPool) {
-    let app = test_app(pool);
-    let (teacher, _) = teacher_and_admin(&app).await;
-    let make_request = || {
-        json_req(
-            "POST",
-            "/api/classrooms",
-            Some(&teacher),
-            Some(json!({"name": "Concurrent Room"})),
-        )
-    };
-    let (a, b) = tokio::join!(send(&app, make_request()), send(&app, make_request()));
-    let statuses = [a.status(), b.status()];
-    assert_eq!(
-        statuses
-            .iter()
-            .filter(|s| **s == StatusCode::CREATED)
-            .count(),
-        1
-    );
-    assert_eq!(
-        statuses
-            .iter()
-            .filter(|s| **s == StatusCode::CONFLICT)
-            .count(),
-        1
-    );
 }

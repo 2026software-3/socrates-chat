@@ -1,13 +1,17 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { formatDate } from '@/features/teacher/format'
-import { useI18n, useT } from '@/i18n'
-import type { Page as PageResult, TeacherSummary } from '@/lib/types'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
+import { api } from '@/lib/api'
+import { translateInBrowser } from '@/lib/browser-translator'
+import { formatDate } from '@/lib/format'
+import { errorText, useI18n, useT } from '@/i18n'
+import type { Page as PageResult, SummaryTranslation, TeacherSummary } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 function Field({ label, value }: { label: string; value: string | null }) {
@@ -20,16 +24,50 @@ function Field({ label, value }: { label: string; value: string | null }) {
   )
 }
 
-function SummaryCard({ row }: { row: TeacherSummary }) {
+/** 一場對話的總結卡片；學生姓名預設連到該學生在這間教室的討論情形。 */
+export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; linkStudent?: boolean }) {
   const t = useT()
+  const base = useClassroomsBase()
   const { lang } = useI18n()
+  const [translation, setTranslation] = useState<SummaryTranslation | null>(null)
+  const [showTranslation, setShowTranslation] = useState(false)
+  const [translating, setTranslating] = useState(false)
+  const [translationError, setTranslationError] = useState<unknown>(null)
+  const shown = showTranslation && translation?.language === lang ? translation : null
+  const visible = shown ?? row
+
+  async function translate() {
+    setTranslating(true)
+    setTranslationError(null)
+    try {
+      const local = await translateInBrowser(row.language, lang, [row.stance ?? '', row.reasons ?? ''])
+      const result = local
+        ? { language: lang, stance: local[0], reasons: local[1] }
+        : await api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`)
+      setTranslation(result)
+      setShowTranslation(true)
+    } catch (error) {
+      setTranslationError(error)
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   return (
     <li>
       <Card>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
             <div className="min-w-0">
-              <p className="font-medium break-words">{row.student_name ?? t('teacher.summaries.unnamed')}</p>
+              <p className="font-medium break-words">
+                {linkStudent ? (
+                  <Link to={`${base}/${row.classroom_id}/students/${row.student_id}`} className="underline-offset-4 hover:underline">
+                    {row.student_name ?? t('teacher.summaries.unnamed')}
+                  </Link>
+                ) : (
+                  (row.student_name ?? t('teacher.summaries.unnamed'))
+                )}
+              </p>
               <p className="text-muted-foreground text-sm break-all">{row.student_email}</p>
             </div>
             <div className="sm:text-right">
@@ -45,9 +83,23 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
           </div>
           {row.claim ? <p className="text-sm font-medium break-words">{row.claim}</p> : null}
           <dl className="space-y-2">
-            <Field label={t('teacher.summaries.stance')} value={row.stance} />
-            <Field label={t('teacher.summaries.reasons')} value={row.reasons} />
+            <Field label={t('teacher.summaries.stance')} value={visible.stance} />
+            <Field label={t('teacher.summaries.reasons')} value={visible.reasons} />
           </dl>
+          {translationError ? (
+            <p role="alert" className="text-destructive text-sm">
+              {errorText(t, translationError)}
+            </p>
+          ) : null}
+          {shown ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowTranslation(false)}>
+              {t('teacher.summaries.showOriginal')}
+            </Button>
+          ) : row.language !== lang ? (
+            <Button type="button" variant="outline" size="sm" disabled={translating} onClick={() => void translate()}>
+              {translating ? t('teacher.summaries.translating') : t('teacher.summaries.translate')}
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </li>

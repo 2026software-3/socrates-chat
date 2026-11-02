@@ -9,6 +9,7 @@ use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
 use serde_json::{Value, json};
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
 
 fn summary(claim: &str, reasons: &str) -> String {
@@ -297,4 +298,111 @@ async fn groups_are_scoped_to_the_activity_not_the_topic(pool: PgPool) {
     // 第二個活動歸群時，看不到第一個活動的群組
     let reqs = ai.requests.lock().unwrap();
     assert!(!reqs[3].system.contains("- 拉桿"));
+}
+
+#[sqlx::test]
+async fn regroup_may_wait_for_the_ai_longer_than_the_general_timeout(pool: PgPool) {
+    // 重新分組會同步等 AI；一般請求逾時（#325）比 AI 逾時短時，仍要等到 AI 的結果
+    let s1 = summary("該拉桿", "理由甲");
+    let ai = FakeAi::with(vec![
+        Reply(vec![Box::leak(s1.into_boxed_str())]),
+        Reply(vec!["{\"group\":\"拉桿\"}"]),
+        Hang,
+    ]);
+    let seed = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&seed).await;
+    let act = published_activity_with_topic(&seed, &a, "電車難題").await;
+    finish(&seed, &a.student, &act, &ai, &pool, 2).await;
+
+    let config = Config {
+        ai_first_token_timeout: Duration::from_millis(300),
+        ai_total_timeout: Duration::from_millis(600),
+        ..short_timeout()
+    };
+    let app = test_app_with_config(pool, ai, config);
+    let (status, body) = regroup(&app, Some(&a.teacher), &act).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "ai_unavailable");
+}
+
+#[sqlx::test]
+async fn regroup_uses_the_teachers_language_not_the_first_conversations(pool: PgPool) {
+    let s1 = summary("該拉桿", "理由甲");
+    let ai = FakeAi::with(vec![
+        Reply(vec![Box::leak(s1.into_boxed_str())]),
+        Fail, // 歸群失敗，留給重新分組
+        Reply(vec!["{\"groups\":[{\"name\":\"Pull\",\"members\":[1]}]}"]),
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let act = published_activity_with_topic(&app, &a, "電車難題").await;
+    // 學生的對話是繁體中文；教師的介面語言是英文
+    finish(&app, &a.student, &act, &ai, &pool, 2).await;
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.teacher),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let (status, _) = regroup(&app, Some(&a.teacher), &act).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let reqs = ai.requests.lock().unwrap();
+    assert!(
+        reqs[2].system.contains("only in English"),
+        "group names follow the teacher's language: {}",
+        reqs[2].system
+    );
+    assert_eq!(reqs[2].messages[0].content, "Please group the claims.");
+}
+
+#[sqlx::test]
+async fn incremental_grouping_names_groups_in_the_classroom_owners_language(pool: PgPool) {
+    let s1 = summary("該拉桿", "理由甲");
+    let s2 = summary("Pull the lever", "reason b");
+    let ai = FakeAi::with(vec![
+        Reply(vec![Box::leak(s1.into_boxed_str())]),
+        Reply(vec!["{\"group\":\"Palanca\"}"]),
+        Reply(vec![Box::leak(s2.into_boxed_str())]),
+        Reply(vec!["{\"group\":\"Palanca\"}"]),
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let student2 = add_student(&app, &a, "sub-student2", "student2@example.com").await;
+    let patch_language = |cookie: String, language: &'static str| {
+        let app = app.clone();
+        async move {
+            let res = send(
+                &app,
+                json_req(
+                    "PATCH",
+                    "/api/me",
+                    Some(&cookie),
+                    Some(json!({"language": language})),
+                ),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+    };
+    // 教室擁有者用西班牙文；兩位學生各用繁體中文與英文開對話
+    patch_language(a.teacher.clone(), "es").await;
+    patch_language(student2.clone(), "en").await;
+    let act = published_activity_with_topic(&app, &a, "電車難題").await;
+    finish(&app, &a.student, &act, &ai, &pool, 2).await;
+    finish(&app, &student2, &act, &ai, &pool, 4).await;
+
+    let reqs = ai.requests.lock().unwrap();
+    for assign in [&reqs[1], &reqs[3]] {
+        assert!(
+            assign.system.contains("únicamente en español"),
+            "group names follow the classroom owner's language: {}",
+            assign.system
+        );
+    }
 }

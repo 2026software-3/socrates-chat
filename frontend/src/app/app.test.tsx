@@ -32,6 +32,51 @@ describe('app shell', () => {
     expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
   })
 
+  it('lets a roleless account re-check its enrolment or switch account from the pending page', async () => {
+    mockMe(makeMe({}, { email: 'outsider@example.com' }))
+    server.use(http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })))
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '尚未開通' })
+
+    // 被加入名單後，重新檢查會重讀登入者並放行
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
+    await userEvent.click(screen.getByRole('button', { name: '我已被加入，重新檢查' }))
+    expect(await screen.findByRole('heading', { name: '選擇題目' })).toBeInTheDocument()
+  })
+
+  it('offers a way to switch account from the pending page', async () => {
+    mockMe(makeMe({}, { email: 'outsider@example.com' }))
+    server.use(http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })))
+    renderApp(null, { route: '/' })
+    await userEvent.click(await screen.findByRole('button', { name: '改用其他帳號登入' }))
+    expect(await screen.findByRole('button', { name: '使用 Google 登入' })).toBeInTheDocument()
+  })
+
+  it('labels the workspace for teachers and for admin-only accounts', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    const first = renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '我的教室' })
+    expect(screen.getByText('教師工作區', { selector: 'span' })).toBeInTheDocument()
+    expect(screen.getByText('教師工作區／我的教室')).toBeInTheDocument()
+    first.unmount()
+
+    mockMe(makeMe({ admin: true }))
+    mockOpsData()
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '系統維運' })
+    expect(screen.getByText('管理者工作區', { selector: 'span' })).toBeInTheDocument()
+  })
+
+  it('does not show a workspace label to students', async () => {
+    mockMe(makeMe({ student: true }))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    await screen.findByRole('heading', { name: '選擇題目' })
+    expect(screen.queryByText(/工作區/)).not.toBeInTheDocument()
+  })
+
   it('does not let a roleless account reach feature pages by URL', async () => {
     mockMe(makeMe())
     renderApp(null, { route: '/teacher/roster' })
@@ -42,7 +87,7 @@ describe('app shell', () => {
     mockMe(makeMe({ student: true }))
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '選擇題目' })).toBeInTheDocument()
   })
 
   const emptyClass = {
@@ -53,22 +98,22 @@ describe('app shell', () => {
     activities: [],
   }
 
-  it('takes teachers to the class dashboard — they do not take part in discussions', async () => {
+  it('takes teachers to their classrooms — they do not take part in discussions', async () => {
     mockMe(makeMe({ teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('heading', { name: '班上論點分布' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
     for (const name of ['選擇題目', '我的對話', '我的儀表板']) {
       expect(within(nav).queryByRole('link', { name })).not.toBeInTheDocument()
     }
   })
 
-  it('sends a teacher who types a student URL back to the dashboard', async () => {
+  it('sends a teacher who types a student URL back to the classrooms', async () => {
     mockMe(makeMe({ teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/conversations' })
-    expect(await screen.findByRole('heading', { name: '班上論點分布' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
   })
 
   it('shows student navigation only to students', async () => {
@@ -96,6 +141,13 @@ describe('app shell', () => {
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
 
+  it('sends the retired dashboard and activities URLs to the classrooms', async () => {
+    mockMe(makeMe({ teacher: true }))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
+    renderApp(null, { route: '/teacher/dashboard' })
+    expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
+  })
+
   it('lets a teacher open classroom management', async () => {
     mockMe(makeMe({ teacher: true }))
     server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
@@ -117,7 +169,14 @@ describe('app shell', () => {
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '系統維運' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
-    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['總覽', '教室管理', '教師管理', '修課名單', '題目庫'])
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual([
+      '總覽',
+      '教室管理',
+      '教師管理',
+      '修課名單',
+      '題目庫',
+      '執行日誌',
+    ])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })
 
@@ -130,31 +189,49 @@ describe('app shell', () => {
 
   it('keeps the normal navigation for an admin who is also a teacher', async () => {
     mockMe(makeMe({ admin: true, teacher: true }))
-    server.use(http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)))
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/' })
     const nav = await screen.findByRole('navigation', { name: 'main' })
-    for (const name of ['教師管理', '題目庫', '學生帳號', '班上分布']) {
+    for (const name of ['教師管理', '題目庫', '學生帳號', '教室管理']) {
       expect(within(nav).getByRole('link', { name })).toBeInTheDocument()
     }
     expect(within(nav).queryByRole('link', { name: '選擇題目' })).not.toBeInTheDocument()
   })
 
   it('switches language without reloading', async () => {
-    mockMe(makeMe({ student: true }))
+    const me = makeMe({ student: true }, { language: 'zh-TW' })
+    mockMe(me)
+    const updates: unknown[] = []
+    server.use(
+      http.patch('/api/me', async ({ request }) => {
+        updates.push(await request.json())
+        return HttpResponse.json({ ...me, language: 'en' })
+      }),
+    )
     server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
     renderApp(null, { route: '/' })
-    await screen.findByRole('heading', { name: '想從哪個問題開始思考？' })
+    await screen.findByRole('heading', { name: '選擇題目' })
     await userEvent.selectOptions(screen.getByLabelText('語言'), 'English')
-    expect(await screen.findByRole('heading', { name: 'Which question will you think about today?' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Choose a topic' })).toBeInTheDocument()
+    await waitFor(() => expect(updates).toEqual([{ language: 'en' }]))
     expect(document.documentElement.lang).toBe('en')
     expect(localStorage.getItem('lang')).toBe('en')
+  })
+
+  it('uses the authenticated account language instead of a stale device preference', async () => {
+    localStorage.setItem('lang', 'en')
+    mockMe(makeMe({ student: true }, { language: 'es' }))
+    server.use(http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })))
+    renderApp(null, { route: '/' })
+    expect(await screen.findByRole('heading', { name: 'Elegir un tema' })).toBeInTheDocument()
+    expect(document.documentElement.lang).toBe('es')
   })
 
   it('shows the disabled page when the account has been disabled', async () => {
     server.use(http.get('/api/me', () => apiError(403, 'account_disabled')))
     renderApp(null, { route: '/' })
     expect(await screen.findByText('帳號已停用')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '登出' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '返回登入' })).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
   })
 
@@ -179,5 +256,27 @@ describe('app shell', () => {
     mockMe(makeMe({ student: true }))
     renderApp(null, { route: '/nope' })
     expect(await screen.findByRole('heading', { name: '找不到資料。' })).toBeInTheDocument()
+  })
+})
+
+// jsdom 不排版，只能檢查決定「固定在視窗內」的 class；實際效果要在瀏覽器確認
+describe('sidebar stays in view on long pages', () => {
+  it.each([
+    ['student', { student: true }, '/', 'md:sticky md:top-0 md:h-svh'],
+    ['teacher', { teacher: true }, '/teacher/classrooms', 'md:sticky md:top-[52px] md:h-[calc(100svh-52px)]'],
+    ['admin', { admin: true }, '/admin', 'md:sticky md:top-[52px] md:h-[calc(100svh-52px)]'],
+  ])('keeps the account block of a %s pinned', async (_name, roles, route, classes) => {
+    mockMe(makeMe(roles))
+    server.use(
+      http.get('/api/classrooms', () => HttpResponse.json([])),
+      http.get('/api/activities/available', () => HttpResponse.json([])),
+      http.get('/api/admin/*', () => HttpResponse.json([])),
+    )
+    renderApp(null, { route })
+    const logout = await screen.findByRole('button', { name: '登出' })
+    const aside = logout.closest('aside')
+    expect(aside).not.toBeNull()
+    for (const c of classes.split(' ')) expect(aside).toHaveClass(c)
+    expect(aside).toHaveClass('md:overflow-y-auto')
   })
 })

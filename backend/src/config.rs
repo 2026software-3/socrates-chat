@@ -34,7 +34,11 @@ pub struct Config {
     pub openai_keys: Arc<KeyPool>,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
+    /// 主模型被限流（429）時依序改用的模型；空表示不啟用備援
+    pub openai_fallback_models: Vec<String>,
     pub openai_base_url: String,
+    /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
+    pub openai_stt_base_url: Option<String>,
     /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     pub openai_stt_model: Option<String>,
     pub openai_tts_model: Option<String>,
@@ -48,6 +52,11 @@ pub struct Config {
     pub ai_first_token_timeout: Duration,
     /// AI 完整回覆上限（S-03.5）。
     pub ai_total_timeout: Duration,
+    /// 一般 API 請求的逾時（#325）：從收到請求到送出回應標頭為止，含讀取 request body。
+    pub request_timeout: Duration,
+    /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
+    /// 讓登入頁一鍵填入。密碼公開，只能用在展示環境；示範帳號不含管理者。
+    pub demo_mode: bool,
 }
 
 #[derive(Debug)]
@@ -99,6 +108,15 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
 
 /// 金鑰清單檔的預設位置：後端通常在 `backend/` 執行，所以也找上一層（專案根目錄）。
 const DEFAULT_KEY_FILES: [&str; 2] = [".apikeylist", "../.apikeylist"];
+
+/// 逗號分隔的模型清單：去掉空白與空項；順序就是備援的先後（重複的由 `with_fallbacks` 略過）。
+fn parse_model_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+        .collect()
+}
 
 /// 讀取所有 API key：`OPENAI_API_KEYS`（逗號分隔）加上金鑰清單檔（一行一把），合併去重。
 /// 清單檔由 `OPENAI_API_KEYS_FILE` 指定（指定了就必須讀得到），否則找預設位置，找不到也沒關係。
@@ -169,11 +187,23 @@ impl Config {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
     }
 
+    /// 較長的請求逾時（#325），給同步等待 AI／語音服務或處理較久的端點：AI 完整回覆上限再加 60 秒，
+    /// 容納上傳 10 MB 音訊、語音服務本身的 30 秒上限與資料庫操作；不會比一般請求逾時短。
+    pub fn long_request_timeout(&self) -> Duration {
+        (self.ai_total_timeout + Duration::from_secs(60)).max(self.request_timeout)
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
         validate_turns(wrap_up_turn, max_turns)?;
+        let request_timeout_secs: u64 = parse_or("REQUEST_TIMEOUT_SECS", 10)?;
+        if request_timeout_secs == 0 {
+            return Err(ConfigError(
+                "REQUEST_TIMEOUT_SECS must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
@@ -200,8 +230,14 @@ impl Config {
                 no_key_error(env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty()))
             })?),
             openai_model: required("OPENAI_MODEL")?,
+            openai_fallback_models: parse_model_list(
+                &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
+            ),
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+            openai_stt_base_url: env::var("OPENAI_STT_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")
@@ -215,6 +251,8 @@ impl Config {
                 15,
             )?),
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
+            request_timeout: Duration::from_secs(request_timeout_secs),
+            demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             app_base_url,
         })
     }
@@ -286,5 +324,16 @@ mod tests {
         for (wrap, max) in [(0, 20), (21, 20), (15, 0), (5, 1001), (5, u32::MAX)] {
             assert!(validate_turns(wrap, max).is_err(), "{wrap}/{max}");
         }
+    }
+
+    #[test]
+    fn model_list_is_split_on_commas_trimmed_and_cleaned() {
+        assert_eq!(parse_model_list(""), Vec::<String>::new());
+        assert_eq!(parse_model_list("  , ,"), Vec::<String>::new());
+        assert_eq!(parse_model_list("a"), ["a"]);
+        assert_eq!(
+            parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
+            ["google/gemma:free", "nvidia/x:free", "a"]
+        );
     }
 }

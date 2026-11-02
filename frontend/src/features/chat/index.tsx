@@ -1,6 +1,6 @@
 import type { Feature } from '@/app/feature'
 import { ConversationListPage } from '@/features/chat/conversation-list-page'
-import { ConversationPage } from '@/features/chat/conversation-page'
+import { ConversationPage } from '@/features/chat/lazy-conversation-page'
 
 export const chatFeature: Feature = {
   routes: [

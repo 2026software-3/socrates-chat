@@ -23,6 +23,12 @@ services:
   app:
     profiles: ["app"]
     build: .
+    # 避免 Docker 預設日誌無限制占用主機磁碟；舊檔由 local driver 壓縮與輪替。
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "5"
     env_file:
       - path: .env
         required: true

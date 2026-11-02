@@ -284,7 +284,9 @@ async fn two_classrooms_share_one_topic_but_keep_separate_activities(pool: PgPoo
 // ---- 對話的教室歸屬 ----
 
 #[sqlx::test]
-async fn an_activity_conversation_keeps_the_activitys_classroom_for_good(pool: PgPool) {
+async fn an_activity_conversation_keeps_the_activitys_classroom_until_the_activity_is_deleted(
+    pool: PgPool,
+) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let topic = create_topic(&app, &a, "電車難題").await;
@@ -297,7 +299,7 @@ async fn an_activity_conversation_keeps_the_activitys_classroom_for_good(pool: P
     assert_eq!(conv["classroom_id"], a.classroom);
     let conv_id = conv["id"].as_str().unwrap();
 
-    // 停用、刪除活動後歸屬不變
+    // 停用活動後歸屬不變；刪除活動則連同其對話一併刪除（S-14）
     send(
         &app,
         json_req(
@@ -308,19 +310,24 @@ async fn an_activity_conversation_keeps_the_activitys_classroom_for_good(pool: P
         ),
     )
     .await;
+    let classroom_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT classroom_id FROM conversations WHERE id = $1")
+            .bind(conv_id.parse::<Uuid>().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(classroom_id, Some(a.classroom.parse().unwrap()));
     sqlx::query("DELETE FROM activities WHERE id = $1")
         .bind(act.parse::<Uuid>().unwrap())
         .execute(&pool)
         .await
         .unwrap();
-    let (activity_id, classroom_id): (Option<Uuid>, Option<Uuid>) =
-        sqlx::query_as("SELECT activity_id, classroom_id FROM conversations WHERE id = $1")
-            .bind(conv_id.parse::<Uuid>().unwrap())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(activity_id, None);
-    assert_eq!(classroom_id, Some(a.classroom.parse().unwrap()));
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM conversations WHERE id = $1")
+        .bind(conv_id.parse::<Uuid>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
 }
 
 #[sqlx::test]

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBlock } from '@/components/page'
-import { useDateFormat } from '@/features/chat/format'
+import { formatDate } from '@/lib/format'
 import { useSummary } from '@/features/chat/use-summary'
 import { errorText, useI18n, useT } from '@/i18n'
 
@@ -14,11 +14,10 @@ type Props = { conversationId: string; pollMs?: number; maxPollMs?: number }
 export function SummaryPanel({ conversationId, pollMs, maxPollMs }: Props) {
   const t = useT()
   const { lang } = useI18n()
-  const formatDate = useDateFormat(lang)
   const titleId = useId()
   const { state, check, retry, retrying, retryError } = useSummary(conversationId, { pollMs, maxPollMs })
 
-  const completed = state.kind === 'ready' && state.summary.completed_at ? formatDate(state.summary.completed_at) : ''
+  const completed = state.kind === 'ready' && state.summary.completed_at ? formatDate(state.summary.completed_at, lang) : ''
 
   return (
     <Card role="region" aria-labelledby={titleId}>

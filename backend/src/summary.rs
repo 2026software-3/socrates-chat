@@ -15,13 +15,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, RULES_VERSION, build_summary_prompt, collect,
-        format_transcript, parse_summary,
+        AiRequest, ChatRole, ChatTurn, build_summary_prompt, build_summary_translation_prompt,
+        collect_background, format_transcript, parse_summary, parse_summary_translation,
+        rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::owned_conversation,
@@ -39,6 +41,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{id}/summary", get(get_summary))
         .route("/api/conversations/{id}/summary/retry", post(retry))
         .route("/api/summaries", get(list))
+        .route("/api/summaries/{id}/translation", post(translate))
 }
 
 /// 結束對話並建立「產生中」的總結；回傳是否真的由這次呼叫結束。
@@ -49,12 +52,11 @@ pub async fn end_conversation(
     id: Uuid,
     stale_secs: f64,
 ) -> Result<bool, sqlx::Error> {
-    let r = sqlx::query(
+    let r = sqlx::query(concat!(
         "UPDATE conversations SET status = 'ended', ended_at = now()
-         WHERE id = $1 AND status = 'active'
-           AND (generating_since IS NULL
-                OR generating_since < now() - make_interval(secs => $2))",
-    )
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+    ))
     .bind(id)
     .bind(stale_secs)
     .execute(&mut *conn)
@@ -82,44 +84,51 @@ pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
 
 /// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
 pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
-    tokio::spawn(async move {
-        if let Err(e) = generate(&state, id, attempt).await {
-            // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
-            tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
-            // 盡力把這一代標記為失敗，避免永遠停在 pending
-            let _ = sqlx::query(
-                "UPDATE summaries SET status = 'failed', completed_at = now()
-                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
-            )
-            .bind(id)
-            .bind(attempt)
-            .execute(&state.pool)
-            .await;
+    tokio::spawn(
+        async move {
+            if let Err(e) = generate(&state, id, attempt).await {
+                // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
+                tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
+                // 盡力把這一代標記為失敗，避免永遠停在 pending
+                let _ = sqlx::query(
+                    "UPDATE summaries SET status = 'failed', completed_at = now()
+                     WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
+                )
+                .bind(id)
+                .bind(attempt)
+                .execute(&state.pool)
+                .await;
+            }
         }
-    });
+        .in_current_span(),
+    );
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let (title, description, activity_id): (String, String, Option<Uuid>) =
-        sqlx::query_as("SELECT title, description, activity_id FROM conversations WHERE id = $1")
-            .bind(id)
-            .fetch_one(&state.pool)
-            .await?;
-    let turns: Vec<ChatTurn> = load_messages_for(state, id).await?;
+    let ((title, description, activity_id, language), turns): (
+        (String, String, Option<Uuid>, String),
+        _,
+    ) = tokio::try_join!(
+        sqlx::query_as(
+            "SELECT title, description, activity_id, language FROM conversations WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_one(&state.pool),
+        load_messages_for(state, id),
+    )?;
     let req = AiRequest {
-        system: build_summary_prompt(&title, &description),
+        system: build_summary_prompt(&title, &description, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
-            content: format_transcript(&turns),
+            content: format_transcript(&turns, &language),
         }],
     };
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
     for _ in 0..2 {
-        let raw = collect(
+        let raw = collect_background(
             state.ai.as_ref(),
             req.clone(),
-            state.config.ai_first_token_timeout,
             state.config.ai_total_timeout,
         )
         .await;
@@ -138,7 +147,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(id)
             .bind(s.stance)
             .bind(s.reasons)
-            .bind(RULES_VERSION)
+            .bind(rules_version(&language))
             .bind(attempt)
             .bind(s.claim.as_deref())
             .execute(&state.pool)
@@ -172,11 +181,7 @@ async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, 
     Ok(rows
         .into_iter()
         .map(|(role, content)| ChatTurn {
-            role: if role == "student" {
-                ChatRole::User
-            } else {
-                ChatRole::Assistant
-            },
+            role: ChatRole::from_db_role(&role),
             content,
         })
         .collect())
@@ -209,14 +214,16 @@ async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
     tag = "conversations",
     summary = "結束對話並在背景產生總結",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已開始產生", body = SummaryView), (status = 200, description = "已結束，回傳目前總結", body = SummaryView), (status = 409, description = "classroom_archived / empty_conversation / reply_in_progress", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn end(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
-    let conv = owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與結束寫入在同一個交易內
+    let mut tx = state.pool.begin().await?;
+    let conv = crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     if conv.status == "ended" {
         // 重複結束不會再產生一次總結
         return Ok((StatusCode::OK, Json(view(&state, id).await?)));
@@ -224,7 +231,6 @@ pub(crate) async fn end(
     if conv.turn_count == 0 {
         return Err(ApiError::conflict("empty_conversation", "還沒有討論內容"));
     }
-    let mut tx = state.pool.begin().await?;
     let ended = end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
     if !ended {
@@ -265,14 +271,16 @@ pub(crate) async fn get_summary(
     tag = "conversations",
     summary = "總結失敗後重試",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "summary_not_retryable", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已重新開始", body = SummaryView), (status = 409, description = "classroom_archived / summary_not_retryable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn retry(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<SummaryView>), ApiError> {
-    owned_conversation(&state, cu.user.id, id).await?;
+    // 封存檢查與重試寫入在同一個交易內
+    let mut tx = state.pool.begin().await?;
+    crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     // 只有失敗，或產生中卻已超過逾時上限（例如服務重啟）才能重試
     // 重試開新的一代（attempt + 1）；舊的背景任務之後寫入會因代數不符而被忽略
     let next: Option<(i32,)> = sqlx::query_as(
@@ -285,8 +293,9 @@ pub(crate) async fn retry(
     )
     .bind(id)
     .bind(state.config.generation_stale_secs())
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     let Some((attempt,)) = next else {
         // 沒有總結列代表對話還沒結束
         view(&state, id).await?;
@@ -310,10 +319,99 @@ pub(crate) struct SummaryRow {
     ended_at: DateTime<Utc>,
     student_id: Uuid,
     student_name: Option<String>,
-    student_email: String,
+    student_email: Option<String>,
+    /// 對話建立時快照的原文語言。
+    language: String,
     stance: Option<String>,
     reasons: Option<String>,
     claim: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SummaryTranslation {
+    language: String,
+    stance: String,
+    reasons: String,
+}
+
+/// 教師明確要求時，僅把自己教室內既有總結的兩個欄位翻成教師目前的介面語言。
+/// 不讀取也不送出對話原文、學生姓名或電子郵件；管理者介面維持敏感欄位遮蔽，不提供翻譯。
+#[utoipa::path(
+    post,
+    path = "/api/summaries/{id}/translation",
+    tag = "summaries",
+    summary = "按需翻譯一筆學生總結（不含對話原文）",
+    params(("id" = Uuid, Path, description = "對話 ID")),
+    responses(
+        (status = 200, description = "未保存的翻譯結果", body = SummaryTranslation),
+        (status = 429, description = "翻譯太頻繁（too_many_translations）", body = crate::error::ErrorBody),
+        (status = 502, description = "AI 無法翻譯，或譯文過長（ai_unavailable）", body = crate::error::ErrorBody),
+        crate::error::CommonErrors
+    )
+)]
+pub(crate) async fn translate(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SummaryTranslation>, ApiError> {
+    if cu.roles.admin {
+        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    let source: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT s.stance, s.reasons, c.language
+         FROM summaries s
+         JOIN conversations c ON c.id = s.conversation_id
+         JOIN classrooms cl ON cl.id = c.classroom_id AND cl.created_by = $2
+         WHERE s.conversation_id = $1 AND s.status = 'ready'",
+    )
+    .bind(id)
+    .bind(cu.user.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((stance, reasons, source_language)) = source else {
+        return Err(ApiError::not_found());
+    };
+    let language = cu.user.language;
+    if language == source_language {
+        return Ok(Json(SummaryTranslation {
+            language,
+            stance,
+            reasons,
+        }));
+    }
+    // 翻譯不保存也不快取，每次都是一次 AI 呼叫：每位教師限量
+    let Some(slot) = state.translation_limit.try_acquire(cu.user.id) else {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_translations",
+            "翻譯太頻繁，請稍後再試",
+        ));
+    };
+    let req = AiRequest {
+        system: build_summary_translation_prompt(&language),
+        messages: vec![ChatTurn {
+            role: ChatRole::User,
+            content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
+        }],
+    };
+    let translated = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
+        .await
+        .ok()
+        .and_then(|raw| parse_summary_translation(&raw));
+    let Some(translated) = translated else {
+        // 沒有得到譯文就不扣額度：AI 當機時的重試不該把教師鎖在外面
+        state.translation_limit.refund(cu.user.id, slot);
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "ai_unavailable",
+            "AI 暫時無法回覆",
+        ));
+    };
+    Ok(Json(SummaryTranslation {
+        language,
+        stance: translated.stance,
+        reasons: translated.reasons,
+    }))
 }
 
 /// 總結分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
@@ -333,6 +431,8 @@ pub(crate) struct SummaryQuery {
     classroom: ClassroomFilter,
     /// 學生的使用者 ID（即列表項目的 `student_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
     student: Option<String>,
+    /// 討論活動的 ID；只看這個活動的對話
+    activity: Option<String>,
     /// 對話複製來的題目標題，完全相符但不分大小寫（以標題分題目，與論點分布、主張分組一致）
     topic: Option<String>,
     /// 搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串），涵蓋所有頁
@@ -358,6 +458,7 @@ fn like_pattern(q: &str) -> String {
 
 struct Filters<'a> {
     student: Option<Uuid>,
+    activity: Option<Uuid>,
     topic: Option<&'a str>,
     search: Option<String>,
     /// 篩選條件的指紋；放進游標，換條件後沿用舊游標會被拒絕。
@@ -368,12 +469,14 @@ struct Filters<'a> {
 fn fingerprint(
     classroom: Option<Uuid>,
     student: Option<Uuid>,
+    activity: Option<Uuid>,
     topic: Option<&str>,
     q: Option<&str>,
 ) -> String {
     let normalized = (
         classroom,
         student,
+        activity,
         topic.map(str::to_lowercase),
         q.map(str::to_lowercase),
     );
@@ -387,6 +490,10 @@ impl SummaryQuery {
         let student = match self.student.as_deref() {
             None => None,
             Some(s) => Some(Uuid::parse_str(s).map_err(|_| invalid())?),
+        };
+        let activity = match self.activity.as_deref() {
+            None => None,
+            Some(a) => Some(Uuid::parse_str(a).map_err(|_| invalid())?),
         };
         let topic = match self.topic.as_deref() {
             None => None,
@@ -402,9 +509,10 @@ impl SummaryQuery {
         };
         Ok(Filters {
             student,
+            activity,
             topic,
             search: q.map(like_pattern),
-            fingerprint: fingerprint(classroom, student, topic, q),
+            fingerprint: fingerprint(classroom, student, activity, topic, q),
         })
     }
 }
@@ -418,9 +526,10 @@ impl SummaryQuery {
     summary = "教室內學生已完成對話的總結（不含原文；不含個人練習）",
     params(
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
-        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 classroom_id／student／topic／q 有效，換條件要從第一頁開始"),
+        ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 classroom_id／student／activity／topic／q 有效，換條件要從第一頁開始"),
         ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
         ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
+        ("activity" = Option<Uuid>, Query, description = "只看這個討論活動的對話（活動 ID）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
@@ -435,6 +544,7 @@ pub(crate) async fn list(
     let classroom = filtered_classroom(&state, &cu, &query.classroom).await?;
     let Filters {
         student,
+        activity,
         topic,
         search,
         fingerprint,
@@ -449,6 +559,7 @@ pub(crate) async fn list(
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
                 u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
+                c.language,
                 s.stance, s.reasons, s.claim
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
@@ -464,8 +575,9 @@ pub(crate) async fn list(
                 OR c.title ILIKE $6 ESCAPE '\\')
            AND ($7::timestamptz IS NULL
                 OR c.ended_at < $7 OR (c.ended_at = $7 AND s.conversation_id > $8))
+           AND ($9::uuid IS NULL OR c.activity_id = $9)
          ORDER BY c.ended_at DESC, s.conversation_id ASC
-         LIMIT $9",
+         LIMIT $10",
     )
     .bind(cu.roles.admin)
     .bind(cu.user.id)
@@ -475,6 +587,7 @@ pub(crate) async fn list(
     .bind(search)
     .bind(after_time)
     .bind(after_id)
+    .bind(activity)
     .bind((limit + 1) as i64)
     .fetch_all(&state.pool)
     .await?;

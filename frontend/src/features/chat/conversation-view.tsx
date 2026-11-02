@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -60,6 +60,15 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   const initialMessages = useMemo(() => toInitialMessages(detail), [detail])
   const runtime = useLocalRuntime(adapter, { initialMessages })
 
+  // 離開對話頁時回覆還在產生：回來後直接接上（只重開串流），不必按重試
+  const resumed = useRef(false)
+  useEffect(() => {
+    const last = detail.messages.at(-1)
+    if (resumed.current || !detail.generating || last?.role !== 'student') return
+    resumed.current = true
+    runtime.thread.startRun({ parentId: last.id })
+  }, [detail, runtime])
+
   const ended = status === 'ended'
 
   async function endDiscussion() {
@@ -79,24 +88,28 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="space-y-4">
-        <header className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight break-words">{detail.title}</h1>
-            <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="flex flex-wrap items-end justify-between gap-4 border-b px-4 pt-6 pb-4 md:px-8">
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl leading-8 font-medium break-words">{detail.title}</h1>
+              <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
+            </div>
+            {detail.description ? <p className="text-muted-foreground text-xs break-words">{detail.description}</p> : null}
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <RoundCount />
+              <StageIndicator stage={stage} />
+            </div>
           </div>
-          {detail.description ? <p className="text-muted-foreground text-sm break-words">{detail.description}</p> : null}
-          <StageIndicator stage={stage} />
+          <EndDiscussion
+            ended={ended}
+            suggestEnd={suggestEnd}
+            pending={ending}
+            error={endError}
+            onClearError={() => setEndError(undefined)}
+            onConfirm={endDiscussion}
+          />
         </header>
-
-        <EndDiscussion
-          ended={ended}
-          suggestEnd={suggestEnd}
-          pending={ending}
-          error={endError}
-          onClearError={() => setEndError(undefined)}
-          onConfirm={endDiscussion}
-        />
 
         <ChatThread
           showComposer={!ended}
@@ -104,11 +117,22 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           language={detail.language}
           onVoiceSource={(s: RecognitionSource) => messageSource.set(s)}
         />
-        {ended ? <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p> : null}
-        {ended ? <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} /> : null}
+        {ended ? (
+          <div className="space-y-4 px-4 pb-6 md:px-8">
+            <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p>
+            <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} />
+          </div>
+        ) : null}
       </div>
     </AssistantRuntimeProvider>
   )
+}
+
+/** 回合數：學生送出幾則訊息就是第幾回合；跟著對話串即時更新。 */
+function RoundCount() {
+  const t = useT()
+  const count = useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length)
+  return <span className="text-xs font-medium">{t('chat.round', { count })}</span>
 }
 
 type EndProps = {
@@ -131,7 +155,6 @@ function EndDiscussion({ ended, suggestEnd, pending, error, onClearError, onConf
   const endButton = (
     <Button
       variant={suggestEnd ? 'default' : 'outline'}
-      size="sm"
       disabled={running || pending}
       onClick={() => {
         onClearError()
@@ -145,7 +168,7 @@ function EndDiscussion({ ended, suggestEnd, pending, error, onClearError, onConf
   return (
     <>
       {suggestEnd ? (
-        <Alert role="status" data-testid="suggest-end">
+        <Alert role="status" data-testid="suggest-end" className="w-full md:w-auto md:max-w-sm">
           <AlertTitle>{t('chat.suggestEnd.title')}</AlertTitle>
           <AlertDescription>
             <p>{t('chat.suggestEnd.body')}</p>
@@ -153,7 +176,7 @@ function EndDiscussion({ ended, suggestEnd, pending, error, onClearError, onConf
           </AlertDescription>
         </Alert>
       ) : (
-        <div className="flex justify-end">{endButton}</div>
+        endButton
       )}
       <ConfirmDialog
         open={open}

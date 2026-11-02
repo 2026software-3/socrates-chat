@@ -13,6 +13,7 @@ pub struct Classroom {
     pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub is_archived: bool,
 }
 
 #[derive(Debug)]
@@ -44,7 +45,7 @@ pub async fn list(
     is_admin: bool,
 ) -> Result<Vec<Classroom>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, name, year_label, description, created_at, updated_at
+        "SELECT id, name, year_label, description, created_at, updated_at, is_archived
          FROM classrooms
          WHERE $1 OR created_by = $2
          ORDER BY lower(name), id",
@@ -55,14 +56,14 @@ pub async fn list(
     .await
 }
 
-pub async fn get_visible(
-    pool: &PgPool,
+pub async fn get_visible<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     actor_id: Uuid,
     is_admin: bool,
 ) -> Result<Option<Classroom>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, name, year_label, description, created_at, updated_at
+        "SELECT id, name, year_label, description, created_at, updated_at, is_archived
          FROM classrooms
          WHERE id = $1 AND ($2 OR created_by = $3)",
     )
@@ -83,7 +84,7 @@ pub async fn create(
     sqlx::query_as(
         "INSERT INTO classrooms (name, year_label, description, created_by)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, name, year_label, description, created_at, updated_at",
+         RETURNING id, name, year_label, description, created_at, updated_at, is_archived",
     )
     .bind(name)
     .bind(year_label)
@@ -96,19 +97,24 @@ pub async fn create(
 
 #[derive(Default)]
 pub struct ClassroomChanges {
+    pub is_archived: Option<bool>,
     pub name: Option<String>,
     pub year_label: Option<Option<String>>,
     pub description: Option<Option<String>>,
 }
 
-pub async fn update_visible(
-    pool: &PgPool,
+pub async fn update_visible<'e>(
+    pool: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     actor_id: Uuid,
     is_admin: bool,
     changes: ClassroomChanges,
 ) -> Result<Option<Classroom>, ClassroomStoreError> {
-    if changes.name.is_none() && changes.year_label.is_none() && changes.description.is_none() {
+    if changes.is_archived.is_none()
+        && changes.name.is_none()
+        && changes.year_label.is_none()
+        && changes.description.is_none()
+    {
         return get_visible(pool, id, actor_id, is_admin)
             .await
             .map_err(Into::into);
@@ -119,9 +125,10 @@ pub async fn update_visible(
          SET name = COALESCE($4, name),
              year_label = CASE WHEN $5 THEN $6 ELSE year_label END,
              description = CASE WHEN $7 THEN $8 ELSE description END,
+             is_archived = COALESCE($9, is_archived),
              updated_at = now()
          WHERE id = $1 AND ($2 OR created_by = $3)
-         RETURNING id, name, year_label, description, created_at, updated_at",
+         RETURNING id, name, year_label, description, created_at, updated_at, is_archived",
     )
     .bind(id)
     .bind(is_admin)
@@ -131,6 +138,7 @@ pub async fn update_visible(
     .bind(changes.year_label.flatten())
     .bind(changes.description.is_some())
     .bind(changes.description.flatten())
+    .bind(changes.is_archived)
     .fetch_optional(pool)
     .await
     .map_err(Into::into)

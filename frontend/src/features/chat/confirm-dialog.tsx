@@ -24,6 +24,8 @@ type Props = {
   error?: unknown
   onConfirm: () => void
   destructive?: boolean
+  /** 說明下方的摘要區塊（設計稿的灰底事實列）。 */
+  children?: ReactNode
 }
 
 /** 需要確認的操作共用的對話框（刪除對話、結束討論）。 */
@@ -37,6 +39,7 @@ export function ConfirmDialog({
   error,
   onConfirm,
   destructive = false,
+  children,
 }: Props) {
   const t = useT()
   return (
@@ -46,6 +49,7 @@ export function ConfirmDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {children ? <div className="bg-surface flex flex-col gap-1 rounded-xl p-3 text-xs">{children}</div> : null}
         {error ? (
           <Alert variant="destructive" role="alert">
             <AlertTitle>{errorText(t, error)}</AlertTitle>
@@ -67,5 +71,15 @@ export function ConfirmDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+/** ConfirmDialog 摘要區塊的一列：灰色標籤＋內容。 */
+export function ConfirmFact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span>
+      <span className="text-muted-foreground">{label}</span>
+      {children}
+    </span>
   )
 }

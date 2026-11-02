@@ -15,6 +15,7 @@ export const classroom = (id: string, name: string): Classroom => ({
   year_label: null,
   description: null,
   created_at: '2026-01-01T00:00:00Z',
+  is_archived: false,
   updated_at: '2026-01-01T00:00:00Z',
 })
 
@@ -38,7 +39,7 @@ export function renderTeacherPage(ui: ReactElement, lang?: Lang, roles: Partial<
       dispatchEvent: () => false,
     })) as typeof window.matchMedia
   }
-  mockMe(makeMe(roles))
+  mockMe(makeMe(roles, { language: lang ?? 'zh-TW' }))
   return renderApp(
     <>
       {ui}

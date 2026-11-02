@@ -1,6 +1,9 @@
 /** 支援語言（S-12.1）：`zh-TW`、`en`、`es`；預設 `zh-TW`。 */
 export const LANGS = ['zh-TW', 'en', 'es'] as const
 export type Lang = (typeof LANGS)[number]
+export function isLang(s: unknown): s is Lang {
+  return (LANGS as readonly unknown[]).includes(s)
+}
 export const DEFAULT_LANG: Lang = 'zh-TW'
 
 export const LANG_LABELS: Record<Lang, string> = {

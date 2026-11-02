@@ -6,8 +6,7 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream::BoxStream};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -16,14 +15,49 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// 提示與規則的版本；記錄在每則 AI 回覆上（S-03.2），修改提示時一併更新。
 /// 送出前的個資遮蔽規則（`pii`，S-02.6）也併入這個版本，遮蔽規則變動時同樣遞增。
 /// v1.11：加入個資遮蔽與系統提示的佔位詞說明。
-/// v1.12：加入第 3 階段收斂條件判定與主動引導收尾規則（S-03.3、F-08.2）。
+/// v1.12：加入第 3 階段收斂條件判定與主動引導收尾規則（S-03.3、F-08.2）；支援多語言提示與版本後綴。
 /// v1.13：收尾階段改由 AI 主動梳理總結學生論點並詢問確認，而非要求學生自行做總結。
 pub const RULES_VERSION: &str = "v1.13/zh-TW";
+
+/// 對話語言對應的提示版本；未知值保守地退回繁體中文。
+pub fn rules_version(language: &str) -> &'static str {
+    match language {
+        "en" => "v1.12/en",
+        "es" => "v1.12/es",
+        _ => RULES_VERSION,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
     User,
     Assistant,
+}
+
+impl ChatRole {
+    /// 資料庫 `messages.role`（`student`／`ai`）對應的角色。
+    pub fn from_db_role(role: &str) -> Self {
+        if role == "student" {
+            Self::User
+        } else {
+            Self::Assistant
+        }
+    }
+}
+
+/// 取出模型輸出中第一個 `{` 到最後一個 `}` 之間的 JSON；找不到或格式不符回傳 `None`。
+fn extract_json<T: DeserializeOwned>(raw: &str) -> Option<T> {
+    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
+    if end < start {
+        return None;
+    }
+    serde_json::from_str(&raw[start..=end]).ok()
+}
+
+/// 去掉前後空白並截到 `max` 個字元；結果為空時回傳 `None`。
+fn clip(s: &str, max: usize) -> Option<String> {
+    let s: String = s.trim().chars().take(max).collect();
+    (!s.is_empty()).then_some(s)
 }
 
 #[derive(Debug, Clone)]
@@ -42,11 +76,12 @@ pub struct AiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiError;
 
+/// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
-    /// 開始串流回覆；回傳的串流依序給出文字片段。
+    /// 開始串流回覆；回傳的串流依序給出文字片段（見 `AiStream`）。
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError>;
 }
 
@@ -88,10 +123,9 @@ impl MetaSplitter {
                     && META_DELIM.starts_with(&self.held[self.held.len() - n..])
             })
             .unwrap_or(0);
-        let cut = self.held.len() - keep;
-        let text = self.held[..cut].to_string();
-        self.held.drain(..cut);
-        text
+        // 送出前段、留下後段：沿用原本的配置，不另外複製
+        let rest = self.held.split_off(self.held.len() - keep);
+        std::mem::replace(&mut self.held, rest)
     }
 
     /// 串流結束：回傳尚未送出的文字與結構化段落。
@@ -133,21 +167,13 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
         advance: bool,
         reason: Option<String>,
     }
-    let parsed = raw
-        .find('{')
-        .zip(raw.rfind('}'))
-        .filter(|(a, b)| a <= b)
-        .and_then(|(a, b)| serde_json::from_str::<Raw>(&raw[a..=b]).ok());
-    match parsed {
+    match extract_json::<Raw>(raw) {
         Some(r) => TurnMeta {
             question_type: r
                 .question_type
                 .filter(|q| QUESTION_TYPES.contains(&q.as_str())),
             advance: r.advance,
-            reason: r
-                .reason
-                .map(|s| s.trim().chars().take(MAX_REASON_CHARS).collect::<String>())
-                .filter(|s| !s.is_empty()),
+            reason: r.reason.and_then(|s| clip(&s, MAX_REASON_CHARS)),
         },
         None => TurnMeta {
             question_type: None,
@@ -165,9 +191,18 @@ pub struct PromptContext<'a> {
     pub stage: i16,
     pub turn: i32,
     pub wrap_up_turn: u32,
+    pub language: &'a str,
 }
 
 pub fn build_system_prompt(c: &PromptContext) -> String {
+    match c.language {
+        "en" => build_system_prompt_en(c),
+        "es" => build_system_prompt_es(c),
+        _ => build_system_prompt_zh(c),
+    }
+}
+
+fn build_system_prompt_zh(c: &PromptContext) -> String {
     let is_wrap_up = c.turn >= c.wrap_up_turn as i32;
     let stage = if is_wrap_up {
         let stage_name = match c.stage {
@@ -212,7 +247,7 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
         ""
     };
     format!(
-        "你是一位蘇格拉底式的哲學討論引導者，使用繁體中文與學生對話。\n\
+        "你是一位蘇格拉底式的哲學討論引導者，只使用繁體中文與學生對話。\n\
          討論題目：{title}\n題目說明：{desc}\n\n\
         規則：\n\
         - 每次回覆只問一個問題，以追問引導學生思考。\n\
@@ -315,13 +350,178 @@ pub fn build_system_prompt(c: &PromptContext) -> String {
     )
 }
 
+fn build_system_prompt_en(c: &PromptContext) -> String {
+    let stage = match c.stage {
+        1 => {
+            "Stage 1 — Clarification: help the student state a clear position, define key terms, and confirm the position. Advance only after the student has stated a definite position and explained the meaning of the key terms."
+        }
+        2 => {
+            "Stage 2 — Argument: examine the reasons and implicit assumptions behind the position. Advance only after the student has offered at least one reason and examined at least one implicit assumption."
+        }
+        _ => {
+            "Stage 3 — Challenge: test the position with a counterexample or opposing view. The stage is complete only after the student has addressed at least one counterexample or opposing view."
+        }
+    };
+    let wrap = if c.turn >= c.wrap_up_turn as i32 {
+        "\nThe discussion has gone on for many turns. Begin helping the student synthesize a conclusion and suggest wrapping up."
+    } else {
+        ""
+    };
+    format!(
+        "You are a Socratic philosophy discussion facilitator. Respond to the student only in English.\n\
+         Discussion topic: {title}\nTopic description: {desc}\n\n\
+         Rules:\n\
+         - Ask exactly one question in each response and use follow-up questions to guide the student's thinking.\n\
+         - Do not reach conclusions for the student or express your own position.\n\
+         - Stay neutral and respectful, keep the response concise, and guide digressions back to the topic.\n\
+         - Uppercase terms in brackets ([EMAIL], [PHONE], [NATIONAL_ID], [STUDENT_ID]) are personal data masked by the system. Do not ask about, guess, or repeat their contents; continue discussing the topic.\n\n\
+         Questioning and classification:\n\
+         First ask one useful follow-up question based on the conversation, then label question_type according to the question you actually asked.\n\
+         Require only one main thinking operation at a time; do not combine, for example, a request for a definition with a request for reasons.\n\
+         Use the necessary context to determine what operation the student must perform to answer. Context identifies the target of the question; it does not by itself determine the type.\n\
+         Do not classify by the current stage, by what the student has not yet supplied, or by a single interrogative word.\n\n\
+         Six types and their boundaries:\n\
+         - clarify: ask the student to make the meaning, reference, or scope of their original words explicit. The core operation is “what did you mean?”, not “is the claim sound?”. Asking for the standard or boundary of a term can still be clarify. If the student must create or assess a standard for trading off conflicting values, use perspective instead.\n\
+         - reason: ask for a reason supporting the student's position. The core operation is “why do you support this position?”. If the question tests a premise, generalization, or inference already used by the student, use assumption even when it asks for an explanation.\n\
+         - assumption: test whether a premise, generalization, or inference used in the student's argument is reliable. It may be explicit or implicit. Examples include testing whether A is enough to imply B or whether only A could cause B. If the question gives a concrete exception or asks the student to find a challenging case, consider counterexample.\n\
+         - counterexample: present an identifiable hypothetical case or exception and ask whether the original principle still holds, or ask the student to find a counterexample or exception. A case proposed by you must state its conditions, but need not be a real event. Merely asking abstractly whether something always holds, without seeking a case, is assumption. A value conflict inside a case does not automatically make it perspective.\n\
+         - perspective: ask the student to compare considerations from different positions or weigh conflicting values or interests, including priority, accommodation, and limits. The core operation is “how should these considerations be compared or traded off?”. If the preceding context already identifies both sides of a conflict, a request for a reasonable limit, priority, or weighting standard is perspective even without restating both sides. A conflict in the context does not make every question perspective. Merely identifying a position is clarify; merely comparing word meanings or task difficulty is not perspective.\n\
+         - wrap_up: ask the student to synthesize or review positions, reasons, revisions, or remaining questions already discussed. Its core is reflective integration, not a new line of inquiry.\n\n\
+         Classification conflicts:\n\
+         Identify the main thinking operation first; incidental wording such as “why” or “explain” does not change the type.\n\
+         Only when the main operation genuinely fits more than one type, use this priority: wrap_up > perspective > counterexample > assumption > reason > clarify. This priority does not constrain which questioning strategy you choose.\n\n\
+         Boundary examples:\n\
+         Student: “I support distributing resources according to contribution.”\n\
+         Question: “What does ‘contribution’ include?” → clarify, because it makes the original term explicit.\n\
+         Question: “Why do you support distribution according to contribution?” → reason, because it asks for support for the position.\n\n\
+         Student: “More hours worked always means a greater contribution.”\n\
+         Question: “Are hours worked enough to determine the size of a contribution?” → assumption, because it tests the inference.\n\
+         Question: “If A produces more in two hours than B does in eight, would B still have contributed more?” → counterexample, because it tests the principle with a concrete case.\n\n\
+         Student: “Distribution should reflect contribution, but it should also help people with urgent needs.”\n\
+         Question: “What situations count as an ‘urgent need’?” → clarify.\n\
+         Question: “When contribution and urgent need point to different people, what standard determines priority?” → perspective.\n\n\
+         Student: “I support transparency, but privacy also needs protection; when they conflict, I do not know where to draw the line.”\n\
+         Question: “What information do you include under ‘privacy’?” → clarify.\n\
+         Question: “What standard would make the scope of disclosure reasonable?” → perspective, because it asks for a boundary within the stated conflict.\n\n\
+         Student: “Rules must never be broken.”\n\
+         Question: “Can you think of a situation in which following the rule would be unreasonable?” → counterexample, because it asks the student to find a case.\n\
+         Question: “Does that principle necessarily apply in every situation?” → assumption, because it tests the generalization abstractly without asking for a case.\n\n\
+         An assumption or perspective question remains that type even if it also says “why”.\n\n\
+         Current stage (stages never move backward): {stage}{wrap}\n\n\
+         Output format (follow it completely in every response):\n\
+         Part 1: one concise follow-up question visible to the student, in English.\n\
+         Part 2: on a new line, output {delim}.\n\
+         Part 3: on a new line, output exactly one valid JSON object.\n\
+         The JSON must contain question_type, advance, and reason. question_type must be one of the six valid types; advance must be true or false; reason must be a short, non-empty English string.\n\
+         Never omit Part 2 or Part 3. Do not put the JSON in a Markdown code block. Previous assistant messages may contain only student-visible text; you must still output all three parts now.\n\
+         reason explains only the advance decision and does not determine question_type. Set advance to true only when the student has already met every completion condition for the current stage. If reason says a required condition is missing, advance must be false. Judge advance from thinking the student has completed so far, not from the question you are about to ask.\n\n\
+         Complete format example (structure only; generate content and judgment from the actual conversation):\n\
+         Suppose the student is in Stage 1 and has only said “I support fair distribution” without explaining fairness. A complete response is:\n\
+         What specifically do you mean by “fair”?\n\
+         {delim}\n\
+         {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"The student has not explained what fairness means.\"}}\n\n\
+         Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n",
+        title = c.title,
+        desc = c.description,
+        stage = stage,
+        wrap = wrap,
+        delim = META_DELIM,
+    )
+}
+
+fn build_system_prompt_es(c: &PromptContext) -> String {
+    let stage = match c.stage {
+        1 => {
+            "Etapa 1: Aclaración. Ayuda al estudiante a expresar una postura clara, definir términos clave y confirmar su postura. Avanza solo cuando haya expresado una postura definida y explicado el significado de los términos clave."
+        }
+        2 => {
+            "Etapa 2: Argumentación. Examina las razones y los supuestos implícitos de la postura. Avanza solo cuando el estudiante haya dado al menos una razón y examinado al menos un supuesto implícito."
+        }
+        _ => {
+            "Etapa 3: Desafío. Pon a prueba la postura con un contraejemplo o una perspectiva opuesta. La etapa se completa solo cuando el estudiante haya respondido al menos a uno de ellos."
+        }
+    };
+    let wrap = if c.turn >= c.wrap_up_turn as i32 {
+        "\nLa discusión ya lleva muchos turnos. Empieza a ayudar al estudiante a sintetizar su conclusión y propón cerrar la conversación."
+    } else {
+        ""
+    };
+    format!(
+        "Eres un facilitador socrático de debates filosóficos. Responde al estudiante únicamente en español.\n\
+         Tema de discusión: {title}\nDescripción del tema: {desc}\n\n\
+         Reglas:\n\
+         - Haz exactamente una pregunta en cada respuesta y usa preguntas de seguimiento para guiar el pensamiento del estudiante.\n\
+         - No saques conclusiones por el estudiante ni expreses tu propia postura.\n\
+         - Mantén un tono neutral y respetuoso, responde con brevedad y reconduce las digresiones hacia el tema.\n\
+         - Los términos en mayúsculas entre corchetes ([EMAIL], [PHONE], [NATIONAL_ID], [STUDENT_ID]) son datos personales ocultados por el sistema. No preguntes por ellos, no intentes adivinarlos ni los repitas; continúa con el tema.\n\n\
+         Preguntas y clasificación:\n\
+         Primero formula una pregunta de seguimiento útil según la conversación y luego marca question_type de acuerdo con la pregunta que realmente formulaste.\n\
+         Exige una sola operación principal de pensamiento cada vez; no combines, por ejemplo, una petición de definición con una petición de razones.\n\
+         Usa el contexto necesario para determinar qué operación debe realizar el estudiante. El contexto identifica el objeto de la pregunta, pero no determina por sí solo el tipo.\n\
+         No clasifiques según la etapa actual, según lo que todavía falte en la respuesta del estudiante ni según una sola palabra interrogativa.\n\n\
+         Seis tipos y sus límites:\n\
+         - clarify: pide aclarar el significado, la referencia o el alcance de las palabras originales del estudiante. La operación central es “¿qué querías decir?”, no “¿es válida tu afirmación?”. Pedir el criterio o el límite de un término todavía puede ser clarify. Si debe crear o evaluar un criterio para sopesar valores en conflicto, usa perspective.\n\
+         - reason: pide una razón que apoye la postura. La operación central es “¿por qué apoyas esta postura?”. Si la pregunta comprueba una premisa, generalización o inferencia ya usada, usa assumption aunque pida una explicación.\n\
+         - assumption: comprueba si una premisa, generalización o inferencia usada en el argumento es fiable. Puede ser explícita o implícita. Por ejemplo, comprueba si A basta para implicar B o si solo A puede causar B. Si presentas una excepción concreta o pides encontrar un caso que desafíe el principio, considera counterexample.\n\
+         - counterexample: presenta un caso hipotético o una excepción identificable y pregunta si el principio original sigue siendo válido, o pide al estudiante encontrar un contraejemplo o una excepción. Si propones el caso, indica sus condiciones; no tiene que ser un hecho real. Preguntar de forma abstracta si algo siempre es válido, sin pedir un caso, es assumption. Que un caso contenga valores en conflicto no lo convierte automáticamente en perspective.\n\
+         - perspective: pide comparar consideraciones de posturas distintas o sopesar valores o intereses en conflicto, incluidas prioridades, formas de conciliación y límites. La operación central es “¿cómo deben compararse o equilibrarse estas consideraciones?”. Si el contexto ya identifica ambos lados del conflicto, pedir un límite razonable, una prioridad o un criterio de ponderación es perspective aunque no se repitan ambos lados. La existencia de un conflicto no convierte todas las preguntas en perspective. Identificar una postura sigue siendo clarify; comparar significados o la dificultad de dos tareas no basta.\n\
+         - wrap_up: pide sintetizar o revisar posturas, razones, revisiones o preguntas pendientes ya discutidas. Su núcleo es la integración reflexiva, no abrir una investigación nueva.\n\n\
+         Conflictos de clasificación:\n\
+         Identifica primero la operación principal de pensamiento; palabras accesorias como “por qué” o “explica” no cambian el tipo.\n\
+         Solo cuando la operación principal encaje de verdad en más de un tipo, usa esta prioridad: wrap_up > perspective > counterexample > assumption > reason > clarify. Esta prioridad no limita la estrategia de pregunta que elijas.\n\n\
+         Ejemplos de límites:\n\
+         Estudiante: «Apoyo distribuir los recursos según la contribución».\n\
+         Pregunta: «¿Qué incluye la “contribución”?» → clarify, porque aclara el término original.\n\
+         Pregunta: «¿Por qué apoyas la distribución según la contribución?» → reason, porque pide apoyo para la postura.\n\n\
+         Estudiante: «Más horas de trabajo siempre significan una contribución mayor».\n\
+         Pregunta: «¿Bastan las horas trabajadas para determinar el tamaño de la contribución?» → assumption, porque comprueba la inferencia.\n\
+         Pregunta: «Si A produce más en dos horas que B en ocho, ¿B habría contribuido más?» → counterexample, porque prueba el principio con un caso concreto.\n\n\
+         Estudiante: «La distribución debe reflejar la contribución, pero también ayudar a quienes tienen necesidades urgentes».\n\
+         Pregunta: «¿Qué situaciones cuentan como una “necesidad urgente”?» → clarify.\n\
+         Pregunta: «Cuando la contribución y la necesidad urgente señalan a personas distintas, ¿qué criterio determina la prioridad?» → perspective.\n\n\
+         Estudiante: «Apoyo la transparencia, pero también hay que proteger la privacidad; cuando entran en conflicto, no sé dónde poner el límite».\n\
+         Pregunta: «¿Qué información incluyes en la “privacidad”?» → clarify.\n\
+         Pregunta: «¿Qué criterio haría razonable el alcance de la divulgación?» → perspective, porque pide un límite dentro del conflicto indicado.\n\n\
+         Estudiante: «Nunca se deben infringir las reglas».\n\
+         Pregunta: «¿Puedes imaginar una situación en la que cumplir la regla resulte irrazonable?» → counterexample, porque pide encontrar un caso.\n\
+         Pregunta: «¿Ese principio se aplica necesariamente en toda situación?» → assumption, porque comprueba la generalización de forma abstracta sin pedir un caso.\n\n\
+         Una pregunta assumption o perspective conserva su tipo aunque también diga “por qué”.\n\n\
+         Etapa actual (las etapas nunca retroceden): {stage}{wrap}\n\n\
+         Formato de salida (síguelo por completo en cada respuesta):\n\
+         Parte 1: una pregunta breve visible para el estudiante, en español.\n\
+         Parte 2: en una línea nueva, escribe {delim}.\n\
+         Parte 3: en una línea nueva, escribe exactamente un objeto JSON válido.\n\
+         El JSON debe contener question_type, advance y reason. question_type debe ser uno de los seis tipos válidos; advance debe ser true o false; reason debe ser una cadena breve, no vacía y en español.\n\
+         Nunca omitas la Parte 2 ni la Parte 3. No encierres el JSON en un bloque de código Markdown. Los mensajes anteriores del asistente pueden contener solo el texto visible; aun así debes producir ahora las tres partes.\n\
+         reason explica únicamente la decisión de advance y no determina question_type. Usa advance=true solo cuando el estudiante ya haya cumplido todas las condiciones de la etapa actual. Si reason indica que falta una condición necesaria, advance debe ser false. Evalúa advance según el pensamiento ya completado por el estudiante, no según la pregunta que vas a formular.\n\n\
+         Ejemplo de formato completo (solo muestra la estructura; genera el contenido y el juicio según la conversación real):\n\
+         Supón que el estudiante está en la Etapa 1 y solo ha dicho «Apoyo una distribución justa» sin explicar la justicia. Una respuesta completa sería:\n\
+         ¿Qué quieres decir concretamente con “justa”?\n\
+         {delim}\n\
+         {{\"question_type\":\"clarify\",\"advance\":false,\"reason\":\"El estudiante todavía no ha explicado qué significa la justicia.\"}}\n\n\
+         Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n",
+        title = c.title,
+        desc = c.description,
+        stage = stage,
+        wrap = wrap,
+        delim = META_DELIM,
+    )
+}
+
 // ---- OpenAI 實作 ----
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     http: reqwest::Client,
     base_url: String,
-    keys: Arc<KeyPool>,
+    /// 第一個是主模型，其後是備援模型（依序）；每個模型各有自己的 key 池冷卻狀態
+    targets: Vec<ModelTarget>,
+}
+
+#[derive(Clone)]
+struct ModelTarget {
     model: String,
+    keys: Arc<KeyPool>,
 }
 
 /// 開始串流前遇到限流或伺服器錯誤時，最多換幾把 key 重試。
@@ -330,43 +530,93 @@ const MAX_KEY_RETRIES: usize = 3;
 /// 不要讓學生的請求卡在一個遠遠等不到的冷卻上（呼叫端另有首 token 逾時）。
 const MAX_KEY_WAIT: Duration = Duration::from_secs(30);
 
+/// 對單一模型送出請求失敗的原因，用來決定要不要換備援模型。
+enum SendFailure {
+    /// 這個模型被限流：每次失敗都是 429，或它的 key 在先前的 429 之後還在冷卻中。可以換備援模型。
+    RateLimited,
+    /// 其他原因（連線失敗、5xx、key 被拒絕、請求本身有誤）。換模型無濟於事，不換。
+    Failed,
+}
+
+impl SendFailure {
+    /// 到目前為止的失敗全是 429 就算限流。
+    fn from_only_rate_limited(only_rate_limited: bool) -> Self {
+        if only_rate_limited {
+            Self::RateLimited
+        } else {
+            Self::Failed
+        }
+    }
+}
+
 impl OpenAiProvider {
     pub fn new(base_url: &str, keys: Arc<KeyPool>, model: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            keys,
-            model: model.to_string(),
+            targets: vec![ModelTarget {
+                model: model.to_string(),
+                keys,
+            }],
         }
+    }
+
+    /// 主模型被限流（429）時依序改用的備援模型。與主模型相同或重複的會略過。
+    /// 每個備援模型有獨立的 key 冷卻狀態：主模型的 429 是整個模型的問題，不能讓 key 因此冷卻。
+    pub fn with_fallbacks(mut self, models: Vec<String>) -> Self {
+        for model in models {
+            if self.targets.iter().any(|t| t.model == model) {
+                continue;
+            }
+            let keys = Arc::new(self.targets[0].keys.fork());
+            self.targets.push(ModelTarget { model, keys });
+        }
+        self
     }
 
     /// 取一把可用的 key；全部冷卻時等最快恢復的那把（不超過 `MAX_KEY_WAIT`）。
-    async fn acquire_key(&self) -> Result<crate::key_pool::Lease, AiError> {
+    /// `may_wait` 為 false（後面還有備援模型可換）時不等，直接放棄。
+    async fn acquire_key(
+        keys: &KeyPool,
+        may_wait: bool,
+    ) -> Result<crate::key_pool::Lease, AiError> {
         for _ in 0..=MAX_KEY_RETRIES {
-            if let Some(lease) = self.keys.acquire() {
+            if let Some(lease) = keys.acquire() {
                 return Ok(lease);
             }
-            match self.keys.next_available_in() {
-                Some(wait) if wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
+            match keys.next_available_in() {
+                Some(wait) if may_wait && wait <= MAX_KEY_WAIT => tokio::time::sleep(wait).await,
                 _ => break,
             }
         }
-        tracing::error!("no usable AI key");
         Err(AiError)
     }
 
-    /// 送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
+    /// 對一個模型送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
     /// （但每把 key 在一次請求中最多試一次，避免對故障的供應商連續猛打）。
     /// 只在尚未開始串流時重試，串流開始後的失敗不會重送（已有部分文字給了學生）。
     async fn send_with_failover(
         &self,
-        body: &serde_json::Value,
-    ) -> Result<reqwest::Response, AiError> {
+        keys: &KeyPool,
+        body: &(impl Serialize + Sync),
+        may_wait: bool,
+    ) -> Result<reqwest::Response, SendFailure> {
         let mut server_errored: Vec<usize> = Vec::new();
+        // 到目前為止的失敗是否全是 429。還沒送出請求就沒有 key 可用時，要看冷卻的原因：
+        // 是先前的 429 才算限流；key 被拒絕（401/402/403）換模型也沒用
+        let mut only_rate_limited = keys.usable_count() > 0 || keys.has_rate_limited_key();
         for _ in 0..=MAX_KEY_RETRIES {
-            let lease = self.acquire_key().await?;
+            let Ok(lease) = Self::acquire_key(keys, may_wait).await else {
+                // 後面還有備援模型時，這只是要換模型的訊號，不是錯誤
+                if may_wait {
+                    tracing::error!("no usable AI key");
+                } else {
+                    tracing::warn!("no usable AI key for this model");
+                }
+                return Err(SendFailure::from_only_rate_limited(only_rate_limited));
+            };
             if server_errored.contains(&lease.index) {
-                return Err(AiError);
+                return Err(SendFailure::Failed);
             }
             tracing::debug!(key = lease.index + 1, "sending AI request");
             let res = self
@@ -376,32 +626,57 @@ impl OpenAiProvider {
                 .json(body)
                 .send()
                 .await
-                .map_err(|_| AiError)?;
+                .map_err(|_| SendFailure::Failed)?;
             let status = res.status();
             if status.is_success() {
                 return Ok(res);
             }
             tracing::warn!(status = %status, key = lease.index + 1, "AI provider returned an error status");
+            only_rate_limited &= status.as_u16() == 429;
             if status.is_server_error() {
                 server_errored.push(lease.index);
             }
-            if !self.keys.report_failure(
+            if !keys.report_failure(
                 lease.index,
                 status.as_u16(),
                 parse_retry_after(res.headers()),
             ) {
-                return Err(AiError);
+                return Err(SendFailure::Failed);
             }
         }
-        Err(AiError)
+        Err(SendFailure::from_only_rate_limited(only_rate_limited))
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SseItem {
     Delta(String),
+    /// 推理模型的推理內容；文字不保留，只用來表示模型已開始回應
+    Reasoning,
     Done,
     Ignore,
+    /// 串流內的錯誤區塊（HTTP 已回 200，內容卻是 `error`）。`capacity` 表示容量或限流類的錯誤
+    /// （429、gRPC 的 ResourceExhausted），換一個模型有機會成功；其他錯誤換模型沒有幫助。
+    /// 供應商的錯誤文字不保留，也不寫入日誌。
+    Error {
+        capacity: bool,
+    },
+}
+
+/// 錯誤區塊是不是容量或限流類：code 為 429，或訊息含 ResourceExhausted（大小寫、底線、空白不拘）。
+fn is_capacity_error(err: &serde_json::Map<String, serde_json::Value>) -> bool {
+    if err.get("code").and_then(|c| c.as_u64()) == Some(429) {
+        return true;
+    }
+    err.get("message")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| {
+            m.chars()
+                .filter(|c| !matches!(c, '_' | ' ' | '-'))
+                .collect::<String>()
+                .to_ascii_lowercase()
+                .contains("resourceexhausted")
+        })
 }
 
 /// 解析 OpenAI 串流的一行（`data: {...}`）。格式錯誤回傳 `Err`，不會當作正常結束。
@@ -419,6 +694,19 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
     {
         return Ok(SseItem::Delta(text.to_string()));
     }
+    if let Some(err) = v["error"].as_object() {
+        return Ok(SseItem::Error {
+            capacity: is_capacity_error(err),
+        });
+    }
+    // OpenRouter 用 `reasoning`，DeepSeek／vLLM 用 `reasoning_content`
+    let delta = &v["choices"][0]["delta"];
+    if ["reasoning", "reasoning_content"]
+        .iter()
+        .any(|k| delta[*k].as_str().is_some_and(|t| !t.is_empty()))
+    {
+        return Ok(SseItem::Reasoning);
+    }
     if v["choices"][0]["finish_reason"].is_string() {
         return Ok(SseItem::Done);
     }
@@ -435,57 +723,187 @@ impl SseDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<SseItem>, AiError> {
         self.buf.extend_from_slice(bytes);
         let mut items = Vec::new();
-        while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = self.buf.drain(..=i).collect();
-            let line = std::str::from_utf8(&line).map_err(|_| AiError)?;
+        // 逐行就地解碼，最後一次丟掉已處理的部分，不為每一行配置新的緩衝
+        let mut start = 0;
+        while let Some(i) = self.buf[start..].iter().position(|&b| b == b'\n') {
+            let line = std::str::from_utf8(&self.buf[start..start + i]).map_err(|_| AiError)?;
             items.push(parse_sse_line(line.trim_end())?);
+            start += i + 1;
         }
+        self.buf.drain(..start);
         Ok(items)
     }
+}
+
+/// 送給供應商的請求本文。直接借用請求的文字序列化，不先複製成 `serde_json::Value`；
+/// 欄位依字母排列，與先前 `json!`（BTreeMap）輸出的位元組相同。
+#[derive(Serialize)]
+struct ChatBody<'a> {
+    messages: &'a [ChatMsg<'a>],
+    model: &'a str,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct ChatMsg<'a> {
+    content: &'a str,
+    role: &'static str,
+}
+
+impl OpenAiProvider {
+    /// 對第 `index` 個模型送出請求（含該模型自己的 key 重試）。
+    async fn send_to(
+        &self,
+        index: usize,
+        req: &AiRequest,
+    ) -> Result<reqwest::Response, SendFailure> {
+        let target = &self.targets[index];
+        let system = ChatMsg {
+            content: &req.system,
+            role: "system",
+        };
+        let turns = req.messages.iter().map(|m| ChatMsg {
+            content: &m.content,
+            role: if m.role == ChatRole::User {
+                "user"
+            } else {
+                "assistant"
+            },
+        });
+        let messages: Vec<ChatMsg> = std::iter::once(system).chain(turns).collect();
+        let body = ChatBody {
+            messages: &messages,
+            model: &target.model,
+            stream: true,
+        };
+        // 後面還有備援模型時不等 key 冷卻，直接換
+        self.send_with_failover(&target.keys, &body, index + 1 == self.targets.len())
+            .await
+    }
+
+    /// 從第 `start` 個模型起，找第一個能送出請求的；只在限流（429）時往下一個找，
+    /// 其他失敗直接放棄。換過模型的會留下日誌。
+    async fn first_available(
+        &self,
+        start: usize,
+        req: &AiRequest,
+    ) -> Option<(usize, reqwest::Response)> {
+        let last = self.targets.len() - 1;
+        for i in start..=last {
+            match self.send_to(i, req).await {
+                Ok(res) => {
+                    if i > 0 {
+                        tracing::warn!(model = %self.targets[i].model, "AI request served by a fallback model");
+                    }
+                    return Some((i, res));
+                }
+                Err(SendFailure::RateLimited) if i < last => {
+                    tracing::warn!(
+                        model = %self.targets[i].model,
+                        next = %self.targets[i + 1].model,
+                        "AI model rate limited, trying the next model"
+                    );
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// 把成功的串流回應轉成逐段文字的串流。回應是第 `index` 個模型的；
+    /// 還沒送出任何內容就收到容量錯誤時，在串流內部改用下一個備援模型。
+    fn into_stream(self, res: reqwest::Response, mut index: usize, req: AiRequest) -> AiStream {
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut current = res;
+            loop {
+                match pump(current, &tx).await {
+                    Pump::Finished => return,
+                    Pump::Failed => {
+                        let _ = tx.send(Err(AiError)).await;
+                        return;
+                    }
+                    Pump::CapacityBeforeContent => {
+                        // 呼叫端已經放棄（例如首字逾時後重試）：不要再替沒人讀的回覆消耗備援額度
+                        if tx.is_closed() {
+                            return;
+                        }
+                        tracing::warn!(
+                            model = %self.targets[index].model,
+                            "AI model reported a capacity error before any content, trying the next model"
+                        );
+                        match self.first_available(index + 1, &req).await {
+                            Some((next, res)) => {
+                                current = res;
+                                index = next;
+                            }
+                            None => {
+                                let _ = tx.send(Err(AiError)).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        ReceiverStream::new(rx).boxed()
+    }
+}
+
+/// 一個串流回應讀完的結果。
+enum Pump {
+    /// 看到結束標記，正常完成
+    Finished,
+    /// 失敗（連線中斷、格式錯誤、串流內的其他錯誤、已開始輸出後的任何錯誤）；呼叫端要送出錯誤
+    Failed,
+    /// 還沒送出任何內容（正文或推理）就收到容量錯誤；可以換備援模型
+    CapacityBeforeContent,
+}
+
+async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>) -> Pump {
+    let mut bytes = res.bytes_stream();
+    let mut decoder = SseDecoder::default();
+    let mut started = false;
+    while let Some(chunk) = bytes.next().await {
+        let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+            Ok(items) => items,
+            Err(_) => return Pump::Failed,
+        };
+        for item in items {
+            match item {
+                SseItem::Delta(t) => {
+                    started = true;
+                    if tx.send(Ok(t)).await.is_err() {
+                        return Pump::Finished;
+                    }
+                }
+                // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
+                // 讓呼叫端知道模型已在回應，不套用首字逾時
+                SseItem::Reasoning if !started => {
+                    started = true;
+                    if tx.send(Ok(String::new())).await.is_err() {
+                        return Pump::Finished;
+                    }
+                }
+                SseItem::Error { capacity: true } if !started => {
+                    return Pump::CapacityBeforeContent;
+                }
+                SseItem::Error { .. } => return Pump::Failed,
+                // 看到結束標記才算正常完成
+                SseItem::Done => return Pump::Finished,
+                SseItem::Reasoning | SseItem::Ignore => {}
+            }
+        }
+    }
+    // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
+    Pump::Failed
 }
 
 #[async_trait]
 impl AiProvider for OpenAiProvider {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        let mut messages = vec![json!({"role": "system", "content": req.system})];
-        messages.extend(req.messages.iter().map(|m| {
-            json!({
-                "role": if m.role == ChatRole::User { "user" } else { "assistant" },
-                "content": m.content,
-            })
-        }));
-        let res = self
-            .send_with_failover(&json!({"model": self.model, "stream": true, "messages": messages}))
-            .await?;
-        let (tx, rx) = mpsc::channel(32);
-        tokio::spawn(async move {
-            let mut bytes = res.bytes_stream();
-            let mut decoder = SseDecoder::default();
-            while let Some(chunk) = bytes.next().await {
-                let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
-                    Ok(items) => items,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                        return;
-                    }
-                };
-                for item in items {
-                    match item {
-                        SseItem::Delta(t) => {
-                            if tx.send(Ok(t)).await.is_err() {
-                                return;
-                            }
-                        }
-                        // 看到結束標記才算正常完成
-                        SseItem::Done => return,
-                        SseItem::Ignore => {}
-                    }
-                }
-            }
-            // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
-            let _ = tx.send(Err(AiError)).await;
-        });
-        Ok(ReceiverStream::new(rx).boxed())
+        let (index, res) = self.first_available(0, &req).await.ok_or(AiError)?;
+        Ok(self.clone().into_stream(res, index, req))
     }
 }
 
@@ -524,12 +942,75 @@ pub async fn collect(
     }
 }
 
+/// 背景用途（總結、主張分組）的 `collect`：只套用完整回覆上限，不套用首個 token 逾時。
+/// 推理模型常先推理數十秒才輸出正文，背景工作沒有人在畫面前等第一個字，
+/// 套用首字逾時只會讓它無故失敗。
+pub async fn collect_background(
+    ai: &dyn AiProvider,
+    req: AiRequest,
+    total: std::time::Duration,
+) -> Result<String, AiError> {
+    collect(ai, req, total, total).await
+}
+
+/// 中日韓文字與全形符號：每個字算一個單位。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+}
+
+/// 去掉前後空白並截到 `max` 個單位；結果為空時回傳 `None`。
+/// 中文每字算一個單位，其他文字以空白分隔的詞為單位，所以英文、西班牙文的
+/// 「N 字內」限制（提示中以單字計）不會把句子切在單字中間。
+fn clip_units(s: &str, max: usize) -> Option<String> {
+    let s = s.trim();
+    let mut units = 0;
+    let mut in_word = false;
+    for (i, c) in s.char_indices() {
+        if c.is_whitespace() {
+            in_word = false;
+        } else if is_cjk(c) || !in_word {
+            in_word = !is_cjk(c);
+            units += 1;
+            if units > max {
+                return clip(&s[..i], usize::MAX);
+            }
+        }
+    }
+    clip(s, usize::MAX)
+}
+
 /// 單一總結欄位的長度上限（字元）。
 const MAX_SUMMARY_FIELD_CHARS: usize = 2000;
-/// 一句主張的長度上限（字元）。
+/// 翻譯後單一欄位的長度上限（字元）：中文翻成拉丁字母常變長數倍，所以是原上限的 4 倍。
+/// 超過就視為失敗，而不是悄悄截斷。
+const MAX_TRANSLATED_FIELD_CHARS: usize = 4 * MAX_SUMMARY_FIELD_CHARS;
+/// 一句主張的長度上限（單位：中文字或詞，見 `clip_units`）。
 const MAX_CLAIM_CHARS: usize = 60;
-/// 主張群組名稱的長度上限（字元）。
+/// 主張群組名稱的長度上限（單位同上）。
 const MAX_GROUP_NAME_CHARS: usize = 24;
+/// 一句主張的硬性字元上限：詞數上限擋不住沒有空白的超長字串（網址、亂碼）。
+const MAX_CLAIM_HARD_CHARS: usize = 10 * MAX_CLAIM_CHARS;
+/// 群組名稱的硬性字元上限；名稱有唯一索引，過長會讓寫入失敗。
+const MAX_GROUP_NAME_HARD_CHARS: usize = 10 * MAX_GROUP_NAME_CHARS;
+
+/// 先依單位（字／詞）截斷，再套硬性字元上限。
+fn clip_claim(s: &str) -> Option<String> {
+    clip(&clip_units(s, MAX_CLAIM_CHARS)?, MAX_CLAIM_HARD_CHARS)
+}
+
+fn clip_group_name(s: &str) -> Option<String> {
+    clip(
+        &clip_units(s, MAX_GROUP_NAME_CHARS)?,
+        MAX_GROUP_NAME_HARD_CHARS,
+    )
+}
+
+/// 譯成另一種語言的總結欄位（不含主張，主張不翻譯）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslatedSummary {
+    pub stance: String,
+    pub reasons: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
@@ -539,32 +1020,83 @@ pub struct Summary {
     pub claim: Option<String>,
 }
 
-pub fn build_summary_prompt(title: &str, description: &str) -> String {
-    format!(
-        "你是哲學討論的紀錄整理者，使用繁體中文。以下是學生與引導者就「{title}」（{description}）\
-         的完整對話。請只依對話內容整理學生的論點，不加入你自己的看法，也不評論論點的對錯。\n\
-         輸出一個 JSON 物件，stance、reasons 為不可為空的字串：\n\
-         {{\"stance\":\"學生的主要立場\",\"reasons\":\"學生提出的核心理由\",\
-         \"claim\":\"學生最終主張的一句短句\"}}\n\
-         claim：學生最終主張的一句短句（30 字內，不含理由，例如「該拉桿」「不拉桿」「視情況而定」）。\n\
-         只輸出 JSON。"
-    )
+pub fn build_summary_prompt(title: &str, description: &str, language: &str) -> String {
+    match language {
+        "en" => format!(
+            "You are the record-keeper for a philosophy discussion. Write the summary only in English. \
+             The following is the complete discussion between a student and facilitator about \"{title}\" ({description}). \
+             Summarize only the student's argument from the transcript. Do not add your own views or judge whether the argument is correct.\n\
+             Output one JSON object whose stance and reasons values are non-empty strings:\n\
+             {{\"stance\":\"the student's main position\",\"reasons\":\"the student's core reasons\",\
+             \"claim\":\"one short sentence stating the student's final claim\"}}\n\
+             claim must state only the final position, without reasons, in at most 30 words. Output JSON only."
+        ),
+        "es" => format!(
+            "Eres quien registra una discusión filosófica. Escribe el resumen únicamente en español. \
+             A continuación está la conversación completa entre un estudiante y un facilitador sobre «{title}» ({description}). \
+             Resume solo el argumento del estudiante según la conversación. No añadas opiniones propias ni juzgues si el argumento es correcto.\n\
+             Devuelve un objeto JSON cuyos valores stance y reasons sean cadenas no vacías:\n\
+             {{\"stance\":\"postura principal del estudiante\",\"reasons\":\"razones centrales del estudiante\",\
+             \"claim\":\"una frase breve con la afirmación final del estudiante\"}}\n\
+             claim debe contener solo la postura final, sin razones y en un máximo de 30 palabras. Devuelve únicamente JSON."
+        ),
+        _ => format!(
+            "你是哲學討論的紀錄整理者，只使用繁體中文。以下是學生與引導者就「{title}」（{description}）\
+             的完整對話。請只依對話內容整理學生的論點，不加入你自己的看法，也不評論論點的對錯。\n\
+             輸出一個 JSON 物件，stance、reasons 為不可為空的字串：\n\
+             {{\"stance\":\"學生的主要立場\",\"reasons\":\"學生提出的核心理由\",\
+             \"claim\":\"學生最終主張的一句短句\"}}\n\
+             claim：學生最終主張的一句短句（30 字內，不含理由，例如「該拉桿」「不拉桿」「視情況而定」）。\n\
+             只輸出 JSON。"
+        ),
+    }
+}
+
+/// Translate only the two teacher-visible summary fields. The source text is supplied as JSON in
+/// the user message so no student identity or conversation transcript is needed.
+pub fn build_summary_translation_prompt(language: &str) -> String {
+    match language {
+        "en" => "Translate the summary into English. Preserve its meaning without adding, removing, or judging any claim. Return JSON only, with exactly two non-empty string fields: {\"stance\":\"translated stance\",\"reasons\":\"translated reasons\"}.".into(),
+        "es" => "Traduce el resumen al español de España. Conserva su significado sin añadir, eliminar ni juzgar ninguna afirmación. Devuelve únicamente JSON con exactamente dos cadenas no vacías: {\"stance\":\"postura traducida\",\"reasons\":\"razones traducidas\"}.".into(),
+        _ => "將總結翻譯成繁體中文。保留原意，不得增加、刪除或評斷任何主張。只輸出 JSON，且只能包含兩個非空字串欄位：{\"stance\":\"翻譯後的主要立場\",\"reasons\":\"翻譯後的核心理由\"}。".into(),
+    }
 }
 
 /// 把對話整理成給總結模型看的單一文字。
-pub fn format_transcript(turns: &[ChatTurn]) -> String {
+pub fn format_transcript(turns: &[ChatTurn], language: &str) -> String {
     turns
         .iter()
         .map(|t| {
-            let who = if t.role == ChatRole::User {
-                "學生"
-            } else {
-                "引導者"
+            // 標籤與分隔符一起依語言決定；未知語言一律退回繁體中文
+            let (who, separator) = match (language, t.role) {
+                ("en", ChatRole::User) => ("Student", ": "),
+                ("en", ChatRole::Assistant) => ("Facilitator", ": "),
+                ("es", ChatRole::User) => ("Estudiante", ": "),
+                ("es", ChatRole::Assistant) => ("Facilitador", ": "),
+                (_, ChatRole::User) => ("學生", "："),
+                (_, ChatRole::Assistant) => ("引導者", "："),
             };
-            format!("{who}：{}", t.content)
+            format!("{who}{separator}{}", t.content)
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// 解析翻譯結果 `(立場, 核心理由)`：缺欄位、空白或格式錯誤回傳 `None`；
+/// 任一欄位超過 `MAX_TRANSLATED_FIELD_CHARS` 也回傳 `None`，不截斷。
+pub fn parse_summary_translation(raw: &str) -> Option<TranslatedSummary> {
+    #[derive(Deserialize)]
+    struct Raw {
+        stance: String,
+        reasons: String,
+    }
+    let r: Raw = extract_json(raw)?;
+    let fits =
+        |s: &str| !s.trim().is_empty() && s.trim().chars().count() <= MAX_TRANSLATED_FIELD_CHARS;
+    (fits(&r.stance) && fits(&r.reasons)).then(|| TranslatedSummary {
+        stance: r.stance.trim().to_string(),
+        reasons: r.reasons.trim().to_string(),
+    })
 }
 
 /// 解析總結；缺欄位、空白或格式錯誤都回傳 `None`（視為結果不完整，F-08.4）。
@@ -575,31 +1107,25 @@ pub fn parse_summary(raw: &str) -> Option<Summary> {
         reasons: String,
         claim: Option<String>,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
-    let clean = |s: String| -> Option<String> {
-        let s: String = s.trim().chars().take(MAX_SUMMARY_FIELD_CHARS).collect();
-        (!s.is_empty()).then_some(s)
-    };
+    let r: Raw = extract_json(raw)?;
     Some(Summary {
-        stance: clean(r.stance)?,
-        reasons: clean(r.reasons)?,
-        claim: r
-            .claim
-            .map(|c| c.trim().chars().take(MAX_CLAIM_CHARS).collect::<String>())
-            .filter(|c| !c.is_empty()),
+        stance: clip(&r.stance, MAX_SUMMARY_FIELD_CHARS)?,
+        reasons: clip(&r.reasons, MAX_SUMMARY_FIELD_CHARS)?,
+        claim: r.claim.and_then(|c| clip_claim(&c)),
     })
 }
 
 // ---- 主張分組（暫定）----
 
 /// 把一句新主張歸入同題目下既有的主張群組，或開新群。回傳 JSON `{"group":"群組名稱"}`。
-pub fn build_group_assign_prompt(topic: &str, existing: &[String]) -> String {
+pub fn build_group_assign_prompt(topic: &str, existing: &[String], language: &str) -> String {
     let list = if existing.is_empty() {
-        "（目前還沒有任何群組）".to_string()
+        match language {
+            "en" => "(There are no groups yet.)",
+            "es" => "(Todavía no hay grupos.)",
+            _ => "（目前還沒有任何群組）",
+        }
+        .to_string()
     } else {
         existing
             .iter()
@@ -607,13 +1133,27 @@ pub fn build_group_assign_prompt(topic: &str, existing: &[String]) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    format!(
-        "你在整理學生對討論題目「{topic}」的主張。使用者訊息是一位學生最終主張的一句短句。\n\
-         請判斷它屬於下列哪個既有群組；意思相同或相近就優先歸入既有群組，名稱要原樣照抄。\n\
-         只有真的不屬於任何既有群組時，才開新群，並取一個簡短的名稱（12 字內，描述主張本身）。\n\
-         既有群組：\n{list}\n\
-         只輸出 JSON：{{\"group\":\"群組名稱\"}}"
-    )
+    match language {
+        "en" => format!(
+            "Group the claim only in English. You are organizing student claims about \"{topic}\". \
+             The user message is one student's final claim. Assign it to an existing group below when the meaning is the same or similar, copying that group name exactly. \
+             Create a new group only when none fits, using a short name of at most 12 words that describes the claim.\n\
+             Existing groups:\n{list}\nOutput JSON only: {{\"group\":\"group name\"}}"
+        ),
+        "es" => format!(
+            "Agrupa la afirmación únicamente en español. Estás organizando afirmaciones estudiantiles sobre «{topic}». \
+             El mensaje del usuario es la afirmación final de un estudiante. Asígnala a un grupo existente cuando el significado sea igual o parecido y copia exactamente su nombre. \
+             Crea un grupo nuevo solo si ninguno corresponde, con un nombre breve de hasta 12 palabras que describa la afirmación.\n\
+             Grupos existentes:\n{list}\nDevuelve únicamente JSON: {{\"group\":\"nombre del grupo\"}}"
+        ),
+        _ => format!(
+            "你在整理學生對討論題目「{topic}」的主張，只使用繁體中文。使用者訊息是一位學生最終主張的一句短句。\n\
+             請判斷它屬於下列哪個既有群組；意思相同或相近就優先歸入既有群組，名稱要原樣照抄。\n\
+             只有真的不屬於任何既有群組時，才開新群，並取一個簡短的名稱（12 字內，描述主張本身）。\n\
+             既有群組：\n{list}\n\
+             只輸出 JSON：{{\"group\":\"群組名稱\"}}"
+        ),
+    }
 }
 
 /// 解析歸類結果；名稱與既有群組相同（忽略大小寫與空白）時回傳既有的寫法。
@@ -622,15 +1162,8 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
     struct Raw {
         group: String,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
-    let name: String = r.group.trim().chars().take(MAX_GROUP_NAME_CHARS).collect();
-    if name.is_empty() {
-        return None;
-    }
+    let r: Raw = extract_json(raw)?;
+    let name = clip_group_name(&r.group)?;
     let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
     Some(
         existing
@@ -643,20 +1176,43 @@ pub fn parse_group_name(raw: &str, existing: &[String]) -> Option<String> {
 
 /// 重新分組：把某題目下全部主張一次分成幾群並命名。回傳 JSON
 /// `{"groups":[{"name":"群組名稱","members":[1,2]}]}`，members 是主張的編號。
-pub fn build_regroup_prompt(topic: &str, claims: &[String]) -> String {
+pub fn build_regroup_prompt(topic: &str, claims: &[String], language: &str) -> String {
     let list = claims
         .iter()
         .enumerate()
         .map(|(i, c)| format!("{}. {c}", i + 1))
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "你在整理學生對討論題目「{topic}」的主張。以下是每位學生最終主張的一句短句（已編號）。\n\
-         請把意思相同或相近的歸成一群，每群取一個簡短的名稱（12 字內，描述主張本身）；\n\
-         群組數量要少而有意義，每個編號只能屬於一個群組。\n\
-         主張：\n{list}\n\
-         只輸出 JSON：{{\"groups\":[{{\"name\":\"群組名稱\",\"members\":[1,2]}}]}}"
-    )
+    match language {
+        "en" => format!(
+            "Group these claims only in English. You are organizing numbered final student claims about \"{topic}\". \
+             Put claims with the same or similar meaning together. Give each group a short name of at most 12 words that describes the claim. \
+             Use a small, meaningful number of groups, and assign each number to exactly one group.\n\
+             Claims:\n{list}\nOutput JSON only: {{\"groups\":[{{\"name\":\"group name\",\"members\":[1,2]}}]}}"
+        ),
+        "es" => format!(
+            "Agrupa estas afirmaciones únicamente en español. Estás organizando afirmaciones finales numeradas sobre «{topic}». \
+             Reúne las afirmaciones con significado igual o parecido. Da a cada grupo un nombre breve de hasta 12 palabras que describa la afirmación. \
+             Usa pocos grupos significativos y asigna cada número exactamente a un grupo.\n\
+             Afirmaciones:\n{list}\nDevuelve únicamente JSON: {{\"groups\":[{{\"name\":\"nombre del grupo\",\"members\":[1,2]}}]}}"
+        ),
+        _ => format!(
+            "你在整理學生對討論題目「{topic}」的主張，只使用繁體中文。以下是每位學生最終主張的一句短句（已編號）。\n\
+             請把意思相同或相近的歸成一群，每群取一個簡短的名稱（12 字內，描述主張本身）；\n\
+             群組數量要少而有意義，每個編號只能屬於一個群組。\n\
+             主張：\n{list}\n\
+             只輸出 JSON：{{\"groups\":[{{\"name\":\"群組名稱\",\"members\":[1,2]}}]}}"
+        ),
+    }
+}
+
+/// 重新分組時送給 AI 的使用者訊息（提示本身在系統訊息裡）。
+pub fn regroup_user_message(language: &str) -> &'static str {
+    match language {
+        "en" => "Please group the claims.",
+        "es" => "Agrupa las afirmaciones.",
+        _ => "請分組。",
+    }
 }
 
 /// 解析重新分組結果：回傳 `(群組名稱, 成員的 0 起算索引)`。名稱重複的群組合併，
@@ -671,18 +1227,13 @@ pub fn parse_regroup(raw: &str, claim_count: usize) -> Option<Vec<(String, Vec<u
     struct Raw {
         groups: Vec<Group>,
     }
-    let (start, end) = (raw.find('{')?, raw.rfind('}')?);
-    if end < start {
-        return None;
-    }
-    let r: Raw = serde_json::from_str(&raw[start..=end]).ok()?;
+    let r: Raw = extract_json(raw)?;
     let mut seen = vec![false; claim_count];
     let mut out: Vec<(String, Vec<usize>)> = Vec::new();
     for g in r.groups {
-        let name: String = g.name.trim().chars().take(MAX_GROUP_NAME_CHARS).collect();
-        if name.is_empty() {
+        let Some(name) = clip_group_name(&g.name) else {
             continue;
-        }
+        };
         let members: Vec<usize> = g
             .members
             .into_iter()
@@ -726,6 +1277,86 @@ mod tests {
         ] {
             assert!(parse_summary(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn claim_limit_counts_words_for_space_separated_text() {
+        // en/es 提示要求 30 字內：一句 40 個英文單字（約 200 字元）不能被切在單字中間
+        let claim = ["wording"; 40].join(" ");
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{claim}\"}}");
+        let got = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(
+            got.split(' ').all(|w| w == "wording"),
+            "cut mid-word: {got}"
+        );
+        assert_eq!(got.split(' ').count(), 40);
+        // 超過上限時以整個單字為單位截斷
+        let long = ["wording"; 100].join(" ");
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{long}\"}}");
+        let got = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(
+            got.split(' ').all(|w| w == "wording"),
+            "cut mid-word: {got}"
+        );
+        assert_eq!(got.split(' ').count(), MAX_CLAIM_CHARS);
+    }
+
+    #[test]
+    fn unspaced_or_huge_words_cannot_get_past_the_character_caps() {
+        // 一個沒有空白的超長字串在詞數上只算 1 個單位，仍要受字元上限約束
+        let blob = "x".repeat(5000);
+        let claim = clip_claim(&blob).unwrap();
+        assert_eq!(claim.chars().count(), MAX_CLAIM_HARD_CHARS);
+        let name = clip_group_name(&blob).unwrap();
+        assert_eq!(name.chars().count(), MAX_GROUP_NAME_HARD_CHARS);
+        // 24 個各 100 字元的詞：詞數剛好沒超過，字元數超過
+        let words = vec!["y".repeat(100); 24].join(" ");
+        assert!(clip_group_name(&words).unwrap().chars().count() <= MAX_GROUP_NAME_HARD_CHARS);
+        // 經過解析函式也一樣，而且截斷後不會留下結尾空白
+        let raw = format!("{{\"group\":\"{words}\"}}");
+        let parsed = parse_group_name(&raw, &[]).unwrap();
+        assert!(parsed.chars().count() <= MAX_GROUP_NAME_HARD_CHARS);
+        assert_eq!(parsed, parsed.trim());
+        let raw = format!("{{\"stance\":\"a\",\"reasons\":\"b\",\"claim\":\"{blob}\"}}");
+        let claim = parse_summary(&raw).unwrap().claim.unwrap();
+        assert!(claim.chars().count() <= MAX_CLAIM_HARD_CHARS);
+    }
+
+    #[test]
+    fn normal_length_text_is_not_touched_by_the_character_caps() {
+        let claim = ["wording"; 30].join(" "); // 30 個詞約 239 字元
+        assert_eq!(clip_claim(&claim).as_deref(), Some(claim.as_str()));
+        let name = ["moral"; 12].join(" ");
+        assert_eq!(clip_group_name(&name).as_deref(), Some(name.as_str()));
+    }
+
+    #[test]
+    fn group_name_limit_counts_words_for_space_separated_text() {
+        let name = ["moral"; 12].join(" ");
+        let raw = format!("{{\"group\":\"{name}\"}}");
+        assert_eq!(parse_group_name(&raw, &[]).as_deref(), Some(name.as_str()));
+        let raw = format!(
+            "{{\"groups\":[{{\"name\":\"{name}\",\"members\":[1]}},{{\"name\":\"{name} x\",\"members\":[2]}}]}}"
+        );
+        let got = parse_regroup(&raw, 2).unwrap();
+        assert_eq!(
+            got.len(),
+            2,
+            "names must not be cut to the same prefix and merged"
+        );
+        assert_eq!(got[0].0, name);
+    }
+
+    #[test]
+    fn cjk_limits_still_count_characters() {
+        assert_eq!(
+            clip_units("長".repeat(200).as_str(), 60)
+                .unwrap()
+                .chars()
+                .count(),
+            60
+        );
+        assert_eq!(clip_units("該 拉桿", 3).as_deref(), Some("該 拉桿"));
     }
 
     #[test]
@@ -787,18 +1418,66 @@ mod tests {
     }
 
     #[test]
+    fn regroup_prompt_follows_the_requested_language() {
+        let english = build_regroup_prompt(
+            "The trolley problem",
+            &["Pull the lever".to_string(), "Do not pull".to_string()],
+            "en",
+        );
+        assert!(english.contains("Group these claims only in English"));
+
+        let spanish = build_regroup_prompt(
+            "El dilema del tranvía",
+            &["Accionar la palanca".to_string()],
+            "es",
+        );
+        assert!(spanish.contains("Agrupa estas afirmaciones únicamente en español"));
+    }
+
+    #[test]
     fn transcript_labels_speakers() {
-        let t = format_transcript(&[
+        let t = format_transcript(
+            &[
+                ChatTurn {
+                    role: ChatRole::User,
+                    content: "我拉桿".into(),
+                },
+                ChatTurn {
+                    role: ChatRole::Assistant,
+                    content: "為什麼？".into(),
+                },
+            ],
+            "zh-TW",
+        );
+        assert_eq!(t, "學生：我拉桿\n\n引導者：為什麼？");
+    }
+
+    #[test]
+    fn transcript_separator_follows_the_same_fallback_as_the_labels() {
+        let turns = [
             ChatTurn {
                 role: ChatRole::User,
-                content: "我拉桿".into(),
+                content: "x".into(),
             },
             ChatTurn {
                 role: ChatRole::Assistant,
-                content: "為什麼？".into(),
+                content: "y".into(),
             },
-        ]);
-        assert_eq!(t, "學生：我拉桿\n\n引導者：為什麼？");
+        ];
+        assert_eq!(
+            format_transcript(&turns, "en"),
+            "Student: x\n\nFacilitator: y"
+        );
+        assert_eq!(
+            format_transcript(&turns, "es"),
+            "Estudiante: x\n\nFacilitador: y"
+        );
+        // 未知語言和標籤一樣退回繁體中文，分隔符也要是全形冒號
+        assert_eq!(
+            format_transcript(&turns, "fr"),
+            format_transcript(&turns, "zh-TW")
+        );
+        assert_eq!(format_transcript(&turns, "fr"), "學生：x\n\n引導者：y");
     }
 
     fn run(chunks: &[&str]) -> (String, String) {
@@ -889,6 +1568,58 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_deltas_parse_as_reasoning_without_their_text() {
+        // OpenRouter 用 `reasoning`（正文是空字串），DeepSeek／vLLM 用 `reasoning_content`
+        assert_eq!(
+            parse_sse_line(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"想一下\"}}]}"
+            ),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想一下\"}}]}"),
+            Ok(SseItem::Reasoning)
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"reasoning\":\"\"}}]}"),
+            Ok(SseItem::Ignore)
+        );
+    }
+
+    #[test]
+    fn error_chunks_are_classified_as_capacity_errors_or_other_errors() {
+        let err = |code: u32, msg: &str| {
+            format!("data: {{\"choices\":[],\"error\":{{\"code\":{code},\"message\":\"{msg}\"}}}}")
+        };
+        let capacity = Ok(SseItem::Error { capacity: true });
+        let other = Ok(SseItem::Error { capacity: false });
+        // 實測：NVIDIA 的並發上限用 HTTP 200 加 502 ResourceExhausted 的區塊送出
+        assert_eq!(
+            parse_sse_line(&err(
+                502,
+                "Upstream error from Nvidia: ResourceExhausted: Worker local total request limit reached (16/16)"
+            )),
+            capacity
+        );
+        // 寫法不同的 gRPC 狀態名稱
+        assert_eq!(parse_sse_line(&err(503, "RESOURCE_EXHAUSTED")), capacity);
+        assert_eq!(parse_sse_line(&err(500, "resource exhausted")), capacity);
+        assert_eq!(parse_sse_line(&err(429, "slow down")), capacity);
+        assert_eq!(parse_sse_line(&err(502, "Upstream error: Internal")), other);
+        assert_eq!(parse_sse_line(&err(400, "bad request")), other);
+        // 有 error 但沒有 code 也是錯誤，只是不算容量錯誤
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[],\"error\":{\"message\":\"boom\"}}"),
+            other
+        );
+        // 帶有正文的區塊仍以正文為準，不因為多了 error 欄位而被丟掉
+        assert_eq!(
+            parse_sse_line("data: {\"choices\":[{\"delta\":{\"content\":\"嗨\"}}],\"error\":null}"),
+            Ok(SseItem::Delta("嗨".to_string()))
+        );
+    }
+
+    #[test]
     fn decoder_handles_multibyte_char_split_across_chunks() {
         let line = "data: {\"choices\":[{\"delta\":{\"content\":\"正義\"}}]}\n";
         let bytes = line.as_bytes();
@@ -918,6 +1649,7 @@ mod tests {
             stage: 2,
             turn: 3,
             wrap_up_turn: 15,
+            language: "zh-TW",
         };
 
         let p = build_system_prompt(&c);
@@ -967,5 +1699,69 @@ mod tests {
         let p = build_system_prompt(&PromptContext { turn: 15, ..c });
 
         assert!(p.contains("開始引導學生整理"));
+    }
+
+    #[test]
+    fn dialogue_prompts_localize_the_rules_not_just_the_output_instruction() {
+        let context = PromptContext {
+            title: "T",
+            description: "D",
+            stage: 1,
+            turn: 1,
+            wrap_up_turn: 15,
+            language: "en",
+        };
+        let english = build_system_prompt(&context);
+        assert!(english.contains("Rules:"));
+        assert!(english.contains("Stage 1 — Clarification"));
+        assert!(!english.contains("規則："));
+
+        let spanish = build_system_prompt(&PromptContext {
+            language: "es",
+            ..context
+        });
+        assert!(spanish.contains("Reglas:"));
+        assert!(spanish.contains("Etapa 1: Aclaración"));
+        assert!(!spanish.contains("規則："));
+
+        assert!(!build_group_assign_prompt("T", &[], "en").contains("目前"));
+        assert!(!build_group_assign_prompt("T", &[], "es").contains("目前"));
+    }
+
+    /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
+    struct SlowStart(std::time::Duration);
+
+    #[async_trait]
+    impl AiProvider for SlowStart {
+        async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+            let delay = self.0;
+            Ok(futures_util::stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok("{}".to_string())
+            })
+            .boxed())
+        }
+    }
+
+    fn any_request() -> AiRequest {
+        AiRequest {
+            system: String::new(),
+            messages: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_waits_for_a_slow_first_chunk_within_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_millis(300));
+        let text = collect_background(&ai, any_request(), std::time::Duration::from_secs(2)).await;
+        assert_eq!(text.unwrap(), "{}");
+    }
+
+    #[tokio::test]
+    async fn collect_fails_past_the_total_limit() {
+        let ai = SlowStart(std::time::Duration::from_secs(2));
+        let text =
+            collect_background(&ai, any_request(), std::time::Duration::from_millis(200)).await;
+        assert!(text.is_err());
     }
 }

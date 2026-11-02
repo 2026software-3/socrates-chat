@@ -23,7 +23,7 @@ async fn upsert_creates_user_with_lowercased_email(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(u.google_sub.as_deref(), Some("sub-1"));
-    assert_eq!(u.email, "alice@example.com");
+    assert_eq!(u.email.as_deref(), Some("alice@example.com"));
     assert_eq!(u.display_name.as_deref(), Some("Alice"));
     assert!(!u.is_admin);
 }
@@ -37,7 +37,7 @@ async fn second_login_reuses_user_and_updates_email(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(first.id, second.id);
-    assert_eq!(second.email, "new@example.com");
+    assert_eq!(second.email.as_deref(), Some("new@example.com"));
     let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM users")
         .fetch_one(&pool)
         .await

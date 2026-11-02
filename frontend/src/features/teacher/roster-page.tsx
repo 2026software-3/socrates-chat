@@ -21,6 +21,7 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { LoadMore } from '@/components/load-more'
@@ -88,6 +89,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
             <Textarea
               id="roster-text"
               rows={6}
+              placeholder={t('teacher.roster.textPlaceholder')}
               value={text}
               onChange={(e) => setText(e.target.value)}
               className="font-mono"
@@ -132,10 +134,10 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
               {result.invalid.length > 0 ? (
                 <ul className="text-destructive space-y-0.5 text-sm break-all">
                   {result.invalid.map((i) => (
-                    <li key={`${i.line}-${i.value}`}>
+                    <li key={`${i.line}-${i.reason}`}>
                       {t('teacher.roster.invalidLine', {
                         line: i.line,
-                        value: i.value,
+                        value: t(`teacher.roster.reason.${i.reason}`),
                       })}
                     </li>
                   ))}
@@ -150,14 +152,14 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>{t('teacher.roster.credsEmail')}</TableHead>
+                        <TableHead>{t('teacher.roster.credsStudentId')}</TableHead>
                         <TableHead>{t('teacher.roster.credsPassword')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {result.credentials.map((c) => (
-                        <TableRow key={c.email}>
-                          <TableCell className="break-all">{c.email}</TableCell>
+                        <TableRow key={c.student_id}>
+                          <TableCell className="break-all">{c.student_id}</TableCell>
                           <TableCell className="font-mono">{c.temporary_password}</TableCell>
                         </TableRow>
                       ))}
@@ -167,7 +169,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.email},${c.temporary_password}`).join('\n'))}
+                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.student_id},${c.temporary_password}`).join('\n'))}
                   >
                     {isCopied ? t('teacher.roster.credsCopied') : t('teacher.roster.credsCopyAll')}
                   </Button>
@@ -181,7 +183,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
   )
 }
 
-type AccountAction = { kind: 'remove'; email: string } | { kind: 'disable'; email: string; id: string } | { kind: 'delete'; email: string }
+type AccountAction = { kind: 'remove'; email: string; id: string } | { kind: 'disable'; email: string; id: string } | { kind: 'delete'; email: string; id: string; studentId: string }
 
 function statusOf(s: StudentRow): 'disabled' | 'pending' | 'active' {
   return s.disabled ? 'disabled' : s.has_account ? 'active' : 'pending'
@@ -244,8 +246,9 @@ export function RosterPage() {
 }
 
 /** 單一教室的學生名單與操作。 */
-function ClassroomRoster({ classroom }: { classroom: Classroom }) {
+export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const t = useT()
+  const base = useClassroomsBase()
   // 搜尋與人數都由後端計算：送出搜尋後從第一頁重新載入，其餘頁按「載入更多」才取
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
@@ -301,12 +304,12 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   /** 每位學生可做的操作：管理者另有重設密碼、停用與復原。 */
   const rowActions = (s: StudentRow) => (
     <>
-      {isAdmin ? (
+      {isAdmin && s.email ? (
         <Button
           variant="outline"
           size="sm"
           aria-label={t('admin.reset.resetPassword', { email: s.email })}
-          onClick={() => setToReset(s.email)}
+          onClick={() => setToReset(s.email ?? undefined)}
         >
           {t('admin.reset.resetConfirm')}
         </Button>
@@ -317,7 +320,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
             variant="outline"
             size="sm"
             disabled={pending}
-            aria-label={t('teacher.roster.enableLabel', { email: s.email })}
+            aria-label={t('teacher.roster.enableLabel', { email: s.email ?? s.student_id })}
             onClick={() => void enable(s.id!)}
           >
             {t('teacher.roster.enable')}
@@ -326,8 +329,8 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
           <Button
             variant="outline"
             size="sm"
-            aria-label={t('teacher.roster.disableLabel', { email: s.email })}
-            onClick={() => open({ kind: 'disable', email: s.email, id: s.id! })}
+            aria-label={t('teacher.roster.disableLabel', { email: s.email ?? s.student_id })}
+            onClick={() => open({ kind: 'disable', email: s.email ?? s.student_id, id: s.id! })}
           >
             {t('teacher.roster.disable')}
           </Button>
@@ -336,21 +339,31 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
       <Button
         variant="outline"
         size="sm"
-        aria-label={t('teacher.roster.removeLabel', { email: s.email })}
-        onClick={() => open({ kind: 'remove', email: s.email })}
+        aria-label={t('teacher.roster.removeLabel', { email: s.email ?? s.student_id })}
+        onClick={() => open({ kind: 'remove', email: s.email ?? s.student_id, id: s.id ?? '' })}
       >
         {t('teacher.roster.remove')}
       </Button>
       <Button
         variant="destructive"
         size="sm"
-        aria-label={t('teacher.roster.deleteLabel', { email: s.email })}
-        onClick={() => open({ kind: 'delete', email: s.email })}
+        aria-label={t('teacher.roster.deleteLabel', { email: s.email ?? s.student_id })}
+        onClick={() => open({ kind: 'delete', email: s.email ?? s.student_id, id: s.id ?? '', studentId: s.student_id })}
       >
         {t('teacher.roster.deleteAccount')}
       </Button>
     </>
   )
+
+  /** 有帳號的學生可點進去看他的討論情形。 */
+  const studentLink = (s: StudentRow) =>
+    s.id ? (
+      <Link to={`${base}/${classroom.id}/students/${s.id}`} className="underline-offset-4 hover:underline">
+        {s.email ?? s.student_id}
+      </Link>
+    ) : (
+      s.email ?? s.student_id
+    )
 
   const target = action?.email ?? ''
   const closeDialog = (o: boolean) => {
@@ -399,9 +412,9 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                   {students.map((s) => {
                     const status = statusOf(s)
                     return (
-                      <li key={s.email} className="space-y-3 rounded-lg border p-3">
+                      <li key={s.email ?? s.id ?? s.student_id} className="space-y-3 rounded-lg border p-3">
                         <div className="space-y-1">
-                          <p className="font-medium break-all">{s.email}</p>
+                          <p className="font-medium break-all">{studentLink(s)}</p>
                           {s.display_name ? <p className="text-muted-foreground text-sm">{s.display_name}</p> : null}
                           <div className="flex flex-wrap items-center gap-2 text-sm">
                             <StatusBadge status={status} />
@@ -428,9 +441,9 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                     </TableHeader>
                     <TableBody>
                       {students.map((s) => (
-                        <TableRow key={s.email}>
+                        <TableRow key={s.email ?? s.id ?? s.student_id}>
                           <TableCell className="break-all">
-                            {s.email}
+                            {studentLink(s)}
                             {s.display_name ? <span className="text-muted-foreground block text-xs">{s.display_name}</span> : null}
                           </TableCell>
                           <TableCell>
@@ -470,7 +483,7 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         confirmLabel={t('teacher.roster.remove')}
         pending={pending}
         error={action?.kind === 'remove' ? actionError : undefined}
-        onConfirm={() => void run(() => api.delete(`/api/classrooms/${classroom.id}/roster/${encodeURIComponent(target)}`), 'teacher.roster.removed')}
+        onConfirm={() => void run(() => api.delete(`/api/classrooms/${classroom.id}/roster/${encodeURIComponent(action?.kind === 'remove' ? target.includes('@') ? target : action.id : '')}`), 'teacher.roster.removed')}
       />
 
       <AccountDialog
@@ -501,18 +514,17 @@ function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         description={t('teacher.roster.deleteBody', { email: target })}
         confirmLabel={t('teacher.roster.deleteConfirm')}
         pending={pending}
-        // 再次確認（S-02.5）：必須輸入對方的電子郵件才能刪除
-        confirmDisabled={confirmText.trim().toLowerCase() !== target.toLowerCase()}
+        confirmDisabled={action?.kind !== 'delete' || confirmText.trim().toUpperCase() !== action.studentId}
         error={action?.kind === 'delete' ? actionError : undefined}
         onConfirm={() =>
           void run(
-            () => api.delete(`/api/students/${encodeURIComponent(target)}`, { confirm_email: confirmText.trim() }),
+            () => api.delete(`/api/students/${encodeURIComponent(action?.kind === 'delete' ? action.id : '')}`, { confirm_student_id: confirmText.trim() }),
             'teacher.roster.deletedToast',
           )
         }
       >
         <div className="space-y-1.5">
-          <Label htmlFor="delete-confirm">{t('teacher.roster.deleteConfirmLabel', { email: target })}</Label>
+          <Label htmlFor="delete-confirm">{t('teacher.roster.deleteConfirmLabel', { email: action?.kind === 'delete' ? action.studentId : '' })}</Label>
           <Input id="delete-confirm" value={confirmText} autoComplete="off" onChange={(e) => setConfirmText(e.target.value)} />
         </div>
       </AccountDialog>

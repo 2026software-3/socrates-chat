@@ -1,0 +1,344 @@
+//! 暫時維運日誌頁：只讓管理者查看目前程序記憶體中的安全 request log。
+
+mod common;
+
+use axum::{
+    Router,
+    body::Body,
+    http::{Request, StatusCode, header},
+};
+use common::Script::{Fail, Reply};
+use common::*;
+use serde_json::{Value, json};
+use sqlx::PgPool;
+
+const SEND_ROUTE: &str = "/api/conversations/{id}/messages";
+/// 會被記錄的公開路由，用來填滿 ring（`/health` 探測不進 ring）。
+const FILLER: &str = "/api/openapi.json";
+
+/// 管理者目前看得到的 request log（最新在前）。
+async fn logged(app: &Router, a: &Actors) -> Vec<Value> {
+    let body = json_body(send(app, get("/api/admin/logs", Some(&a.admin))).await).await;
+    body["items"].as_array().unwrap().clone()
+}
+
+/// 用健康檢查填滿整個 ring（500 筆），之後的記錄都會擠掉先前的內容。
+async fn fill_ring(app: &Router) {
+    for _ in 0..500 {
+        assert_eq!(send(app, get(FILLER, None)).await.status(), StatusCode::OK);
+    }
+}
+
+fn entry<'a>(items: &'a [Value], route: &str) -> Option<&'a Value> {
+    items.iter().find(|entry| entry["route"] == route)
+}
+
+#[sqlx::test]
+async fn admin_sees_recent_sanitized_request_logs_newest_first(pool: PgPool) {
+    let app = test_app(pool);
+    let actors = seed_actors(&app).await;
+
+    let health = send(&app, get(FILLER, None)).await;
+    let health_id = health.headers()[header::HeaderName::from_static("x-request-id")]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let missing = send(&app, get("/private/student@example.com", None)).await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let missing_id = missing.headers()[header::HeaderName::from_static("x-request-id")]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let response = send(&app, get("/api/admin/logs", Some(&actors.admin))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["capacity"], 500);
+
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items[0]["request_id"], health_id);
+    assert_eq!(items[0]["method"], "GET");
+    assert_eq!(items[0]["route"], FILLER);
+    assert_eq!(items[0]["status"], 200);
+    assert!(items[0]["error_code"].is_null());
+    assert!(items[0]["duration_ms"].is_u64());
+    assert!(items[0]["created_at"].is_string());
+
+    // 找不到的路徑不進 ring（見 unknown_path_404s_do_not_evict_recent_history）
+    assert!(items.iter().all(|e| e["request_id"] != missing_id));
+    assert!(!body.to_string().contains("student@example.com"));
+}
+
+#[sqlx::test]
+async fn request_logs_are_admin_only(pool: PgPool) {
+    let app = test_app(pool);
+    let actors = seed_actors(&app).await;
+
+    for (cookie, expected) in [
+        (Some(actors.teacher.as_str()), StatusCode::FORBIDDEN),
+        (Some(actors.student.as_str()), StatusCode::FORBIDDEN),
+        (Some(actors.outsider.as_str()), StatusCode::FORBIDDEN),
+        (None, StatusCode::UNAUTHORIZED),
+    ] {
+        let response = send(&app, get("/api/admin/logs", cookie)).await;
+        assert_eq!(response.status(), expected);
+    }
+
+    // 被拒絕的維運頁存取不進 ring，因此不會擠掉真正的應用請求
+    let items = logged(&app, &actors).await;
+    assert!(entry(&items, "/api/admin/logs").is_none());
+}
+
+#[sqlx::test]
+async fn request_logs_keep_only_the_latest_five_hundred_entries(pool: PgPool) {
+    let app = test_app(pool);
+    let actors = seed_actors(&app).await;
+
+    for _ in 0..501 {
+        assert_eq!(send(&app, get(FILLER, None)).await.status(), StatusCode::OK);
+    }
+
+    let body = json_body(send(&app, get("/api/admin/logs", Some(&actors.admin))).await).await;
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 500);
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
+}
+
+#[sqlx::test]
+async fn rejected_admin_log_polls_do_not_evict_recent_history(pool: PgPool) {
+    let app = test_app(pool);
+    let actors = seed_actors(&app).await;
+    fill_ring(&app).await;
+
+    // 過期分頁的輪詢（401）與非管理者的輪詢（403）反覆發生
+    for cookie in [
+        None,
+        Some(actors.teacher.as_str()),
+        Some(actors.student.as_str()),
+    ] {
+        assert!(
+            !send(&app, get("/api/admin/logs", cookie))
+                .await
+                .status()
+                .is_success()
+        );
+    }
+
+    let items = logged(&app, &actors).await;
+    assert_eq!(items.len(), 500);
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
+}
+
+#[sqlx::test]
+async fn unknown_path_404s_do_not_evict_recent_history(pool: PgPool) {
+    let app = test_app(pool);
+    let actors = seed_actors(&app).await;
+    fill_ring(&app).await;
+
+    for i in 0..5 {
+        let res = send(&app, get(&format!("/probe/{i}"), None)).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    let items = logged(&app, &actors).await;
+    assert_eq!(items.len(), 500);
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
+}
+
+#[sqlx::test]
+async fn streamed_reply_is_logged_when_its_stream_ends_with_the_real_outcome(pool: PgPool) {
+    // 重試後仍失敗：串流以 error 事件結束，回應標頭本身是 200
+    let app = test_app_with_ai(pool, FakeAi::with(vec![Fail, Fail]));
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/messages"),
+            Some(&a.student),
+            Some(json!({"content": "我認為應該拉桿。"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    // 標頭已送出但本文尚未讀完：此時不應該寫入 log
+    assert!(entry(&logged(&app, &a).await, SEND_ROUTE).is_none());
+
+    let events = parse_sse(&text_body(res).await);
+    let (name, data) = events.last().unwrap();
+    assert_eq!(name, "error");
+    assert_eq!(data["code"], "ai_unavailable");
+
+    let items = logged(&app, &a).await;
+    let streamed = entry(&items, SEND_ROUTE).expect("stream is logged once it ends");
+    assert_eq!(streamed["method"], "POST");
+    assert_eq!(streamed["status"], 200);
+    assert_eq!(streamed["error_code"], "ai_unavailable");
+}
+
+#[sqlx::test]
+async fn successfully_streamed_reply_is_logged_without_an_error_code(pool: PgPool) {
+    let app = test_app_with_ai(
+        pool,
+        FakeAi::with(vec![Reply(vec![
+            "你說的「正義」是什麼意思？\n<<<META>>>\n",
+            "{\"question_type\":\"clarify\",\"advance\":false}",
+        ])]),
+    );
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/messages"),
+            Some(&a.student),
+            Some(json!({"content": "我認為應該拉桿。"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let events = parse_sse(&text_body(res).await);
+    assert_eq!(events.last().unwrap().0, "done");
+
+    let items = logged(&app, &a).await;
+    let streamed = entry(&items, SEND_ROUTE).expect("stream is logged once it ends");
+    assert_eq!(streamed["status"], 200);
+    assert!(streamed["error_code"].is_null());
+}
+
+/// 帶任意本文與 content-type 的 POST（繞過 `json_req`，才能送出壞掉的請求）。
+fn raw_post(path: &str, cookie: &str, content_type: Option<&str>, body: &str) -> Request<Body> {
+    let mut b = Request::post(path)
+        .header(header::ORIGIN, APP_URL)
+        .header(header::COOKIE, cookie);
+    if let Some(ct) = content_type {
+        b = b.header(header::CONTENT_TYPE, ct);
+    }
+    b.body(Body::from(body.to_string())).unwrap()
+}
+
+#[sqlx::test]
+async fn json_extractor_rejections_use_the_api_error_format_and_log_their_code(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    for (content_type, body, status, code) in [
+        (
+            Some("application/json"),
+            "{not json",
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            None,
+            "{}",
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
+        ),
+        (
+            Some("application/json"),
+            "{}",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_body",
+        ),
+    ] {
+        let res = send(
+            &app,
+            raw_post("/api/topics", &a.teacher, content_type, body),
+        )
+        .await;
+        assert_eq!(res.status(), status, "{body}");
+        let json = json_body(res).await;
+        assert_eq!(json["error"]["code"], code);
+        assert!(
+            json["error"]["request_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+
+        let items = logged(&app, &a).await;
+        let logged_entry = entry(&items, "/api/topics").expect("rejection is logged");
+        assert_eq!(logged_entry["status"], status.as_u16());
+        assert_eq!(logged_entry["error_code"], code);
+    }
+}
+
+/// 掛上暫存前端目錄的 app（`/` 與 `/assets/app.js` 由 fallback 提供）。
+fn app_with_frontend(pool: PgPool) -> Router {
+    let dir = std::env::temp_dir().join(format!("socrates-fe-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html><title>SPA</title>").unwrap();
+    std::fs::write(dir.join("assets/app.js"), "console.log('hi')").unwrap();
+    let mut config = test_config();
+    config.frontend_dir = Some(dir);
+    test_app_with_config(pool, FakeAi::with(vec![]), config)
+}
+
+#[sqlx::test]
+async fn probes_static_files_and_unmatched_requests_do_not_evict_recent_history(pool: PgPool) {
+    let app = app_with_frontend(pool);
+    let a = seed_actors(&app).await;
+    fill_ring(&app).await;
+
+    for path in [
+        "/",
+        "/assets/app.js",
+        "/some/spa/page",
+        "/health",
+        "/health",
+    ] {
+        assert_eq!(
+            send(&app, get(path, None)).await.status(),
+            StatusCode::OK,
+            "{path}"
+        );
+    }
+    // 沒帶 Origin 的狀態變更請求打到未知路徑：被 CSRF 檢查擋下，仍然不進 ring
+    for i in 0..3 {
+        let req = Request::post(format!("/probe/{i}"))
+            .header(header::COOKIE, &a.student)
+            .body(Body::empty())
+            .unwrap();
+        let res = send(&app, req).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    let items = logged(&app, &a).await;
+    assert_eq!(items.len(), 500);
+    assert!(items.iter().all(|entry| entry["route"] == FILLER));
+}
+
+#[sqlx::test]
+async fn method_not_allowed_on_the_log_route_keeps_allow_and_stays_out_of_the_ring(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    let res = send(
+        &app,
+        raw_post("/api/admin/logs", &a.admin, Some("application/json"), "{}"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(res.headers().contains_key(header::ALLOW));
+    assert_eq!(json_body(res).await["error"]["code"], "method_not_allowed");
+
+    let items = logged(&app, &a).await;
+    assert!(entry(&items, "/api/admin/logs").is_none());
+}
+
+#[sqlx::test]
+async fn rejections_outside_the_api_are_left_alone(pool: PgPool) {
+    let app = test_app(pool);
+    let res = send(
+        &app,
+        raw_post("/health", "sid=none", Some("application/json"), "{}"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(res.headers().contains_key(header::ALLOW));
+    assert!(!json_body(res).await["error"]["code"].is_string());
+}

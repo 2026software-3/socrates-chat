@@ -2,6 +2,7 @@ import { Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router
 import { hasAnyRole, useAuth } from '@/auth/auth-context'
 import { canAccess, type Access, type Feature } from '@/app/feature'
 import { Layout } from '@/app/layout'
+import { RouteErrorBoundary } from '@/app/route-error-boundary'
 import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { adminFeature, opsNav } from '@/features/admin'
 import { DisabledPage } from '@/features/auth/disabled-page'
@@ -15,7 +16,7 @@ import { AvailablePage } from '@/features/student/available-page'
 import { teacherFeature } from '@/features/teacher'
 import { useT } from '@/i18n'
 import type { Roles } from '@/lib/types'
-import type { ReactNode } from 'react'
+import { Suspense, type ReactNode } from 'react'
 
 // 新增功能時：在 features/<name>/index.tsx 匯出 Feature，再加進這裡。
 export const features: Feature[] = [studentFeature, chatFeature, dashboardFeature, teacherFeature, adminFeature]
@@ -32,6 +33,7 @@ const participates = (roles: Roles) => roles.student
 /** 已登入外框：未登入導向 /login；沒有任何角色（尚未開通）只看得到說明頁。 */
 function Shell() {
   const auth = useAuth()
+  const { pathname } = useLocation()
   if (auth.status === 'loading') {
     return (
       <div className="p-4">
@@ -50,16 +52,16 @@ function Shell() {
   if (auth.status === 'disabled') return <DisabledPage />
   const { me } = auth
   // 臨時密碼：改密碼前其他 API 都會回 password_change_required，所以只放行改密碼頁
-  if (me.must_change_password) {
-    return (
-      <Layout me={me} nav={[]}>
-        <ChangePasswordPage />
-      </Layout>
-    )
-  }
+  if (me.must_change_password) return <ChangePasswordPage />
+  // 名單外的帳號：獨立的「尚未開通」頁，只有重新檢查與換帳號
+  if (!hasAnyRole(me.roles)) return <PendingPage />
   return (
-    <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : hasAnyRole(me.roles) ? (participates(me.roles) ? allNav : staffNav) : []}>
-      {hasAnyRole(me.roles) ? <Outlet /> : <PendingPage />}
+    <Layout me={me} nav={isOpsAdmin(me.roles) ? opsNav : participates(me.roles) ? allNav : staffNav}>
+      <RouteErrorBoundary pathname={pathname}>
+        <Suspense fallback={<LoadingBlock />}>
+          <Outlet />
+        </Suspense>
+      </RouteErrorBoundary>
     </Layout>
   )
 }
@@ -72,7 +74,7 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
   // 純管理者只能進維運頁面；其他功能頁導回維運首頁
   if (isOpsAdmin(auth.me.roles) && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />
   // 教師不參與討論：學生功能導向教師首頁
-  if (access === 'member' && !participates(auth.me.roles)) return <Navigate to="/teacher/dashboard" replace />
+  if (access === 'member' && !participates(auth.me.roles)) return <Navigate to="/teacher/classrooms" replace />
   if (!canAccess(access, auth.me.roles)) {
     return (
       <Page title={t('error.forbidden')}>
@@ -85,11 +87,11 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
   return <>{children}</>
 }
 
-/** 首頁：純管理者進維運首頁，教師進班上分布，學生直接進選題。 */
+/** 首頁：純管理者進維運首頁，教師進教室列表，學生直接進選題。 */
 function Home() {
   const auth = useAuth()
   if (auth.status === 'authed' && isOpsAdmin(auth.me.roles)) return <Navigate to="/admin" replace />
-  if (auth.status === 'authed' && !participates(auth.me.roles)) return <Navigate to="/teacher/dashboard" replace />
+  if (auth.status === 'authed' && !participates(auth.me.roles)) return <Navigate to="/teacher/classrooms" replace />
   return <AvailablePage />
 }
 
@@ -115,6 +117,9 @@ export function AppRoutes() {
             <Route key={r.path} path={r.path} element={<RequireAccess access={r.access}>{r.element}</RequireAccess>} />
           )),
         )}
+        {/* 舊網址：班上分布與討論活動已併入教室頁 */}
+        <Route path="/teacher/dashboard" element={<Navigate to="/teacher/classrooms" replace />} />
+        <Route path="/teacher/activities" element={<Navigate to="/teacher/classrooms" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

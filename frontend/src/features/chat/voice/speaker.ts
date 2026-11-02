@@ -3,6 +3,8 @@
  * 或找不到對話語言的語音時，改用 OpenAI（經後端 `/api/voice/speech`，前端不接觸 OpenAI）。
  * 找語音的順序：完全相符的地區，其次是同語言的其他地區（例如 `zh-*`）。
  */
+import { isAbortError } from '@/lib/api'
+
 export type Speaker = {
   /** 播放文字；播完時 resolve，被 `stop` 中斷也會 resolve（`false`）。 */
   speak: (text: string) => Promise<boolean>
@@ -68,12 +70,19 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
     let url: string | undefined
     let settled = false
     return new Promise<boolean>((resolve, reject) => {
-      const finish = (ok: boolean) => {
-        if (settled) return
+      // 結束一律收尾：清掉 cancel 並釋放音訊的 object URL
+      const settle = () => {
+        if (settled) return false
         settled = true
         cancel = undefined
         if (url) URL.revokeObjectURL(url)
-        resolve(ok)
+        return true
+      }
+      const finish = (ok: boolean) => {
+        if (settle()) resolve(ok)
+      }
+      const fail = (e?: unknown) => {
+        if (settle()) reject(e instanceof SpeechUnavailableError ? e : new SpeechUnavailableError())
       }
       cancel = () => {
         ctrl.abort()
@@ -92,15 +101,12 @@ export function createSpeaker(lang: string, conversationLang: string): Speaker {
           url = URL.createObjectURL(await res.blob())
           audio = new Audio(url)
           audio.onended = () => finish(true)
-          audio.onerror = () => reject(new SpeechUnavailableError())
+          audio.onerror = () => fail()
           await audio.play()
         })
         .catch((e: unknown) => {
-          if (settled) return
-          if (e instanceof DOMException && e.name === 'AbortError') return finish(false)
-          settled = true
-          cancel = undefined
-          reject(e instanceof SpeechUnavailableError ? e : new SpeechUnavailableError())
+          if (isAbortError(e)) finish(false)
+          else fail(e)
         })
     })
   }

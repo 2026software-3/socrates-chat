@@ -62,6 +62,7 @@ impl VoiceProvider for FakeVoice {
 }
 
 fn app_with_voice(pool: PgPool, voice: Arc<dyn VoiceProvider>) -> Router {
+    register_fixture_pool(&pool);
     let state = AppState::new(
         pool,
         test_config(),
@@ -167,10 +168,30 @@ async fn transcribe_validates_input(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let body = json_body(res).await;
-    assert_eq!(body["error"]["code"], "payload_too_large");
-    assert!(body["error"]["request_id"].is_string());
+    // 與其他端點相同的 JSON 錯誤格式（#324）
+    assert_json_error(res, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+}
+
+#[sqlx::test]
+async fn transcribe_accepts_audio_larger_than_the_json_body_limit(pool: PgPool) {
+    // 語音辨識有自己的 10 MB 上限，不受全域 JSON body 上限影響（#324）
+    let voice = Arc::new(FakeVoice::default());
+    let app = app_with_voice(pool, voice.clone());
+    let a = seed_actors(&app).await;
+    let size = socrates_chat_backend::MAX_BODY_BYTES * 3;
+    assert!(size < socrates_chat_backend::voice::MAX_AUDIO_BYTES);
+    let res = send(
+        &app,
+        audio_req(
+            "/api/voice/transcribe?language=en",
+            Some(&a.student),
+            "audio/webm",
+            vec![0; size],
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(voice.calls.lock().unwrap()[0].0, size);
 }
 
 #[sqlx::test]
@@ -325,6 +346,25 @@ async fn openai_voice_sends_multipart_transcription_with_model_and_language() {
     ] {
         assert!(body.contains(needle), "missing {needle}");
     }
+}
+
+#[tokio::test]
+async fn openai_voice_sends_transcription_to_the_stt_base_url_when_set() {
+    // 辨識可指向自架的 Whisper 服務；合成與對話仍走 OPENAI_BASE_URL
+    let (chat_base, chat_calls) = spawn_fake_openai().await;
+    let (stt_base, stt_calls) = spawn_fake_openai().await;
+    let mut c = test_config();
+    c.openai_base_url = chat_base;
+    c.openai_stt_base_url = Some(stt_base);
+    c.openai_stt_model = Some("stt-test".into());
+    c.openai_tts_model = Some("tts-test".into());
+    let v = OpenAiVoice::from_config(&c);
+    v.transcribe(vec![5; 20], "audio/webm", "en").await.unwrap();
+    v.speak("hi", "en").await.unwrap();
+    assert_eq!(stt_calls.lock().unwrap().len(), 1);
+    assert_eq!(stt_calls.lock().unwrap()[0].0, "/audio/transcriptions");
+    assert_eq!(chat_calls.lock().unwrap().len(), 1);
+    assert_eq!(chat_calls.lock().unwrap()[0].0, "/audio/speech");
 }
 
 #[tokio::test]

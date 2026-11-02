@@ -18,3 +18,8 @@ dist/
 !.vscode/extensions.json
 .DS_Store
 *.log
+
+# 本機評估結果與預覽檔
+/backend/eval/results/
+/backend/eval/followup.gbnf
+/backend/examples/docs_preview.rs

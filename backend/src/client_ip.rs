@@ -106,6 +106,13 @@ pub fn resolve(
     Some(peer)
 }
 
+/// 一個請求的限流鍵（`resolve` 後再 `rate_limit_key`）；沒有連線資訊時為空字串。
+pub fn client_key(peer: Option<IpAddr>, forwarded_for: Option<&str>, trusted: &[Cidr]) -> String {
+    resolve(peer, forwarded_for, trusted)
+        .map(rate_limit_key)
+        .unwrap_or_default()
+}
+
 /// 限流用的鍵：IPv4 mapped IPv6 還原成 IPv4，IPv6 只留前 64 位元（同一個 /64 視為同一來源）。
 pub fn rate_limit_key(ip: IpAddr) -> String {
     match normalize(ip) {
