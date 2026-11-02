@@ -2,6 +2,7 @@ import type { ChatModelRunOptions, ChatModelRunResult } from '@assistant-ui/reac
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
+import { createVoiceTurns } from '@/features/chat/voice/realtime/voice-turn'
 import type { SentMessage, StreamDone } from '@/lib/types'
 import { apiError } from '@/test/render'
 import { server } from '@/test/server'
@@ -58,6 +59,48 @@ function mockSend(calls: unknown[], frames: string[] = [], result: SentMessage =
     }),
   )
 }
+
+describe('voice turns', () => {
+  it('shows the reply from the voice connection and never posts', async () => {
+    const calls: unknown[] = []
+    mockSend(calls)
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    const turn = turns.begin()
+    turn.push('你')
+    turn.push('好')
+    turn.end()
+    const out = await drain(adapter.run(runOptions([userMsg('u1')])))
+    expect(out.at(-1)).toEqual({ content: [{ type: 'text', text: '你好' }] })
+    expect(calls).toEqual([])
+  })
+
+  it('stops following the reply when the run is cancelled', async () => {
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    const turn = turns.begin()
+    const ctrl = new AbortController()
+    turn.push('你')
+    const running = drain(adapter.run(runOptions([userMsg('u1')], ctrl.signal)))
+    await Promise.resolve()
+    ctrl.abort()
+    turn.push('好')
+    turn.end()
+    expect((await running).length).toBeLessThanOrEqual(1)
+  })
+
+  it('treats the saved voice message as persisted on a later run', async () => {
+    const calls: unknown[] = []
+    mockSend(calls)
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    turns.begin().end()
+    await drain(adapter.run(runOptions([userMsg('u1')])))
+    server.use(http.get('/api/conversations/c1/stream', () => sse(delta('接上'), doneFrame)))
+    await drain(adapter.run(runOptions([userMsg('u1')])))
+    expect(calls).toEqual([])
+  })
+})
 
 describe('createChatAdapter', () => {
   it('POSTs the new student message and streams the accumulated reply from the same response', async () => {

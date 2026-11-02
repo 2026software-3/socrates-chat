@@ -63,7 +63,7 @@ export type Conversation = {
 }
 
 export type MessageRole = 'student' | 'ai'
-export type MessageSource = 'text' | 'speech-browser' | 'speech-openai'
+export type MessageSource = 'text' | 'speech-browser' | 'speech-openai' | 'speech-cascade'
 
 export type Message = {
   id: string
@@ -75,7 +75,12 @@ export type Message = {
 }
 
 /** 對話詳情；`generating` 表示 AI 回覆正在產生，可用 `GET …/stream` 接上。 */
-export type ConversationDetail = Conversation & { messages: Message[]; generating: boolean }
+export type ConversationDetail = Conversation & {
+  messages: Message[]
+  generating: boolean
+  /** 伺服器端語音對話已啟用（`GET /api/conversations/{id}/voice`） */
+  voice_realtime: boolean
+}
 
 /** 送出訊息的回應；`auto_ended` 表示達回合上限，對話已自動結束、總結產生中。 */
 export type SentMessage = Message & { auto_ended: boolean }
@@ -106,6 +111,18 @@ export type TeacherSummary = {
   stance: string | null
   reasons: string | null
   claim?: string | null
+}
+
+/** 教師唯讀檢視的一場已結束活動對話（GET /api/summaries/{id}/messages）；管理者的 content 一律是 `message`。 */
+export type Transcript = {
+  conversation_id: string
+  classroom_id: string
+  title: string
+  language: Lang
+  ended_at: string
+  student_id: string
+  student_name: string | null
+  messages: Message[]
 }
 
 /** 教師明確觸發、僅保留在目前頁面的總結翻譯。 */

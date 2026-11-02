@@ -11,6 +11,7 @@ import {
 import { ArrowUp, RefreshCw } from 'lucide-react'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import type { RealtimeHost } from '@/features/chat/voice/realtime/use-realtime-voice'
 import { VoiceControls } from '@/features/chat/voice/voice-controls'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { errorText, useT } from '@/i18n'
@@ -28,6 +29,7 @@ export function ChatThread({
   composerDisabled,
   language,
   onVoiceSource,
+  realtime,
 }: {
   showComposer: boolean
   composerDisabled: boolean
@@ -35,6 +37,8 @@ export function ChatThread({
   language: string
   /** 輸入框目前的文字是以哪種語音來源輸入的；送出時一起保存（S-05.4） */
   onVoiceSource: (source: RecognitionSource) => void
+  /** 伺服器端語音對話；這場對話不能用時不提供 */
+  realtime?: RealtimeHost
 }) {
   const t = useT()
   return (
@@ -57,7 +61,7 @@ export function ChatThread({
         <div className="flex flex-col gap-2 border-t px-4 pt-4 pb-6 md:px-8">
           <PendingReply />
           <p className="text-muted-foreground text-xs">{t('chat.privacy')}</p>
-          <ChatComposer disabled={composerDisabled} language={language} onVoiceSource={onVoiceSource} />
+          <ChatComposer disabled={composerDisabled} language={language} onVoiceSource={onVoiceSource} realtime={realtime} />
         </div>
       ) : null}
     </ThreadPrimitive.Root>
@@ -156,10 +160,12 @@ function ChatComposer({
   disabled: externalDisabled,
   language,
   onVoiceSource,
+  realtime,
 }: {
   disabled: boolean
   language: string
   onVoiceSource: (source: RecognitionSource) => void
+  realtime?: RealtimeHost
 }) {
   const t = useT()
   // 最後一則 AI 回覆失敗時鎖住輸入：先按重試，避免在未保存／未回覆的訊息後再疊新訊息
@@ -179,6 +185,7 @@ function ChatComposer({
         language={language}
         onSource={onVoiceSource}
         disabled={disabled}
+        realtime={realtime}
         input={
           <ComposerPrimitive.Input
             aria-label={t('chat.thread.inputLabel')}

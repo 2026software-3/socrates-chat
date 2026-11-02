@@ -6,7 +6,7 @@ license = "MIT"
 
 [dependencies]
 async-trait = "0.1.92"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 openidconnect = "4.0.1"
@@ -29,6 +29,7 @@ utoipa = { version = "6.0.0", features = ["uuid", "chrono"] }
 utoipa-redoc = { version = "7.0.0", features = ["axum"] }
 regex = "1.13.1"
 tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 
 [dev-dependencies]
 dotenvy = "0.15.7"

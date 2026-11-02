@@ -6,8 +6,9 @@ import {
   ClassroomStudentsPage,
 } from '@/features/classrooms/classroom-pages'
 import { ClassroomsPage } from '@/features/classrooms/classrooms-page'
+import { TranscriptPage } from '@/features/classrooms/transcript-page'
 
-/** 教室 → 活動／學生 的階層路由；教師在 `/teacher`、管理者在 `/admin`。 */
+/** 教室 → 活動／學生／對話原文 的階層路由；教師在 `/teacher`、管理者在 `/admin`。 */
 export function classroomRoutes(prefix: '/teacher' | '/admin', access: AppRoute['access']): AppRoute[] {
   const base = `${prefix}/classrooms`
   return [
@@ -16,5 +17,6 @@ export function classroomRoutes(prefix: '/teacher' | '/admin', access: AppRoute[
     { path: `${base}/:classroomId/students`, element: <ClassroomStudentsPage />, access },
     { path: `${base}/:classroomId/students/:studentId`, element: <ClassroomStudentPage />, access },
     { path: `${base}/:classroomId/activities/:activityId`, element: <ClassroomActivityPage />, access },
+    { path: `${base}/:classroomId/conversations/:conversationId`, element: <TranscriptPage />, access },
   ]
 }

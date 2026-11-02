@@ -8,11 +8,14 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use socrates_chat_backend::openapi;
 
-/// 文件之外的路由：健康檢查與文件本身（含 API reference 頁面用的 Redoc 腳本）。
-const UNDOCUMENTED: [&str; 3] = [
+/// 文件之外的路由：健康檢查、文件本身（含 API reference 頁面用的 Redoc 腳本），
+/// 以及只給 cascade 服務呼叫的內部端點。
+const UNDOCUMENTED: [&str; 5] = [
     "/health",
     "/api/openapi.json",
     "/api/docs/redoc.standalone.js",
+    "/internal/cascade/v1/models",
+    "/internal/cascade/v1/chat/completions",
 ];
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 

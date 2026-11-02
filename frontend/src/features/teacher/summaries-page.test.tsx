@@ -196,17 +196,21 @@ describe('SummariesPage', () => {
     expect(within(card).getAllByText('（無內容）')).toHaveLength(2)
   })
 
-  it('states that teachers cannot see conversation originals and never requests conversations', async () => {
+  it('links each summary to the full conversation without fetching it on the list', async () => {
     const seen: string[] = []
     server.events.on('request:start', ({ request }) => {
       seen.push(new URL(request.url).pathname)
     })
     setup()
     await screen.findByText('王小明')
-    expect(screen.getByText(/教師看不到學生的對話原文/)).toBeInTheDocument()
-    // 學生姓名連到學生頁；沒有任何連到對話原文的連結
-    for (const link of screen.queryAllByRole('link')) expect(link.getAttribute('href')).not.toMatch(/conversations/)
-    expect(seen.some((p) => p.startsWith('/api/conversations'))).toBe(false)
+    const card = cardOf(screen.getByText('王小明'))
+    expect(within(card).getByRole('link', { name: '查看完整對話' })).toHaveAttribute(
+      'href',
+      '/teacher/classrooms/room-1/conversations/c1',
+    )
+    expect(screen.queryByText(/看不到學生的對話原文/)).not.toBeInTheDocument()
+    // 列表本身只載入總結；原文要點進去才會請求
+    expect(seen.some((p) => p.includes('/messages') || p.startsWith('/api/conversations'))).toBe(false)
   })
 
   it('sends the search to the API and shows the server results, not a client-side filter', async () => {

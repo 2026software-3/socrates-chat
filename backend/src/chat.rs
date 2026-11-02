@@ -1,12 +1,13 @@
 //! 對話與訊息（F-06.1、F-06.3、F-06.5；規格見 S-02.5、S-03.3、S-08.1）。
 //!
-//! 對話內容只有擁有者能讀寫：教師與管理者都看不到原文（S-02.1），
-//! 其他人存取一律回 404，不洩漏對話是否存在。
+//! 對話內容只有擁有者能讀寫，其他人存取一律回 404，不洩漏對話是否存在。
+//! 教師唯讀檢視自己教室已結束的活動對話走 `summary::transcript`（S-02.1）；管理者看不到原文。
 
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::sse::Event,
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -107,6 +108,8 @@ pub(crate) struct Detail {
     messages: Vec<Message>,
     /// AI 回覆正在產生；可用 `GET /api/conversations/{id}/stream` 接上
     generating: bool,
+    /// 伺服器端語音對話已啟用，可連 `GET /api/conversations/{id}/voice`
+    voice_realtime: bool,
 }
 
 #[utoipa::path(
@@ -265,14 +268,33 @@ pub(crate) async fn owned_conversation_in<'e>(
         .ok_or_else(ApiError::not_found)
 }
 
+/// 學生實際聽到的訊息內容與條件：被打斷的語音回覆只算聽到的部分，一個字都沒聽到就不算存在。
+/// 給學生看的、給 AI 的上下文與總結都要用這一組，才會是同一份歷史。
+macro_rules! heard_content {
+    () => {
+        "CASE WHEN heard_chars IS NULL THEN content
+              ELSE rtrim(left(content, heard_chars)) END"
+    };
+}
+macro_rules! heard_only {
+    () => {
+        "heard_chars IS DISTINCT FROM 0"
+    };
+}
+pub(crate) use {heard_content, heard_only};
+
 pub async fn load_messages(
     state: &AppState,
     conversation_id: Uuid,
 ) -> Result<Vec<Message>, ApiError> {
-    Ok(sqlx::query_as(
-        "SELECT id, role, content, source, question_type, created_at FROM messages
-         WHERE conversation_id = $1 ORDER BY seq",
-    )
+    Ok(sqlx::query_as(concat!(
+        "SELECT id, role, ",
+        heard_content!(),
+        " AS content, source, question_type, created_at FROM messages
+         WHERE conversation_id = $1 AND ",
+        heard_only!(),
+        " ORDER BY seq",
+    ))
     .bind(conversation_id)
     .fetch_all(&state.pool)
     .await?)
@@ -299,6 +321,7 @@ pub(crate) async fn detail(
         conversation,
         messages,
         generating,
+        voice_realtime: state.config.cascade_voice_url().is_some(),
     }))
 }
 
@@ -334,10 +357,39 @@ pub(crate) async fn send_message(
         Some("speech-openai") => "speech-openai",
         Some(_) => return Err(ApiError::bad_request("invalid_source", "訊息來源不正確")),
     };
+    match submit_message(&state, cu.user.id, id, content, source, false).await? {
+        Submitted::Ended(first) => Ok(reply::single_event(first)),
+        Submitted::Reply {
+            conversation,
+            first,
+        } => reply::begin_stream(state, cu.user.id, conversation, first).await,
+    }
+}
+
+/// `submit_message` 的結果。
+pub(crate) enum Submitted {
+    /// 達回合上限：對話已結束，不產生回覆。
+    Ended(Event),
+    /// 已保存並取得產生回覆的權利；`first` 是保存好的學生訊息事件。
+    Reply {
+        conversation: Conversation,
+        first: Event,
+    },
+}
+
+/// 保存學生訊息並更新回合數；文字與語音對話共用。`answered_only` 時，上一則學生訊息
+/// 還沒有回覆就拒絕：語音對話沒有重試的畫面，不能把新的發言疊上去。
+pub(crate) async fn submit_message(
+    state: &AppState,
+    user: Uuid,
+    id: Uuid,
+    content: &str,
+    source: &str,
+    answered_only: bool,
+) -> Result<Submitted, ApiError> {
     // 封存檢查與寫入在同一個交易內，教室列的共享鎖持續到提交
     let mut tx = state.pool.begin().await?;
-    let mut conversation =
-        crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
+    let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
@@ -359,6 +411,21 @@ pub(crate) async fn send_message(
     let Some((turn, stage)) = turn else {
         return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
     };
+    if answered_only {
+        // 上面的 UPDATE 鎖住對話列，檢查與寫入之間不會有別的訊息。沒被聽到的回覆也算回覆過
+        let last: Option<(String,)> = sqlx::query_as(
+            "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if last.is_some_and(|(role,)| role == "student") {
+            return Err(ApiError::conflict(
+                "unanswered_message",
+                "上一則訊息還沒有回覆",
+            ));
+        }
+    }
     let m = sqlx::query_as(
         "INSERT INTO messages (conversation_id, role, content, source)
          VALUES ($1, 'student', $2, $3)
@@ -384,12 +451,81 @@ pub(crate) async fn send_message(
     );
     if auto_ended {
         summary::spawn_generation(state.clone(), id, 1);
-        return Ok(reply::single_event(first));
+        return Ok(Submitted::Ended(first));
     }
     // 回合數與階段取自上面鎖住該列的 UPDATE；其餘欄位建立後不變，不必重新查詢
     conversation.turn_count = turn;
     conversation.stage = stage;
-    reply::begin_stream(state, cu.user.id, conversation, first).await
+    Ok(Submitted::Reply {
+        conversation,
+        first,
+    })
+}
+
+/// 把學生接著說的話併回上一則學生訊息，回合數不變，並取得產生回覆的權利。
+/// 上一則 AI 回覆確定有被聽到（`heard_chars` 大於 0）時回傳 `None`：那是新的一輪。
+/// 還沒有紀錄不算聽到：cascade 併句代表它已移除回覆，回報可能還在路上。
+pub(crate) async fn rejoin_message(
+    state: &AppState,
+    user: Uuid,
+    id: Uuid,
+    content: &str,
+) -> Result<Option<Submitted>, ApiError> {
+    let mut tx = state.pool.begin().await?;
+    let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
+    if conversation.status != "active" {
+        return Err(ApiError::conflict("conversation_ended", "對話已結束"));
+    }
+    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
+        "UPDATE conversations SET generating_since = now()
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+        " RETURNING turn_count, stage",
+    ))
+    .bind(id)
+    .bind(state.config.generation_stale_secs())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((turn, stage)) = turn else {
+        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+    };
+    let last: Option<(String, Option<i32>)> = sqlx::query_as(
+        "SELECT role, heard_chars FROM messages
+         WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if last.is_some_and(|(role, heard)| role == "ai" && heard.is_some_and(|h| h > 0)) {
+        return Ok(None);
+    }
+    let m = sqlx::query_as(
+        "UPDATE messages SET content = $2
+         WHERE id = (
+             SELECT id FROM messages WHERE conversation_id = $1 AND role = 'student'
+             ORDER BY seq DESC LIMIT 1
+         )
+         RETURNING id, role, content, source, question_type, created_at",
+    )
+    .bind(id)
+    .bind(content)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let first = reply::event(
+        "message",
+        serde_json::to_value(SentMessage {
+            message: m,
+            auto_ended: false,
+        })
+        .map_err(|_| ApiError::internal())?,
+    );
+    conversation.turn_count = turn;
+    conversation.stage = stage;
+    Ok(Some(Submitted::Reply {
+        conversation,
+        first,
+    }))
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
