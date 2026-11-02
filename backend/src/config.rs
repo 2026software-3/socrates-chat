@@ -50,11 +50,17 @@ pub struct Config {
     pub openai_base_url: String,
     /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
     pub openai_stt_base_url: Option<String>,
+    /// 語音合成專用的自架服務 base URL；有設定時不送 OpenAI 金鑰、不扣 AI 用量（S-05.5）。
+    pub openai_tts_base_url: Option<String>,
     /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     pub openai_stt_model: Option<String>,
     pub openai_tts_model: Option<String>,
     /// 語音合成的聲音名稱。
     pub openai_tts_voice: String,
+    /// 語音對話實驗：cascade 的 `/v1/realtime` 位址；沒設定就不開放（見 `cascade`）。
+    pub cascade_realtime_url: Option<String>,
+    /// cascade 呼叫內部 LLM 端點用的共用密鑰。
+    pub cascade_llm_token: Option<String>,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -204,6 +210,15 @@ impl Config {
         (self.ai_total_timeout + Duration::from_secs(60)).max(self.request_timeout)
     }
 
+    /// 伺服器端語音對話的 cascade 位址：網址與共用密鑰要同時設定才有值。
+    /// 只有網址時 cascade 呼叫內部 LLM 端點會被拒絕，學生按得到即時語音卻等不到回覆。
+    pub fn cascade_voice_url(&self) -> Option<&str> {
+        match (&self.cascade_realtime_url, &self.cascade_llm_token) {
+            (Some(url), Some(_)) => Some(url),
+            _ => None,
+        }
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
@@ -278,6 +293,13 @@ impl Config {
             openai_stt_base_url: env::var("OPENAI_STT_BASE_URL")
                 .ok()
                 .filter(|v| !v.is_empty()),
+            openai_tts_base_url: env::var("OPENAI_TTS_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_realtime_url: env::var("CASCADE_REALTIME_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_llm_token: env::var("CASCADE_LLM_TOKEN").ok().filter(|v| !v.is_empty()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")

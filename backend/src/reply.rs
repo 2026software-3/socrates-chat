@@ -38,10 +38,10 @@ use crate::{
     AppState,
     ai::{
         AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta, build_system_prompt,
-        parse_meta, rules_version,
+        closing_instruction, parse_meta, rules_version,
     },
     auth::RequireStudent,
-    chat::{Conversation, Message, load_messages},
+    chat::{Conversation, Message, heard_only, load_messages},
     error::ApiError,
     mutex::lock,
 };
@@ -52,6 +52,12 @@ pub fn routes() -> Router<AppState> {
 
 /// 事件通道不設上限：一則回覆很小，且這樣慢速客戶端不會拖住 AI 的逾時計時。
 type EventTx = mpsc::UnboundedSender<Event>;
+
+/// 語音對話收到的回覆：文字片段，最後若沒有存成回覆再加一個 `Failed`。
+pub(crate) enum ReplyText {
+    Delta(String),
+    Failed,
+}
 
 /// 這個服務程序內正在產生的回覆：已送出的文字與正在收看的連線。
 /// 學生離開對話頁再回來時，`GET /stream` 從這裡接上同一個回覆，而不是被擋下或重新產生。
@@ -66,6 +72,12 @@ struct Live {
     /// 已送出的回覆文字；新接上的連線先收到這一段
     text: String,
     watchers: Vec<EventTx>,
+    /// 語音對話收回覆文字的通道；回覆結束時關閉。
+    tap: Option<mpsc::UnboundedSender<ReplyText>>,
+    /// 產生途中被打斷時學生聽到的字元數，等回覆存好才寫入
+    heard: Option<usize>,
+    /// 回覆已存好或已失敗，之後的打斷直接寫資料庫
+    sealed: bool,
 }
 
 /// 一次回覆產生的紀錄，由產生回覆的工作持有。
@@ -79,8 +91,18 @@ impl LiveReply {
     fn delta(&self, text: &str) {
         let mut live = lock(&self.live);
         live.text.push_str(text);
+        if let Some(tap) = &live.tap {
+            let _ = tap.send(ReplyText::Delta(text.to_string()));
+        }
         let ev = delta_event(text);
         live.watchers.retain(|w| w.send(ev.clone()).is_ok());
+    }
+
+    /// 收尾：之後的 `cut` 不再暫存，回傳已暫存的聽到字元數。
+    fn seal(&self) -> Option<usize> {
+        let mut live = lock(&self.live);
+        live.sealed = true;
+        live.heard.take()
     }
 }
 
@@ -90,10 +112,18 @@ impl LiveReplies {
         lock(&self.0).contains_key(&id)
     }
 
-    fn start(&self, id: Uuid, watcher: EventTx) -> LiveReply {
+    fn start(
+        &self,
+        id: Uuid,
+        watcher: EventTx,
+        tap: Option<mpsc::UnboundedSender<ReplyText>>,
+    ) -> LiveReply {
         let live = Arc::new(Mutex::new(Live {
             text: String::new(),
             watchers: vec![watcher],
+            tap,
+            heard: None,
+            sealed: false,
         }));
         lock(&self.0).insert(id, live.clone());
         LiveReply { id, live }
@@ -101,7 +131,7 @@ impl LiveReplies {
 
     /// 送出最後一個事件（done／error）並結束；之後的 `join` 不會再接上這次回覆。
     /// 只移除自己的紀錄：已被同一場對話的新回覆取代時，新回覆照常進行。
-    fn finish(&self, reply: LiveReply, last: Event) {
+    fn finish(&self, reply: LiveReply, last: Event, failed: bool) {
         let mut replies = lock(&self.0);
         if replies
             .get(&reply.id)
@@ -109,9 +139,29 @@ impl LiveReplies {
         {
             replies.remove(&reply.id);
         }
-        for w in lock(&reply.live).watchers.drain(..) {
+        let mut live = lock(&reply.live);
+        if let Some(tap) = live.tap.take()
+            && failed
+        {
+            let _ = tap.send(ReplyText::Failed);
+        }
+        for w in live.watchers.drain(..) {
             let _ = w.send(last.clone());
         }
+    }
+
+    /// 回覆還在產生時暫存打斷的位置；已收尾或沒有回覆時回傳 `false`。
+    pub(crate) fn cut(&self, id: Uuid, chars: usize) -> bool {
+        let replies = lock(&self.0);
+        let Some(live) = replies.get(&id) else {
+            return false;
+        };
+        let mut live = lock(live);
+        if live.sealed {
+            return false;
+        }
+        live.heard = Some(chars);
+        true
     }
 
     /// 接上進行中的回覆：先收到已產生的文字（一個 delta），之後與其他連線收到相同的事件。
@@ -148,6 +198,23 @@ async fn release_generation(state: &AppState, id: Uuid) {
         .await
     {
         tracing::error!(class = %crate::error::db_error_class(&e), "failed to release generation claim");
+    }
+}
+
+/// 記下學生聽到最後一則 AI 回覆的多少；最後一則不是 AI 訊息時（回覆沒有存成）不做事。
+pub(crate) async fn save_heard(state: &AppState, id: Uuid, chars: usize) {
+    if let Err(e) = sqlx::query(
+        "UPDATE messages SET heard_chars = $2
+         WHERE role = 'ai' AND id = (
+             SELECT id FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1
+         )",
+    )
+    .bind(id)
+    .bind(i32::try_from(chars).unwrap_or(i32::MAX))
+    .execute(&state.pool)
+    .await
+    {
+        tracing::error!(class = %crate::error::db_error_class(&e), "failed to save what was heard");
     }
 }
 
@@ -204,6 +271,7 @@ pub(crate) async fn stream(
         conversation,
         messages,
         None,
+        None,
     ))
 }
 
@@ -223,12 +291,40 @@ pub async fn begin_stream(
             conversation,
             messages,
             Some(first),
+            None,
         )),
         Err(e) => {
             release_generation(&state, conversation.id).await;
             Err(e)
         }
     }
+}
+
+/// 與 `begin_stream` 相同，但回覆文字走回傳的通道（語音對話用）；通道關閉表示回覆結束，
+/// 沒有存成回覆時最後一個是 `ReplyText::Failed`。
+pub(crate) async fn begin_text_stream(
+    state: AppState,
+    user: Uuid,
+    conversation: Conversation,
+    first: Event,
+) -> Result<mpsc::UnboundedReceiver<ReplyText>, ApiError> {
+    let messages = match load_messages(&state, conversation.id).await {
+        Ok(messages) => messages,
+        Err(e) => {
+            release_generation(&state, conversation.id).await;
+            return Err(e);
+        }
+    };
+    let (tap, text) = mpsc::unbounded_channel();
+    drop(spawn_stream(
+        state,
+        user,
+        conversation,
+        messages,
+        Some(first),
+        Some(tap),
+    ));
+    Ok(text)
 }
 
 /// 只送出一個事件就結束的串流（例如達回合上限、沒有 AI 回覆時）。
@@ -243,16 +339,18 @@ fn spawn_stream(
     conversation: Conversation,
     messages: Vec<Message>,
     first: Option<Event>,
+    tap: Option<mpsc::UnboundedSender<ReplyText>>,
 ) -> EventStream {
     let (tx, rx) = mpsc::unbounded_channel();
     if let Some(first) = first {
         let _ = tx.send(first);
     }
     let id = conversation.id;
-    let reply = state.live.start(id, tx);
+    let reply = state.live.start(id, tx, tap);
     tokio::spawn(
         async move {
             // 每位使用者的 AI 用量上限：用完時學生訊息已保存，但不呼叫 AI，以 error 事件結束（之後可重試）
+            let mut failed = true;
             let last = match state.charge_ai(user) {
                 Err(_) => event("error", json!({"code": crate::ai_usage::EXCEEDED_CODE})),
                 Ok(slot) => {
@@ -261,7 +359,10 @@ fn spawn_stream(
                             .catch_unwind()
                             .await;
                     match result {
-                        Ok(Ok(done)) => done,
+                        Ok(Ok(done)) => {
+                            failed = false;
+                            done
+                        }
                         // 沒有得到回覆：不扣額度，AI 當機時的重試不該把學生鎖在外面
                         Ok(Err(error)) => {
                             state.refund_ai(user, slot);
@@ -274,9 +375,13 @@ fn spawn_stream(
                     }
                 }
             };
+            // 釋放前寫入：下一輪一開始載入的歷史就要是學生聽到的版本
+            if let Some(chars) = reply.seal() {
+                save_heard(&state, id, chars).await;
+            }
             // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
             release_generation(&state, id).await;
-            state.live.finish(reply, last);
+            state.live.finish(reply, last, failed);
         }
         .in_current_span(),
     );
@@ -310,7 +415,7 @@ async fn generate(
     messages: Vec<Message>,
     reply: &LiveReply,
 ) -> Result<Event, Event> {
-    let req = AiRequest {
+    let mut req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
             description: &conv.description,
@@ -327,6 +432,13 @@ async fn generate(
             })
             .collect(),
     };
+    // 歷史裡一長串追問會蓋過系統提示，所以收尾指令也放在模型最後讀到的地方；只在請求裡，不寫進紀錄
+    if conv.turn_count >= state.config.wrap_up_turn as i32
+        && let Some(last) = req.messages.last_mut()
+    {
+        last.content.push_str("\n\n");
+        last.content.push_str(closing_instruction(&conv.language));
+    }
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
@@ -352,6 +464,7 @@ async fn generate(
                 "question_type": meta.question_type,
                 "stage": saved.stage,
                 "suggest_end": saved.converge_ready,
+                "ended": saved.ended,
             }),
         )),
         // 對話在串流期間已結束或已有回覆
@@ -420,9 +533,12 @@ struct Saved {
     message_id: Uuid,
     stage: i16,
     converge_ready: bool,
+    ended: bool,
 }
 
 /// 保存 AI 回覆並更新階段；對話已結束或最後一則已不是學生訊息時不保存。
+/// 模型判斷可以收尾、且確實符合收斂條件或到了收尾回合時，這則回覆就是結束語：直接結束討論
+/// 並產生總結，不再等學生回應（S-03.3）。封存教室中的對話一律不收尾（S-14）。
 async fn save_reply(
     state: &AppState,
     conv: &Conversation,
@@ -436,9 +552,11 @@ async fn save_reply(
     .bind(conv.id)
     .fetch_one(&mut *tx)
     .await?;
-    let last: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
-    )
+    let last: Option<(String,)> = sqlx::query_as(concat!(
+        "SELECT role FROM messages WHERE conversation_id = $1 AND ",
+        heard_only!(),
+        " ORDER BY seq DESC LIMIT 1",
+    ))
     .bind(conv.id)
     .fetch_optional(&mut *tx)
     .await?;
@@ -472,11 +590,34 @@ async fn save_reply(
     .bind(converge_ready)
     .fetch_one(&mut *tx)
     .await?;
+    let closing = meta.question_type.as_deref() == Some("wrap_up")
+        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+    let writable = match conv.classroom_id {
+        Some(room) if closing => crate::classrooms::ensure_writable(&mut *tx, room)
+            .await
+            .is_ok(),
+        _ => true,
+    };
+    let ended = if closing && writable {
+        // 這次產生已完成：先放掉自己的 claim，否則會被當成 AI 還在回覆
+        sqlx::query("UPDATE conversations SET generating_since = NULL WHERE id = $1")
+            .bind(conv.id)
+            .execute(&mut *tx)
+            .await?;
+        crate::summary::end_conversation(&mut tx, conv.id, state.config.generation_stale_secs())
+            .await?
+    } else {
+        false
+    };
     tx.commit().await?;
+    if ended {
+        crate::summary::spawn_generation(state.clone(), conv.id, 1);
+    }
     Ok(Some(Saved {
         message_id,
         stage: new_stage,
         converge_ready,
+        ended,
     }))
 }
 
@@ -491,11 +632,11 @@ mod tests {
         let id = Uuid::new_v4();
         let (old_tx, mut old_rx) = mpsc::unbounded_channel();
         let (new_tx, mut new_rx) = mpsc::unbounded_channel();
-        let old = replies.start(id, old_tx);
+        let old = replies.start(id, old_tx, None);
         // 舊回覆釋放 claim 之後、送出最後事件之前，新回覆已開始
-        let new = replies.start(id, new_tx);
+        let new = replies.start(id, new_tx, None);
 
-        replies.finish(old, event("error", json!({"code": "ai_unavailable"})));
+        replies.finish(old, event("error", json!({"code": "ai_unavailable"})), true);
         // 舊回覆的連線收到自己的最後事件後結束
         assert!(old_rx.try_recv().is_ok());
         assert_eq!(old_rx.try_recv().unwrap_err(), TryRecvError::Disconnected);
@@ -507,7 +648,7 @@ mod tests {
         assert!(new_rx.try_recv().is_ok());
         let mut joined = replies.join(id).expect("the new reply is still joinable");
         assert!(joined.try_recv().is_ok());
-        replies.finish(new, event("done", json!({})));
+        replies.finish(new, event("done", json!({})), false);
         assert!(!replies.is_live(id));
         assert!(new_rx.try_recv().is_ok());
         assert!(joined.try_recv().is_ok());

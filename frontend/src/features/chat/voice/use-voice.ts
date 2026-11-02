@@ -5,16 +5,20 @@ import {
   MAX_UTTERANCE_MS,
   SILENCE_MS,
   loadAutoSend,
+  loadBargeIn,
   saveAutoSend,
+  saveBargeIn,
   speechLang,
 } from '@/features/chat/voice/config'
+import { createBargeInMonitor, type BargeInMonitor, type BargeInStatus, type PlaybackPath } from '@/features/chat/voice/audio/barge-in'
 import {
   createRecognizer,
   pickRecognitionSource,
   type RecognitionSource,
   type Recognizer,
 } from '@/features/chat/voice/recognizer'
-import { createSpeaker, type Speaker } from '@/features/chat/voice/speaker'
+import { createSentenceSplitter, type SentenceSplitter } from '@/features/chat/voice/sentence-splitter'
+import { createSpeaker, type Speaker, type SpeechTurn } from '@/features/chat/voice/speaker'
 
 /** 輸入框的存取：由對話串元件提供，hook 本身不依賴 assistant-ui。 */
 export type VoiceHost = {
@@ -48,16 +52,35 @@ function clearAllTimers(t: Timers) {
  * - `speaking`：播放 AI 語音
  */
 export type VoicePhase = 'idle' | 'listening' | 'countdown' | 'review' | 'transcribing' | 'waiting' | 'speaking'
-export type VoiceNotice = 'permission' | 'unavailable' | 'failed' | 'speechFailed' | 'hint'
+export type VoiceNotice =
+  | 'permission'
+  | 'device'
+  | 'unavailable'
+  | 'failed'
+  | 'speechFailed'
+  | 'hint'
+  | 'bargeIn'
+  | 'queuedSend'
 
-export type VoiceReply = { id: string; text: string }
+/** 關於上一次播放的提示：學生還要看到，開始收音時不清掉，下一次播放才清。 */
+const aboutPlayback = (n: VoiceNotice | undefined) => n === 'bargeIn' || n === 'speechFailed'
+
+/** 最新一則 AI 回覆；`text` 是目前累積的全文。 */
+export type VoiceReply = { id: string; text: string; status: 'running' | 'complete' | 'failed' }
+
+/** 正在邊生成邊唸的回覆；第一句出現前還沒有 `speech`。 */
+type ReplyStream = { id: string; take: SentenceSplitter; speech?: SpeechTurn }
 
 /**
  * 語音輸入與輪流語音對話（S-05.1、S-05.2）。
  *
  * - `dictate`：辨識文字即時填入輸入框，學生確認或編輯後自己送出（S-05.1）。
- * - `converse`：AI 回覆自動播放；播完自動收音；靜音 3 秒進入 3 秒倒數後自動送出
- *   （可關閉自動送出，只用按鈕）。播放時不收音，避免把 AI 的聲音錄成學生發言。
+ * - `converse`：AI 回覆邊生成邊唸，湊滿一句就開始；唸完自動收音；靜音 3 秒進入 3 秒倒數後
+ *   自動送出（可關閉自動送出，只用按鈕）。回覆還在生成時被打斷，學生可以先說，訊息等這則回覆
+ *   結束才送出：這時送出會中止前端的串流，後端卻還在生成。
+ *   學生開啟「開口打斷」後，播放時麥克風只在瀏覽器內偵測開口
+ *   （S-05.5），偵測到就打斷播放、換回辨識器並請學生再說一次，因為偵測期間的聲音沒有進辨識器；
+ *   辨識器本身仍不在播放時運作，避免把 AI 的聲音錄成學生發言。
  * 備援的 OpenAI 辨識沒有即時文字也沒有靜音偵測，需按按鈕結束發言。
  */
 export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
@@ -66,6 +89,8 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const [notice, setNotice] = useState<VoiceNotice>()
   const [countdown, setCountdown] = useState(0) // 0..1
   const [autoSend, setAutoSendState] = useState(loadAutoSend)
+  const [bargeIn, setBargeInState] = useState(loadBargeIn)
+  const [audioStatus, setAudioStatus] = useState<BargeInStatus>({ state: 'idle' })
 
   const hostRef = useRef(host)
   const modeRef = useRef<VoiceMode>('off')
@@ -73,12 +98,20 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const autoSendRef = useRef(autoSend)
   const recRef = useRef<Recognizer>(undefined)
   const speakerRef = useRef<Speaker>(undefined)
+  const monitorRef = useRef<BargeInMonitor>(undefined)
+  const bargeInRef = useRef(bargeIn)
+  const speakTurnRef = useRef(0)
+  const bargedInRef = useRef(false)
   const baseRef = useRef('')
   const sourceRef = useRef<RecognitionSource>('speech-browser')
   const startRef = useRef<(m: Exclude<VoiceMode, 'off'>) => void>(() => {})
   const spokenRef = useRef('') // 這次發言辨識到的文字
+  const replyRef = useRef<VoiceReply>(undefined)
   const lastReplyRef = useRef<VoiceReply>(undefined)
   const handledReplyRef = useRef<string>(undefined)
+  const replyStreamRef = useRef<ReplyStream>(undefined)
+  const replyAbandonedRef = useRef(false) // 回覆失敗而中止播放，回合不交給學生
+  const pendingSendRef = useRef(false) // 訊息等目前的回覆生成完才送出
   const timers = useRef<Timers>({})
 
   useEffect(() => {
@@ -106,6 +139,18 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     return speakerRef.current
   }, [])
 
+  const ensureMonitor = useCallback((): BargeInMonitor => {
+    monitorRef.current ??= createBargeInMonitor({
+      // 中斷播放後，`speakReply` 接手把回合交給學生
+      onSpeech: () => {
+        bargedInRef.current = true
+        speakerRef.current?.stop()
+      },
+      onStatus: setAudioStatus,
+    })
+    return monitorRef.current
+  }, [])
+
   /** 停止收音並丟掉辨識器（不處理剩下的結果）。 */
   const stopRecognizer = useCallback(() => {
     const rec = recRef.current
@@ -126,6 +171,12 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     }
     stopRecognizer()
     setPhase('waiting')
+    const replyStatus = replyRef.current?.status
+    if (replyStatus === 'running' || replyStatus === 'failed') {
+      pendingSendRef.current = true
+      if (replyStatus === 'failed') setNotice('queuedSend')
+      return
+    }
     // 等輸入框的文字更新完再送出
     window.setTimeout(() => hostRef.current.send(), 0)
   }, [setPhase, stopRecognizer])
@@ -171,11 +222,13 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       const existing = hostRef.current.getText().trim()
       baseRef.current = existing ? `${existing} ` : ''
       spokenRef.current = ''
-      setNotice(undefined)
+      // 播放失敗或被打斷後會走到這裡，改用備援辨識時也是
+      setNotice((n) => (aboutPlayback(n) ? n : undefined))
       const rec: Recognizer = createRecognizer(pickRecognitionSource(), speechLang(lang), lang, {
         onText: (text, final) => {
           const first = spokenRef.current === ''
           spokenRef.current = text
+          setNotice((n) => (n === 'bargeIn' ? undefined : n))
           hostRef.current.setText(baseRef.current + text)
           hostRef.current.onSource(rec.source)
           if (phaseRef.current === 'countdown') keepListening()
@@ -218,14 +271,18 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
           setPhase('idle')
           setNotice(kind)
           // 無法收音就不要停在語音對話模式
-          if (kind === 'permission' || kind === 'unavailable') setMode('off')
+          if (kind === 'permission' || kind === 'device' || kind === 'unavailable') {
+            setMode('off')
+            monitorRef.current?.close()
+            monitorRef.current = undefined
+          }
         },
       })
       recRef.current = rec
       sourceRef.current = rec.source
       setPhase('listening')
       setMode(m)
-      timers.current.hint = window.setTimeout(() => setNotice('hint'), HINT_AFTER_MS)
+      timers.current.hint = window.setTimeout(() => setNotice((n) => (n === 'speechFailed' ? n : 'hint')), HINT_AFTER_MS)
       rec.start()
     },
     [armSilence, keepListening, setMode, setPhase, startCountdown, stopRecognizer, submit],
@@ -235,42 +292,113 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     startRef.current = startListening
   }, [startListening])
 
-  /** 播放 AI 回覆；播完（或被停止）後輪到學生。 */
+  /** 播放 AI 回覆；播完（或被停止）後輪到學生。`play` 同步開始這一輪。 */
   const speakReply = useCallback(
-    async (r: VoiceReply, thenListen: boolean) => {
+    async (play: (onStart: (path: PlaybackPath) => void) => Promise<boolean>) => {
       stopRecognizer()
       setPhase('speaking')
-      let failed = false
+      setNotice((n) => (aboutPlayback(n) ? undefined : n))
+      bargedInRef.current = false
+      replyAbandonedRef.current = false
+      const turn = ++speakTurnRef.current
+      // 只有語音對話才監聽開口；開始發聲才開麥克風，音量校準才會對到 AI 的聲音
+      const monitor = bargeInRef.current && modeRef.current === 'converse' ? ensureMonitor() : undefined
       try {
-        await ensureSpeaker().speak(r.text)
+        await play((path) => {
+          // 等待發聲期間，這一輪可能已被取代，或開關已被關閉
+          if (turn === speakTurnRef.current && monitor === monitorRef.current) monitor?.start(path)
+        })
       } catch {
-        failed = true
         setNotice('speechFailed')
       }
+      // 被新的播放取代：後續由新的那一輪負責
+      if (turn !== speakTurnRef.current) return
+      replyStreamRef.current = undefined
+      monitor?.stop()
       // 播放期間若被關掉語音對話，就不再收音
       if (modeRef.current !== 'converse') {
         setPhase('idle')
         return
       }
-      if (thenListen || failed) startListening('converse')
-      else setPhase('idle')
+      // 回覆失敗時輸入框被鎖住：停在等待，學生重試後新的回覆會接著唸
+      if (replyAbandonedRef.current) {
+        setPhase('waiting')
+        return
+      }
+      startListening('converse')
+      if (bargedInRef.current) setNotice('bargeIn')
     },
-    [ensureSpeaker, setPhase, startListening, stopRecognizer],
+    [ensureMonitor, setPhase, startListening, stopRecognizer],
   )
 
-  // AI 回覆完成：在語音對話中自動播放
-  useEffect(() => {
-    lastReplyRef.current = reply
-    if (!reply || handledReplyRef.current === reply.id) return
-    if (modeRef.current === 'converse' && phaseRef.current === 'waiting') {
-      handledReplyRef.current = reply.id
-      void speakReply(reply, true)
+  /** 把生成中的回覆一句一句送去播放；不是這一輪該唸的回覆就略過。 */
+  const feedReply = useCallback(
+    (r: VoiceReply) => {
+      let stream = replyStreamRef.current
+      if (stream?.id !== r.id) {
+        const ours = modeRef.current === 'converse' && phaseRef.current === 'waiting'
+        if (!ours || handledReplyRef.current === r.id || r.status === 'failed') return
+        handledReplyRef.current = r.id
+        stream = { id: r.id, take: createSentenceSplitter(speechLang(hostRef.current.language)) }
+        replyStreamRef.current = stream
+      }
+      if (r.status === 'failed') {
+        // 這則回覆已作廢（S-03）：還沒唸的句子不再唸，已唸出的收不回來
+        replyStreamRef.current = undefined
+        if (stream.speech) {
+          replyAbandonedRef.current = true
+          speakerRef.current?.stop()
+        }
+        return
+      }
+      const complete = r.status === 'complete'
+      const sentences = stream.take(r.text, complete)
+      if (sentences.length > 0 && !stream.speech) {
+        const opening = stream
+        void speakReply((onStart) => {
+          opening.speech = ensureSpeaker().open(onStart)
+          return opening.speech.finished
+        })
+      }
+      for (const sentence of sentences) stream.speech?.say(sentence)
+      if (complete) {
+        stream.speech?.end()
+        replyStreamRef.current = undefined
+      }
+    },
+    [ensureSpeaker, speakReply],
+  )
+
+  /** 排隊中的訊息看回覆的結果決定去留；學生已經往下說了，這段期間的回覆（包含重試的）只顯示文字。 */
+  const settleQueuedSend = useCallback((r: VoiceReply) => {
+    handledReplyRef.current = r.id
+    if (r.status === 'failed') {
+      // 輸入框被鎖住，繞過它會在失敗的回覆後疊上新訊息：繼續排隊，等學生重試成功
+      setNotice('queuedSend')
+      return
     }
-  }, [reply, speakReply])
+    setNotice((n) => (n === 'queuedSend' ? undefined : n))
+    if (r.status === 'complete') {
+      pendingSendRef.current = false
+      window.setTimeout(() => hostRef.current.send(), 0)
+    }
+  }, [])
+
+  useEffect(() => {
+    replyRef.current = reply
+    lastReplyRef.current = reply?.status === 'complete' ? reply : undefined
+    if (!reply) return
+    if (pendingSendRef.current) settleQueuedSend(reply)
+    else feedReply(reply)
+  }, [feedReply, reply, settleQueuedSend])
 
   const stopAll = useCallback(() => {
     stopRecognizer()
+    pendingSendRef.current = false
+    replyStreamRef.current = undefined
     speakerRef.current?.stop()
+    monitorRef.current?.close()
+    monitorRef.current = undefined
     setMode('off')
     setPhase('idle')
     setNotice(undefined)
@@ -279,8 +407,13 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   // 離開頁面或對話結束時關掉收音與播放
   useEffect(
     () => () => {
+      // 先讓進行中的回合失效：播放被中斷後不能再把回合交給已經不存在的畫面
+      modeRef.current = 'off'
+      speakTurnRef.current += 1
       recRef.current?.stop()
       speakerRef.current?.stop()
+      monitorRef.current?.close()
+      monitorRef.current = undefined
       clearAllTimers(timers.current)
     },
     [],
@@ -292,6 +425,9 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     notice,
     countdown,
     autoSend,
+    bargeIn,
+    /** 麥克風前處理與開口偵測的狀態，供疑難排解。 */
+    audioStatus,
     /** 語音輸入：開始收音（再按一次停止）；播放中按下會立即停止播放並開始收音（S-05.2 打斷）。 */
     toggleDictate() {
       if (mode === 'dictate' && phase === 'listening') {
@@ -321,9 +457,10 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       }
       stopRecognizer()
       setMode('converse')
-      const last = lastReplyRef.current
-      // 一開始先聆聽；之後每個 AI 回覆自動播放
-      handledReplyRef.current = last?.id
+      // 這裡還在點擊事件內：之後 AI 開始說話時已經沒有使用者手勢了
+      if (bargeInRef.current) ensureMonitor().unlock()
+      // 一開始先聆聽；之後每個 AI 回覆自動播放，已經開始生成的這則不唸
+      handledReplyRef.current = replyRef.current?.id
       startListening('converse')
     },
     /** 立即送出（倒數中或收音中）。 */
@@ -344,7 +481,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     },
     replay() {
       const r = lastReplyRef.current
-      if (r) void speakReply(r, true)
+      if (r) void speakReply((onStart) => ensureSpeaker().speak(r.text, onStart))
     },
     setAutoSend(on: boolean) {
       autoSendRef.current = on
@@ -354,6 +491,17 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
         window.clearTimeout(timers.current.silence)
         if (phaseRef.current === 'countdown') keepListening()
       } else if (phaseRef.current === 'listening') armSilence()
+    },
+    setBargeIn(on: boolean) {
+      bargeInRef.current = on
+      setBargeInState(on)
+      saveBargeIn(on)
+      if (on) ensureMonitor().unlock()
+      else {
+        // 關閉要立刻生效：麥克風不繼續開著
+        monitorRef.current?.close()
+        monitorRef.current = undefined
+      }
     },
     dismissNotice: () => setNotice(undefined),
   }

@@ -63,7 +63,7 @@ export type Conversation = {
 }
 
 export type MessageRole = 'student' | 'ai'
-export type MessageSource = 'text' | 'speech-browser' | 'speech-openai'
+export type MessageSource = 'text' | 'speech-browser' | 'speech-openai' | 'speech-cascade'
 
 export type Message = {
   id: string
@@ -75,7 +75,12 @@ export type Message = {
 }
 
 /** 對話詳情；`generating` 表示 AI 回覆正在產生，可用 `GET …/stream` 接上。 */
-export type ConversationDetail = Conversation & { messages: Message[]; generating: boolean }
+export type ConversationDetail = Conversation & {
+  messages: Message[]
+  generating: boolean
+  /** 伺服器端語音對話已啟用（`GET /api/conversations/{id}/voice`） */
+  voice_realtime: boolean
+}
 
 /** 送出訊息的回應；`auto_ended` 表示達回合上限，對話已自動結束、總結產生中。 */
 export type SentMessage = Message & { auto_ended: boolean }
@@ -212,6 +217,8 @@ export type StreamDone = {
   question_type: string | null
   stage: 1 | 2 | 3
   suggest_end: boolean
+  /** AI 這則是結束語：討論已結束、總結產生中。 */
+  ended?: boolean
 }
 
 /** Keyset 分頁列表。 */

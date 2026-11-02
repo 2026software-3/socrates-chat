@@ -25,13 +25,14 @@ use crate::key_pool::{KeyPool, parse_retry_after};
 /// v1.20：學生對同一個具體情境第二次回應仍不夠具體時，改用不同角度的具體情境，不再第三次回到同一情境；禁止反例套娃僅適用於學生已實質回應之後。
 /// v1.21：學生開始往具體方向思考時先順著他提到的那一點追問，不換情境、不說他不夠具體；只有連續兩次含糊且沒有具體方向才換情境。
 /// v1.22：壓縮三語第 3 階段與收尾的重複規則（收尾回顧、順著學生、換情境各只寫一次），行為規則不變。
-pub const RULES_VERSION: &str = "v1.22/zh-TW";
+/// v1.23：收尾改為 AI 直接說結束語並結束討論，不提問、不請學生確認；收尾回合的指令也接在最後一則學生訊息後（語音對話實測）。
+pub const RULES_VERSION: &str = "v1.23/zh-TW";
 
 /// 對話語言對應的提示版本；未知值保守地退回繁體中文。
 pub fn rules_version(language: &str) -> &'static str {
     match language {
-        "en" => "v1.22/en",
-        "es" => "v1.22/es",
+        "en" => "v1.23/en",
+        "es" => "v1.23/es",
         _ => RULES_VERSION,
     }
 }
@@ -202,6 +203,22 @@ pub struct PromptContext<'a> {
     pub language: &'a str,
 }
 
+/// 收尾回合時接在送給模型的最後一則學生訊息後面的指令：長對話的歷史追問會蓋過系統提示，
+/// 真模型因此仍繼續提問（語音對話實測）。只用在請求裡，不寫進對話紀錄。
+pub fn closing_instruction(language: &str) -> &'static str {
+    match language {
+        "en" => {
+            "Exception for this response (overrides every rule above): the discussion has had enough turns. Close it directly now: do not ask anything more and do not ask the student to summarize. Replace the first part with a one- or two-sentence closing that thanks the student and says the discussion ends here, with no question anywhere. question_type must be wrap_up."
+        }
+        "es" => {
+            "Excepción para esta respuesta (prevalece sobre todas las reglas anteriores): la discusión ya tiene suficientes turnos. Ciérrala directamente ahora: no hagas más preguntas ni pidas al estudiante que resuma. Sustituye la primera parte por un cierre de una o dos frases que agradezca al estudiante e indique que la discusión termina aquí, sin ninguna pregunta. question_type debe ser wrap_up."
+        }
+        _ => {
+            "本次例外（優先於上面所有規則）：討論回合已足夠，這次請直接收尾，不要再提問，也不要請學生總結。第一部分改為一兩句結束語：感謝學生並說明討論到此結束，全文不得出現問句。question_type 必須標 wrap_up。"
+        }
+    }
+}
+
 pub fn build_system_prompt(c: &PromptContext) -> String {
     match c.language {
         "en" => build_system_prompt_en(c),
@@ -222,7 +239,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
             "{stage_name}（已達引導收尾回合，第 15 回合起）：\n\
              【回合上限最高優先級覆蓋（S-03.3）】：目前討論已達到引導收尾回合（第 15 回合起）！\
              回合上限優先級高於一切階段進度！無視當前階段的條件是否完成，AI 必須立即停止展開新探究或追問；\
-             正文必須開始引導學生整理收尾：由 AI 主動梳理並總結學生討論至今的立場與核心理由，詢問是否符合學生的想法，並提議收尾結束討論（嚴禁要求學生自己做總結）！\
+             正文必須開始引導學生整理收尾：由 AI 主動用兩三句話梳理學生討論至今的立場與核心理由，接著直接宣布討論到此結束；不要提問，也不要請學生確認、補充或回應（嚴禁要求學生自己做總結）！\
              此時 advance 必須為 true，question_type 必須為 wrap_up，reason 必須說明已達回合上限引導收尾。"
         )
     } else {
@@ -245,7 +262,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
                  承認反例合理而修正立場並劃出合理例外界線（例如上課原則禁用手機，但緊急或教學用途除外）、提出兼顧雙方價值的整合或分流方案（例如基本助學金照顧需求、小額獎金激勵成績雙軌並行）。\
                  符合時 advance 必須為 true，question_type 必須為 wrap_up。\
                  【禁止反例套娃】學生一旦實質回應，考驗即告達成：不得再提第二個反例，不得無休止質疑新原則，也不得針對例外界線或兼顧細節挑毛病（例如誰來審核例外、兩者兼具時怎麼辦）。此禁令只適用於學生已實質回應之後。\
-                 【收尾方式】肯定學生的整合或調整，由 AI 主動梳理最終立場、核心理由與思考轉折，向學生確認並提議結束討論（嚴禁要求學生自己做總結）。回顧不超過三句，不逐回合複述；若已回顧過而學生繼續討論，只用一兩句更新有變化的部分。\
+                 【收尾方式】肯定學生的整合或調整，由 AI 主動梳理最終立場、核心理由與思考轉折，接著直接宣布討論到此結束；不要提問，也不要請學生確認或補充（嚴禁要求學生自己做總結）。回顧不超過三句，不逐回合複述；若已回顧過而學生繼續討論，只用一兩句更新有變化的部分。\
                  【以下情況不算收斂】只承認「我可能預設了……」或重述原本立場；只答「是／不是」「該／不該」而沒有理由；泛泛反思而沒有對應到該情境的具體條件；尚未有人提出具體反例；學生迴避、敷衍或不置可否。\
                  此時 advance 必須為 false，question_type 不得為 wrap_up：尚未提出具體反例，這一回合就提出一個；學生已回應但不夠具體，第一次請他針對剛才情境的具體條件說明理由。\
                  【順著學生的想法】學生開始往具體方向思考時（例如提到該情境中的某個具體條件、提出可能的理由，或說出自己試探性的想法），即使還不完整，先順著他剛提到的那一點追問一個問題，不要換情境，也不要說他不夠具體。\
@@ -254,7 +271,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         }
     };
     let wrap_alert = if is_wrap_up {
-        "\n【當前最高優先指令】已達引導收尾回合（第 15 回合起）：依上述覆蓋規則收尾，嚴禁提出新的探究追問。"
+        "\n【當前最高優先指令】已達引導收尾回合（第 15 回合起）：依上述覆蓋規則收尾：不要提出任何問題，直接結束討論，question_type 標 wrap_up。"
     } else {
         ""
     };
@@ -288,7 +305,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         - assumption：檢查學生論證中已使用的前提、概括或推論是否可靠。前提可以明說，也可以隱含，不限於未說出口的假設。例如檢查「A 是否足以推出 B」「是否只有 A 才會造成 B」。若提出具體例外情境，或要求學生找出能挑戰原則的情境，則考慮 counterexample。\n\
         - counterexample：提出可辨識的假設個案或例外情境，要求學生判斷原有原則在該情境下是否仍成立；或要求學生自己找出能挑戰原則的反例或例外情境。模型提出情境時須說明情境條件，不需要是真實事件；要求學生找反例時，不必先替學生給出情境。僅抽象地問「一定成立嗎」且未要求找出情境，屬於 assumption。情境中存在價值衝突，不代表一定是 perspective。\n\
         - perspective：要求學生比較不同立場的考量，或權衡相互衝突的價值、利益，包括決定優先順序、兼顧方式及取捨界線。核心是「這些不同考量應如何比較或取捨」。若前文已明確指出衝突雙方，而追問要求建立或評估該衝突中的合理限制、優先順序或權重標準，即使沒有再次列出雙方，也屬於 perspective。前文有衝突不會讓所有追問都變成 perspective，仍須檢查實際要求的思考操作。只確認學生指的是哪個立場，仍屬於 clarify；只比較兩個詞的意思或兩項工作的難度，不因此屬於 perspective。\n\
-        - wrap_up：回顧、梳理與總結已討論的立場、理由、修正或尚存問題，並向學生確認。核心是回顧整合與收尾，不是引入新的探究。\n\
+        - wrap_up：回顧、梳理與總結已討論的立場、理由、修正或尚存問題，並直接結束討論，不向學生提問。核心是回顧整合與收尾，不是引入新的探究。\n\
         \n\
         分類衝突：\n\
         先辨認主要思考操作，不因附帶的「為什麼」「請說明」改變分類。\n\
@@ -371,12 +388,12 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         {{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"學生已表明立場並說明幻覺的意思，達成第 1 階段，改問理由。\"}}\n\
         \n\
         [範例 2：收斂階段] 假設目前是第 3 階段，學生面對反例主動修正原則並劃出合理例外（達成收斂條件）：\n\
-        你很敏銳地調整了原則，兼顧了不同情境的需求。回顧我們今天的討論：你原本主張……，在面對反例時進一步劃出了……的界線，以此兼顧……。這樣的總結是否符合你的想法？如果沒有其他想補充的，我們今天就可以結束討論。\n\
+        你很敏銳地調整了原則，兼顧了不同情境的需求。回顧我們今天的討論：你原本主張……，在面對反例時進一步劃出了……的界線，以此兼顧……。今天的討論就到這裡，謝謝你的思考。\n\
         {delim}\n\
         {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"學生面對反例已完成立場調適並劃定合理界線，達成收斂條件。\"}}\n\
         \n\
         [範例 3：回合上限收尾] 當前已達引導收尾回合（第 15 回合起，無論處於何階段、條件是否完成）：\n\
-        我們今天已經討論了許多不同觀點與考量。梳理你整場的核心觀點：你的主要立場是……，關鍵理由在於……。這樣的整理是否準確反映了你的想法？如果沒有其他想補充的，我們可以結束今天的討論。\n\
+        我們今天已經討論了許多不同觀點與考量。梳理你整場的核心觀點：你的主要立場是……，關鍵理由在於……。今天的討論就到這裡，謝謝你的思考。\n\
         {delim}\n\
         {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"已達第 15 回合引導收尾上限，停止追問並由 AI 主動總結。\"}}\n\
         \n\
@@ -403,7 +420,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
             "{stage_name} (the wrap-up turn has been reached, turn 15 onward):\n\
              [Turn limit overrides everything (S-03.3)] The discussion has reached the wrap-up turn. The turn limit takes priority over any stage progress: \
              ignore whether the stage conditions are met, stop opening new lines of inquiry and stop asking probing questions. \
-             Your visible text must start closing the discussion: you summarize the student's position and core reasons so far, ask whether this matches their thinking, and suggest ending the discussion (never ask the student to write the summary themselves). \
+             Your visible text must start closing the discussion: you summarize the student's position and core reasons so far in two or three sentences, then state directly that the discussion ends here; do not ask any question and do not invite the student to confirm, add, or reply (never ask the student to write the summary themselves). \
              advance must be true, question_type must be wrap_up, and reason must state that the turn limit was reached."
         )
     } else {
@@ -425,7 +442,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
                  (2) the student has made a judgment about the specifics of that case or view and given reasons. Any of these counts as a substantive response: explaining a value priority that justifies keeping the position; \
                  admitting the counterexample is reasonable and revising the position with a sensible exception; or proposing an integrated or split solution that serves both values. Then advance must be true and question_type must be wrap_up. \
                  [Strict ban on stacking counterexamples] Once the student has responded substantively, the test is passed: never raise a second counterexample, never keep attacking the new principle, and never pick at the details or edge cases of the exception (for example, who would approve it, or what happens when both apply). The ban applies only after a substantive response. \
-                 [How to close] Acknowledge the student's integration or revision, summarize their final position, core reason, and turning point yourself, check that it reflects their view, and suggest ending the discussion (never ask the student to write the summary). No more than three sentences; do not retell turn by turn. If you already gave a recap and the student kept talking, update only what changed in one or two sentences. \
+                 [How to close] Acknowledge the student's integration or revision, summarize their final position, core reason, and turning point yourself, then state directly that the discussion ends here; ask no question and do not invite the student to confirm or add anything (never ask the student to write the summary). No more than three sentences; do not retell turn by turn. If you already gave a recap and the student kept talking, update only what changed in one or two sentences. \
                  [These do not count as convergence] Only admitting “I may have assumed…” or restating the original position; answering just yes/no or should/should not without reasons; reflecting in general terms without tying it to the case's specific conditions; no concrete counterexample raised yet; or the student avoiding, brushing off, or staying noncommittal. \
                  Then advance must be false and question_type must not be wrap_up: if no concrete counterexample has been raised, raise one this turn; if the student responded but not specifically enough, the first time ask them to explain their reasons about the specific conditions of that case. \
                  [Follow the student's thinking] When the student starts moving toward something specific (for example mentioning a particular condition of the case, offering a possible reason, or voicing a tentative idea of their own), even if incomplete, follow up with one question on the point they just raised; do not switch cases and do not tell them they were not specific enough. \
@@ -434,7 +451,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
         }
     };
     let wrap_alert = if is_wrap_up {
-        "\n[Highest-priority instruction now] The wrap-up turn has been reached (turn 15 onward): close as described above and do not ask any new probing question."
+        "\n[Highest-priority instruction now] The wrap-up turn has been reached (turn 15 onward): close as described above, ask no question of any kind, and end the discussion; question_type must be wrap_up."
     } else {
         ""
     };
@@ -466,7 +483,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          - assumption: test whether a premise, generalization, or inference used in the student's argument is reliable. It may be explicit or implicit. Examples include testing whether A is enough to imply B or whether only A could cause B. If the question gives a concrete exception or asks the student to find a challenging case, consider counterexample.\n\
          - counterexample: present an identifiable hypothetical case or exception and ask whether the original principle still holds, or ask the student to find a counterexample or exception. A case proposed by you must state its conditions, but need not be a real event. Merely asking abstractly whether something always holds, without seeking a case, is assumption. A value conflict inside a case does not automatically make it perspective.\n\
          - perspective: ask the student to compare considerations from different positions or weigh conflicting values or interests, including priority, accommodation, and limits. The core operation is “how should these considerations be compared or traded off?”. If the preceding context already identifies both sides of a conflict, a request for a reasonable limit, priority, or weighting standard is perspective even without restating both sides. A conflict in the context does not make every question perspective. Merely identifying a position is clarify; merely comparing word meanings or task difficulty is not perspective.\n\
-         - wrap_up: review, synthesize, and sum up the positions, reasons, revisions, or remaining questions already discussed, then check with the student. Its core is reflective integration and closing, not a new line of inquiry.\n\n\
+         - wrap_up: review, synthesize, and sum up the positions, reasons, revisions, or remaining questions already discussed, and end the discussion without asking the student anything. Its core is reflective integration and closing, not a new line of inquiry.\n\n\
          Classification conflicts:\n\
          Identify the main thinking operation first; incidental wording such as “why” or “explain” does not change the type.\n\
          Only when the main operation genuinely fits more than one type, use this priority: wrap_up > perspective > counterexample > assumption > reason > clarify. This priority does not constrain which questioning strategy you choose.\n\n\
@@ -518,11 +535,11 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          {delim}\n\
          {{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"The student stated a position and explained what illusion means, completing Stage 1, so the question moves to reasons.\"}}\n\n\
          Example of convergence: suppose the student is in Stage 3 and, facing a counterexample, revises the principle and draws a sensible exception. A complete response is:\n\
-         You adjusted the principle thoughtfully and kept different situations in mind. Looking back at our discussion: you first held that…, and when faced with the counterexample you drew the line at…, which lets you respect…. Does this summary match your thinking? If you have nothing to add, we can end the discussion here.\n\
+         You adjusted the principle thoughtfully and kept different situations in mind. Looking back at our discussion: you first held that…, and when faced with the counterexample you drew the line at…, which lets you respect…. That is where our discussion ends today. Thank you for thinking it through.\n\
          {delim}\n\
          {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"The student revised the position against the counterexample and drew a sensible boundary, meeting the convergence condition.\"}}\n\n\
          Example of the turn limit: the wrap-up turn has been reached (turn 15 onward), whatever the stage and whether or not its conditions are met. A complete response is:\n\
-         We have covered many views and considerations today. Drawing together your whole discussion: your main position is…, and the key reason is…. Does this reflect your thinking accurately? If you have nothing to add, we can end today's discussion.\n\
+         We have covered many views and considerations today. Drawing together your whole discussion: your main position is…, and the key reason is…. That is where our discussion ends today. Thank you for thinking it through.\n\
          {delim}\n\
          {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"The turn-15 wrap-up limit was reached, so questioning stops and the AI summarizes.\"}}\n\n\
          Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n\
@@ -547,7 +564,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
             "{stage_name} (se alcanzó el turno de cierre, desde el turno 15):\n\
              [El límite de turnos prevalece sobre todo (S-03.3)] La discusión llegó al turno de cierre. El límite de turnos tiene prioridad sobre cualquier avance de etapa: \
              ignora si se cumplen las condiciones de la etapa, deja de abrir nuevas líneas de indagación y de hacer preguntas de seguimiento. \
-             Tu texto visible debe empezar a cerrar la discusión: tú resumes la postura del estudiante y sus razones centrales hasta ahora, le preguntas si refleja su pensamiento y propones terminar la discusión (nunca le pidas que haga el resumen él mismo). \
+             Tu texto visible debe empezar a cerrar la discusión: tú resumes en dos o tres frases la postura del estudiante y sus razones centrales hasta ahora y declaras directamente que la discusión termina aquí; no hagas ninguna pregunta ni invites al estudiante a confirmar, añadir o responder (nunca le pidas que haga el resumen él mismo). \
              advance debe ser true, question_type debe ser wrap_up y reason debe indicar que se alcanzó el límite de turnos."
         )
     } else {
@@ -569,7 +586,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
                  (2) el estudiante ha emitido un juicio sobre los detalles de ese caso o postura y ha dado razones. Vale como respuesta sustancial cualquiera de estas: explicar una prioridad de valores que justifique mantener la postura; \
                  admitir que el contraejemplo es razonable y revisar la postura con una excepción sensata; o proponer una solución integrada o dividida que atienda ambos valores. Entonces advance debe ser true y question_type debe ser wrap_up. \
                  [Prohibición estricta de apilar contraejemplos] Cuando el estudiante ya respondió de forma sustancial, la prueba está superada: nunca plantees un segundo contraejemplo, no sigas cuestionando su nuevo principio y no busques fallos en los detalles o casos límite de su excepción (por ejemplo, quién la aprobaría o qué pasa si se dan ambos casos). La prohibición solo se aplica tras una respuesta sustancial. \
-                 [Cómo cerrar] Reconoce la integración o revisión del estudiante; tú resumes su postura final, una razón central y el giro en su pensamiento, compruebas que lo refleja bien y propones terminar la discusión (nunca le pidas que haga el resumen él mismo). No más de tres frases; no lo cuentes turno por turno. Si ya hiciste un resumen y el estudiante siguió hablando, actualiza solo lo que cambió en una o dos frases. \
+                 [Cómo cerrar] Reconoce la integración o revisión del estudiante; tú resumes su postura final, una razón central y el giro en su pensamiento, declaras directamente que la discusión termina aquí, sin preguntas y sin invitar al estudiante a confirmar o añadir nada (nunca le pidas que haga el resumen él mismo). No más de tres frases; no lo cuentes turno por turno. Si ya hiciste un resumen y el estudiante siguió hablando, actualiza solo lo que cambió en una o dos frases. \
                  [Esto no cuenta como convergencia] Solo admitir «quizá supuse…» o repetir la postura original; responder solo sí/no o debe/no debe sin razones; reflexionar en general sin vincularlo a las condiciones concretas del caso; que todavía no se haya planteado un contraejemplo concreto; o que el estudiante evite, responda de forma superficial o no se comprometa. \
                  Entonces advance debe ser false y question_type no debe ser wrap_up: si no se ha planteado un contraejemplo concreto, plantea uno en este turno; si el estudiante respondió pero sin suficiente concreción, la primera vez pídele que explique sus razones sobre las condiciones concretas de ese caso. \
                  [Sigue el pensamiento del estudiante] Cuando el estudiante empiece a avanzar hacia algo concreto (por ejemplo, mencionar una condición particular del caso, ofrecer una posible razón o expresar una idea propia tentativa), aunque esté incompleta, profundiza con una pregunta sobre el punto que acaba de plantear; no cambies de caso ni le digas que no fue lo bastante concreto. \
@@ -578,7 +595,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
         }
     };
     let wrap_alert = if is_wrap_up {
-        "\n[Instrucción de máxima prioridad ahora] Se alcanzó el turno de cierre (desde el turno 15): cierra como se indicó arriba y no hagas ninguna pregunta de indagación nueva."
+        "\n[Instrucción de máxima prioridad ahora] Se alcanzó el turno de cierre (desde el turno 15): cierra como se indicó arriba, no hagas ninguna pregunta de ningún tipo y termina la discusión; question_type debe ser wrap_up."
     } else {
         ""
     };
@@ -610,7 +627,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          - assumption: comprueba si una premisa, generalización o inferencia usada en el argumento es fiable. Puede ser explícita o implícita. Por ejemplo, comprueba si A basta para implicar B o si solo A puede causar B. Si presentas una excepción concreta o pides encontrar un caso que desafíe el principio, considera counterexample.\n\
          - counterexample: presenta un caso hipotético o una excepción identificable y pregunta si el principio original sigue siendo válido, o pide al estudiante encontrar un contraejemplo o una excepción. Si propones el caso, indica sus condiciones; no tiene que ser un hecho real. Preguntar de forma abstracta si algo siempre es válido, sin pedir un caso, es assumption. Que un caso contenga valores en conflicto no lo convierte automáticamente en perspective.\n\
          - perspective: pide comparar consideraciones de posturas distintas o sopesar valores o intereses en conflicto, incluidas prioridades, formas de conciliación y límites. La operación central es “¿cómo deben compararse o equilibrarse estas consideraciones?”. Si el contexto ya identifica ambos lados del conflicto, pedir un límite razonable, una prioridad o un criterio de ponderación es perspective aunque no se repitan ambos lados. La existencia de un conflicto no convierte todas las preguntas en perspective. Identificar una postura sigue siendo clarify; comparar significados o la dificultad de dos tareas no basta.\n\
-         - wrap_up: revisa, sintetiza y resume las posturas, razones, revisiones o preguntas pendientes ya discutidas, y lo confirma con el estudiante. Su núcleo es la integración reflexiva y el cierre, no abrir una investigación nueva.\n\n\
+         - wrap_up: revisa, sintetiza y resume las posturas, razones, revisiones o preguntas pendientes ya discutidas, y termina la discusión sin preguntar nada al estudiante. Su núcleo es la integración reflexiva y el cierre, no abrir una investigación nueva.\n\n\
          Conflictos de clasificación:\n\
          Identifica primero la operación principal de pensamiento; palabras accesorias como “por qué” o “explica” no cambian el tipo.\n\
          Solo cuando la operación principal encaje de verdad en más de un tipo, usa esta prioridad: wrap_up > perspective > counterexample > assumption > reason > clarify. Esta prioridad no limita la estrategia de pregunta que elijas.\n\n\
@@ -662,11 +679,11 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          {delim}\n\
          {{\"question_type\":\"reason\",\"advance\":true,\"reason\":\"El estudiante expresó una postura y explicó qué significa ilusión, completando la Etapa 1, así que la pregunta pasa a las razones.\"}}\n\n\
          Ejemplo de convergencia: supón que el estudiante está en la Etapa 3 y, ante un contraejemplo, revisa el principio y traza una excepción sensata. Una respuesta completa sería:\n\
-         Ajustaste el principio con mucha agudeza y tuviste en cuenta distintas situaciones. Repasando nuestra discusión: al principio sostenías que…, y ante el contraejemplo trazaste el límite en…, lo que te permite respetar…. ¿Este resumen refleja tu pensamiento? Si no tienes nada que añadir, podemos terminar la discusión.\n\
+         Ajustaste el principio con mucha agudeza y tuviste en cuenta distintas situaciones. Repasando nuestra discusión: al principio sostenías que…, y ante el contraejemplo trazaste el límite en…, lo que te permite respetar…. Aquí termina nuestra discusión de hoy. Gracias por pensarlo conmigo.\n\
          {delim}\n\
          {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"El estudiante revisó su postura ante el contraejemplo y trazó un límite sensato, cumpliendo la condición de convergencia.\"}}\n\n\
          Ejemplo del límite de turnos: se alcanzó el turno de cierre (desde el turno 15), sea cual sea la etapa y se cumplan o no sus condiciones. Una respuesta completa sería:\n\
-         Hoy hemos recorrido muchos puntos de vista y consideraciones. Reuniendo toda tu discusión: tu postura principal es… y la razón clave es…. ¿Esto refleja con precisión tu pensamiento? Si no tienes nada que añadir, podemos terminar la discusión de hoy.\n\
+         Hoy hemos recorrido muchos puntos de vista y consideraciones. Reuniendo toda tu discusión: tu postura principal es… y la razón clave es…. Aquí termina nuestra discusión de hoy. Gracias por pensarlo conmigo.\n\
          {delim}\n\
          {{\"question_type\":\"wrap_up\",\"advance\":true,\"reason\":\"Se alcanzó el límite de cierre del turno 15, así que se detienen las preguntas y la IA resume.\"}}\n\n\
          Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n\
@@ -2240,8 +2257,55 @@ mod tests {
                 assert!(p.contains(rule), "{language} 缺少語音對話規則：{rule}");
             }
         }
-        assert_eq!(rules_version("en"), "v1.22/en");
-        assert_eq!(rules_version("es"), "v1.22/es");
+        assert_eq!(rules_version("en"), "v1.23/en");
+        assert_eq!(rules_version("es"), "v1.23/es");
+    }
+
+    #[test]
+    fn closing_means_ending_without_a_question_in_every_language() {
+        // 收尾是直接結束討論：提示不能再叫模型向學生確認或提議，結束指令要在輸出格式之後（最後讀到）
+        for (language, marker, forbidden) in [
+            (
+                "zh-TW",
+                "當前最高優先指令",
+                ["是否符合學生的想法", "向學生確認"],
+            ),
+            (
+                "en",
+                "Highest-priority instruction now",
+                ["ask whether this matches", "check that it reflects"],
+            ),
+            (
+                "es",
+                "Instrucción de máxima prioridad ahora",
+                ["le preguntas si refleja", "compruebas que lo refleja"],
+            ),
+        ] {
+            let context = |turn| PromptContext {
+                title: "T",
+                description: "D",
+                stage: 3,
+                turn,
+                wrap_up_turn: 15,
+                language,
+            };
+            let closing = build_system_prompt(&context(15));
+            let at = closing.find(marker).unwrap_or_else(|| panic!("{language}"));
+            assert!(at > closing.find(META_DELIM).unwrap(), "{language}");
+            assert!(!closing[at..].contains('{'), "{language}");
+            assert!(closing[at..].contains("wrap_up"), "{language}");
+            for phrase in forbidden {
+                assert!(!closing.contains(phrase), "{language}: {phrase}");
+            }
+            assert!(
+                !build_system_prompt(&context(14)).contains(marker),
+                "{language}"
+            );
+            assert!(
+                closing_instruction(language).contains("wrap_up"),
+                "{language}"
+            );
+        }
     }
 
     /// 等 `delay` 之後才給出一段文字的假 AI，模擬推理模型先想很久才開始輸出。
