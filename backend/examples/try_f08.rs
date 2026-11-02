@@ -321,6 +321,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 stage: case.stage,
                 turn: case.turn,
                 wrap_up_turn: 15,
+                language: "zh-TW",
             }),
             messages,
         };
