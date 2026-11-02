@@ -1,0 +1,81 @@
+# cascade（sglang-omni Streaming Cascade）的設定範本，欄位說明見 docs/specs/cascade-voice-spike.md 的「cascade 設定」。
+# 複製成自己的 launch.yaml 再改，實際檔案不進版控。
+#
+# 密碼不寫在這份檔案裡：LLM 節點用 api_key_env 指定「環境變數名稱」，啟動 cascade 的行程必須有同名環境變數，
+# 值要和後端的 CASCADE_LLM_TOKEN 相同（兩邊自己產生同一個，例如 openssl rand -hex 32）。
+#
+# 瘦身 cascade：GPU 只放 TTS 0.6B；ASR 為 CPU whisper，LLM 走後端的內部端點，打斷裁切到句子邊界。
+# TTS、Whisper、轉接層由各自的腳本啟動，這裡不寫 services。
+# 轉接層（本機評估是 127.0.0.1:8103，不在 repo）把 /v1/audio/transcriptions 轉給 scripts/whisper-server.py，
+# 把 /v1/audio/speech 轉給 TTS 服務，所以 asr 與 tts 的 base_url 都指向它。
+config_cls: StreamingCascadePipelineConfig
+model_path: /path/to/cascade # 依 sglang-omni 的要求填；本機評估時是放這份設定的目錄
+
+stages:
+  vad:
+    factory:
+      # 靜音多久算一句結束。預設 160 ms 時，學生一停頓就被切成新的一句；1000 ms 是實測後的值
+      silence_duration_ms: 1000
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: [input]
+  turn_detection:
+    stages: [turn_detection]
+    inputs: ["input:pcm16", "input:session", "vad:session"]
+  asr:
+    kind: openai_transcription
+    inputs: [input, "turn_detection:session"]
+    base_url: "http://127.0.0.1:8103/v1"
+    model: whisper-small
+    language: zh
+    response_format: json
+  dialog:
+    kind: dialog
+    inputs:
+      - asr
+      - {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - "turn_detection:session"
+      - "input:session"
+      - {kind: control, source: input, event: interrupt}
+      - {kind: control, source: aligner, event: reply.progress}
+    # 不設 system_prompt：後端建立每場語音時會以 instructions 覆蓋它（那是辨識這場語音的一次性代號），
+    # 實際的 AI 提示與歷史都由後端的回覆流程提供，cascade 這邊的文字不會送給 OpenAI
+  llm:
+    kind: openai_chat
+    inputs:
+      - dialog
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    # 後端的內部端點（同網域部署時填後端的位址）；後端的 /models 回報的名稱是 socrates
+    base_url: "http://127.0.0.1:3100/internal/cascade/v1"
+    model: socrates
+    # 環境變數名稱，不是密碼本身；cascade 以 Authorization: Bearer 送給後端
+    api_key_env: CASCADE_LLM_TOKEN
+    max_tokens: 512
+  tts:
+    kind: openai_speech
+    inputs:
+      - llm
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:8103/v1"
+    model: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+    # 參考音與逐字稿要自己準備且內容一致；repo 不附音檔，來源與授權請自行確認（參考音只限本機評估）
+    reference_audio_path: /path/to/reference.wav
+    reference_text: 請填入參考音檔的逐字稿
+    language: Chinese
+  aligner:
+    kind: alignment
+    method: sentence
+    inputs: ["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]
+
+session_publish:
+  turn_detection: [session]
+  asr: [transcript]
+  dialog: [session]
+  llm: [text_delta]
+  tts: [pcm_f32le, session]
+  aligner: [session]

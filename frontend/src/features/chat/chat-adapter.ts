@@ -9,6 +9,8 @@ export type ChatAdapterOptions = {
   persistedIds?: Iterable<string>
   /** 取出這則學生訊息的輸入來源（文字或語音）；沒提供就是文字。 */
   takeSource?: () => MessageSource
+  /** 這一輪若是語音回合，回傳回覆文字；訊息已由後端保存，不再 POST。 */
+  takeVoiceTurn?: () => AsyncIterable<string> | undefined
   onSent?: (sent: SentMessage) => void
   onDone?: (done: StreamDone) => void
   /** 後端回報對話已結束（例如在別的分頁結束）；畫面應切成唯讀。 */
@@ -42,6 +44,22 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
     async *run({ messages, abortSignal }): AsyncGenerator<ChatModelRunResult, void> {
       const last = messages.at(-1)
       if (!last || last.role !== 'user') return
+      const voiceTurn = options.takeVoiceTurn?.()
+      if (voiceTurn) {
+        persisted.add(last.id)
+        let text = ''
+        try {
+          for await (const delta of voiceTurn) {
+            if (abortSignal.aborted) return
+            text += delta
+            yield { content: [{ type: 'text', text }] }
+          }
+        } catch {
+          // 學生訊息已保存，重試只會重開串流
+          yield { status: { type: 'incomplete', reason: 'error', error: 'ai_unavailable' } }
+        }
+        return
+      }
       const onlyStream = persisted.has(last.id)
       try {
         let text = ''

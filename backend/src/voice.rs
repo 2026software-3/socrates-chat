@@ -6,21 +6,28 @@
 //!
 //! 具體的語音模型尚未決定（S-03.4 之後），所以沒有預設值：`OPENAI_STT_MODEL`、`OPENAI_TTS_MODEL`
 //! 沒設定時兩個端點都回 `503 voice_unavailable`，前端改提示用文字輸入。
+//!
+//! 設了 `OPENAI_TTS_BASE_URL` 時語音合成改走自架服務：不送 OpenAI 金鑰、不扣 AI 用量，
+//! 改以每位使用者同時一個請求保護 GPU，並用 `X-Speech-Pacing` 告訴前端逐句送（S-05.5）。
 
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, FromRequest, Query, Request, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderName, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
 };
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::{AppState, auth::RequireStudent, config::Config, error::ApiError, key_pool::KeyPool};
 
@@ -28,6 +35,14 @@ use crate::{AppState, auth::RequireStudent, config::Config, error::ApiError, key
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
 /// 單次合成的文字上限，與訊息長度上限一致。
 pub const MAX_SPEECH_CHARS: usize = 4000;
+/// 自架語音時的回應標頭，值為 `sentence`：不合併句子，也沒有每則回覆的請求上限。
+pub const SPEECH_PACING_HEADER: &str = "x-speech-pacing";
+
+const SPEECH_BUSY: ApiError = ApiError::new(
+    StatusCode::TOO_MANY_REQUESTS,
+    "speech_busy",
+    "語音合成忙碌中，請稍後再試",
+);
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -57,12 +72,45 @@ pub trait VoiceProvider: Send + Sync {
 
     /// 合成語音，回傳 mp3 位元組。
     async fn speak(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError>;
+
+    /// 語音合成是否由自架服務處理；是的話不計入 AI 用量。
+    fn self_hosted_speech(&self) -> bool {
+        false
+    }
+}
+
+/// 自架語音正在合成的使用者。沒有用量上限擋著，一人同時只跑一個請求，以免佔滿 GPU。
+#[derive(Default)]
+pub(crate) struct SpeechSlots(Mutex<HashSet<Uuid>>);
+
+impl SpeechSlots {
+    fn acquire(self: &Arc<Self>, user: Uuid) -> Option<SpeechSlot> {
+        let mut users = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        users.insert(user).then(|| SpeechSlot {
+            slots: self.clone(),
+            user,
+        })
+    }
+}
+
+/// 合成結束、失敗或客戶端中斷（future 被丟棄）時都會釋放。
+struct SpeechSlot {
+    slots: Arc<SpeechSlots>,
+    user: Uuid,
+}
+
+impl Drop for SpeechSlot {
+    fn drop(&mut self) {
+        let mut users = self.slots.0.lock().unwrap_or_else(|e| e.into_inner());
+        users.remove(&self.user);
+    }
 }
 
 pub struct OpenAiVoice {
     http: reqwest::Client,
     base_url: String,
     stt_base_url: String,
+    tts_base_url: Option<String>,
     keys: Arc<KeyPool>,
     stt_model: Option<String>,
     tts_model: Option<String>,
@@ -83,6 +131,10 @@ impl OpenAiVoice {
                 .unwrap_or(&c.openai_base_url)
                 .trim_end_matches('/')
                 .to_string(),
+            tts_base_url: c
+                .openai_tts_base_url
+                .as_deref()
+                .map(|url| url.trim_end_matches('/').to_string()),
             keys: c.openai_keys.clone(),
             stt_model: c.openai_stt_model.clone(),
             tts_model: c.openai_tts_model.clone(),
@@ -144,28 +196,40 @@ impl VoiceProvider for OpenAiVoice {
     async fn speak(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
         // 語言由輸入文字本身決定，OpenAI 的語音合成沒有語言參數
         let model = self.tts_model.as_deref().ok_or(VoiceError::Unavailable)?;
-        let lease = self.keys.acquire().ok_or(VoiceError::Failed)?;
-        let res = self
+        // OpenAI 金鑰不能送到自架服務，所以那條路不取 key
+        let (base_url, lease) = match &self.tts_base_url {
+            Some(url) => (url, None),
+            None => (
+                &self.base_url,
+                Some(self.keys.acquire().ok_or(VoiceError::Failed)?),
+            ),
+        };
+        let mut req = self
             .http
-            .post(format!("{}/audio/speech", self.base_url))
-            .bearer_auth(&lease.key)
+            .post(format!("{base_url}/audio/speech"))
             .json(&json!({
                 "model": model,
                 "voice": self.tts_voice,
                 "input": text,
                 "response_format": "mp3",
-            }))
-            .send()
-            .await
-            .map_err(|_| VoiceError::Failed)?;
+            }));
+        if let Some(lease) = &lease {
+            req = req.bearer_auth(&lease.key);
+        }
+        let res = req.send().await.map_err(|_| VoiceError::Failed)?;
         if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), key = lease.index + 1, "text-to-speech returned an error status");
+            let key = lease.as_ref().map(|lease| lease.index + 1);
+            tracing::warn!(status = %res.status(), key, "text-to-speech returned an error status");
             return Err(VoiceError::Failed);
         }
         res.bytes()
             .await
             .map(Vec::from)
             .map_err(|_| VoiceError::Failed)
+    }
+
+    fn self_hosted_speech(&self) -> bool {
+        self.tts_base_url.is_some()
     }
 }
 
@@ -290,14 +354,20 @@ pub(crate) struct SpeechBody {
     language: String,
 }
 
-/// 把文字合成語音（mp3）。
+/// 把文字合成語音（mp3）。OpenAI 每次請求扣一筆 AI 用量；自架服務不扣，改為一人同時一個請求。
 #[utoipa::path(
     post,
     path = "/api/voice/speech",
     tag = "voice",
     summary = "文字轉語音",
     request_body = SpeechBody,
-    responses((status = 200, description = "audio/mpeg", content_type = "audio/mpeg", body = AudioBytes), (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody), (status = 502, description = "voice_failed", body = crate::error::ErrorBody))
+    responses(
+        (status = 200, description = "audio/mpeg", content_type = "audio/mpeg", body = AudioBytes,
+            headers(("X-Speech-Pacing" = String, description = "只在自架語音時出現，值為 sentence：逐句請求，不合併"))),
+        (status = 429, description = "ai_usage_exceeded：AI 用量已達上限；speech_busy：自架語音同一使用者已有請求進行中", body = crate::error::ErrorBody),
+        (status = 503, description = "voice_unavailable", body = crate::error::ErrorBody),
+        (status = 502, description = "voice_failed", body = crate::error::ErrorBody)
+    )
 )]
 pub(crate) async fn speech(
     RequireStudent(cu): RequireStudent,
@@ -309,6 +379,22 @@ pub(crate) async fn speech(
     let text = b.text.trim();
     if text.is_empty() || text.chars().count() > MAX_SPEECH_CHARS {
         return Err(ApiError::bad_request("invalid_text", "文字長度不符"));
+    }
+    if state.voice.self_hosted_speech() {
+        let _slot = state.speech_slots.acquire(cu.user.id).ok_or(SPEECH_BUSY)?;
+        let audio = state
+            .voice
+            .speak(text, language)
+            .await
+            .map_err(voice_error)?;
+        return Ok((
+            [
+                (header::CONTENT_TYPE, "audio/mpeg"),
+                (HeaderName::from_static(SPEECH_PACING_HEADER), "sentence"),
+            ],
+            audio,
+        )
+            .into_response());
     }
     let slot = state.charge_ai(cu.user.id)?;
     let audio = state.voice.speak(text, language).await.map_err(|e| {

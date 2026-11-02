@@ -1,0 +1,227 @@
+[
+  {
+    "id": "S01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我會拉桿 因為五個人比一個人多"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "立場與理由都已說完；回覆會被朗讀，應是兩三句口語短句、問題放最後，不用條列或符號。"
+  },
+  {
+    "id": "S02",
+    "stage": 2,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得可以說謊 如果朋友會受到傷害"
+      },
+      {
+        "role": "assistant",
+        "content": "你說的「受到傷害」，是指哪一類的傷害呢？"
+      },
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "身體上的跟心理上的都算 只要傷害很明顯就可以"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "學生已完整回答；應口語化地承接並追問，不列點整理。"
+  },
+  {
+    "id": "S03",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "你可以幫我列出有哪些倫理學的理論可以用來想這個問題嗎"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "學生要求列出理論，容易誘發條列；朗讀情境下不應用條列或編號，也不應代答，而是把問題帶回學生自己的想法。"
+  },
+  {
+    "id": "S04",
+    "stage": 2,
+    "title": "校園手機管理",
+    "description": "學校是否應禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我認為上課應該禁止使用手機。"
+      },
+      {
+        "role": "assistant",
+        "content": "你為什麼認為應該禁止呢？"
+      },
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "會分心"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "回答很短但意思完整；不應因句子簡短就要求學生說完，應承接「分心」繼續追問。"
+  },
+  {
+    "id": "S05",
+    "stage": 3,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我會拉桿 因為能救比較多人"
+      },
+      {
+        "role": "assistant",
+        "content": "如果要救五個人，必須把一個人推下橋擋住電車，你還會這樣做嗎？"
+      },
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "不會 推人跟拉桿感覺不一樣 推人是我直接去殺他"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "學生已回應反例並說明區別；應以口語短句承接，避免長篇整理或括號補充。"
+  },
+  {
+    "id": "I01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得應該要拉桿 因為"
+      }
+    ],
+    "completeness": "incomplete",
+    "annotation_reason": "停在「因為」，理由還沒說出來；應簡短請學生把理由說完，而不是替他推測理由或追問新問題。"
+  },
+  {
+    "id": "I02",
+    "stage": 2,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我認為不應該說謊"
+      },
+      {
+        "role": "assistant",
+        "content": "你說「不應該說謊」，是指任何情況下都不行嗎？"
+      },
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "大部分情況都不行 但是如果"
+      }
+    ],
+    "completeness": "incomplete",
+    "annotation_reason": "學生正要說出例外條件就被送出；應請他把「但是如果」後面的情況說完。"
+  },
+  {
+    "id": "I03",
+    "stage": 3,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "我會拉桿 救比較多人比較重要"
+      },
+      {
+        "role": "assistant",
+        "content": "如果那一個人是正在研究癌症解藥的醫生，你的判斷會改變嗎？"
+      },
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "嗯 如果是醫生的話 我可能會"
+      }
+    ],
+    "completeness": "incomplete",
+    "annotation_reason": "「我可能會」沒有說完，無法判斷學生會改變還是維持判斷；應請他說完，不應自行推定答案。"
+  },
+  {
+    "id": "I04",
+    "stage": 1,
+    "title": "校園手機管理",
+    "description": "學校是否應禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "我覺得不應該完全禁止 所以"
+      }
+    ],
+    "completeness": "incomplete",
+    "annotation_reason": "已表達立場但停在「所以」，後面的結論或主張還沒說出；應請學生把想法說完。"
+  },
+  {
+    "id": "P01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-browser",
+        "content": "嗯 我覺得 應該會拉吧 嗯"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "雖有停頓與贅詞，立場已表達完整；不應要求學生說完，應照常追問。"
+  },
+  {
+    "id": "P02",
+    "stage": 2,
+    "title": "說謊與誠實",
+    "description": "為了保護朋友，對他人說謊是可以接受的嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "speech-openai",
+        "content": "我覺得可以說謊 因為朋友比較重要 就這樣"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "學生明確表示說完了（「就這樣」）；應承接理由追問，不要求補充。"
+  },
+  {
+    "id": "T01",
+    "stage": 1,
+    "title": "電車難題",
+    "description": "失控的電車將撞上五個人，你可以拉桿讓它轉向，但會撞上另一個人。你會拉桿嗎？",
+    "conversation": [
+      {
+        "role": "user",
+        "source": "text",
+        "content": "我不會拉桿，因為我不想親手讓別人死。"
+      }
+    ],
+    "completeness": "complete",
+    "annotation_reason": "文字輸入的對照組；規則對所有訊息生效，回覆同樣應是口語短句、不提到語音。"
+  }
+]

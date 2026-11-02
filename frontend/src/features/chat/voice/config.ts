@@ -20,21 +20,50 @@ export const MAX_UTTERANCE_MS = 60_000
 /** 開口前不計時，超過這段時間只顯示提示。 */
 export const HINT_AFTER_MS = 30_000
 
-/** 自動送出開關存在這個裝置的 localStorage（只是個人偏好，不影響後端）。 */
-const AUTO_SEND_KEY = 'voice.autoSend'
+/**
+ * 後端走 OpenAI 時，一則回覆最多發幾次語音合成（S-05.5）。每次都扣一筆與對話共用的 AI 用量，
+ * 第一次搶開頭的速度，最後一次留到回覆結束，把剩下的文字一次帶走。自架模型不受此限。
+ */
+export const BACKEND_SPEECH_MAX_REQUESTS = 3
 
-export function loadAutoSend(): boolean {
+/** 開口偵測的分析幀長度。 */
+export const BARGE_IN_FRAME_MS = 20
+
+/** 播放中，AI 的聲音回灌到麥克風的風險（S-05.5）。 */
+export type EchoRisk = 'low' | 'high'
+
+/**
+ * 開口偵測的門檻（S-05.5）。數值來自合成訊號的測試，尚未用真實裝置與喇叭校正；
+ * 風險高時要求更明顯、更久的開口，寧可漏判也不要 AI 打斷自己。
+ */
+export const BARGE_IN_DETECTOR: Record<EchoRisk, { calibrationMs: number; marginDb: number; minVoicedMs: number }> = {
+  low: { calibrationMs: 600, marginDb: 8, minVoicedMs: 240 },
+  high: { calibrationMs: 1000, marginDb: 14, minVoicedMs: 360 },
+}
+
+/** 語音偏好存在這個裝置的 localStorage（只是個人偏好，不影響後端）。 */
+const AUTO_SEND_KEY = 'voice.autoSend'
+const BARGE_IN_KEY = 'voice.bargeIn'
+
+function loadFlag(key: string, fallback: boolean): boolean {
   try {
-    return localStorage.getItem(AUTO_SEND_KEY) !== 'false'
+    const stored = localStorage.getItem(key)
+    return stored === null ? fallback : stored === 'true'
   } catch {
-    return true
+    return fallback
   }
 }
 
-export function saveAutoSend(on: boolean) {
+function saveFlag(key: string, on: boolean) {
   try {
-    localStorage.setItem(AUTO_SEND_KEY, String(on))
+    localStorage.setItem(key, String(on))
   } catch {
     // 忽略
   }
 }
+
+export const loadAutoSend = () => loadFlag(AUTO_SEND_KEY, true)
+export const saveAutoSend = (on: boolean) => saveFlag(AUTO_SEND_KEY, on)
+/** 預設關閉：iOS 實機驗證通過之前，播放時不主動開麥克風（S-05.5）。 */
+export const loadBargeIn = () => loadFlag(BARGE_IN_KEY, false)
+export const saveBargeIn = (on: boolean) => saveFlag(BARGE_IN_KEY, on)
