@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, isAbortError, isApiError, type ApiError } from '@/lib/api'
+import { api, isAbortError, isApiError, isInvalidCursor, type ApiError } from '@/lib/api'
 import type { Page } from '@/lib/types'
 
 export type FetchState<T> = {
@@ -100,9 +100,16 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
   const last = pages?.[pages.length - 1]
   const cursor = last?.next_cursor ?? null
 
+  const reload = useCallback(() => setTick((n) => n + 1), [])
+
   const loadMore = useCallback(() => {
     const c = ctrl.current
     if (path === null || !c || c.signal.aborted || cursor === null || loadingMore) return
+    // 游標失效時重送同一個游標不會成功，「重試」改為從第一頁重新載入
+    if (isInvalidCursor(moreError)) {
+      reload()
+      return
+    }
     setLoadingMore(true)
     setMoreError(undefined)
     const sep = path.includes('?') ? '&' : '?'
@@ -120,9 +127,8 @@ export function usePagedFetch<T, P extends Page<T> = Page<T>>(path: string | nul
       .finally(() => {
         if (!c.signal.aborted) setLoadingMore(false)
       })
-  }, [path, cursor, loadingMore])
+  }, [path, cursor, loadingMore, moreError, reload])
 
-  const reload = useCallback(() => setTick((n) => n + 1), [])
   return {
     items: pages?.flatMap((p) => p.items),
     page: last,

@@ -119,7 +119,7 @@
 
 - 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件（教師雖然看得到原文，翻譯請求仍只含總結兩個欄位）；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
 
-- `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
+- `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依總結完成時間新到舊（`completed_at DESC, conversation_id ASC`）回 `{ items, next_cursor }`：翻頁期間才完成（或重試成功）的總結一定排在第一頁最上面，已列出的項目不會重複或被跳過，重新開啟列表就看得到；項目的 `ended_at` 仍是對話結束時間。`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
 - `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
 - `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
 - 兩個篩選可同時使用，也可與分頁一起用（換篩選時要從第一頁開始，舊游標會被拒絕）。格式錯誤（`student` 不是 UUID、`student` 或 `topic` 為空白）回 `400 invalid_filter`；格式正確但沒有符合的學生或題目，回空頁 `{ "items": [], "next_cursor": null }`，不洩漏學生或題目是否存在。
@@ -161,7 +161,7 @@
 
 ### 沒有分頁／上限【高】（#284 對話、#285 總結、#286 學生、#287 名單、#288 活動）
 
-`GET /api/conversations`（#284）、`GET /api/summaries`（#285，依 `ended_at DESC, conversation_id ASC`，另有 `?student=`、`?topic=` 篩選與 `?q=` 搜尋，見「教師檢視」）、`/api/classrooms/{id}/students`（#286）、`/api/classrooms/{id}/roster`（#287）、`/api/activities`（#288）都已完成 keyset 分頁。
+`GET /api/conversations`（#284）、`GET /api/summaries`（#285，依 `completed_at DESC, conversation_id ASC`，另有 `?student=`、`?topic=` 篩選與 `?q=` 搜尋，見「教師檢視」）、`/api/classrooms/{id}/students`（#286）、`/api/classrooms/{id}/roster`（#287）、`/api/activities`（#288）都已完成 keyset 分頁。
 
 ### 動作式路徑與動詞誤用【中】（#290 帳號啟用狀態、#291 可選清單）
 

@@ -205,7 +205,7 @@ async fn personal_practice_never_matches_a_classroom_scoped_query(pool: PgPool) 
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO summaries (conversation_id, status, stance, reasons) VALUES ($1, 'ready', 's', 'r')",
+        "INSERT INTO summaries (conversation_id, status, stance, reasons, completed_at) VALUES ($1, 'ready', 's', 'r', now())",
     )
     .bind(practice).execute(&pool).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();

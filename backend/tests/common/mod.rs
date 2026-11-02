@@ -225,6 +225,59 @@ pub async fn json_body(res: Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+/// 接著已讀到的第一頁，依 `next_cursor` 讀完其餘各頁，回傳每頁內容（含第一頁）；每頁都必須是 200。
+pub async fn pages_after(app: &Router, base: &str, cookie: &str, first: Value) -> Vec<Value> {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let mut pages = vec![first];
+    while let Some(cursor) = pages.last().unwrap()["next_cursor"].as_str() {
+        assert!(pages.len() < 30, "too many pages");
+        let url = format!("{base}{sep}cursor={cursor}");
+        let res = send(app, get(&url, Some(cookie))).await;
+        assert_eq!(res.status(), StatusCode::OK, "{url}");
+        pages.push(json_body(res).await);
+    }
+    pages
+}
+
+/// 依 `next_cursor` 走完分頁列表的所有頁，回傳每頁內容。
+pub async fn all_pages(app: &Router, base: &str, cookie: &str) -> Vec<Value> {
+    let res = send(app, get(base, Some(cookie))).await;
+    assert_eq!(res.status(), StatusCode::OK, "{base}");
+    pages_after(app, base, cookie, json_body(res).await).await
+}
+
+/// 把各頁的 `items` 攤平成一個陣列。只讀第一頁的測試在測資超過一頁時會靜默漏掉資料。
+pub fn items_of(pages: &[Value]) -> Value {
+    Value::Array(
+        pages
+            .iter()
+            .flat_map(|p| p["items"].as_array().unwrap().iter().cloned())
+            .collect(),
+    )
+}
+
+/// 讀完分頁列表的所有頁，回傳全部項目。
+pub async fn all_items(app: &Router, base: &str, cookie: &str) -> Value {
+    items_of(&all_pages(app, base, cookie).await)
+}
+
+/// 輪詢到學生這場對話的總結不再是 pending 為止（背景產生），回傳最終的總結。
+pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
+    for _ in 0..100 {
+        let res = send(
+            app,
+            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
+        )
+        .await;
+        let v = json_body(res).await;
+        if v["status"] != "pending" {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("summary stayed pending");
+}
+
 /// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
 pub async fn assert_json_error(res: Response<Body>, status: StatusCode, code: &str) {
     assert_eq!(res.status(), status);

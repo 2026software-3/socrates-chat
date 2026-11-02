@@ -316,6 +316,24 @@ describe('SummariesPage', () => {
     expect(cursors).toEqual([null, 'opaque+/=', null])
   })
 
+  it('retries an invalid cursor from the first page instead of the same cursor', async () => {
+    const cursors: (string | null)[] = []
+    server.use(
+      http.get('/api/summaries', ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('cursor')
+        cursors.push(cursor)
+        return cursor ? apiError(400, 'invalid_cursor') : HttpResponse.json(page([rows[0]], 'stale'))
+      }),
+    )
+    renderTeacherPage(<SummariesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '下一頁' }))
+    expect(await screen.findByText('分頁連結已失效，請重新開啟列表。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重試' }))
+    expect(await screen.findByText('王小明')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '上一頁' })).not.toBeInTheDocument()
+    expect(cursors).toEqual([null, 'stale', null])
+  })
+
   it('formats the date in the active language', async () => {
     server.use(http.get('/api/summaries', () => HttpResponse.json(page([row()]))))
     renderTeacherPage(<SummariesPage />, 'en')
