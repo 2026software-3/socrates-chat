@@ -23,3 +23,6 @@ dist/
 /backend/eval/results/
 /backend/eval/followup.gbnf
 /backend/examples/docs_preview.rs
+
+# 伺服器端語音（cascade）的參考音，只限本機評估
+cascade-refs/
