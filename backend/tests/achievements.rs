@@ -40,6 +40,15 @@ async fn completion_unlocks_once_and_duplicate_events_do_not_award_points(pool: 
     .await
     .unwrap();
     assert_eq!((unlocks, awards), (1, 1));
+    let award: (i32, String) = sqlx::query_as(
+        "SELECT delta, source_id FROM point_ledger
+         WHERE user_id = $1 AND source_type = 'achievement'",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(award, (10, "first_dialogue:1".to_string()));
 }
 
 #[sqlx::test]
@@ -179,6 +188,8 @@ async fn event_transaction_rollback_also_rolls_back_achievement_and_points(pool:
 
 #[sqlx::test]
 async fn achievement_migration_has_catalog_constraints_and_cascades_with_account(pool: PgPool) {
+    // SQLx migration runner is idempotent on an already-migrated database.
+    sqlx::migrate!().run(&pool).await.unwrap();
     let user_id = user(&pool).await;
     record_first_task_reward(&pool, user_id).await.unwrap();
     sqlx::query("DELETE FROM users WHERE id=$1")

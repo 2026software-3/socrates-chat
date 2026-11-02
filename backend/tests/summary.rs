@@ -113,6 +113,18 @@ async fn failed_summary_is_marked_and_can_be_retried(pool: PgPool) {
     assert_eq!(s["status"], "failed");
     assert!(s["stance"].is_null());
     assert_eq!(ai.request_count(), 2);
+    let student_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let unlocks: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM achievement_unlocks WHERE user_id = $1")
+            .bind(student_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(unlocks, 0, "a failed summary is not a completed dialogue");
 
     let res = send(
         &app,
@@ -250,6 +262,12 @@ async fn summary_endpoints_are_owner_only_and_read_only(pool: PgPool) {
     seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
+    let unlocks_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM achievement_unlocks WHERE achievement_id = 'first_dialogue'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     for cookie in [&a.teacher, &a.admin] {
         let res = send(
@@ -301,6 +319,16 @@ async fn summary_endpoints_are_owner_only_and_read_only(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     let s = settled_summary(&app, &a.student, &conv).await;
     assert_eq!(s["stance"], "會拉桿");
+    let unlocks_after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM achievement_unlocks WHERE achievement_id = 'first_dialogue'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        unlocks_after, unlocks_before,
+        "unauthorized summary requests must not cause additional achievement awards"
+    );
 }
 
 #[sqlx::test]

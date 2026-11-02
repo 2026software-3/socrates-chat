@@ -70,6 +70,35 @@ async fn openapi_describes_parameters_and_errors_accurately() {
 }
 
 #[tokio::test]
+async fn achievement_completion_uses_the_documented_summary_api_contract() {
+    let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let operation = &doc["paths"]["/api/conversations/{id}/end"]["post"];
+
+    // Completion is emitted by the existing end/summary flow; the frontend
+    // sends no achievement-specific payload.
+    assert!(operation.get("requestBody").is_none());
+    for status in ["200", "202"] {
+        assert_eq!(
+            operation["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/SummaryView"
+        );
+    }
+    for status in ["401", "403", "404", "500"] {
+        assert_eq!(
+            operation["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ErrorBody",
+            "{status} must use the shared API error envelope"
+        );
+    }
+    assert_eq!(
+        operation["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ErrorBody"
+    );
+}
+
+#[tokio::test]
 async fn api_docs_uses_the_wireframe_design_tokens() {
     let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
     let app = test_app(pool);
