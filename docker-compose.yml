@@ -45,9 +45,114 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
 
+  # ---- 伺服器端語音對話（cascade，docs/specs/cascade-voice-spike.md）----
+  # 預設不啟動。啟用：COMPOSE_PROFILES=cascade（或 docker compose --profile app --profile cascade up -d --build），
+  # 並在 .env 設 CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime、CASCADE_LLM_TOKEN、CASCADE_REFERENCE_TEXT，
+  # 把參考音放在 CASCADE_REFS_DIR（預設 ./cascade-refs）的 reference.wav。需要 NVIDIA GPU（TTS 約 5 GB 顯存）與
+  # NVIDIA Container Toolkit。服務之間走 compose 內部網路，不對主機開 port。
+  cascade-tts:
+    profiles: ["cascade"]
+    build:
+      context: .
+      dockerfile: docker/cascade/Dockerfile
+    image: socrates-cascade:latest
+    command: ["tts"]
+    restart: unless-stopped
+    logging: &cascade-logging
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - cascade_cache:/root/.cache
+      - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  cascade-whisper:
+    profiles: ["cascade"]
+    build:
+      context: .
+      dockerfile: docker/cascade/whisper.Dockerfile
+    image: socrates-cascade-whisper:latest
+    restart: unless-stopped
+    logging: *cascade-logging
+    environment:
+      WHISPER_MODEL: small
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE: int8
+      WHISPER_HOST: 0.0.0.0
+      WHISPER_PORT: "8101"
+    volumes:
+      - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8101/openapi.json', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # cascade 與 TTS／Whisper 之間的轉接層：繁轉簡、帶 max_new_tokens，ASR 轉給 cascade-whisper
+  cascade-adapter:
+    profiles: ["cascade"]
+    image: socrates-cascade:latest
+    command: ["adapter"]
+    restart: unless-stopped
+    logging: *cascade-logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8103/v1/models', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      cascade-tts:
+        condition: service_healthy
+      cascade-whisper:
+        condition: service_healthy
+
+  cascade:
+    profiles: ["cascade"]
+    image: socrates-cascade:latest
+    command: ["cascade"]
+    restart: unless-stopped
+    logging: *cascade-logging
+    environment:
+      CASCADE_LLM_TOKEN: ${CASCADE_LLM_TOKEN:-}
+      CASCADE_REFERENCE_TEXT: ${CASCADE_REFERENCE_TEXT:-}
+    volumes:
+      - ${CASCADE_REFS_DIR:-./cascade-refs}:/refs:ro
+      - cascade_cache:/root/.cache
+      - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8110/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      cascade-adapter:
+        condition: service_healthy
+      app:
+        condition: service_started
+        required: false
+
 secrets:
   apikeylist:
     file: ./.apikeylist
 
 volumes:
   pgdata:
+  cascade_cache:
+  cascade_hf:
