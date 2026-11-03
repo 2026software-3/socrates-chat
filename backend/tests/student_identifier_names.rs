@@ -15,7 +15,7 @@ const STUDENT_NUMBER: &str = "10000000A";
 
 async fn ok_json(app: &Router, path: &str, cookie: &str) -> Value {
     let res = send(app, get(path, Some(cookie))).await;
-    assert_eq!(res.status(), StatusCode::OK, "{path}");
+    assert_eq!(res.status(), StatusCode::OK, "GET should succeed");
     json_body(res).await
 }
 
