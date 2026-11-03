@@ -67,6 +67,8 @@ type Reply = {
   interrupted: boolean
   serverDone: boolean
   textEnded: boolean
+  /** 已收到這則回覆的文字或聲音；沒有就不算一則回覆。 */
+  hasOutput: boolean
 }
 
 type ServerEvent = {
@@ -214,23 +216,32 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         break
       }
       case 'response.created':
-        reply = { id: event.response?.id ?? '', interrupted: false, serverDone: false, textEnded: false }
+        reply = { id: event.response?.id ?? '', interrupted: false, serverDone: false, textEnded: false, hasOutput: false }
         phase('waiting')
         break
       case 'response.output_text.delta':
         window.clearTimeout(replyWatchdog)
-        if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) cb.onReplyDelta(event.delta)
+        if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) {
+          reply.hasOutput = true
+          cb.onReplyDelta(event.delta)
+        }
         break
       case 'response.output_audio.delta':
         window.clearTimeout(replyWatchdog)
         if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) {
+          reply.hasOutput = true
           reply.item = event.item_id
           player.push(decodePcm16(event.delta))
           phase('speaking')
         }
         break
       case 'response.done':
-        if (reply && event.response?.id === reply.id) {
+        if (reply && event.response?.id === reply.id && event.response.status === 'cancelled' && !reply.hasOutput) {
+          // 伺服器在開口前就取消（學生還在說話）：這一輪沒有回覆。回合留著不收尾，後面若沒有新的回覆，
+          // 逾時會把它標成失敗而出現重試；有新的發言則照常接手。
+          reply = undefined
+          phase('transcribing')
+        } else if (reply && event.response?.id === reply.id) {
           reply.serverDone = true
           endText(reply)
           settle()
