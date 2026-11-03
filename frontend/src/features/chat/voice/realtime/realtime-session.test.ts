@@ -274,6 +274,19 @@ describe('realtime session', () => {
     expect(cb.onReplyFailed.mock.invocationCallOrder[0]).toBeLessThan(cb.onReplyEnd.mock.invocationCallOrder[0])
   })
 
+  it('fails the turn when a transcript gets no reply within 10 seconds', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    vi.advanceTimersByTime(9_999)
+    expect(cb.onReplyFailed).not.toHaveBeenCalled()
+    expect(cb.onClosed).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
+    expect(micClose).toHaveBeenCalled()
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
