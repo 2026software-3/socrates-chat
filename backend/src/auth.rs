@@ -852,17 +852,13 @@ impl ResetBody {
             (Some(email), None) => crate::roster::normalize_email(&email)
                 .map(ResetTarget::Email)
                 .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確")),
-            (None, Some(student_id)) => {
-                let student_id = auth_store::normalize_login_input(&student_id);
-                if crate::roster::is_valid_student_id(&student_id) {
-                    Ok(ResetTarget::StudentId(student_id))
-                } else {
-                    Err(ApiError::bad_request(
-                        "invalid_student_id",
-                        "學號格式不正確",
-                    ))
-                }
-            }
+            (None, Some(student_id)) => Some(auth_store::normalize_login_input(&student_id))
+                .filter(|id| crate::roster::is_valid_student_id(id))
+                .map(ResetTarget::StudentId)
+                .ok_or(ApiError::bad_request(
+                    "invalid_student_id",
+                    "學號格式不正確",
+                )),
             _ => Err(ApiError::bad_request(
                 "invalid_target",
                 "請只提供電子郵件或學號其中一個",

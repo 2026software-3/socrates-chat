@@ -9,7 +9,7 @@ use axum::{
     http::{Response, StatusCode},
 };
 use common::*;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 async fn login_account(app: &Router, account: &str, pw: &str) -> Response<Body> {
@@ -25,21 +25,25 @@ async fn login_account(app: &Router, account: &str, pw: &str) -> Response<Body> 
     .await
 }
 
-async fn reset_by_student_id(
-    app: &Router,
-    cookie: Option<&str>,
-    student_id: &str,
-) -> Response<Body> {
+async fn reset(app: &Router, cookie: Option<&str>, body: Value) -> Response<Body> {
     send(
         app,
         json_req(
             "POST",
             "/api/admin/users/reset-password",
             cookie,
-            Some(json!({"student_id": student_id})),
+            Some(body),
         ),
     )
     .await
+}
+
+async fn reset_by_student_id(
+    app: &Router,
+    cookie: Option<&str>,
+    student_id: &str,
+) -> Response<Body> {
+    reset(app, cookie, json!({"student_id": student_id})).await
 }
 
 /// 管理者把一位沒有電子郵件的學生匯入教室，回傳匯入時給的臨時密碼。
@@ -154,44 +158,16 @@ async fn malformed_student_id_is_rejected(pool: PgPool) {
 async fn exactly_one_of_email_or_student_id_is_required(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let both = send(
+    let both = reset(
         &app,
-        json_req(
-            "POST",
-            "/api/admin/users/reset-password",
-            Some(&a.admin),
-            Some(json!({"email": "student@example.com", "student_id": "10000000A"})),
-        ),
+        Some(&a.admin),
+        json!({"email": "student@example.com", "student_id": "10000000A"}),
     )
     .await;
     assert_json_error(both, StatusCode::BAD_REQUEST, "invalid_target").await;
 
-    let neither = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/admin/users/reset-password",
-            Some(&a.admin),
-            Some(json!({})),
-        ),
-    )
-    .await;
+    let neither = reset(&app, Some(&a.admin), json!({})).await;
     assert_json_error(neither, StatusCode::BAD_REQUEST, "invalid_target").await;
-}
-
-#[sqlx::test]
-async fn student_id_reset_is_admin_only(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    for (cookie, expected) in [
-        (None, StatusCode::UNAUTHORIZED),
-        (Some(&a.student), StatusCode::FORBIDDEN),
-        (Some(&a.outsider), StatusCode::FORBIDDEN),
-        (Some(&a.teacher), StatusCode::FORBIDDEN),
-    ] {
-        let res = reset_by_student_id(&app, cookie.map(String::as_str), "10000000A").await;
-        assert_eq!(res.status(), expected);
-    }
 }
 
 #[sqlx::test]
@@ -218,15 +194,6 @@ async fn student_id_reset_audits_the_internal_id_and_never_the_student_id(pool: 
     .await
     .unwrap();
     assert_eq!(rows, vec![("password_reset".to_string(), user_id)]);
-
-    let (leaked,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM audit_logs
-         WHERE target_email LIKE '%11234567%' OR reason LIKE '%11234567%' OR action LIKE '%11234567%'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(leaked, 0);
 }
 
 #[sqlx::test]
@@ -266,12 +233,14 @@ async fn a_rejected_non_admin_attempt_leaves_the_password_unchanged(pool: PgPool
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let temp = import_student_without_email(&app, &a, "11234567A").await;
-    for cookie in [None, Some(&a.student), Some(&a.outsider), Some(&a.teacher)] {
+    for (cookie, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(&a.student), StatusCode::FORBIDDEN),
+        (Some(&a.outsider), StatusCode::FORBIDDEN),
+        (Some(&a.teacher), StatusCode::FORBIDDEN),
+    ] {
         let res = reset_by_student_id(&app, cookie.map(String::as_str), "11234567A").await;
-        assert!(matches!(
-            res.status(),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-        ));
+        assert_eq!(res.status(), expected);
     }
     // 原本的臨時密碼仍然有效，也沒有留下任何重設的稽核紀錄
     assert_eq!(

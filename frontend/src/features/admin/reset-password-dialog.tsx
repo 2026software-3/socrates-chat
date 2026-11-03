@@ -38,7 +38,7 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
   const t = useT()
   const [resetting, setResetting] = useState(false)
   const [error, setError] = useState<unknown>()
-  const [issued, setIssued] = useState<{ label: string; password: string; byStudentId: boolean }>()
+  const [issued, setIssued] = useState<{ label: string; password: string }>()
   const { isCopied, copyToClipboard } = useCopyToClipboard()
 
   async function onReset() {
@@ -53,7 +53,7 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
       )
       // 信箱以伺服器正規化後實際重設的為準；學號則顯示姓名與學號
       const label = target.kind === 'email' ? (res.email ?? target.email) : labelOf(target)
-      setIssued({ label, password: res.temporary_password, byStudentId: target.kind === 'student' })
+      setIssued({ label, password: res.temporary_password })
     } catch (err) {
       setError(err)
     } finally {
@@ -99,9 +99,7 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
           <AlertDialogHeader>
             <AlertDialogTitle>{t('admin.reset.tempTitle')}</AlertDialogTitle>
             <AlertDialogDescription>
-              {issued?.byStudentId
-                ? t('admin.reset.tempDescWho', { who: issued.label })
-                : t('admin.reset.tempDesc', { email: issued?.label ?? '' })}
+              {t('admin.reset.tempDesc', { who: issued?.label ?? '' })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-1.5">
