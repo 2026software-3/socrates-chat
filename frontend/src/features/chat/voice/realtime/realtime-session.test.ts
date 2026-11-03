@@ -316,6 +316,16 @@ describe('realtime session', () => {
     expect(cb.onClosed).toHaveBeenCalledTimes(1)
   })
 
+  it('does not fail the turn a second time after the server already reported it', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    ws.event({ type: 'socrates.turn.failed' })
+    vi.advanceTimersByTime(60_000)
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    expect(cb.onClosed).toHaveBeenCalledTimes(1)
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
