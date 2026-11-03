@@ -287,6 +287,19 @@ describe('realtime session', () => {
     expect(micClose).toHaveBeenCalled()
   })
 
+  it('does not fail the turn when the reply starts within 10 seconds', async () => {
+    const session = await connected()
+    const ws = FakeSocket.last
+    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    vi.advanceTimersByTime(5_000)
+    ws.event(created('resp_1'))
+    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
+    vi.advanceTimersByTime(60_000)
+    expect(cb.onReplyFailed).not.toHaveBeenCalled()
+    expect(cb.onClosed).not.toHaveBeenCalled()
+    session.close()
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
