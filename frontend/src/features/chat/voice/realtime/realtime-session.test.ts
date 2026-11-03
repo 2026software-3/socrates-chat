@@ -274,11 +274,11 @@ describe('realtime session', () => {
     expect(cb.onReplyFailed.mock.invocationCallOrder[0]).toBeLessThan(cb.onReplyEnd.mock.invocationCallOrder[0])
   })
 
-  it('fails the turn when a transcript gets no reply within 25 seconds', async () => {
+  it('fails the turn when a transcript gets no reply within 10 seconds', async () => {
     await connected()
     const ws = FakeSocket.last
     ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    vi.advanceTimersByTime(24_999)
+    vi.advanceTimersByTime(9_999)
     expect(cb.onReplyFailed).not.toHaveBeenCalled()
     expect(cb.onClosed).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
@@ -330,7 +330,7 @@ describe('realtime session', () => {
     session.close()
   })
 
-  it('does not fail the turn when the reply starts within 25 seconds', async () => {
+  it('does not fail the turn when the reply starts within 10 seconds', async () => {
     const session = await connected()
     const ws = FakeSocket.last
     ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
@@ -348,11 +348,11 @@ describe('realtime session', () => {
     const ws = FakeSocket.last
     const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
     transcript('第一句')
-    vi.advanceTimersByTime(15_000)
+    vi.advanceTimersByTime(6_000)
     transcript('第二句')
-    vi.advanceTimersByTime(15_000)
+    vi.advanceTimersByTime(6_000)
     expect(cb.onReplyFailed).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(10_000)
+    vi.advanceTimersByTime(4_000)
     expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(60_000)
     expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
