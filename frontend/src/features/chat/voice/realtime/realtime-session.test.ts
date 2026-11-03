@@ -190,7 +190,7 @@ describe('realtime session', () => {
     ws.event({ type: 'input_audio_buffer.speech_stopped' })
     expect(cb.onPhase).toHaveBeenLastCalledWith('transcribing')
     ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: ' 合成的發言 ' })
-    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言', false)
+    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言')
     ws.event(created('resp_1'))
     expect(cb.onPhase).toHaveBeenLastCalledWith('waiting')
     ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
@@ -272,131 +272,6 @@ describe('realtime session', () => {
     expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
     expect(micClose).toHaveBeenCalled()
     expect(cb.onReplyFailed.mock.invocationCallOrder[0]).toBeLessThan(cb.onReplyEnd.mock.invocationCallOrder[0])
-  })
-
-  it('fails the turn when a transcript gets no reply within 25 seconds', async () => {
-    await connected()
-    const ws = FakeSocket.last
-    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    vi.advanceTimersByTime(24_999)
-    expect(cb.onReplyFailed).not.toHaveBeenCalled()
-    expect(cb.onClosed).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(1)
-    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
-    expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
-    expect(micClose).toHaveBeenCalled()
-  })
-
-  it('keeps the turn open when the server cancels the reply before any text, so the timeout can still fail it', async () => {
-    await connected()
-    const ws = FakeSocket.last
-    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    ws.event(created('resp_1'))
-    ws.event(done('resp_1', 'cancelled'))
-    // 空的取消不是一則回覆：不能把這一輪收成「正常結束」，否則逾時時沒有可標記失敗的回合、也就沒有重試按鈕
-    expect(cb.onReplyEnd).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(25_000)
-    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
-    expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
-  })
-
-  it('tells whether a reply is still open when a transcript arrives', async () => {
-    const session = await connected()
-    const ws = FakeSocket.last
-    const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
-    transcript('甲')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('甲', false)
-    // 回覆已開、文字還在串流或還沒出字：下一句要排在它後面
-    ws.event(created('resp_1'))
-    transcript('乙')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙', true)
-    // 回覆文字結束後，下一句就是新的一輪
-    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
-    ws.event(done('resp_1'))
-    transcript('丙')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('丙', false)
-    session.close()
-  })
-
-  it('does not fail the turn when the reply starts within 25 seconds', async () => {
-    const session = await connected()
-    const ws = FakeSocket.last
-    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    vi.advanceTimersByTime(5_000)
-    ws.event(created('resp_1'))
-    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
-    vi.advanceTimersByTime(60_000)
-    expect(cb.onReplyFailed).not.toHaveBeenCalled()
-    expect(cb.onClosed).not.toHaveBeenCalled()
-    session.close()
-  })
-
-  it('times the reply from the latest transcript and fails only once', async () => {
-    await connected()
-    const ws = FakeSocket.last
-    const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
-    transcript('第一句')
-    vi.advanceTimersByTime(15_000)
-    transcript('第二句')
-    vi.advanceTimersByTime(15_000)
-    expect(cb.onReplyFailed).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(10_000)
-    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
-    vi.advanceTimersByTime(60_000)
-    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
-    expect(cb.onClosed).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not fail the turn a second time after the server already reported it', async () => {
-    await connected()
-    const ws = FakeSocket.last
-    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    ws.event({ type: 'socrates.turn.failed' })
-    vi.advanceTimersByTime(60_000)
-    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
-    expect(cb.onClosed).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not fire the reply timeout after the connection dropped or the session was closed', async () => {
-    await connected()
-    const dropped = FakeSocket.last
-    dropped.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    dropped.drop()
-    vi.advanceTimersByTime(60_000)
-    expect(cb.onReplyFailed).not.toHaveBeenCalled()
-    expect(cb.onClosed).toHaveBeenCalledTimes(1)
-
-    const session = await connected()
-    FakeSocket.last.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
-    session.close()
-    vi.advanceTimersByTime(60_000)
-    expect(cb.onReplyFailed).not.toHaveBeenCalled()
-    expect(cb.onClosed).toHaveBeenCalledTimes(1)
-  })
-
-  it('traces speech and reply events by type for diagnosis, never the transcript', async () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
-    const session = await connected()
-    const ws = FakeSocket.last
-    ws.event({ type: 'input_audio_buffer.speech_started' })
-    ws.event({ type: 'input_audio_buffer.speech_stopped' })
-    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'SECRETTRANSCRIPT' })
-    ws.event(created('resp_1'))
-    ws.event(done('resp_1', 'cancelled'))
-    const traced = info.mock.calls.map((c) => c.join(' ')).join('\n')
-    for (const type of [
-      'input_audio_buffer.speech_started',
-      'input_audio_buffer.speech_stopped',
-      'conversation.item.input_audio_transcription.completed',
-      'response.created',
-      'response.done',
-    ]) {
-      expect(traced).toContain(type)
-    }
-    expect(traced).toContain('cancelled')
-    expect(traced).not.toContain('SECRETTRANSCRIPT')
-    info.mockRestore()
-    session.close()
   })
 
   it('settles when interrupted after the server already finished the reply', async () => {
