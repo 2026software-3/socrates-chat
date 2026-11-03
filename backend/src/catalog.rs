@@ -221,7 +221,9 @@ pub(crate) struct NewActivity {
     title: String,
     #[serde(default)]
     description: String,
-    /// 必填；沒帶或為 `null` 回 `invalid_topic`，讓錯誤格式與其他題目錯誤一致
+    /// 題目清單（S-04.7、F-29.1）：必填且至少一個；沒帶、為空或題目不存在都回 `invalid_topic`
+    topic_ids: Option<Vec<Uuid>>,
+    /// 相容舊欄位（單一題目）
     topic_id: Option<Uuid>,
     /// 活動所屬的教室（必填、建立後不可更改）；沒帶回 `invalid_classroom`，
     /// 教室不存在或不是自己管理的教室一律回 `404 not_found`
@@ -234,6 +236,8 @@ pub(crate) struct NewActivity {
 pub(crate) struct ActivityPatch {
     title: Option<String>,
     description: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    topic_ids: Option<Option<Vec<Uuid>>>,
     #[serde(default, deserialize_with = "nullable")]
     topic_id: Option<Option<Uuid>>,
     #[serde(default, deserialize_with = "nullable")]
@@ -373,16 +377,29 @@ pub(crate) async fn create_activity(
     if !valid_text(&b.title) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    let Some(topic_id) = b.topic_id else {
-        return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+    let topic_ids = match (b.topic_ids, b.topic_id) {
+        (Some(ids), _) => ids,
+        (None, Some(id)) => vec![id],
+        (None, None) => return Err(ApiError::bad_request("invalid_topic", "請選擇題目")),
     };
+    if topic_ids.is_empty() {
+        return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for &id in &topic_ids {
+        if !seen.insert(id) {
+            return Err(ApiError::bad_request("invalid_topic", "題目不可重複"));
+        }
+    }
     let Some(classroom_id) = b.classroom_id else {
         return Err(ApiError::bad_request("invalid_classroom", "請選擇教室"));
     };
     // 不是自己管理的教室與不存在的教室回應相同
     let classroom = visible_classroom(&state, &cu, &classroom_id.to_string()).await?;
-    if !topic_exists(&state.pool, topic_id).await? {
-        return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+    for &id in &topic_ids {
+        if !topic_exists(&state.pool, id).await? {
+            return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+        }
     }
     validate_not_past((b.opens_at, b.closes_at), (None, None))?;
     validate_schedule(b.opens_at, b.closes_at)?;
@@ -394,7 +411,7 @@ pub(crate) async fn create_activity(
         cu.user.id,
         b.title.trim(),
         &b.description,
-        topic_id,
+        &topic_ids,
         (b.opens_at, b.closes_at),
     )
     .await?;
@@ -420,23 +437,42 @@ pub(crate) async fn update_activity(
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    // 活動必須有題目：不能清除，只能換成另一個存在的題目
-    let new_topic = match p.topic_id {
-        Some(None) => return Err(ApiError::bad_request("invalid_topic", "請選擇題目")),
-        Some(Some(t)) => {
+    // 活動必須有題目：不能清除，若有傳入必須包含至少一個存在且不重複的題目
+    let new_topics = match (p.topic_ids, p.topic_id) {
+        (Some(None), _) | (_, Some(None)) => {
+            return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+        }
+        (Some(Some(ids)), _) => {
+            if ids.is_empty() {
+                return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+            }
+            let mut seen = std::collections::HashSet::new();
+            for &id in &ids {
+                if !seen.insert(id) {
+                    return Err(ApiError::bad_request("invalid_topic", "題目不可重複"));
+                }
+            }
+            for &id in &ids {
+                if !topic_exists(&state.pool, id).await? {
+                    return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+                }
+            }
+            Some(ids)
+        }
+        (None, Some(Some(t))) => {
             if !topic_exists(&state.pool, t).await? {
                 return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
             }
-            Some(t)
+            Some(vec![t])
         }
-        None => None,
+        (None, None) => None,
     };
     // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
     // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
     let mut tx = state.pool.begin().await?;
-    type CurrentSchedule = (Uuid, Uuid, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+    type CurrentSchedule = (Uuid, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
     let current: Option<CurrentSchedule> = sqlx::query_as(
-        "SELECT a.topic_id, a.classroom_id, a.opens_at, a.closes_at FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
+        "SELECT a.classroom_id, a.opens_at, a.closes_at FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
     )
     .bind(id)
@@ -444,7 +480,7 @@ pub(crate) async fn update_activity(
     .bind(cu.user.id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((current_topic, classroom, old_opens, old_closes)) = current else {
+    let Some((classroom, old_opens, old_closes)) = current else {
         return Err(ApiError::not_found());
     };
     crate::classrooms::ensure_writable(&mut *tx, classroom).await?;
@@ -452,35 +488,100 @@ pub(crate) async fn update_activity(
     let closes_at = p.closes_at.unwrap_or(old_closes);
     validate_not_past((opens_at, closes_at), (old_opens, old_closes))?;
     validate_schedule(opens_at, closes_at)?;
-    if let Some(t) = new_topic
-        && t != current_topic
-    {
-        let (started,): (bool,) =
+
+    if let Some(ref new_ids) = new_topics {
+        let current_topics: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT topic_id FROM activity_topics WHERE activity_id = $1 ORDER BY position ASC",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let (has_conversations,): (bool,) =
             sqlx::query_as("SELECT EXISTS (SELECT 1 FROM conversations WHERE activity_id = $1)")
                 .bind(id)
                 .fetch_one(&mut *tx)
                 .await?;
-        if started {
-            return Err(ApiError::conflict(
-                "activity_topic_locked",
-                "已有學生開始對話，不能更換題目",
-            ));
+
+        if has_conversations {
+            let conv_topics: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT DISTINCT topic_id FROM conversations WHERE activity_id = $1 AND topic_id IS NOT NULL",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            let locked_set: std::collections::HashSet<Uuid> = conv_topics.into_iter().collect();
+
+            // 1. 已有對話的題目不能被移除或替換
+            for locked in &locked_set {
+                if !new_ids.contains(locked) {
+                    return Err(ApiError::conflict(
+                        "activity_topic_locked",
+                        "已有學生開始對話，不能更換題目",
+                    ));
+                }
+            }
+
+            // 2. 已有對話的題目不能被重排（其與其他既有題目的相對順序不能被更動）
+            for locked in &locked_set {
+                let cur_l_pos = current_topics.iter().position(|t| t == locked).unwrap();
+                let new_l_pos = new_ids.iter().position(|t| t == locked).unwrap();
+
+                for other in &current_topics {
+                    if other == locked {
+                        continue;
+                    }
+                    if let Some(new_o_pos) = new_ids.iter().position(|t| t == other) {
+                        let cur_o_pos = current_topics.iter().position(|t| t == other).unwrap();
+                        if (cur_o_pos < cur_l_pos && new_o_pos > new_l_pos)
+                            || (cur_o_pos > cur_l_pos && new_o_pos < new_l_pos)
+                        {
+                            return Err(ApiError::conflict(
+                                "activity_topic_locked",
+                                "已有學生開始對話，不能更換題目",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 更新題目關聯
+        sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        for (pos, &topic_id) in new_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO activity_topics (activity_id, topic_id, position)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(id)
+            .bind(topic_id)
+            .bind(pos as i32)
+            .execute(&mut *tx)
+            .await?;
         }
     }
-    let activity = sqlx::query_as(
+
+    sqlx::query(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
-                topic_id = COALESCE($4, topic_id), opens_at = $5, closes_at = $6, updated_at = now()
-         WHERE id = $1
-         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
+                opens_at = $4, closes_at = $5, updated_at = now()
+         WHERE id = $1",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
-    .bind(new_topic)
     .bind(opens_at)
     .bind(closes_at)
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await?;
+
+    let activity = activity_store::find_by_id(&mut *tx, id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
     tx.commit().await?;
     Ok(Json(activity))
 }

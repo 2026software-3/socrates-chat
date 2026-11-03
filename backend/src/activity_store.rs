@@ -13,7 +13,9 @@ pub struct Activity {
     pub id: Uuid,
     pub title: String,
     pub description: String,
-    /// 活動必須選題庫題目（S-04.7）
+    /// 活動題目清單（S-04.7、F-29.1）
+    pub topic_ids: Vec<Uuid>,
+    /// 相容舊欄位（回傳第一個題目）
     pub topic_id: Uuid,
     /// 活動所屬的教室，建立後不可更改（S-14）
     pub classroom_id: Uuid,
@@ -28,7 +30,10 @@ pub struct Activity {
 macro_rules! activity_select {
     ($tail:literal) => {
         concat!(
-            "SELECT a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+            "SELECT a.id, a.title, a.description,
+                    COALESCE((SELECT array_agg(at.topic_id ORDER BY at.position) FROM activity_topics at WHERE at.activity_id = a.id), ARRAY[]::uuid[]) AS topic_ids,
+                    COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = a.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
+                    a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
             $tail
         )
@@ -83,27 +88,51 @@ pub async fn get_visible(
     .await
 }
 
+pub async fn find_by_id<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+) -> Result<Option<Activity>, sqlx::Error> {
+    sqlx::query_as(activity_select!("WHERE a.id = $1"))
+        .bind(id)
+        .fetch_optional(executor)
+        .await
+}
+
 pub async fn create_with_schedule<'e>(
-    executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    executor: impl sqlx::PgExecutor<'e>,
     classroom_id: Uuid,
     created_by: Uuid,
     title: &str,
     description: &str,
-    topic_id: Uuid,
+    topic_ids: &[Uuid],
     schedule: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
 ) -> Result<Activity, sqlx::Error> {
+    let (opens_at, closes_at) = schedule;
     sqlx::query_as(
-        "INSERT INTO activities (title, description, topic_id, classroom_id, created_by, opens_at, closes_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
+        "WITH a AS (
+            INSERT INTO activities (title, description, classroom_id, created_by, opens_at, closes_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
+         ),
+         ins AS (
+            INSERT INTO activity_topics (activity_id, topic_id, position)
+            SELECT a.id, t.topic_id, (t.ord - 1)::integer
+            FROM a
+            CROSS JOIN LATERAL unnest($7::uuid[]) WITH ORDINALITY AS t(topic_id, ord)
+         )
+         SELECT a.id, a.title, a.description,
+                $7::uuid[] AS topic_ids,
+                COALESCE($7[1]::uuid, '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
+                a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+         FROM a",
     )
     .bind(title)
     .bind(description)
-    .bind(topic_id)
     .bind(classroom_id)
     .bind(created_by)
-    .bind(schedule.0)
-    .bind(schedule.1)
+    .bind(opens_at)
+    .bind(closes_at)
+    .bind(topic_ids)
     .fetch_one(executor)
     .await
 }
@@ -117,11 +146,18 @@ pub async fn set_status_writable(
     status: &str,
 ) -> Result<Option<Activity>, sqlx::Error> {
     sqlx::query_as(
-        "UPDATE activities a SET status = $2, updated_at = now()
-         FROM classrooms cl
-         WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
-           AND NOT cl.is_archived AND NOT a.is_archived
-         RETURNING a.id, a.title, a.description, a.topic_id, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at",
+        "WITH upd AS (
+            UPDATE activities a SET status = $2, updated_at = now()
+            FROM classrooms cl
+            WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
+              AND NOT cl.is_archived AND NOT a.is_archived
+            RETURNING a.id, a.title, a.description, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+         )
+         SELECT u.id, u.title, u.description,
+                COALESCE((SELECT array_agg(at.topic_id ORDER BY at.position) FROM activity_topics at WHERE at.activity_id = u.id), ARRAY[]::uuid[]) AS topic_ids,
+                COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = u.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
+                u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
+         FROM upd u",
     )
     .bind(id)
     .bind(status)
@@ -169,7 +205,10 @@ pub async fn find_startable(
     user_id: Uuid,
 ) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.id, a.topic_id, a.classroom_id, a.title, a.description FROM activities a
+        "SELECT a.id,
+                COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = a.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
+                a.classroom_id, a.title, a.description
+         FROM activities a
          JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
            AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
@@ -191,8 +230,15 @@ pub async fn set_archived<'e>(
     archived: bool,
 ) -> Result<Activity, sqlx::Error> {
     sqlx::query_as(
-        "UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
-         RETURNING id, title, description, topic_id, classroom_id, status, is_archived, opens_at, closes_at, created_at",
+        "WITH upd AS (
+            UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
+            RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
+         )
+         SELECT u.id, u.title, u.description,
+                COALESCE((SELECT array_agg(at.topic_id ORDER BY at.position) FROM activity_topics at WHERE at.activity_id = u.id), ARRAY[]::uuid[]) AS topic_ids,
+                COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = u.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
+                u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
+         FROM upd u",
     )
     .bind(id)
     .bind(archived)

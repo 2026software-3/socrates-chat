@@ -89,6 +89,23 @@ mod classroom_scope {
     }
 
     #[test]
+    fn activities_contract_supports_multiple_topics() {
+        let doc = document();
+        let new = &doc["components"]["schemas"]["NewActivity"]["properties"];
+        assert!(new.get("topic_ids").is_some(), "NewActivity.topic_ids");
+        let patch = &doc["components"]["schemas"]["ActivityPatch"]["properties"];
+        assert!(patch.get("topic_ids").is_some(), "ActivityPatch.topic_ids");
+        let activity = &doc["components"]["schemas"]["Activity"]["properties"];
+        assert!(activity.get("topic_ids").is_some(), "Activity.topic_ids");
+
+        let patch_op = &doc["paths"]["/api/activities/{id}"]["patch"];
+        let conflicts = patch_op["responses"]["409"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(conflicts.contains("activity_topic_locked"));
+    }
+
+    #[test]
     fn conversations_expose_a_nullable_classroom() {
         let doc = document();
         let conversation = &doc["components"]["schemas"]["Conversation"]["properties"];
