@@ -57,6 +57,7 @@ export type Conversation = {
   turn_count: number
   converge_ready: boolean
   created_at: string
+  updated_at: string
   ended_at: string | null
   /** 學生已封存：只從自己的清單隱藏，可復原 */
   is_archived: boolean

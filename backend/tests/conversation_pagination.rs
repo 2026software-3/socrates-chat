@@ -45,6 +45,31 @@ async fn paginates_with_stable_ties_and_excludes_other_students(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn sorts_by_latest_message_time_and_falls_back_to_creation_time(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let user: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let oldest = Uuid::from_u128(10);
+    let newer = Uuid::from_u128(11);
+    let no_messages = Uuid::from_u128(12);
+    sqlx::query("INSERT INTO conversations (id,user_id,title,created_at) VALUES ($1,$2,'Oldest created','2026-01-01T00:00:00Z')").bind(oldest).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO conversations (id,user_id,title,created_at) VALUES ($1,$2,'Recent activity','2026-01-03T00:00:00Z')").bind(newer).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO conversations (id,user_id,title,created_at) VALUES ($1,$2,'No messages yet','2026-01-05T00:00:00Z')").bind(no_messages).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO messages (conversation_id, role, content, created_at) VALUES ($1, 'student', 'latest', '2026-01-10T00:00:00Z')").bind(oldest).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO messages (conversation_id, role, content, created_at) VALUES ($1, 'ai', 'reply', '2026-01-04T00:00:00Z')").bind(newer).execute(&pool).await.unwrap();
+
+    let res = send(&app, get("/api/conversations?limit=10", Some(&a.student))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let items = json_body(res).await["items"].as_array().unwrap();
+    let ids: Vec<_> = items.iter().map(|item| item["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, vec![oldest.to_string(), newer.to_string(), no_messages.to_string()]);
+}
+
+#[sqlx::test]
 async fn pagination_validates_input_and_preserves_authorization(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
