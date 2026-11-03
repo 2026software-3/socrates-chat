@@ -548,6 +548,23 @@ pub async fn student_says_events(
     }
 }
 
+/// 輪詢到總結不再是 pending 為止（背景產生），回傳當時的總結。
+pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
+    for _ in 0..100 {
+        let res = send(
+            app,
+            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
+        )
+        .await;
+        let v = json_body(res).await;
+        if v["status"] != "pending" {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("summary stayed pending");
+}
+
 /// 直接寫入一則學生訊息當作測試前置條件：不經過 API、不呼叫 AI、不佔用假 AI 的腳本。
 pub async fn seed_student_message(pool: &PgPool, conv: &str, text: &str) {
     let id: uuid::Uuid = conv.parse().unwrap();

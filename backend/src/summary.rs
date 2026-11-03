@@ -112,13 +112,15 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
 const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
 
-/// 對話完成發點給對話擁有者。同一場對話只入帳一次（帳本以對話 ID 防重複），
-/// 刪除對話不收回（S-07.2）。
-async fn award_completion(conn: &mut PgConnection, id: Uuid) -> Result<(), sqlx::Error> {
-    let owner: Uuid = sqlx::query_scalar("SELECT user_id FROM conversations WHERE id = $1")
-        .bind(id)
-        .fetch_one(&mut *conn)
-        .await?;
+/// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
+///
+/// 目前只有發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）。
+/// 之後的成就發點與任務進度（S-07.3、S-07.4）也加在這裡，讓所有完成事件的副作用只有一個進入點。
+async fn on_conversation_completed(
+    conn: &mut PgConnection,
+    id: Uuid,
+    owner: Uuid,
+) -> Result<(), sqlx::Error> {
     let source_id = id.to_string();
     let entry = points::Entry::award(
         owner,
@@ -132,12 +134,13 @@ async fn award_completion(conn: &mut PgConnection, id: Uuid) -> Result<(), sqlx:
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let ((title, description, activity_id, language), turns): (
-        (String, String, Option<Uuid>, String),
+    let ((owner, title, description, activity_id, language), turns): (
+        (Uuid, String, String, Option<Uuid>, String),
         _,
     ) = tokio::try_join!(
         sqlx::query_as(
-            "SELECT title, description, activity_id, language FROM conversations WHERE id = $1"
+            "SELECT user_id, title, description, activity_id, language
+             FROM conversations WHERE id = $1"
         )
         .bind(id)
         .fetch_one(&state.pool),
@@ -168,7 +171,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
         Some(s) => {
             // 總結完成與發點在同一個交易內（S-07.2 2.2）：只有這一代真的把總結改成 ready 才發點
             let mut tx = state.pool.begin().await?;
-            let ready = sqlx::query(
+            let updated = sqlx::query(
                 "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
                         rules_version = $4, completed_at = now(), claim = $6
                  WHERE conversation_id = $1 AND attempt = $5 AND status = 'pending'",
@@ -181,10 +184,9 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(s.claim.as_deref())
             .execute(&mut *tx)
             .await?
-            .rows_affected()
-                == 1;
-            if ready {
-                award_completion(&mut tx, id).await?;
+            .rows_affected();
+            if updated > 0 {
+                on_conversation_completed(&mut tx, id, owner).await?;
             }
             tx.commit().await?;
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結

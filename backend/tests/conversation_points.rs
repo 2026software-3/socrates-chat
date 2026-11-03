@@ -9,28 +9,10 @@ use std::time::Duration;
 use axum::{Router, http::StatusCode};
 use common::Script::*;
 use common::*;
-use serde_json::Value;
+use socrates_chat_backend::config::Config;
 use sqlx::PgPool;
-use uuid::Uuid;
 
 const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\"}";
-
-/// 輪詢到總結不再是 pending 為止（背景產生）。
-async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
-    for _ in 0..100 {
-        let res = send(
-            app,
-            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
-        )
-        .await;
-        let v = json_body(res).await;
-        if v["status"] != "pending" {
-            return v;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("summary stayed pending");
-}
 
 async fn post(app: &Router, cookie: &str, path: &str) -> StatusCode {
     send(app, json_req("POST", path, Some(cookie), None))
@@ -119,19 +101,73 @@ async fn a_failed_summary_awards_nothing_until_a_retry_succeeds(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn regenerating_the_same_conversation_does_not_award_again(pool: PgPool) {
+async fn a_superseded_generation_awards_nothing(pool: PgPool) {
+    // 第一代很慢才回出好結果；在它完成前手動重試開出第二代，而第二代卡住。
+    // 第一代完成時代數已不符，不能把總結改成 ready，也不能發點。
+    let config = Config {
+        ai_total_timeout: Duration::from_secs(3),
+        ..test_config()
+    };
+    let ai = FakeAi::with(vec![Paced(vec![GOOD], Duration::from_millis(500)), Hang]);
+    let app = test_app_with_config(pool.clone(), ai.clone(), config);
+    let a = seed_actors(&app).await;
+    let conv = finish_conversation(&app, &pool, &a).await;
+    while ai.request_count() < 1 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let retry = format!("/api/conversations/{conv}/summary/retry");
+    assert_eq!(post(&app, &a.student, &retry).await, StatusCode::ACCEPTED);
+
+    // 等第一代的結果回來並被丟棄
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let res = send(
+        &app,
+        get(
+            &format!("/api/conversations/{conv}/summary"),
+            Some(&a.student),
+        ),
+    )
+    .await;
+    assert_eq!(json_body(res).await["status"], "pending");
+    assert_eq!(balance(&app, &a.student).await, 0);
+    assert!(ledger(&pool, "student@example.com").await.is_empty());
+}
+
+#[sqlx::test]
+async fn a_failed_award_rolls_back_the_summary_and_a_retry_awards_once(pool: PgPool) {
+    // 入帳失敗時，總結不能已經變成 ready（同一個交易，S-07.2 2.2）
+    sqlx::query(
+        "CREATE FUNCTION reject_ledger_insert() RETURNS trigger AS $$
+         BEGIN RAISE EXCEPTION 'ledger unavailable'; END $$ LANGUAGE plpgsql",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_ledger_insert BEFORE INSERT ON point_ledger
+         FOR EACH ROW EXECUTE FUNCTION reject_ledger_insert()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     let app = test_app_with_ai(
         pool.clone(),
         FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![GOOD])]),
     );
     let a = seed_actors(&app).await;
     let conv = finish_conversation(&app, &pool, &a).await;
-    settled_summary(&app, &a.student, &conv).await;
-    assert_eq!(balance(&app, &a.student).await, 10);
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "failed"
+    );
+    assert_eq!(balance(&app, &a.student).await, 0);
 
-    // 同一場對話的總結再次成功（例如被標成失敗後重試）：防重複，只入帳一次
-    sqlx::query("UPDATE summaries SET status = 'failed' WHERE conversation_id = $1")
-        .bind(Uuid::parse_str(&conv).unwrap())
+    sqlx::query("DROP TRIGGER reject_ledger_insert ON point_ledger")
         .execute(&pool)
         .await
         .unwrap();
@@ -146,11 +182,27 @@ async fn regenerating_the_same_conversation_does_not_award_again(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn an_unfinished_conversation_awards_nothing(pool: PgPool) {
-    let app = test_app_with_ai(pool.clone(), FakeAi::with(vec![]));
+async fn an_active_conversation_awards_nothing(pool: PgPool) {
+    // 經由真正的送出訊息流程：AI 回覆完成但對話還沒結束
+    let app = test_app_with_ai(pool.clone(), FakeAi::with(vec![Reply(vec!["為什麼？"])]));
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
-    seed_student_message(&pool, &conv, "還在想").await;
+    let (status, _) = student_says(&app, &a, &conv, "我會拉桿").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(balance(&app, &a.student).await, 0);
+    assert!(ledger(&pool, "student@example.com").await.is_empty());
+}
+
+#[sqlx::test]
+async fn a_pending_summary_awards_nothing_yet(pool: PgPool) {
+    // 對話已結束但總結還在產生：總結 ready 前不發點
+    let ai = FakeAi::with(vec![Hang]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    finish_conversation(&app, &pool, &a).await;
+    while ai.request_count() < 1 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(balance(&app, &a.student).await, 0);
     assert!(ledger(&pool, "student@example.com").await.is_empty());
 }
