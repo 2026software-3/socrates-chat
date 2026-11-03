@@ -72,9 +72,8 @@ fn enabled() -> Config {
     }
 }
 
-#[sqlx::test]
-async fn a_reply_the_cascade_abandons_before_any_text_is_logged_without_the_speech(pool: PgPool) {
-    let (logs, _guard) = capture();
+/// 開一場語音並送出一輪 cascade 請求，回傳回應（尚未讀取）。
+async fn spoken_turn(pool: PgPool) -> axum::response::Response {
     register_fixture_pool(&pool);
     let ai = FakeAi::with(vec![Reply(vec!["你為什麼", "這樣認為？"])]);
     let state = AppState::new(pool.clone(), enabled(), Arc::new(FakeIdentity), ai);
@@ -88,7 +87,6 @@ async fn a_reply_the_cascade_abandons_before_any_text_is_logged_without_the_spee
         .await
         .unwrap();
     let session = state.voice_sessions.open(user, id).unwrap();
-
     let body = json!({
         "model": "rust",
         "stream": true,
@@ -109,6 +107,13 @@ async fn a_reply_the_cascade_abandons_before_any_text_is_logged_without_the_spee
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+    res
+}
+
+#[sqlx::test]
+async fn a_reply_the_cascade_abandons_before_any_text_is_logged_without_the_speech(pool: PgPool) {
+    let (logs, _guard) = capture();
+    let res = spoken_turn(pool).await;
     // cascade 一收到回應就掐斷：串流一個字都沒讀過就被丟棄
     drop(res);
 
@@ -116,4 +121,21 @@ async fn a_reply_the_cascade_abandons_before_any_text_is_logged_without_the_spee
     assert!(logs.contains("voice reply stream dropped"), "logs: {logs}");
     assert!(logs.contains("\"sent_any\":false"), "logs: {logs}");
     assert!(!logs.contains("SECRETSPEECH"), "logs: {logs}");
+}
+
+#[sqlx::test]
+async fn a_reply_read_to_the_end_is_not_logged_as_dropped(pool: PgPool) {
+    let (logs, _guard) = capture();
+    let res = spoken_turn(pool).await;
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .contains("[DONE]")
+    );
+
+    let logs = logs.text();
+    assert!(!logs.contains("voice reply stream dropped"), "logs: {logs}");
 }
