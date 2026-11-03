@@ -204,9 +204,11 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         phase('waiting')
         break
       case 'response.output_text.delta':
+        window.clearTimeout(replyWatchdog)
         if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) cb.onReplyDelta(event.delta)
         break
       case 'response.output_audio.delta':
+        window.clearTimeout(replyWatchdog)
         if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) {
           reply.item = event.item_id
           player.push(decodePcm16(event.delta))
