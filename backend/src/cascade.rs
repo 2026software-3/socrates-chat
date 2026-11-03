@@ -15,7 +15,7 @@ use std::{
     collections::{HashMap, HashSet},
     convert::Infallible,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -495,35 +495,61 @@ fn streamed_reply(
     state: AppState,
     token: String,
 ) -> Response {
-    let begin = (text, state, token, false, false);
-    let chunks = stream::unfold(
-        begin,
-        |(mut text, state, token, mut sent, done)| async move {
-            if done {
-                return None;
-            }
-            loop {
-                match text.recv().await {
-                    Some(ReplyText::Delta(delta)) => {
-                        return Some((delta_chunk(&delta), (text, state, token, true, false)));
-                    }
-                    Some(ReplyText::Failed) => state.voice_sessions.turn_failed(&token),
-                    None if sent => {
-                        let end = Bytes::from_static(END_OF_REPLY.as_bytes());
-                        return Some((end, (text, state, token, true, true)));
-                    }
-                    None => {
-                        sent = true;
-                        return Some((
-                            delta_chunk(FAILED_REPLY),
-                            (text, state, token, sent, false),
-                        ));
-                    }
+    let begin = (text, state, token, ReplyWatch::default());
+    let chunks = stream::unfold(begin, |(mut text, state, token, mut watch)| async move {
+        if watch.finished {
+            return None;
+        }
+        loop {
+            match text.recv().await {
+                Some(ReplyText::Delta(delta)) => {
+                    watch.sent_any = true;
+                    return Some((delta_chunk(&delta), (text, state, token, watch)));
+                }
+                Some(ReplyText::Failed) => state.voice_sessions.turn_failed(&token),
+                None if watch.sent_any => {
+                    watch.finished = true;
+                    let end = Bytes::from_static(END_OF_REPLY.as_bytes());
+                    return Some((end, (text, state, token, watch)));
+                }
+                None => {
+                    watch.sent_any = true;
+                    return Some((delta_chunk(FAILED_REPLY), (text, state, token, watch)));
                 }
             }
-        },
-    );
+        }
+    });
     sse(Body::from_stream(chunks.map(Ok::<_, Infallible>)))
+}
+
+/// 回覆串流的進度。串流被丟棄時還沒結束，代表 cascade 放棄了它（打斷或逾時）：留一行診斷日誌，
+/// 分辨是一開始就被掐斷，還是說到一半。只記時間與是否已送出內容，不含任何原文。
+struct ReplyWatch {
+    started: Instant,
+    sent_any: bool,
+    finished: bool,
+}
+
+impl Default for ReplyWatch {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            sent_any: false,
+            finished: false,
+        }
+    }
+}
+
+impl Drop for ReplyWatch {
+    fn drop(&mut self) {
+        if !self.finished {
+            tracing::info!(
+                sent_any = self.sent_any,
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                "voice reply stream dropped before it finished"
+            );
+        }
+    }
 }
 
 /// cascade 的 LLM 節點：學生的一句話走與文字相同的回覆流程。
