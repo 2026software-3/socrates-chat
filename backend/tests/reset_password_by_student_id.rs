@@ -248,11 +248,15 @@ async fn a_student_with_an_email_reset_by_student_id_returns_and_audits_the_emai
     assert_eq!(targets, vec![("student@example.com".to_string(),)]);
 
     // 同一組臨時密碼學號與信箱都能登入
-    for account in ["10000000A", "student@example.com"] {
+    // 失敗訊息只用固定標籤，不把帳號本身印出來
+    for (label, account) in [
+        ("student ID", "10000000A"),
+        ("email", "student@example.com"),
+    ] {
         assert_eq!(
             login_account(&app, account, &temp).await.status(),
             StatusCode::OK,
-            "{account}"
+            "login by {label}"
         );
     }
 }
