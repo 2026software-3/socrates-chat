@@ -2,12 +2,24 @@ import type { ReactElement } from 'react'
 import { Toaster } from '@/components/ui/sonner'
 import type { Lang } from '@/i18n/define'
 import { http, HttpResponse } from 'msw'
-import type { Classroom, Roles } from '@/lib/types'
+import type { Classroom, Roles, StudentRow } from '@/lib/types'
 import { makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 export const ROOM_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 export const ROOM_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
+/** 名單上的學生（預設已有帳號、使用中）；`email` 為 null 代表沒有電子郵件的學生。 */
+export const student = (email: string | null, over: Partial<StudentRow> = {}): StudentRow => ({
+  email,
+  student_id: '12345678A',
+  display_name: null,
+  id: '11111111-1111-4111-8111-111111111111',
+  has_account: true,
+  disabled: false,
+  completed_conversations: 0,
+  ...over,
+})
 
 export const classroom = (id: string, name: string): Classroom => ({
   id,

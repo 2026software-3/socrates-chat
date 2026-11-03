@@ -830,39 +830,89 @@ pub(crate) async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// 重設密碼的目標：`email`（沒有帳號就建立）與 `student_id`（只針對已有帳號的學生）二選一。
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct ResetBody {
-    email: String,
+    /// 電子郵件；與 `student_id` 擇一。
+    email: Option<String>,
+    /// 學號（不分大小寫）；與 `email` 擇一，學號必須屬於已有帳號的學生。
+    student_id: Option<String>,
+}
+
+/// 驗證並正規化後的重設目標。
+enum ResetTarget {
+    Email(String),
+    StudentId(String),
+}
+
+impl ResetBody {
+    /// `email` 與 `student_id` 必須恰好一個；格式錯誤在這裡就擋下，不碰資料庫。
+    fn into_target(self) -> Result<ResetTarget, ApiError> {
+        match (self.email, self.student_id) {
+            (Some(email), None) => crate::roster::normalize_email(&email)
+                .map(ResetTarget::Email)
+                .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確")),
+            (None, Some(student_id)) => Some(auth_store::normalize_login_input(&student_id))
+                .filter(|id| crate::roster::is_valid_student_id(id))
+                .map(ResetTarget::StudentId)
+                .ok_or(ApiError::bad_request(
+                    "invalid_student_id",
+                    "學號格式不正確",
+                )),
+            _ => Err(ApiError::bad_request(
+                "invalid_target",
+                "請只提供電子郵件或學號其中一個",
+            )),
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ResetResponse {
-    email: String,
+    /// 帳號的電子郵件；沒有電子郵件的學生為 `null`。
+    email: Option<String>,
     /// 只在這次回應出現，之後無法再查詢。
     temporary_password: String,
 }
 
-/// 管理者重設密碼（產生臨時密碼）；信箱沒有帳號時一併建立。
+/// 管理者重設密碼（產生臨時密碼）。以 `email` 指定時信箱沒有帳號就建立；以 `student_id` 指定時只能是已有帳號的學生，找不到回 404。
 #[utoipa::path(
     post,
     path = "/api/admin/users/reset-password",
     tag = "admin",
-    summary = "重設密碼（僅管理者；沒有帳號就建立）",
+    summary = "重設密碼（僅管理者；以信箱沒有帳號就建立，以學號只重設既有學生）",
     request_body = ResetBody,
-    responses((status = 200, description = "臨時密碼只出現這一次", body = ResetResponse))
+    responses(
+        (status = 200, description = "臨時密碼只出現這一次", body = ResetResponse),
+        (status = 400, description = "invalid_target（email 與 student_id 必須恰好一個）、invalid_email、invalid_student_id", body = crate::error::ErrorBody),
+        (status = 404, description = "學號不屬於任何已有帳號的學生", body = crate::error::ErrorBody)
+    )
 )]
 pub(crate) async fn reset_password(
     RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Json(body): Json<ResetBody>,
 ) -> Result<Json<ResetResponse>, ApiError> {
-    let email = crate::roster::normalize_email(&body.email)
-        .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))?;
+    let target = body.into_target()?;
     let temporary_password = password::generate_temporary();
     let hash = hash_blocking(temporary_password.clone()).await?;
     let mut tx = state.pool.begin().await?;
-    auth_store::reset_password(&mut tx, &email, &hash).await?;
-    audit(&mut *tx, cu.user.id, "password_reset", &email, None).await?;
+    // 稽核對象：有電子郵件用信箱，沒有則用內部識別碼（不記學號，S-01.4）
+    let (email, audit_target) = match target {
+        ResetTarget::Email(email) => {
+            auth_store::reset_password(&mut tx, &email, &hash).await?;
+            (Some(email.clone()), email)
+        }
+        ResetTarget::StudentId(student_id) => {
+            let (user_id, email) =
+                auth_store::reset_password_by_student_id(&mut tx, &student_id, &hash)
+                    .await?
+                    .ok_or(ApiError::not_found())?;
+            let audit_target = email.clone().unwrap_or_else(|| user_id.to_string());
+            (email, audit_target)
+        }
+    };
+    audit(&mut *tx, cu.user.id, "password_reset", &audit_target, None).await?;
     tx.commit().await?;
     Ok(Json(ResetResponse {
         email,

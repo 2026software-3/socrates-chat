@@ -644,9 +644,40 @@ pub async fn reset_password(
     .bind(password_hash)
     .fetch_one(&mut *conn)
     .await?;
-    delete_sessions_except(&mut *conn, id, None).await?;
-    clear_login_failures_of_user(&mut *conn, id).await?;
+    invalidate_credentials(&mut *conn, id).await?;
     Ok(id)
+}
+
+/// 重設密碼後讓舊憑證失效：清除所有 session 與登入鎖定（管理者重設的兩種方式共用）。
+async fn invalidate_credentials(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    delete_sessions_except(&mut *conn, user_id, None).await?;
+    clear_login_failures_of_user(&mut *conn, user_id).await
+}
+
+/// 管理者以學號重設密碼（#413）：只針對已有帳號的學生，不建立帳號。找不到學號回 `None`。
+/// 找到時的處理與 `reset_password` 相同；回傳使用者 id 與電子郵件（沒有則為 `None`）。
+/// 學號須已是大寫（呼叫端正規化）。呼叫端須與稽核紀錄一起提交。
+pub async fn reset_password_by_student_id(
+    conn: &mut sqlx::PgConnection,
+    student_id: &str,
+    password_hash: &str,
+) -> Result<Option<(Uuid, Option<String>)>, sqlx::Error> {
+    let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
+        "UPDATE users SET password_hash = $2, must_change_password = true, updated_at = now()
+         WHERE student_id = $1
+         RETURNING id, email",
+    )
+    .bind(student_id)
+    .bind(password_hash)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((id, _)) = &row {
+        invalidate_credentials(&mut *conn, *id).await?;
+    }
+    Ok(row)
 }
 
 /// 部署時依 `ADMIN_EMAILS` 建立首位管理者的內建帳號（初始密碼來自環境變數，首次登入須更改）。

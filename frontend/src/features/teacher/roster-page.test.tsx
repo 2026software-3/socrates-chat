@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { classroom, mockClassrooms, renderTeacherPage, ROOM_A, ROOM_B } from '@/features/teacher/test-helpers'
+import { classroom, mockClassrooms, renderTeacherPage, ROOM_A, ROOM_B, student } from '@/features/teacher/test-helpers'
+import type { StudentRow } from '@/lib/types'
 import { apiError, makeMe, mockMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -347,6 +348,78 @@ describe('RosterPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: '重設 alice@example.com 的密碼' }))
     await userEvent.click(screen.getByRole('button', { name: '重設密碼' }))
     expect(await screen.findByLabelText('臨時密碼')).toHaveValue('ABCD2345WXYZ')
+  })
+
+  it('tells the admin to give the temporary password to the address the server reset', async () => {
+    mockClassrooms()
+    mockRoster(['alice@example.com'])
+    server.use(
+      http.post('/api/admin/users/reset-password', () =>
+        HttpResponse.json({ email: 'normalized@example.com', temporary_password: 'ABCD2345WXYZ' }),
+      ),
+    )
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '重設 alice@example.com 的密碼' }))
+    await userEvent.click(screen.getByRole('button', { name: '重設密碼' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/normalized@example\.com/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/alice@example\.com/)).not.toBeInTheDocument()
+  })
+
+  /** 匯入後沒有電子郵件的學生（#413）。 */
+  const noEmailStudent = (over: Partial<StudentRow> = {}) =>
+    pageOf(
+      [
+        student(null, {
+          student_id: '11234567A',
+          display_name: '王小明',
+          id: '22222222-2222-4222-8222-222222222222',
+          ...over,
+        }),
+      ],
+      null,
+      { total: 1 },
+    )
+
+  it('lets an admin reset a student without email by student ID after checking name and classroom', async () => {
+    mockClassrooms()
+    server.use(http.get(students(ROOM_A), () => noEmailStudent()))
+    let sent: unknown
+    server.use(
+      http.post('/api/admin/users/reset-password', async ({ request }) => {
+        sent = await request.json()
+        return HttpResponse.json({ email: null, temporary_password: 'WXYZ2345ABCD' })
+      }),
+    )
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '重設學號 11234567A 的密碼' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/王小明（11234567A）/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/2026 春季班/)).toBeInTheDocument()
+    // 學號是全域的：重設套用到整個帳號，不只這間教室
+    expect(within(dialog).getByText(/整個帳號/)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: '重設密碼' }))
+    expect(await screen.findByLabelText('臨時密碼')).toHaveValue('WXYZ2345ABCD')
+    expect(sent).toEqual({ student_id: '11234567A' })
+  })
+
+  it('shows the student-ID reset only to admins and only for students who have an account', async () => {
+    mockClassrooms()
+    server.use(http.get(students(ROOM_A), () => noEmailStudent()))
+    setup()
+    await screen.findByText('11234567A')
+    expect(screen.queryByRole('button', { name: /重設學號/ })).not.toBeInTheDocument()
+  })
+
+  it('does not offer a student-ID reset for a student without an account', async () => {
+    mockClassrooms()
+    server.use(http.get(students(ROOM_A), () => noEmailStudent({ has_account: false })))
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await screen.findByText('11234567A')
+    expect(screen.queryByRole('button', { name: /重設學號/ })).not.toBeInTheDocument()
   })
 
   it('loads the roster of the first classroom and names it', async () => {
