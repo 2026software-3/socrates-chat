@@ -190,7 +190,7 @@ describe('realtime session', () => {
     ws.event({ type: 'input_audio_buffer.speech_stopped' })
     expect(cb.onPhase).toHaveBeenLastCalledWith('transcribing')
     ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: ' 合成的發言 ' })
-    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言', false)
+    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言')
     ws.event(created('resp_1'))
     expect(cb.onPhase).toHaveBeenLastCalledWith('waiting')
     ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
@@ -298,24 +298,6 @@ describe('realtime session', () => {
     vi.advanceTimersByTime(25_000)
     expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
     expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
-  })
-
-  it('tells whether a reply is still open when a transcript arrives', async () => {
-    const session = await connected()
-    const ws = FakeSocket.last
-    const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
-    transcript('甲')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('甲', false)
-    // 回覆已開、文字還在串流或還沒出字：下一句要排在它後面
-    ws.event(created('resp_1'))
-    transcript('乙')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙', true)
-    // 回覆文字結束後，下一句就是新的一輪
-    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
-    ws.event(done('resp_1'))
-    transcript('丙')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('丙', false)
-    session.close()
   })
 
   it('stops timing once the reply has opened, however slowly the first text comes', async () => {
