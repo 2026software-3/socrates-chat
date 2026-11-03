@@ -192,6 +192,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         const text = event.transcript?.trim()
         if (text) {
           cb.onTranscript(text)
+          window.clearTimeout(replyWatchdog)
           replyWatchdog = window.setTimeout(() => {
             cb.onReplyFailed()
             fail('replyFailed')
