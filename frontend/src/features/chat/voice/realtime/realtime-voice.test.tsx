@@ -83,7 +83,7 @@ describe('server voice conversation', () => {
     const { cb } = await startLive()
     act(() => {
       cb.onPhase('listening')
-      cb.onTranscript('合成的語音發言')
+      cb.onTranscript('合成的語音發言', false)
     })
     expect(await screen.findByText('合成的語音發言')).toBeInTheDocument()
     act(() => cb.onReplyDelta('那你認為'))
@@ -177,7 +177,7 @@ describe('server voice conversation', () => {
     const { cb } = await startLive()
     act(() => {
       cb.onPhase('listening')
-      cb.onTranscript('合成的語音發言')
+      cb.onTranscript('合成的語音發言', false)
     })
     await screen.findByText('合成的語音發言')
     act(() => cb.onReplyDelta('唸到一半'))
