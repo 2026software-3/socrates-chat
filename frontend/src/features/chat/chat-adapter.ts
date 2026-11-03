@@ -32,8 +32,6 @@ export type ChatAdapterOptions = {
  */
 export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter {
   const persisted = new Set<string>(options.persistedIds ?? [])
-  // 語音回合失敗的學生訊息：cascade 可能沒把這句送到後端，重試前要向伺服器核對
-  const unconfirmed = new Map<string, string>()
   // 回覆已完整；callback 的錯誤不能讓這則訊息變成失敗
   const notifyDone = (done: StreamDone) => {
     try {
@@ -57,28 +55,20 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
             yield { content: [{ type: 'text', text }] }
           }
         } catch {
-          // 學生訊息不一定存到了：重試時先問伺服器，有就只重開串流，沒有就再送一次
-          persisted.delete(last.id)
-          unconfirmed.set(last.id, lastText(last))
+          // 學生訊息已保存，重試只會重開串流
           yield { status: { type: 'incomplete', reason: 'error', error: 'ai_unavailable' } }
         }
         return
       }
-      let onlyStream = persisted.has(last.id)
+      const onlyStream = persisted.has(last.id)
       try {
-        const spoken = unconfirmed.get(last.id)
-        if (spoken !== undefined) {
-          unconfirmed.delete(last.id)
-          if (await serverHasStudentMessage(options.conversationId, spoken, abortSignal)) persisted.add(last.id)
-        }
-        onlyStream = persisted.has(last.id)
         let text = ''
         const events: AsyncGenerator<ReplyEvent | { type: 'sent'; sent: SentMessage }> = onlyStream
           ? streamReply(options.conversationId, abortSignal)
           : sendMessage(
               options.conversationId,
               {
-                content: lastText(last),
+                content: last.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('\n'),
                 source: options.takeSource?.() ?? 'text',
               },
               abortSignal,
@@ -112,16 +102,6 @@ export function createChatAdapter(options: ChatAdapterOptions): ChatModelAdapter
       }
     },
   }
-}
-
-const lastText = (m: { content: readonly { type: string; text?: string }[] }) =>
-  m.content.flatMap((p) => (p.type === 'text' && p.text !== undefined ? [p.text] : [])).join('\n')
-
-/** 伺服器上最後一則學生訊息是否含有這句話（cascade 會把連續的發言併成一則）。 */
-async function serverHasStudentMessage(conversationId: string, text: string, signal: AbortSignal): Promise<boolean> {
-  const d = await api.get<ConversationDetail>(`/api/conversations/${conversationId}`, signal)
-  const lastStudent = d.messages.findLast((m) => m.role === 'student')
-  return lastStudent !== undefined && lastStudent.content.includes(text.trim())
 }
 
 /** 已保存的最後一則 AI 回覆（最後一則不是 AI 訊息時為 undefined）。 */

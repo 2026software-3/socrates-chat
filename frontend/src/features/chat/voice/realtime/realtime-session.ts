@@ -15,18 +15,6 @@ const OUTPUT_RATE = 24_000
 const FRAME_MS = 100
 /** 瀏覽器讀不到 WebSocket 升級失敗的原因，也可能連上後端但 cascade 沒回應。 */
 const CONNECT_TIMEOUT_MS = 10_000
-/** 字幕出現後多久回覆還沒開（沒有 response.created），就視為這一輪沒送出去（cascade 放棄回覆時不會通知）。回覆一開就停表。 */
-const REPLY_TIMEOUT_MS = 10_000
-
-/** 診斷用：只記事件類型、回覆狀態與時間，不記逐字稿或回覆內容（S-05.4）。 */
-const TRACED_EVENTS = new Set([
-  'input_audio_buffer.speech_started',
-  'input_audio_buffer.speech_stopped',
-  'conversation.item.input_audio_transcription.completed',
-  'response.created',
-  'response.done',
-  'socrates.turn.failed',
-])
 
 export type RealtimePhase = 'connecting' | 'listening' | 'transcribing' | 'waiting' | 'speaking'
 
@@ -41,8 +29,7 @@ export type RealtimeCloseReason = 'unreachable' | 'lost' | 'replyFailed' | 'perm
 export type RealtimeCallbacks = {
   onPhase: (phase: RealtimePhase) => void
   onMicrophone: (diagnostics: MicrophoneDiagnostics) => void
-  /** `replying`：這句話到達時，上一則回覆還開著（還在串流或唸）；那則回覆要先收尾，這句話才接在後面。 */
-  onTranscript: (text: string, replying: boolean) => void
+  onTranscript: (text: string) => void
   onReplyDelta: (text: string) => void
   onReplyEnd: () => void
   /** 伺服器說這一輪失敗；在 `onReplyEnd` 之前呼叫，接著以 `replyFailed` 關閉。 */
@@ -68,8 +55,6 @@ type Reply = {
   interrupted: boolean
   serverDone: boolean
   textEnded: boolean
-  /** 已收到這則回覆的文字或聲音；沒有就不算一則回覆。 */
-  hasOutput: boolean
 }
 
 type ServerEvent = {
@@ -78,7 +63,7 @@ type ServerEvent = {
   delta?: string
   response_id?: string
   item_id?: string
-  response?: { id?: string; status?: string }
+  response?: { id?: string }
   sglang?: { fatal?: boolean }
   error?: { code?: string }
 }
@@ -112,7 +97,6 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
   let capture: FrameCapture | undefined
   let socket: WebSocket | undefined
   let watchdog: number | undefined
-  let replyWatchdog: number | undefined
   let closed = false
   let answered = false
   let seq = 0
@@ -132,7 +116,6 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
     closed = true
     ctrl.abort()
     window.clearTimeout(watchdog)
-    window.clearTimeout(replyWatchdog)
     capture?.stop()
     capture = undefined
     mic?.close()
@@ -147,15 +130,6 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
       socket = undefined
     }
     ctx.close().catch((e: unknown) => console.warn('[voice] audio context did not close:', e))
-  }
-
-  /** 沒有回覆開著時才計時；回覆一開（response.created）就停表，之後慢不慢由後端的首字逾時處理。 */
-  const armReplyWatchdog = () => {
-    window.clearTimeout(replyWatchdog)
-    replyWatchdog = window.setTimeout(() => {
-      cb.onReplyFailed()
-      fail('replyFailed')
-    }, REPLY_TIMEOUT_MS)
   }
 
   const endText = (r: Reply) => {
@@ -198,9 +172,6 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
   }
 
   const onEvent = (event: ServerEvent) => {
-    if (TRACED_EVENTS.has(event.type)) {
-      console.info('[voice] event', event.type, event.response?.status ?? '', Math.round(performance.now()))
-    }
     if (!answered) {
       answered = true
       window.clearTimeout(watchdog)
@@ -215,41 +186,25 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         break
       case 'conversation.item.input_audio_transcription.completed': {
         const text = event.transcript?.trim()
-        if (text) {
-          cb.onTranscript(text, reply !== undefined && !reply.interrupted && !reply.textEnded)
-          armReplyWatchdog()
-        }
+        if (text) cb.onTranscript(text)
         break
       }
       case 'response.created':
-        window.clearTimeout(replyWatchdog)
-        reply = { id: event.response?.id ?? '', interrupted: false, serverDone: false, textEnded: false, hasOutput: false }
+        reply = { id: event.response?.id ?? '', interrupted: false, serverDone: false, textEnded: false }
         phase('waiting')
         break
       case 'response.output_text.delta':
-        window.clearTimeout(replyWatchdog)
-        if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) {
-          reply.hasOutput = true
-          cb.onReplyDelta(event.delta)
-        }
+        if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) cb.onReplyDelta(event.delta)
         break
       case 'response.output_audio.delta':
-        window.clearTimeout(replyWatchdog)
         if (reply && !reply.interrupted && event.response_id === reply.id && event.delta) {
-          reply.hasOutput = true
           reply.item = event.item_id
           player.push(decodePcm16(event.delta))
           phase('speaking')
         }
         break
       case 'response.done':
-        if (reply && event.response?.id === reply.id && event.response.status === 'cancelled' && !reply.hasOutput) {
-          // 伺服器在開口前就取消（學生還在說話）：這一輪沒有回覆。回合留著不收尾，後面若沒有新的回覆，
-          // 逾時會把它標成失敗而出現重試；有新的發言則照常接手。
-          reply = undefined
-          phase('transcribing')
-          armReplyWatchdog()
-        } else if (reply && event.response?.id === reply.id) {
+        if (reply && event.response?.id === reply.id) {
           reply.serverDone = true
           endText(reply)
           settle()
