@@ -40,7 +40,7 @@ CREATE INDEX activities_created_idx ON activities (created_at DESC, id);
 CREATE TABLE activity_topics (
     activity_id uuid NOT NULL REFERENCES activities (id) ON DELETE CASCADE,
     topic_id    uuid NOT NULL REFERENCES topics (id),
-    position    integer NOT NULL CHECK (position >= 0),
+    position    integer NOT NULL CHECK (position >= 0 AND position < 5),
     created_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (activity_id, topic_id),
     CONSTRAINT activity_topics_position_unique UNIQUE (activity_id, position)

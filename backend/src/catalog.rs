@@ -385,6 +385,9 @@ pub(crate) async fn create_activity(
     if topic_ids.is_empty() {
         return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
     }
+    if topic_ids.len() > 5 {
+        return Err(ApiError::bad_request("invalid_topic", "題目數量最多 5 個"));
+    }
     let mut seen = std::collections::HashSet::new();
     for &id in &topic_ids {
         if !seen.insert(id) {
@@ -437,7 +440,7 @@ pub(crate) async fn update_activity(
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    // 活動必須有題目：不能清除，若有傳入必須包含至少一個存在且不重複的題目
+    // 活動必須有題目：不能清除，若有傳入必須包含至少一個存在且不重複的題目（最多 5 個）
     let new_topics = match (p.topic_ids, p.topic_id) {
         (Some(None), _) | (_, Some(None)) => {
             return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
@@ -445,6 +448,9 @@ pub(crate) async fn update_activity(
         (Some(Some(ids)), _) => {
             if ids.is_empty() {
                 return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+            }
+            if ids.len() > 5 {
+                return Err(ApiError::bad_request("invalid_topic", "題目數量最多 5 個"));
             }
             let mut seen = std::collections::HashSet::new();
             for &id in &ids {

@@ -141,6 +141,28 @@ async fn create_activity_validates_topic_ids(pool: PgPool) {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
+
+    // 超過 5 個題目回 400 invalid_topic（S-04.7 補充決定：最多 5 個題目）
+    let t3 = create_topic(&app, &a, "自由意志存在嗎").await;
+    let t4 = create_topic(&app, &a, "道德相對主義").await;
+    let t5 = create_topic(&app, &a, "心靈與身體").await;
+    let t6 = create_topic(&app, &a, "認識論難題").await;
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&a.teacher),
+            Some(json!({
+                "title": "超過五題活動",
+                "classroom_id": a.classroom,
+                "topic_ids": [&t1, &t2, &t3, &t4, &t5, &t6]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
 }
 
 #[sqlx::test]
@@ -191,7 +213,7 @@ async fn patch_activity_topics_before_conversations(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(json_body(res).await["topic_ids"], json!([&t3]));
 
-    // 驗證 PATCH 不合法情況：空清單、null、重複
+    // 驗證 PATCH 不合法情況：空清單、null、重複、超過 5 題
     let res = patch(json!({"topic_ids": []})).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
@@ -201,6 +223,13 @@ async fn patch_activity_topics_before_conversations(pool: PgPool) {
     assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
 
     let res = patch(json!({"topic_ids": [&t3, &t3]})).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
+
+    let t4 = create_topic(&app, &a, "道德相對主義").await;
+    let t5 = create_topic(&app, &a, "心靈與身體").await;
+    let t6 = create_topic(&app, &a, "認識論難題").await;
+    let res = patch(json!({"topic_ids": [&t1, &t2, &t3, &t4, &t5, &t6]})).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(res).await["error"]["code"], "invalid_topic");
 }
