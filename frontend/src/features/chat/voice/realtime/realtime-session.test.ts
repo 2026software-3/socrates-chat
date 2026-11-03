@@ -300,6 +300,22 @@ describe('realtime session', () => {
     session.close()
   })
 
+  it('times the reply from the latest transcript and fails only once', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
+    transcript('第一句')
+    vi.advanceTimersByTime(6_000)
+    transcript('第二句')
+    vi.advanceTimersByTime(6_000)
+    expect(cb.onReplyFailed).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(4_000)
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(60_000)
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    expect(cb.onClosed).toHaveBeenCalledTimes(1)
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
