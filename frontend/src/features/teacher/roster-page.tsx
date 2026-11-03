@@ -189,6 +189,13 @@ function statusOf(s: StudentRow): 'disabled' | 'pending' | 'active' {
   return s.disabled ? 'disabled' : s.has_account ? 'active' : 'pending'
 }
 
+/** 重設密碼的對象：有信箱用信箱；沒有信箱的學生以學號（#413，對話框顯示姓名與教室供核對）；還沒有帳號則不能重設。 */
+function resetTargetOf(s: StudentRow, classroomName: string): ResetTarget | undefined {
+  if (s.email) return { kind: 'email', email: s.email }
+  if (s.has_account) return { kind: 'student', studentId: s.student_id, name: s.display_name, classroom: classroomName }
+  return undefined
+}
+
 function StatusBadge({ status }: { status: 'disabled' | 'pending' | 'active' }) {
   const t = useT()
   return (
@@ -301,30 +308,30 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
     await run(() => api.put(`/api/admin/users/${encodeURIComponent(id)}/status`, { disabled: false }), 'teacher.roster.enabledToast')
   }
 
+  /** 管理者的重設密碼按鈕；對象由 `resetTargetOf` 決定，沒有可重設的對象就不顯示。 */
+  const resetButton = (s: StudentRow) => {
+    const target = isAdmin ? resetTargetOf(s, classroom.name) : undefined
+    if (!target) return null
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        aria-label={
+          target.kind === 'email'
+            ? t('admin.reset.resetPassword', { email: target.email })
+            : t('admin.reset.resetStudent', { studentId: target.studentId })
+        }
+        onClick={() => setToReset(target)}
+      >
+        {t('admin.reset.resetConfirm')}
+      </Button>
+    )
+  }
+
   /** 每位學生可做的操作：管理者另有重設密碼、停用與復原。 */
   const rowActions = (s: StudentRow) => (
     <>
-      {/* 有信箱用信箱重設；沒有信箱的學生以學號重設（#413），對話框顯示姓名與教室供核對 */}
-      {isAdmin && (s.email || s.has_account) ? (
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={
-            s.email
-              ? t('admin.reset.resetPassword', { email: s.email })
-              : t('admin.reset.resetStudent', { studentId: s.student_id })
-          }
-          onClick={() =>
-            setToReset(
-              s.email
-                ? { kind: 'email', email: s.email }
-                : { kind: 'student', studentId: s.student_id, name: s.display_name, classroom: classroom.name },
-            )
-          }
-        >
-          {t('admin.reset.resetConfirm')}
-        </Button>
-      ) : null}
+      {resetButton(s)}
       {isAdmin && s.id ? (
         s.disabled ? (
           <Button

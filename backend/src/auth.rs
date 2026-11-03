@@ -853,7 +853,7 @@ impl ResetBody {
                 .map(ResetTarget::Email)
                 .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確")),
             (None, Some(student_id)) => {
-                let student_id = student_id.trim().to_ascii_uppercase();
+                let student_id = auth_store::normalize_login_input(&student_id);
                 if crate::roster::is_valid_student_id(&student_id) {
                     Ok(ResetTarget::StudentId(student_id))
                 } else {

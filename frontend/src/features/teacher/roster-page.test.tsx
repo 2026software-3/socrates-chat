@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { classroom, mockClassrooms, renderTeacherPage, ROOM_A, ROOM_B } from '@/features/teacher/test-helpers'
+import { classroom, mockClassrooms, renderTeacherPage, ROOM_A, ROOM_B, student } from '@/features/teacher/test-helpers'
+import type { StudentRow } from '@/lib/types'
 import { apiError, makeMe, mockMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -367,19 +368,15 @@ describe('RosterPage', () => {
   })
 
   /** 匯入後沒有電子郵件的學生（#413）。 */
-  const noEmailStudent = (over: Partial<{ has_account: boolean; display_name: string | null }> = {}) =>
+  const noEmailStudent = (over: Partial<StudentRow> = {}) =>
     pageOf(
       [
-        {
-          email: null,
+        student(null, {
           student_id: '11234567A',
           display_name: '王小明',
           id: '22222222-2222-4222-8222-222222222222',
-          has_account: true,
-          disabled: false,
-          completed_conversations: 0,
           ...over,
-        },
+        }),
       ],
       null,
       { total: 1 },

@@ -9,7 +9,7 @@ use axum::{
     http::{Response, StatusCode},
 };
 use common::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::PgPool;
 
 async fn login_account(app: &Router, account: &str, pw: &str) -> Response<Body> {
@@ -127,6 +127,7 @@ async fn unknown_student_id_is_not_found_and_nothing_is_created(pool: PgPool) {
     let a = seed_actors(&app).await;
     let res = reset_by_student_id(&app, Some(&a.admin), "99999999Z").await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(!json_body(res).await.to_string().contains("99999999Z"));
     let (count,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM users WHERE student_id = '99999999Z'")
             .fetch_one(&pool)
@@ -226,15 +227,6 @@ async fn student_id_reset_audits_the_internal_id_and_never_the_student_id(pool: 
     .await
     .unwrap();
     assert_eq!(leaked, 0);
-}
-
-#[sqlx::test]
-async fn error_responses_do_not_echo_the_student_id(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    let res = reset_by_student_id(&app, Some(&a.admin), "99999999Z").await;
-    let body: Value = json_body(res).await;
-    assert!(!body.to_string().contains("99999999Z"));
 }
 
 #[sqlx::test]
