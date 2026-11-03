@@ -14,12 +14,6 @@ use sqlx::PgPool;
 
 const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\"}";
 
-async fn post(app: &Router, cookie: &str, path: &str) -> StatusCode {
-    send(app, json_req("POST", path, Some(cookie), None))
-        .await
-        .status()
-}
-
 async fn balance(app: &Router, cookie: &str) -> i64 {
     let res = send(app, get("/api/points", Some(cookie))).await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -43,10 +37,13 @@ async fn ledger(pool: &PgPool, email: &str) -> Vec<(i32, String, String, String)
 async fn finish_conversation(app: &Router, pool: &PgPool, a: &Actors) -> String {
     let conv = start_conversation(app, a).await;
     seed_student_message(pool, &conv, "我會拉桿，因為五個人比一個人多。").await;
-    assert_eq!(
-        post(app, &a.student, &format!("/api/conversations/{conv}/end")).await,
-        StatusCode::ACCEPTED
+    let end = json_req(
+        "POST",
+        &format!("/api/conversations/{conv}/end"),
+        Some(&a.student),
+        None,
     );
+    assert_eq!(send(app, end).await.status(), StatusCode::ACCEPTED);
     conv
 }
 
@@ -91,8 +88,10 @@ async fn a_failed_summary_awards_nothing_until_a_retry_succeeds(pool: PgPool) {
     // 未產生總結的對話不發點（S-07.2 2.2）
     assert_eq!(balance(&app, &a.student).await, 0);
 
-    let retry = format!("/api/conversations/{conv}/summary/retry");
-    assert_eq!(post(&app, &a.student, &retry).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        retry_summary(&app, &a.student, &conv).await,
+        StatusCode::ACCEPTED
+    );
     assert_eq!(
         settled_summary(&app, &a.student, &conv).await["status"],
         "ready"
@@ -112,15 +111,15 @@ async fn a_superseded_generation_awards_nothing(pool: PgPool) {
     let app = test_app_with_config(pool.clone(), ai.clone(), config);
     let a = seed_actors(&app).await;
     let conv = finish_conversation(&app, &pool, &a).await;
-    while ai.request_count() < 1 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&ai, 1).await;
     sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
         .execute(&pool)
         .await
         .unwrap();
-    let retry = format!("/api/conversations/{conv}/summary/retry");
-    assert_eq!(post(&app, &a.student, &retry).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        retry_summary(&app, &a.student, &conv).await,
+        StatusCode::ACCEPTED
+    );
 
     // 等第一代的結果回來並被丟棄
     tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -171,8 +170,10 @@ async fn a_failed_award_rolls_back_the_summary_and_a_retry_awards_once(pool: PgP
         .execute(&pool)
         .await
         .unwrap();
-    let retry = format!("/api/conversations/{conv}/summary/retry");
-    assert_eq!(post(&app, &a.student, &retry).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        retry_summary(&app, &a.student, &conv).await,
+        StatusCode::ACCEPTED
+    );
     assert_eq!(
         settled_summary(&app, &a.student, &conv).await["status"],
         "ready"
@@ -200,9 +201,7 @@ async fn a_pending_summary_awards_nothing_yet(pool: PgPool) {
     let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
     finish_conversation(&app, &pool, &a).await;
-    while ai.request_count() < 1 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&ai, 1).await;
     assert_eq!(balance(&app, &a.student).await, 0);
     assert!(ledger(&pool, "student@example.com").await.is_empty());
 }

@@ -115,7 +115,6 @@ const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
 /// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
 ///
 /// 目前只有發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）。
-/// 之後的成就發點與任務進度（S-07.3、S-07.4）也加在這裡，讓所有完成事件的副作用只有一個進入點。
 async fn on_conversation_completed(
     conn: &mut PgConnection,
     id: Uuid,
