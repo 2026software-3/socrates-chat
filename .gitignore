@@ -30,3 +30,7 @@ cascade-refs/
 # Python 直譯器產生的快取（docker/cascade 的補丁測試會產生）
 __pycache__/
 *.pyc
+
+# 本機 AI agent 設定與自行安裝的 skills（各人自理，不進版控）
+.claude/
+skills-lock.json
