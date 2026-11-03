@@ -18,6 +18,16 @@ const CONNECT_TIMEOUT_MS = 10_000
 /** 字幕出現後多久沒有任何回覆，就視為這一輪沒送出去（cascade 放棄回覆時不會通知）。 */
 const REPLY_TIMEOUT_MS = 10_000
 
+/** 診斷用：只記事件類型、回覆狀態與時間，不記逐字稿或回覆內容（S-05.4）。 */
+const TRACED_EVENTS = new Set([
+  'input_audio_buffer.speech_started',
+  'input_audio_buffer.speech_stopped',
+  'conversation.item.input_audio_transcription.completed',
+  'response.created',
+  'response.done',
+  'socrates.turn.failed',
+])
+
 export type RealtimePhase = 'connecting' | 'listening' | 'transcribing' | 'waiting' | 'speaking'
 
 /**
@@ -65,7 +75,7 @@ type ServerEvent = {
   delta?: string
   response_id?: string
   item_id?: string
-  response?: { id?: string }
+  response?: { id?: string; status?: string }
   sglang?: { fatal?: boolean }
   error?: { code?: string }
 }
@@ -176,6 +186,9 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
   }
 
   const onEvent = (event: ServerEvent) => {
+    if (TRACED_EVENTS.has(event.type)) {
+      console.info('[voice] event', event.type, event.response?.status ?? '', Math.round(performance.now()))
+    }
     if (!answered) {
       answered = true
       window.clearTimeout(watchdog)
