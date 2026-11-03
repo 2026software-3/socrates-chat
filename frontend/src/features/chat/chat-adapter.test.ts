@@ -131,6 +131,26 @@ describe('retrying a failed voice turn', () => {
     expect(streams).toBe(0)
     expect(retried.at(-1)).toEqual({ content: [{ type: 'text', text: '補上的回覆' }] })
   })
+
+  it('only re-opens the stream when the server already saved the utterance, even merged into a longer message', async () => {
+    const posts: unknown[] = []
+    mockSend(posts)
+    server.use(
+      http.get('/api/conversations/c1', () =>
+        HttpResponse.json(
+          makeDetail({}, [makeMessage({ id: 'm1', role: 'student', content: '合成的前半句 合成的後半句' })]),
+        ),
+      ),
+      http.get('/api/conversations/c1/stream', () => sse(delta('接上的回覆'), doneFrame)),
+    )
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    turns.begin().fail()
+    await drain(adapter.run(runOptions([userMsg('u1', '合成的後半句')])))
+    const retried = await drain(adapter.run(runOptions([userMsg('u1', '合成的後半句')])))
+    expect(posts).toEqual([])
+    expect(retried.at(-1)).toEqual({ content: [{ type: 'text', text: '接上的回覆' }] })
+  })
 })
 
 describe('createChatAdapter', () => {
