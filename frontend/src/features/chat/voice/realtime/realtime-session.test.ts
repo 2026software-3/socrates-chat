@@ -343,6 +343,31 @@ describe('realtime session', () => {
     expect(cb.onClosed).toHaveBeenCalledTimes(1)
   })
 
+  it('traces speech and reply events by type for diagnosis, never the transcript', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const session = await connected()
+    const ws = FakeSocket.last
+    ws.event({ type: 'input_audio_buffer.speech_started' })
+    ws.event({ type: 'input_audio_buffer.speech_stopped' })
+    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'SECRETTRANSCRIPT' })
+    ws.event(created('resp_1'))
+    ws.event(done('resp_1', 'cancelled'))
+    const traced = info.mock.calls.map((c) => c.join(' ')).join('\n')
+    for (const type of [
+      'input_audio_buffer.speech_started',
+      'input_audio_buffer.speech_stopped',
+      'conversation.item.input_audio_transcription.completed',
+      'response.created',
+      'response.done',
+    ]) {
+      expect(traced).toContain(type)
+    }
+    expect(traced).toContain('cancelled')
+    expect(traced).not.toContain('SECRETTRANSCRIPT')
+    info.mockRestore()
+    session.close()
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
