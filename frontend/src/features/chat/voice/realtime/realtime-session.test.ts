@@ -287,6 +287,19 @@ describe('realtime session', () => {
     expect(micClose).toHaveBeenCalled()
   })
 
+  it('keeps the turn open when the server cancels the reply before any text, so the timeout can still fail it', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    ws.event(created('resp_1'))
+    ws.event(done('resp_1', 'cancelled'))
+    // 空的取消不是一則回覆：不能把這一輪收成「正常結束」，否則逾時時沒有可標記失敗的回合、也就沒有重試按鈕
+    expect(cb.onReplyEnd).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(10_000)
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
+  })
+
   it('does not fail the turn when the reply starts within 10 seconds', async () => {
     const session = await connected()
     const ws = FakeSocket.last
