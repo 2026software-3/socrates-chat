@@ -15,8 +15,8 @@ const OUTPUT_RATE = 24_000
 const FRAME_MS = 100
 /** 瀏覽器讀不到 WebSocket 升級失敗的原因，也可能連上後端但 cascade 沒回應。 */
 const CONNECT_TIMEOUT_MS = 10_000
-/** 字幕出現後多久沒有任何回覆，就視為這一輪沒送出去（cascade 放棄回覆時不會通知）。實測 AI 首字延遲 4–17 秒，要比它長；後端語音首字逾時是 45 秒。 */
-const REPLY_TIMEOUT_MS = 25_000
+/** 字幕出現後多久回覆還沒開（沒有 response.created），就視為這一輪沒送出去（cascade 放棄回覆時不會通知）。回覆一開就停表。 */
+const REPLY_TIMEOUT_MS = 10_000
 
 /** 診斷用：只記事件類型、回覆狀態與時間，不記逐字稿或回覆內容（S-05.4）。 */
 const TRACED_EVENTS = new Set([
