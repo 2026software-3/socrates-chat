@@ -236,3 +236,56 @@ async fn error_responses_do_not_echo_the_student_id(pool: PgPool) {
     let body: Value = json_body(res).await;
     assert!(!body.to_string().contains("99999999Z"));
 }
+
+#[sqlx::test]
+async fn a_student_with_an_email_reset_by_student_id_returns_and_audits_the_email(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    // seed 的學生有學號 10000000A 與信箱 student@example.com
+    let res = reset_by_student_id(&app, Some(&a.admin), "10000000a").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["email"], "student@example.com");
+    let temp = body["temporary_password"].as_str().unwrap().to_string();
+
+    let targets: Vec<(String,)> =
+        sqlx::query_as("SELECT target_email FROM audit_logs WHERE action = 'password_reset'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(targets, vec![("student@example.com".to_string(),)]);
+
+    // 同一組臨時密碼學號與信箱都能登入
+    for account in ["10000000A", "student@example.com"] {
+        assert_eq!(
+            login_account(&app, account, &temp).await.status(),
+            StatusCode::OK,
+            "{account}"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn a_rejected_non_admin_attempt_leaves_the_password_unchanged(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let temp = import_student_without_email(&app, &a, "11234567A").await;
+    for cookie in [None, Some(&a.student), Some(&a.outsider), Some(&a.teacher)] {
+        let res = reset_by_student_id(&app, cookie.map(String::as_str), "11234567A").await;
+        assert!(matches!(
+            res.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+    }
+    // 原本的臨時密碼仍然有效，也沒有留下任何重設的稽核紀錄
+    assert_eq!(
+        login_account(&app, "11234567A", &temp).await.status(),
+        StatusCode::OK
+    );
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM audit_logs WHERE action = 'password_reset'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+}
