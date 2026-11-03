@@ -1,0 +1,1010 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>蘇格拉底廣場</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@700;900&display=swap">
+<style>
+/* Layout: one full-bleed illustrated 3D forum; a die-cut sticker panel per camera station (left on desktop, bottom sheet on phones); station stickers along the bottom. */
+:root {
+  --sky-top: #CFE0F2;
+  --sky-low: #F2F4F7;
+  --fg: #0E1A2B;
+  --fg-soft: #2B3A55;
+  --ink: #0E1A2B;
+  --ink-soft: #2B3A55;
+  --muted: #55627A;
+  --sticker: #FFFFFF;
+  --card: #FFFFFF;
+  --blue: #1D4ED8;
+  --blue-press: #17389E;
+  --lamp: #F5B700;
+  --lamp-pale: #FFF1C2;
+  --line: #C9D1DE;
+  --field: #7C8AA3;
+  --soft: #E6EAF1;
+  --danger: #8A1C12;
+  --danger-bg: #FDECEA;
+  --info: #12307F;
+  --info-bg: #EAF0FE;
+  --note: #5A3A00;
+  --note-bg: #FFF6DC;
+  --shadow-hard: rgba(14, 26, 43, .16);
+  --shadow-soft: rgba(14, 26, 43, .22);
+  --grain-opacity: .07;
+  --font-display: 'Noto Serif TC', 'Songti TC', serif;
+  --font-body: 'Noto Sans TC', 'PingFang TC', system-ui, sans-serif;
+  --font-latin: 'Cinzel', 'Trajan Pro', 'Times New Roman', serif;
+  --panel-w: min(400px, calc(100vw - 32px));
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sky-top: #0B1424;
+    --sky-low: #22324D;
+    --fg: #F2F4F7;
+    --fg-soft: #C9D1DE;
+    --shadow-hard: rgba(0, 0, 0, .35);
+    --shadow-soft: rgba(0, 0, 0, .45);
+    --grain-opacity: .05;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --sky-top: #0B1424;
+  --sky-low: #22324D;
+  --fg: #F2F4F7;
+  --fg-soft: #C9D1DE;
+  --shadow-hard: rgba(0, 0, 0, .35);
+  --shadow-soft: rgba(0, 0, 0, .45);
+  --grain-opacity: .05;
+  color-scheme: dark;
+}
+
+[hidden] { display: none !important; }
+html, body { height: 100%; overflow-x: clip; }
+body {
+  margin: 0;
+  background: linear-gradient(180deg, var(--sky-top) 0%, var(--sky-low) 78%);
+  background-color: var(--sky-low);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  overflow: hidden;
+}
+button, input { font-family: inherit; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+
+/* paper grain over everything, so the WebGL flats read as printed */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: pan-y; }
+.no-webgl #scene { display: none; }
+
+.app { position: relative; z-index: 2; height: 100%; display: grid; grid-template-rows: auto 1fr auto; pointer-events: none; }
+.app > * { pointer-events: none; }
+
+.top {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding-block: 14px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.brand { display: flex; align-items: center; gap: 10px; color: var(--fg); }
+.brand svg { flex: none; }
+.brand b { font-family: var(--font-display); font-weight: 900; font-size: 19px; letter-spacing: .02em; }
+.brand span { font-family: var(--font-latin); font-weight: 700; font-size: 12px; letter-spacing: .18em; color: var(--fg-soft); }
+.top .skip { pointer-events: auto; }
+
+.chip-btn {
+  pointer-events: auto;
+  min-height: 44px; padding: 0 16px; border-radius: 999px;
+  border: 2px solid var(--ink); background: var(--card); color: var(--ink);
+  font-size: 14px; font-weight: 500; cursor: pointer;
+  box-shadow: 0 0 0 4px var(--sticker), 3px 5px 0 4px var(--shadow-hard);
+}
+.chip-btn:hover { background: var(--soft); }
+.chip-btn:active { transform: translateY(1px); }
+
+/* ---------- station panels (die-cut stickers) ---------- */
+.stage {
+  position: relative; min-height: 0;
+  padding-left: max(28px, calc(env(safe-area-inset-left, 0px) + 16px));
+  padding-right: max(28px, calc(env(safe-area-inset-right, 0px) + 16px));
+  padding-block: 8px;
+  display: flex; align-items: center;
+}
+.sticker {
+  background: var(--card); color: var(--ink);
+  border: 2px solid var(--ink);
+  border-radius: 22px;
+  box-shadow: 0 0 0 8px var(--sticker), 7px 11px 0 8px var(--shadow-hard), 0 24px 40px -10px var(--shadow-soft);
+}
+.panel {
+  pointer-events: auto;
+  width: var(--panel-w);
+  max-height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 24px 24px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+  transform: rotate(-.6deg);
+  will-change: transform, opacity;
+}
+.js .panel:not(.is-active) { display: none; }
+.panel h1, .panel h2 { margin: 0; font-family: var(--font-display); font-weight: 900; line-height: 1.25; text-wrap: balance; }
+.panel h1 { font-size: clamp(28px, 3.4vw, 36px); }
+.panel h2 { font-size: 26px; }
+.panel h1:focus, .panel h2:focus { outline: none; }
+.panel p { margin: 0; color: var(--ink-soft); }
+.latin { font-family: var(--font-latin); font-weight: 700; font-size: 13px; letter-spacing: .16em; color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn {
+  min-height: 48px; padding: 0 20px; border-radius: 12px; border: 0;
+  background: var(--blue); color: #FFFFFF; font-size: 15px; font-weight: 700; cursor: pointer;
+}
+.btn:hover { background: var(--blue-press); }
+.btn:active { transform: translateY(1px); }
+.btn[disabled] { opacity: .55; cursor: progress; }
+.btn.ghost { background: var(--card); color: var(--ink); border: 2px solid var(--ink); font-weight: 500; }
+.btn.ghost:hover { background: var(--soft); }
+.btn.wide { width: 100%; }
+.fine { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.pending { font-size: 13px; line-height: 1.6; color: var(--note); background: var(--note-bg); border: 1.5px dashed var(--note); border-radius: 10px; padding: 8px 12px; }
+
+/* rostra dialogue */
+.talk { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.talk li { max-width: 86%; padding: 8px 12px; border-radius: 14px; font-size: 15px; line-height: 1.5; }
+.talk .s { align-self: flex-start; border: 1.5px solid var(--field); border-bottom-left-radius: 4px; }
+.talk .a { align-self: flex-end; background: var(--lamp); font-weight: 500; border-bottom-right-radius: 4px; }
+.meter { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.meter-track { flex: 1; height: 8px; border-radius: 999px; background: var(--soft); overflow: hidden; }
+.meter-fill { height: 100%; width: 100%; background: var(--lamp); transform-origin: left center; transform: scaleX(1); }
+
+/* curia */
+.sees { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sees li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 8px; align-items: start; font-size: 15px; line-height: 1.5; }
+.sees svg { margin-top: 2px; }
+.sees .no { color: var(--muted); }
+
+/* temple door: arch-topped sticker with a gold-leaf rim */
+.door-card { border-radius: 200px 200px 22px 22px; padding-top: 86px; position: relative; }
+.foil {
+  position: absolute; left: 50%; top: 16px; width: 54px; height: 54px; margin-left: -27px; border-radius: 50%;
+  border: 2px solid var(--ink);
+  background: linear-gradient(115deg, var(--lamp) 0%, var(--lamp-pale) 38%, var(--lamp) 56%, var(--lamp) 100%);
+  background-size: 240% 100%; background-position: 100% 0;
+  transition: background-position .9s ease;
+}
+.door-card:hover .foil { background-position: 0 0; }
+.door-card h2 { text-align: center; }
+.door-card .lede { text-align: center; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label { font-size: 14px; font-weight: 500; color: var(--ink); }
+.field input {
+  height: 48px; box-sizing: border-box; padding: 0 14px; border-radius: 10px;
+  border: 1.5px solid var(--field); background: var(--card); color: var(--ink); font-size: 16px;
+}
+.field input::placeholder { color: #66738A; }
+.field input[aria-invalid="true"] { border: 2px solid var(--danger); }
+.field .err { font-size: 13px; color: var(--danger); }
+.alert { display: flex; gap: 10px; align-items: flex-start; border-radius: 10px; padding: 9px 12px; font-size: 14px; line-height: 1.5; }
+.alert.bad { background: var(--danger-bg); border: 1.5px solid var(--danger); color: var(--danger); }
+.alert.info { background: var(--info-bg); border: 1.5px solid var(--blue); color: var(--info); }
+.or { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1.5px solid var(--line); }
+.g-mark { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--ink); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.btn.ghost.g { display: inline-flex; align-items: center; justify-content: center; gap: 10px; }
+.demo { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.demo button { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1.5px dashed var(--field); background: var(--card); color: var(--ink-soft); font-size: 13px; cursor: pointer; }
+.demo button:hover { border-style: solid; border-color: var(--ink); color: var(--ink); }
+.accounts { list-style: none; margin: 0; padding: 0; border: 1.5px solid var(--line); border-radius: 12px; overflow: hidden; }
+.accounts button { width: 100%; min-height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border: 0; border-bottom: 1px solid var(--soft); background: var(--card); color: var(--ink); font-size: 15px; text-align: left; cursor: pointer; }
+.accounts li:last-child button { border-bottom: 0; }
+.accounts button:hover { background: var(--soft); }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--soft); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+.spin { display: inline-block; width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .45); border-top-color: #FFFFFF; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- station stickers (bottom nav) ---------- */
+.dock {
+  pointer-events: auto;
+  display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;
+  padding-block: 12px calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.dock ol { list-style: none; margin: 0; padding: 0; display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+.station {
+  min-height: 48px; padding: 0 14px 0 6px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 2px solid var(--ink); background: var(--card); color: var(--ink);
+  font-size: 14px; font-weight: 500; cursor: pointer;
+  box-shadow: 0 0 0 5px var(--sticker), 3px 6px 0 5px var(--shadow-hard);
+}
+.station .num { width: 34px; height: 34px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-latin); font-weight: 700; font-size: 13px; background: var(--soft); }
+.station[aria-current="step"] { background: var(--ink); color: #FFFFFF; }
+.station[aria-current="step"] .num { background: var(--lamp); color: var(--ink); }
+.station:hover:not([aria-current="step"]) { background: var(--soft); }
+
+/* 3D pins */
+.pins { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
+.pin {
+  position: absolute; left: 0; top: 0; pointer-events: auto;
+  min-height: 40px; padding: 0 12px; border-radius: 999px;
+  border: 2px solid var(--ink); background: var(--card); color: var(--ink);
+  font-family: var(--font-latin); font-weight: 700; font-size: 12px; letter-spacing: .14em; cursor: pointer;
+  box-shadow: 0 0 0 4px var(--sticker), 2px 4px 0 4px var(--shadow-hard);
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+}
+.pin small { font-family: var(--font-body); font-weight: 500; letter-spacing: 0; font-size: 13px; margin-left: 6px; }
+.pin:hover { background: var(--lamp); }
+
+/* door flight + classroom */
+.iris { position: fixed; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; background: var(--ink); z-index: 20; pointer-events: none; transform: scale(0); }
+.iris::after { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--lamp); }
+.home {
+  position: fixed; inset: 0; z-index: 30; overflow: auto;
+  background: var(--sky-low); color: var(--fg);
+  padding-block: calc(24px + env(safe-area-inset-top, 0px)) calc(24px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.home-inner { max-width: 880px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.home-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.role { font-size: 13px; font-weight: 700; background: var(--lamp); color: var(--ink); border-radius: 999px; padding: 3px 12px; }
+.home h1 { margin: 0; font-family: var(--font-display); font-weight: 900; font-size: 34px; }
+.home .sticker { padding: 20px 22px; display: flex; flex-direction: column; gap: 10px; }
+.home .sticker h2 { margin: 0; font-size: 20px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--soft); padding-top: 10px; }
+.tag { align-self: center; font-size: 13px; background: var(--soft); border-radius: 999px; padding: 2px 10px; }
+
+.noscript { padding: 16px; }
+
+@media (max-width: 759px) {
+  :root { --panel-w: 100%; }
+  .stage { align-items: flex-end; padding-left: max(24px, calc(env(safe-area-inset-left, 0px) + 16px)); padding-right: max(24px, calc(env(safe-area-inset-right, 0px) + 16px)); }
+  .panel { max-height: 56vh; transform: none; padding: 18px 18px 16px; gap: 10px; }
+  .panel h1 { font-size: 26px; }
+  .panel h2 { font-size: 22px; }
+  .door-card { border-radius: 160px 160px 22px 22px; padding-top: 80px; }
+  .station { padding: 0 6px; }
+  .station .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .brand span { display: none; }
+  .pin small { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  .foil { transition: none; }
+}
+</style>
+
+<script>document.documentElement.classList.add('js');</script>
+<canvas id="scene" aria-hidden="true"></canvas>
+<div class="pins" id="pins" aria-hidden="false"></div>
+
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16" fill="#FFFFFF" stroke="#0E1A2B" stroke-width="2"></circle><path d="M13.5 14a4.5 4.5 0 1 1 6.3 4.1c-1.1.5-1.8 1.4-1.8 2.6V22" fill="none" stroke="#0E1A2B" stroke-width="2.4" stroke-linecap="round"></path><circle cx="18" cy="26.5" r="1.6" fill="#0E1A2B"></circle><circle cx="18" cy="3" r="3" fill="#F5B700" stroke="#0E1A2B" stroke-width="1.5"></circle></svg>
+      <b>蘇格拉底・教室</b><span>FORVM</span>
+    </div>
+    <button type="button" class="chip-btn skip" id="skip" hidden>略過進場</button>
+  </header>
+
+  <main class="stage" id="stage">
+    <!-- I · 廣場 -->
+    <section class="panel sticker is-active" id="st-1" aria-labelledby="h1">
+      <span class="latin">I · FORVM</span>
+      <h1 id="h1" tabindex="-1">走進廣場，把想法說清楚</h1>
+      <p>在老師指定的哲學題目上，與 AI 多輪對話。它不給答案，只追問你的理由，直到想法站得住腳。</p>
+      <div class="actions">
+        <button type="button" class="btn" data-go="4">走向神殿之門登入</button>
+        <button type="button" class="btn ghost" data-go="2">先看一段對話</button>
+      </div>
+      <p class="pending">待確認：Three.js 與 GSAP 屬新增前端依賴，需先經規格討論。本頁為 prototype，帳號皆為示意。</p>
+    </section>
+
+    <!-- II · 講壇 -->
+    <section class="panel sticker" id="st-2" aria-labelledby="h2r">
+      <span class="latin">II · ROSTRA</span>
+      <h2 id="h2r" tabindex="-1">講壇上，AI 只負責追問</h2>
+      <ol class="talk" id="talk" aria-label="示意對話">
+        <li class="s">民主一定比較公平。</li>
+        <li class="a">「公平」指的是誰的標準？</li>
+        <li class="s">多數人同意就是標準。</li>
+        <li class="a">少數人被忽略時呢？</li>
+        <li class="s">那要加上保障少數。</li>
+        <li class="a">你剛才改變了什麼主張？</li>
+      </ol>
+      <div class="meter"><span>想法打磨</span><div class="meter-track"><div class="meter-fill" id="meter"></div></div></div>
+      <div class="actions"><button type="button" class="btn ghost" id="replay">重播這段對話</button></div>
+    </section>
+
+    <!-- III · 議事堂 -->
+    <section class="panel sticker" id="st-3" aria-labelledby="h3c">
+      <span class="latin">III · CVRIA</span>
+      <h2 id="h3c" tabindex="-1">議事堂：教師看得到什麼</h2>
+      <ul class="sees">
+        <li><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="#F5B700" stroke="#0E1A2B" stroke-width="1.5"></circle><path d="M6 10.5l2.6 2.6L14 7.6" fill="none" stroke="#0E1A2B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg><span>學生的學習總結與主張分布</span></li>
+        <li><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="#F5B700" stroke="#0E1A2B" stroke-width="1.5"></circle><path d="M6 10.5l2.6 2.6L14 7.6" fill="none" stroke="#0E1A2B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg><span>已結束活動的對話原文，只能閱讀</span></li>
+        <li class="no"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="#FFFFFF" stroke="#55627A" stroke-width="1.5"></circle><path d="M7 7l6 6M13 7l-6 6" stroke="#55627A" stroke-width="2" stroke-linecap="round"></path></svg><span>進行中的對話</span></li>
+        <li class="no"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="#FFFFFF" stroke="#55627A" stroke-width="1.5"></circle><path d="M7 7l6 6M13 7l-6 6" stroke="#55627A" stroke-width="2" stroke-linecap="round"></path></svg><span>學生自己從題目庫開始的個人練習</span></li>
+      </ul>
+      <p class="fine">教師只看得到自己建立的教室。管理者介面中的每則訊息一律顯示為 message。</p>
+    </section>
+
+    <!-- IV · 神殿之門 -->
+    <section class="panel sticker door-card" id="st-4" aria-labelledby="h4d">
+      <div class="foil" aria-hidden="true"></div>
+      <div id="v-login" class="view" style="display:flex;flex-direction:column;gap:12px">
+        <span class="latin" style="text-align:center">IV · AEDES</span>
+        <h2 id="h4d" tabindex="-1">神殿之門</h2>
+        <p class="lede">登入後，門會帶你到自己的教室。</p>
+        <div class="alert bad" id="a-bad" role="alert" hidden><span>電子郵件或密碼不正確，請再試一次。</span></div>
+        <div class="alert info" id="a-timeout" role="status" hidden><span>為保護你的帳號，已自動登出，請重新登入。</span></div>
+        <form id="login" novalidate style="display:flex;flex-direction:column;gap:12px">
+          <div class="field">
+            <label for="email">電子郵件</label>
+            <input id="email" name="email" type="email" autocomplete="username" placeholder="name@school.edu" aria-describedby="email-err">
+            <span class="err" id="email-err" hidden></span>
+          </div>
+          <div class="field">
+            <label for="pw">密碼</label>
+            <input id="pw" name="pw" type="password" autocomplete="current-password" placeholder="••••••••" aria-describedby="pw-err">
+            <span class="err" id="pw-err" hidden></span>
+          </div>
+          <button type="submit" class="btn wide" id="submit">登入</button>
+        </form>
+        <div class="or">或</div>
+        <button type="button" class="btn ghost wide g" id="google"><span class="g-mark" aria-hidden="true">G</span>使用 Google 帳號登入</button>
+        <p class="fine" style="text-align:center">本系統不開放自行註冊，帳號由教師或管理者匯入名單後開通。忘記密碼請聯絡管理者重設。</p>
+        <div class="demo" id="demo"><span>示意帳號：</span></div>
+      </div>
+      <div id="v-google" class="view" hidden style="flex-direction:column;gap:12px">
+        <p class="fine" style="text-align:center">示意畫面，實際由 Google 提供</p>
+        <h2 id="h4g" tabindex="-1">選擇帳號</h2>
+        <ul class="accounts" id="accounts"></ul>
+        <button type="button" class="btn ghost" id="g-cancel">取消</button>
+      </div>
+      <div id="v-blocked" class="view" hidden style="flex-direction:column;gap:12px">
+        <h2 id="h4b" tabindex="-1">你的帳號尚未開通</h2>
+        <p style="text-align:center"><b id="blocked-who"></b> 不在任何教室的修課名單內。請聯絡你的教師或管理者，把這個信箱加入名單。</p>
+        <div class="alert bad" id="a-recheck" role="status" hidden><span>剛剛重新檢查過，仍未在名單內。</span></div>
+        <button type="button" class="btn" id="recheck">我已被加入，重新檢查</button>
+        <button type="button" class="btn ghost" id="other">改用其他帳號登入</button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="dock" aria-label="廣場站點">
+    <ol>
+      <li><button type="button" class="station" data-go="1" aria-current="step"><span class="num">I</span><span class="label">廣場</span></button></li>
+      <li><button type="button" class="station" data-go="2"><span class="num">II</span><span class="label">講壇</span></button></li>
+      <li><button type="button" class="station" data-go="3"><span class="num">III</span><span class="label">議事堂</span></button></li>
+      <li><button type="button" class="station" data-go="4"><span class="num">IV</span><span class="label">神殿之門</span></button></li>
+    </ol>
+  </nav>
+</div>
+
+<div class="iris" id="iris" aria-hidden="true"></div>
+
+<section class="home" id="home" hidden aria-labelledby="home-h">
+  <div class="home-inner">
+    <div class="home-bar">
+      <div class="brand"><b>蘇格拉底・教室</b> <span class="role" id="home-role">學生</span></div>
+      <div class="actions">
+        <button type="button" class="chip-btn" id="sim-timeout">模擬逾時</button>
+        <button type="button" class="chip-btn" id="back">回到廣場</button>
+      </div>
+    </div>
+    <h1 id="home-h" tabindex="-1">我的教室</h1>
+    <div id="home-body" style="display:flex;flex-direction:column;gap:30px"></div>
+  </div>
+</section>
+
+<noscript><div class="noscript">這個 prototype 需要 JavaScript 才能顯示立體廣場；上方各站點的文字仍可閱讀。</div></noscript>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+document.documentElement.classList.add('js');
+const gsap = window.gsap;
+const rmQuery = matchMedia('(prefers-reduced-motion: reduce)');
+let RM = rmQuery.matches;
+rmQuery.addEventListener('change', (e) => { RM = e.matches; });
+const $ = (s) => document.querySelector(s);
+const isPhone = () => innerWidth < 760;
+
+/* ================= scene ================= */
+const canvas = $('#scene');
+let renderer = null;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+} catch (e) { renderer = null; }
+if (!renderer || !renderer.getContext()) document.documentElement.classList.add('no-webgl');
+
+const PAL = {
+  ink: 0x0E1A2B, marble: 0xF4F1EC, marble2: 0xE3DED4, terra: 0xC8643B, stucco: 0xD99A78,
+  bronze: 0x8C6A3A, dark: 0x2A2420, lamp: 0xF5B700, blue: 0x1D4ED8, cypress: 0x3F6B4E,
+  sand: [0xEADBC0, 0xE2CFAE, 0xEFE2C8], grass: [0xB9D59F, 0xA9CB8E],
+};
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 200);
+const tones = new Uint8Array([110, 190, 255]);
+const gradientMap = new THREE.DataTexture(tones, 3, 1, THREE.RedFormat);
+gradientMap.minFilter = gradientMap.magFilter = THREE.NearestFilter;
+gradientMap.needsUpdate = true;
+const matCache = new Map();
+const toon = (c, flat = false) => {
+  const k = c + (flat ? 'f' : '');
+  if (!matCache.has(k)) matCache.set(k, new THREE.MeshToonMaterial({ color: c, gradientMap, flatShading: flat }));
+  return matCache.get(k);
+};
+const flatMat = (c, o = 1) => new THREE.MeshBasicMaterial({ color: c, transparent: o < 1, opacity: o, depthWrite: o === 1 });
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0xA9B4C8, 1.6);
+const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+sun.position.set(-8, 16, 10);
+scene.add(hemi, sun);
+
+// die-cut sticker outline: an inverted hull pushed out along smoothed normals
+const hullMats = new Map();
+function hullMat(t, color) {
+  const k = t + ':' + color;
+  if (!hullMats.has(k)) {
+    hullMats.set(k, new THREE.ShaderMaterial({
+      uniforms: { thickness: { value: t }, color: { value: new THREE.Color(color) } },
+      vertexShader: 'uniform float thickness; void main(){ vec3 p = position + normal * thickness; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }',
+      fragmentShader: 'uniform vec3 color; void main(){ gl_FragColor = vec4(color, 1.0); }',
+      side: THREE.BackSide,
+    }));
+  }
+  return hullMats.get(k);
+}
+function outline(mesh, t = 0.05, color = 0xffffff) {
+  let g = mesh.geometry.clone();
+  for (const name of Object.keys(g.attributes)) if (name !== 'position') g.deleteAttribute(name);
+  g = mergeVertices(g, 1e-3);
+  g.computeVertexNormals();
+  const h = new THREE.Mesh(g, hullMat(t, color));
+  mesh.add(h);
+  return mesh;
+}
+function part(geo, color, x = 0, y = 0, z = 0, o = {}) {
+  const m = new THREE.Mesh(geo, Array.isArray(color) ? color.map((c) => toon(c, o.flat)) : toon(color, o.flat));
+  m.position.set(x, y, z);
+  if (o.ry) m.rotation.y = o.ry;
+  if (o.outline !== false) outline(m, o.t ?? 0.05);
+  return m;
+}
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (r, h, s = 10) => new THREE.CylinderGeometry(r, r, h, s);
+function prism(base, height, depth) {
+  const s = new THREE.Shape();
+  s.moveTo(-base / 2, 0); s.lineTo(base / 2, 0); s.lineTo(0, height); s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: false });
+  g.translate(0, 0, -depth / 2);
+  return g;
+}
+
+/* ---------- puzzle island ---------- */
+const S = 4, COLS = 4, ROWS = 3, X0 = -8, Z0 = -6, TOP = 0.5;
+let seed = 7;
+const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+const tabH = [], tabV = [];
+for (let r = 0; r <= ROWS; r++) { tabH[r] = []; tabV[r] = []; for (let c = 0; c <= COLS; c++) { tabH[r][c] = rnd() > 0.5 ? 1 : -1; tabV[r][c] = rnd() > 0.5 ? 1 : -1; } }
+function edge(path, P, Q, dir, toShape) {
+  if (!dir) { path.lineTo(...toShape(Q)); return; }
+  const d = [Q[0] - P[0], Q[1] - P[1]];
+  const pt = (a, b) => toShape([P[0] + d[0] * a + dir[0] * S * b, P[1] + d[1] * a + dir[1] * S * b]);
+  path.lineTo(...pt(0.36, 0));
+  path.bezierCurveTo(...pt(0.42, 0), ...pt(0.3, 0.22), ...pt(0.5, 0.22));
+  path.bezierCurveTo(...pt(0.7, 0.22), ...pt(0.58, 0), ...pt(0.64, 0));
+  path.lineTo(...toShape(Q));
+}
+const island = new THREE.Group();
+scene.add(island);
+const pieces = [];
+for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+  const x = X0 + c * S, z = Z0 + r * S, cx = x + S / 2, cz = z + S / 2;
+  const toShape = ([px, pz]) => [px - cx, -(pz - cz)];
+  const sh = new THREE.Shape();
+  sh.moveTo(...toShape([x, z]));
+  edge(sh, [x, z], [x + S, z], r > 0 ? [0, tabH[r][c]] : null, toShape);
+  edge(sh, [x + S, z], [x + S, z + S], c < COLS - 1 ? [tabV[r][c + 1], 0] : null, toShape);
+  edge(sh, [x + S, z + S], [x, z + S], r < ROWS - 1 ? [0, tabH[r + 1][c]] : null, toShape);
+  edge(sh, [x, z + S], [x, z], c > 0 ? [tabV[r][c], 0] : null, toShape);
+  const border = r === 0 || c === 0 || r === ROWS - 1 || c === COLS - 1;
+  const corner = (r === 0 || r === ROWS - 1) && (c === 0 || c === COLS - 1);
+  const color = corner ? PAL.grass[(r + c) % 2] : border && (r + c) % 3 === 0 ? PAL.grass[1] : PAL.sand[(r * 3 + c) % 3];
+  const g = new THREE.Group();
+  g.position.set(cx, 0, cz);
+  const topGeo = new THREE.ExtrudeGeometry(sh, { depth: TOP, bevelEnabled: true, bevelThickness: 0.001, bevelSize: 0, bevelOffset: -0.08, bevelSegments: 1, curveSegments: 10 });
+  topGeo.rotateX(-Math.PI / 2);
+  const top = new THREE.Mesh(topGeo, toon(color));
+  const baseGeo = new THREE.ExtrudeGeometry(sh, { depth: TOP - 0.06, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.1, bevelOffset: 0, bevelSegments: 1, curveSegments: 10 });
+  baseGeo.rotateX(-Math.PI / 2);
+  const base = new THREE.Mesh(baseGeo, flatMat(0xffffff));
+  base.position.y = -0.02;
+  const shadowGeo = new THREE.ShapeGeometry(sh, 10);
+  shadowGeo.rotateX(-Math.PI / 2);
+  const shadow = new THREE.Mesh(shadowGeo, flatMat(PAL.ink, 0.14));
+  shadow.position.set(0.35, -1.4, 0.55);
+  g.add(top, base, shadow);
+  island.add(g);
+  pieces.push({ g, cx, cz, deco: [] });
+}
+const pieceAt = (x, z) => pieces[Math.min(ROWS - 1, Math.max(0, Math.floor((z - Z0) / S))) * COLS + Math.min(COLS - 1, Math.max(0, Math.floor((x - X0) / S)))];
+// anything standing on the island rides on the puzzle piece under it
+function place(obj, x, z, ry = 0) {
+  const p = pieceAt(x, z);
+  obj.position.set(x - p.cx, TOP, z - p.cz);
+  obj.rotation.y = ry;
+  p.g.add(obj);
+  p.deco.push(obj);
+  return obj;
+}
+
+/* ---------- buildings ---------- */
+const anchors = {};
+// Temple (Aedes) with the door
+const temple = new THREE.Group();
+temple.add(part(box(4.4, 0.9, 5.2), PAL.marble2, 0, 0.45, 0));
+temple.add(part(box(2.6, 0.3, 0.9), PAL.marble2, 0, 0.15, 3.05));
+temple.add(part(box(2.6, 0.6, 0.45), PAL.marble2, 0, 0.3, 2.82));
+temple.add(part(box(3.2, 2.3, 3.2), PAL.marble, 0, 2.05, -0.7));
+for (let i = 0; i < 6; i++) {
+  const x = -1.8 + i * 0.72;
+  temple.add(part(cyl(0.17, 2.4), PAL.marble, x, 2.1, 2.1, { t: 0.035 }));
+  if (i === 0 || i === 5) temple.add(part(cyl(0.17, 2.4), PAL.marble, x, 2.1, 1.3, { t: 0.035 }));
+}
+temple.add(part(box(4.2, 0.4, 4.6), PAL.marble, 0, 3.5, 0));
+temple.add(part(prism(4.3, 0.95, 4.7), [PAL.marble, PAL.terra], 0, 3.7, 0));
+temple.add(part(box(1.36, 1.96, 0.1), PAL.dark, 0, 1.88, 0.92, { outline: false }));
+const doorL = new THREE.Group(), doorR = new THREE.Group();
+doorL.position.set(-0.62, 1.86, 0.98); doorR.position.set(0.62, 1.86, 0.98);
+doorL.add(part(box(0.6, 1.84, 0.07), PAL.bronze, 0.3, 0, 0, { t: 0.02 }));
+doorR.add(part(box(0.6, 1.84, 0.07), PAL.bronze, -0.3, 0, 0, { t: 0.02 }));
+temple.add(doorL, doorR);
+const templeLamp = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), flatMat(PAL.lamp));
+templeLamp.position.set(0, 4.15, 2.4);
+outline(templeLamp, 0.05, PAL.ink);
+temple.add(templeLamp);
+const TEMPLE = [4.4, -3.0];
+place(temple, ...TEMPLE);
+anchors[4] = new THREE.Vector3(TEMPLE[0], 5.4, TEMPLE[1]);
+
+// Curia
+const curia = new THREE.Group();
+curia.add(part(box(3.2, 2.9, 2.6), PAL.stucco, 0, 1.45, 0));
+curia.add(part(prism(3.4, 0.8, 2.8), [PAL.marble, PAL.terra], 0, 2.9, 0));
+curia.add(part(box(1.8, 0.3, 0.7), PAL.marble2, 0, 0.15, 1.6));
+curia.add(part(box(0.9, 1.5, 0.08), PAL.bronze, 0, 0.75, 1.31, { t: 0.02 }));
+for (const x of [-0.95, 0, 0.95]) curia.add(part(box(0.46, 0.8, 0.05), PAL.ink, x, 2.25, 1.31, { outline: false }));
+const CURIA = [-4.8, -3.0];
+place(curia, ...CURIA);
+anchors[3] = new THREE.Vector3(CURIA[0], 4.6, CURIA[1]);
+// floating tablets above the Curia (shown at station III)
+const tablets = new THREE.Group();
+tablets.position.set(CURIA[0] + 0.2, 5.0, CURIA[1] + 1.2);
+scene.add(tablets);
+function tabletTexture(title, sub, locked) {
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 320;
+  const x = cv.getContext('2d');
+  x.fillStyle = locked ? '#E6EAF1' : '#FFFFFF'; x.fillRect(0, 0, 512, 320);
+  x.strokeStyle = '#0E1A2B'; x.lineWidth = 10; x.strokeRect(5, 5, 502, 310);
+  x.fillStyle = '#0E1A2B'; x.font = '900 64px "Noto Serif TC", serif'; x.fillText(title, 36, 108);
+  x.fillStyle = locked ? '#55627A' : '#2B3A55'; x.font = '500 36px "Noto Sans TC", sans-serif'; x.fillText(sub, 36, 176);
+  if (locked) { x.fillStyle = '#F5B700'; x.fillRect(400, 214, 70, 60); x.strokeRect(400, 214, 70, 60); x.beginPath(); x.lineWidth = 9; x.arc(435, 214, 24, Math.PI, 0); x.stroke(); }
+  else { x.fillStyle = '#F5B700'; for (let i = 0; i < 3; i++) x.fillRect(36, 220 + i * 26, 300 - i * 80, 14); }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const tabletDefs = [['學習總結', '活動結束後', false, -1.9, 0.25], ['對話原文', '已結束・唯讀', false, 0, 0.6], ['進行中', '看不到', true, 1.9, 0.1]];
+const tabletMeshes = [];
+function buildTablets() {
+  for (const m of tabletMeshes) tablets.remove(m);
+  tabletMeshes.length = 0;
+  tabletDefs.forEach(([t, s, l, x, y], i) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.06), new THREE.MeshBasicMaterial({ map: tabletTexture(t, s, l), side: THREE.DoubleSide }));
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 1.26), flatMat(0xffffff));
+    back.position.z = -0.01; m.add(back);
+    m.position.set(x, y, 0); m.rotation.z = (i - 1) * -0.06;
+    m.userData.baseY = y;
+    tablets.add(m); tabletMeshes.push(m);
+  });
+}
+buildTablets();
+tablets.scale.setScalar(0.001); tablets.visible = false;
+
+// Rostra with two speakers and the idea
+const rostra = new THREE.Group();
+rostra.add(part(box(3.8, 1.0, 1.8), PAL.marble2, 0, 0.5, 0));
+rostra.add(part(box(3.86, 0.18, 1.86), PAL.terra, 0, 0.78, 0, { outline: false }));
+rostra.add(part(box(1.4, 0.5, 0.6), PAL.marble2, 0, 0.25, -1.2));
+function pawn(color) {
+  const g = new THREE.Group();
+  g.add(part(new THREE.CylinderGeometry(0.12, 0.2, 0.6, 12), color, 0, 0.3, 0, { t: 0.035 }));
+  g.add(part(new THREE.SphereGeometry(0.17, 14, 10), color, 0, 0.75, 0, { t: 0.035 }));
+  return g;
+}
+const student = pawn(PAL.blue); student.position.set(-0.8, 1.0, 0.1);
+const socrates = pawn(PAL.lamp); socrates.position.set(0.8, 1.0, 0.1);
+rostra.add(student, socrates);
+const ROSTRA = [0, 1.7];
+place(rostra, ...ROSTRA);
+anchors[2] = new THREE.Vector3(ROSTRA[0], 4.1, ROSTRA[1]);
+// the idea: a rough polyhedron that is polished into a sphere (morph target)
+const ideaGeo = new THREE.IcosahedronGeometry(0.7, 2);
+const pos = ideaGeo.attributes.position;
+const smooth = new Float32Array(pos.array.length);
+const v = new THREE.Vector3();
+for (let i = 0; i < pos.count; i++) {
+  v.fromBufferAttribute(pos, i).normalize();
+  smooth.set([v.x * 0.72, v.y * 0.72, v.z * 0.72], i * 3);
+  const n = 1 + 0.32 * Math.sin(v.x * 5.1 + 1.3) * Math.cos(v.y * 4.3) + 0.22 * Math.sin(v.z * 6.7 + v.x * 2.0);
+  pos.setXYZ(i, v.x * 0.72 * n, v.y * 0.72 * n, v.z * 0.72 * n);
+}
+ideaGeo.morphAttributes.position = [new THREE.Float32BufferAttribute(smooth, 3)];
+ideaGeo.computeVertexNormals();
+const idea = new THREE.Mesh(ideaGeo, new THREE.MeshToonMaterial({ color: PAL.lamp, gradientMap, flatShading: true }));
+idea.morphTargetInfluences = [0];
+idea.position.set(ROSTRA[0], 3.1, ROSTRA[1]);
+const halo = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.03, 8, 48), flatMat(PAL.lamp, 0));
+halo.position.copy(idea.position);
+scene.add(idea, halo);
+
+// Arch of Septimius, column of Phocas, basilica ruins, cypresses
+const arch = new THREE.Group();
+arch.add(part(box(0.9, 2.4, 1.1), PAL.marble2, -1.05, 1.2, 0));
+arch.add(part(box(0.9, 2.4, 1.1), PAL.marble2, 1.05, 1.2, 0));
+arch.add(part(box(3.0, 0.8, 1.15), PAL.marble, 0, 2.8, 0));
+place(arch, -4.6, 3.1, 0.15);
+const phocas = new THREE.Group();
+phocas.add(part(box(0.8, 0.6, 0.8), PAL.marble2, 0, 0.3, 0));
+phocas.add(part(cyl(0.17, 3.2), PAL.marble, 0, 2.2, 0, { t: 0.035 }));
+phocas.add(part(box(0.5, 0.2, 0.5), PAL.marble, 0, 3.9, 0, { t: 0.035 }));
+place(phocas, 2.2, -0.2);
+const ruins = new THREE.Group();
+for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) { const h = 0.5 + ((i * 7 + j * 3) % 5) * 0.18; ruins.add(part(cyl(0.16, h, 8), PAL.marble2, i * 0.75, h / 2, j * 0.8, { t: 0.03 })); }
+place(ruins, 4.2, 2.0);
+function cypress() { const g = new THREE.Group(); g.add(part(new THREE.ConeGeometry(0.34, 1.9, 8), PAL.cypress, 0, 1.15, 0, { t: 0.04 })); g.add(part(cyl(0.07, 0.3, 6), PAL.bronze, 0, 0.15, 0, { outline: false })); return g; }
+for (const [x, z] of [[-7, -5], [-6.2, -0.6], [-7.1, 1.6], [7.1, -5.2], [7.2, 0.4], [6.8, 4.9], [-1.8, -5.2], [1.4, -5.4], [-1.9, 5.1], [2.2, 5.0]]) place(cypress(), x, z);
+
+// sticker clouds
+const clouds = [];
+for (const [x, y, z, s] of [[-13, 2.2, -6, 1.2], [12, 3.0, -8, 1.0], [-11, -0.5, 7, 0.9], [13, 0.4, 6, 1.1], [0, 4.6, -14, 1.3]]) {
+  const g = new THREE.Group();
+  for (const [dx, dy, r] of [[0, 0, 0.9], [0.95, -0.15, 0.7], [-0.9, -0.2, 0.65], [0.3, 0.45, 0.6]]) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), toon(0xffffff));
+    m.position.set(dx, dy, 0); m.scale.y = 0.72; outline(m, 0.05, PAL.ink); g.add(m);
+  }
+  g.position.set(x, y, z); g.scale.setScalar(s); g.userData = { x, y, ph: x * 0.3 };
+  scene.add(g); clouds.push(g);
+}
+
+/* ================= camera stations ================= */
+const STATIONS = {
+  1: { pos: [15, 13.5, 19], tgt: [0, 0.6, 0] },
+  2: { pos: [4.2, 4.8, 9.6], tgt: [0, 2.4, 1.7] },
+  3: { pos: [0.6, 6.4, 5.4], tgt: [-4.6, 3.4, -2.6] },
+  4: { pos: [6.6, 2.9, 6.2], tgt: [4.4, 2.1, -2.0] },
+};
+const cam = { px: 0, py: 0, pz: 0, tx: 0, ty: 0, tz: 0 };
+function stationView(n) {
+  const s = STATIONS[n];
+  const k = isPhone() ? (n === 1 ? 1.45 : 1.3) : (n === 1 ? 1.2 : 1);
+  const p = s.pos.map((c, i) => s.tgt[i] + (c - s.tgt[i]) * k);
+  return { px: p[0], py: p[1], pz: p[2], tx: s.tgt[0], ty: s.tgt[1], tz: s.tgt[2] };
+}
+function applyCam() { camera.position.set(cam.px, cam.py, cam.pz); camera.lookAt(cam.tx, cam.ty, cam.tz); }
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  if (!renderer) return;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, isPhone() ? 1.5 : 2));
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.fov = w < h ? 46 : 34;
+  // keep the subject clear of the sticker panel: shift the projection, not the camera
+  if (isPhone()) camera.setViewOffset(w, h, 0, h * 0.2, w, h);
+  else camera.setViewOffset(w, h, -Math.min(230, w * 0.17), 0, w, h);
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', () => { resize(); if (!flying) { Object.assign(cam, stationView(current)); applyCam(); } });
+
+/* ================= intro: puzzle assembly ================= */
+let introTl = null;
+function intro() {
+  Object.assign(cam, stationView(1));
+  if (RM || !renderer) { applyCam(); return; }
+  const far = stationView(1);
+  Object.assign(cam, { ...far, px: far.px * 1.5 + 8, py: far.py * 1.6, pz: far.pz * 1.25 });
+  pieces.forEach((p, i) => {
+    const a = (i / pieces.length) * Math.PI * 2;
+    p.g.position.set(p.cx + Math.cos(a) * 7, 7 + (i % 4) * 2.2, p.cz + Math.sin(a) * 6);
+    p.g.rotation.set(0.6 * Math.sin(i * 1.7), 1.2 * Math.cos(i), 0.5 * Math.sin(i));
+    p.deco.forEach((d) => d.scale.setScalar(0.001));
+  });
+  idea.scale.setScalar(0.001);
+  $('#skip').hidden = false;
+  introTl = gsap.timeline({ defaults: { ease: 'power3.out' }, onComplete: endIntro });
+  introTl.to(cam, { ...far, duration: 3.4, ease: 'power2.inOut', onUpdate: applyCam }, 0);
+  pieces.forEach((p, i) => {
+    introTl.to(p.g.position, { x: p.cx, y: 0, z: p.cz, duration: 1.1, ease: 'back.out(1.25)' }, 0.15 + i * 0.09)
+      .to(p.g.rotation, { x: 0, y: 0, z: 0, duration: 1.1 }, '<');
+  });
+  introTl.to(pieces.flatMap((p) => p.deco.map((d) => d.scale)), { x: 1, y: 1, z: 1, duration: 0.55, ease: 'back.out(2.2)', stagger: 0.03 }, 1.5)
+    .to(idea.scale, { x: 1, y: 1, z: 1, duration: 0.6, ease: 'back.out(2)' }, '>-0.2');
+  introTl.from('#st-1', { y: 24, autoAlpha: 0, duration: 0.6 }, 2.4);
+}
+function endIntro() {
+  if (introTl) { introTl.progress(1).kill(); introTl = null; }
+  pieces.forEach((p) => { p.g.position.set(p.cx, 0, p.cz); p.g.rotation.set(0, 0, 0); p.deco.forEach((d) => d.scale.setScalar(1)); });
+  idea.scale.setScalar(1);
+  gsap.set('#st-1', { clearProps: 'transform,opacity,visibility' });
+  Object.assign(cam, stationView(current)); applyCam();
+  $('#skip').hidden = true;
+}
+$('#skip').addEventListener('click', endIntro);
+
+/* ================= stations ================= */
+let current = 1, flying = false, camTween = null;
+const panels = { 1: $('#st-1'), 2: $('#st-2'), 3: $('#st-3'), 4: $('#st-4') };
+const headings = { 1: '#h1', 2: '#h2r', 3: '#h3c', 4: '#h4d' };
+function go(n, { focus = true } = {}) {
+  n = Number(n);
+  if (flying || !panels[n]) return;
+  if (introTl) endIntro();
+  const prev = current; current = n;
+  for (const [k, el] of Object.entries(panels)) el.classList.toggle('is-active', Number(k) === n);
+  document.querySelectorAll('.station').forEach((b) => { if (Number(b.dataset.go) === n) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current'); });
+  const to = stationView(n);
+  if (camTween) camTween.kill();
+  if (RM || !renderer) { Object.assign(cam, to); applyCam(); }
+  else camTween = gsap.to(cam, { ...to, duration: prev === n ? 0.01 : 1.8, ease: 'power2.inOut', onUpdate: applyCam });
+  if (!RM) gsap.fromTo(panels[n], { y: 18, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.5, delay: 0.15, ease: 'power3.out', clearProps: 'transform,opacity,visibility' });
+  showTablets(n === 3);
+  if (n === 2) playTalk(); else stopTalk();
+  if (focus) { const h = $(headings[n]); if (h) h.focus({ preventScroll: true }); }
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-go]'); if (b) go(b.dataset.go); });
+addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea') || !$('#home').hidden) return;
+  if (e.key === 'ArrowRight') go(Math.min(4, current + 1));
+  if (e.key === 'ArrowLeft') go(Math.max(1, current - 1));
+});
+
+function showTablets(on) {
+  if (!renderer) return;
+  if (RM) { tablets.visible = on; tablets.scale.setScalar(on ? 1 : 0.001); return; }
+  if (on) { tablets.visible = true; gsap.to(tablets.scale, { x: 1, y: 1, z: 1, duration: 0.7, delay: 0.9, ease: 'back.out(1.8)' }); }
+  else gsap.to(tablets.scale, { x: 0.001, y: 0.001, z: 0.001, duration: 0.3, onComplete: () => { tablets.visible = false; } });
+}
+
+// rostra: three rounds of "say -> ask -> polish"
+let talkTl = null;
+const talkItems = [...document.querySelectorAll('#talk li')];
+const meter = $('#meter');
+function setPolish(p) { idea.morphTargetInfluences[0] = p; meter.style.transform = `scaleX(${p})`; halo.material.opacity = p > 0.98 ? 0.8 : 0; }
+function stopTalk() { if (talkTl) { talkTl.kill(); talkTl = null; } gsap.set(talkItems, { clearProps: 'all' }); setPolish(1); }
+function playTalk() {
+  stopTalk();
+  if (RM) { setPolish(1); return; }
+  const st = { p: 0 };
+  setPolish(0);
+  talkTl = gsap.timeline({ delay: 1.2 });
+  talkTl.set(talkItems, { autoAlpha: 0, y: 10 });
+  for (let i = 0; i < 3; i++) {
+    talkTl.to(talkItems[i * 2], { autoAlpha: 1, y: 0, duration: 0.45, ease: 'power2.out' }, '+=0.35')
+      .to(student.position, { y: 1.18, duration: 0.18, yoyo: true, repeat: 1 }, '<')
+      .to(talkItems[i * 2 + 1], { autoAlpha: 1, y: 0, duration: 0.45, ease: 'power2.out' }, '+=0.6')
+      .to(socrates.position, { y: 1.18, duration: 0.18, yoyo: true, repeat: 1 }, '<')
+      .to(st, { p: (i + 1) / 3, duration: 0.8, ease: 'power1.inOut', onUpdate: () => setPolish(st.p) }, '>-0.1');
+  }
+  talkTl.fromTo(halo.scale, { x: 0.6, y: 0.6, z: 0.6 }, { x: 1, y: 1, z: 1, duration: 0.6, ease: 'back.out(2)' });
+}
+$('#replay').addEventListener('click', playTalk);
+
+/* ================= temple door: login ================= */
+const ACCOUNTS = [
+  { email: 'student@demo.tw', role: 'student', label: '學生' },
+  { email: 'teacher@demo.tw', role: 'teacher', label: '教師' },
+  { email: 'admin@demo.tw', role: 'admin', label: '管理者' },
+  { email: 'outsider@demo.tw', role: null, label: '名單外' },
+];
+const views = { login: $('#v-login'), google: $('#v-google'), blocked: $('#v-blocked') };
+function view(name, focusSel) {
+  for (const [k, el] of Object.entries(views)) { el.hidden = k !== name; if (k === name) el.style.display = 'flex'; }
+  if (focusSel) $(focusSel).focus({ preventScroll: true });
+}
+const email = $('#email'), pw = $('#pw'), submit = $('#submit');
+function fieldError(input, msg) {
+  const err = $('#' + input.id + '-err');
+  err.textContent = msg; err.hidden = !msg;
+  input.setAttribute('aria-invalid', msg ? 'true' : 'false');
+}
+function clearBanners() { $('#a-bad').hidden = true; $('#a-timeout').hidden = true; }
+$('#login').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const em = email.value.trim();
+  let bad = false;
+  if (!em) { fieldError(email, '請輸入電子郵件。'); bad = true; }
+  else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { fieldError(email, '電子郵件格式不正確，例如 name@school.edu。'); bad = true; }
+  else fieldError(email, '');
+  if (!pw.value) { fieldError(pw, '請輸入密碼。'); bad = true; } else fieldError(pw, '');
+  if (bad) { (email.getAttribute('aria-invalid') === 'true' ? email : pw).focus(); return; }
+  clearBanners();
+  submit.disabled = true; submit.innerHTML = '<span class="spin" aria-hidden="true"></span>登入中';
+  setTimeout(() => route(em), 700);
+});
+function resetSubmit() { submit.disabled = false; submit.textContent = '登入'; }
+function route(em) {
+  resetSubmit();
+  const acc = ACCOUNTS.find((a) => a.email === em.toLowerCase());
+  if (!acc) { $('#a-bad').hidden = false; pw.value = ''; pw.focus(); return; }
+  if (!acc.role) { $('#blocked-who').textContent = acc.email; $('#a-recheck').hidden = true; view('blocked', '#h4b'); return; }
+  enterDoor(acc);
+}
+$('#google').addEventListener('click', () => view('google', '#h4g'));
+$('#g-cancel').addEventListener('click', () => view('login', '#h4d'));
+$('#recheck').addEventListener('click', () => { $('#a-recheck').hidden = false; });
+$('#other').addEventListener('click', () => { email.value = ''; pw.value = ''; view('login', '#email'); });
+const accList = $('#accounts');
+for (const a of [ACCOUNTS[0], ACCOUNTS[3], ACCOUNTS[1]]) {
+  const li = document.createElement('li');
+  const b = document.createElement('button'); b.type = 'button';
+  b.innerHTML = `<span class="avatar" aria-hidden="true">${a.email[0].toUpperCase()}</span><span></span>`;
+  b.lastChild.textContent = a.email;
+  b.addEventListener('click', () => { view('login'); email.value = a.email; route(a.email); });
+  li.append(b); accList.append(li);
+}
+const demo = $('#demo');
+for (const a of ACCOUNTS) {
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = a.label;
+  b.addEventListener('click', () => { email.value = a.email; pw.value = 'demo-pass'; fieldError(email, ''); fieldError(pw, ''); clearBanners(); submit.focus(); });
+  demo.append(b);
+}
+
+/* ---------- through the door ---------- */
+const iris = $('#iris');
+function irisScale() { return Math.hypot(innerWidth, innerHeight) / 40 + 2; }
+function enterDoor(acc) {
+  if (introTl) endIntro();
+  if (current !== 4) go(4, { focus: false });
+  if (RM || !renderer) { showHome(acc); return; }
+  flying = true;
+  if (camTween) camTween.kill();
+  const door = new THREE.Vector3(); doorL.parent.localToWorld(door.set(0, 1.86, 0.98));
+  const tl = gsap.timeline({ onComplete: () => { flying = false; } });
+  tl.to(cam, { px: door.x, py: door.y + 0.1, pz: door.z + 3.2, tx: door.x, ty: door.y, tz: door.z - 4, duration: 0.9, ease: 'power2.inOut', onUpdate: applyCam })
+    .to(doorL.rotation, { y: -1.9, duration: 0.8, ease: 'power2.out' }, '-=0.2')
+    .to(doorR.rotation, { y: 1.9, duration: 0.8, ease: 'power2.out' }, '<')
+    .to(templeLamp.scale, { x: 1.8, y: 1.8, z: 1.8, duration: 0.4, yoyo: true, repeat: 1 }, '<')
+    .to(cam, { pz: door.z - 0.4, duration: 0.9, ease: 'power3.in', onUpdate: applyCam }, '-=0.35')
+    .fromTo(iris, { scale: 0 }, { scale: irisScale(), duration: 0.55, ease: 'power3.in' }, '-=0.45')
+    .call(() => showHome(acc))
+    .to(iris, { autoAlpha: 0, duration: 0.5, ease: 'power1.out' }, '+=0.15')
+    .set(iris, { scale: 0, autoAlpha: 1 });
+}
+const HOMES = {
+  student: { role: '學生', title: '我的教室', html: `
+    <div class="alert info" role="note"><span>活動中的對話與總結，教師會在活動結束後看到（唯讀）。從題目庫開始的個人練習只有你看得到。</span></div>
+    <div class="sticker"><h2>[教室名稱 A]</h2><div class="fine">[教師姓名]</div>
+      <div class="row"><span>[活動名稱 1]</span><span class="actions"><span class="tag">進行中</span><button type="button" class="btn">繼續對話</button></span></div>
+      <div class="row"><span>[活動名稱 2]</span><span class="actions"><span class="tag">已結束</span><button type="button" class="btn ghost">查看總結</button></span></div></div>
+    <div class="sticker"><h2>個人練習</h2><div class="fine">從題目庫挑一題自由練習，不屬於任何活動，教師看不到。</div><div class="actions"><button type="button" class="btn ghost">瀏覽題目庫</button></div></div>` },
+  teacher: { role: '教師', title: '我的教室', html: `
+    <div class="pending">你可以查看學生的學習總結，以及已結束活動的對話原文（唯讀）。進行中的對話與個人練習看不到。</div>
+    <div class="sticker"><h2>[教室名稱 A]</h2><div class="fine">[N] 位學生・[N] 個活動</div>
+      <div class="row"><span>[活動名稱 1]</span><span class="actions"><span class="tag">已結束</span><button type="button" class="btn">查看學習總結</button></span></div>
+      <div class="row"><span>[活動名稱 2]</span><span class="actions"><span class="tag">進行中</span><button type="button" class="btn ghost">查看進度</button></span></div></div>
+    <div class="actions"><button type="button" class="btn">建立教室</button><button type="button" class="btn ghost">匯入修課名單</button></div>` },
+  admin: { role: '系統管理者', title: '所有教室', html: `
+    <div class="pending">介面中每則訊息一律顯示為 message；AI 總結、學生反思等敏感欄位遮蔽。</div>
+    <div class="sticker"><h2>[教室名稱 A]</h2><div class="fine">[教師姓名]・名單 [N] 人・使用中</div></div>
+    <div class="sticker"><h2>帳號與密碼</h2><div class="fine">不開放自行註冊；帳號由修課名單開通，密碼由管理者重設。</div><div class="actions"><button type="button" class="btn ghost">重設密碼</button></div></div>` },
+};
+let who = '';
+function showHome(acc) {
+  who = acc.email;
+  const h = HOMES[acc.role];
+  $('#home-role').textContent = h.role;
+  $('#home-h').textContent = h.title;
+  $('#home-body').innerHTML = h.html;
+  $('#home').hidden = false;
+  if (!RM) gsap.from('#home .home-inner > *', { y: 24, autoAlpha: 0, duration: 0.5, stagger: 0.07, ease: 'power3.out', clearProps: 'all' });
+  $('#home-h').focus({ preventScroll: true });
+  pw.value = '';
+}
+function leaveHome(timeout) {
+  $('#home').hidden = true;
+  doorL.rotation.y = 0; doorR.rotation.y = 0; templeLamp.scale.setScalar(1);
+  view('login');
+  if (timeout) { email.value = who; $('#a-timeout').hidden = false; go(4, { focus: false }); pw.focus(); }
+  else { email.value = ''; go(1); }
+}
+$('#back').addEventListener('click', () => leaveHome(false));
+$('#sim-timeout').addEventListener('click', () => leaveHome(true));
+
+/* ================= pins + loop ================= */
+const pinDefs = { 2: ['ROSTRA', '講壇'], 3: ['CVRIA', '議事堂'], 4: ['AEDES', '神殿之門'] };
+const pinEls = {};
+for (const [n, [lat, zh]] of Object.entries(pinDefs)) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'pin'; b.dataset.go = n;
+  b.innerHTML = `${lat}<small>${zh}</small>`;
+  b.setAttribute('aria-label', `前往${zh}`);
+  b.tabIndex = -1;
+  $('#pins').append(b); pinEls[n] = b;
+}
+const tmp = new THREE.Vector3();
+function updatePins() {
+  const show = renderer && !flying && !introTl && $('#home').hidden;
+  for (const [n, el] of Object.entries(pinEls)) {
+    const vis = show && Number(n) !== current;
+    if (!vis) { el.hidden = true; continue; }
+    tmp.copy(anchors[n]).project(camera);
+    if (tmp.z > 1) { el.hidden = true; continue; }
+    el.hidden = false;
+    el.style.transform = `translate(${((tmp.x + 1) / 2) * innerWidth}px, ${((1 - tmp.y) / 2) * innerHeight}px) translate(-50%, -100%)`;
+  }
+}
+const clock = new THREE.Clock();
+function frame() {
+  const t = clock.getElapsedTime();
+  if (!RM) {
+    idea.rotation.y = t * 0.5; idea.rotation.x = Math.sin(t * 0.7) * 0.25;
+    idea.position.y = 3.1 + Math.sin(t * 1.3) * 0.08;
+    halo.position.y = idea.position.y; halo.rotation.z = t * 0.2;
+    for (const c of clouds) { c.position.x = c.userData.x + Math.sin(t * 0.12 + c.userData.ph) * 1.2; c.position.y = c.userData.y + Math.sin(t * 0.4 + c.userData.ph) * 0.15; }
+    tabletMeshes.forEach((m, i) => { m.position.y = m.userData.baseY + Math.sin(t * 1.1 + i) * 0.06; });
+  }
+  halo.lookAt(camera.position);
+  updatePins();
+  renderer.render(scene, camera);
+}
+
+/* ================= theme + lifecycle ================= */
+function theme() {
+  const dark = getComputedStyle(document.documentElement).colorScheme.includes('dark');
+  hemi.intensity = dark ? 1.0 : 1.6; hemi.color.set(dark ? 0xC9D6F0 : 0xffffff);
+  sun.intensity = dark ? 1.5 : 2.4;
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', theme);
+new MutationObserver(theme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+// stop drawing and pause every tween while the tab is hidden
+document.addEventListener('visibilitychange', () => {
+  if (!renderer) return;
+  if (document.hidden) { renderer.setAnimationLoop(null); gsap.globalTimeline.pause(); clock.stop(); }
+  else { clock.start(); gsap.globalTimeline.resume(); renderer.setAnimationLoop(frame); }
+});
+
+if (renderer) {
+  theme(); resize(); setPolish(1);
+  document.fonts?.ready.then(buildTablets);
+  intro();
+  renderer.setAnimationLoop(frame);
+} else {
+  setPolish(1);
+}
+</script>

@@ -1,0 +1,815 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>廣場版畫 Vedute</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=Noto+Serif+TC:wght@400;700;900&display=swap">
+<style>
+/* Layout: the viewport is one copperplate view of the Forum printed on laid paper; the plate mark frames it,
+   the station text is printed in the plate's open sky, and the plate's numbered key is the navigation. */
+:root {
+  --paper: #E8E1CF;
+  --paper-deep: #DDD4BE;
+  --ink: #1F1A16;
+  --ink-soft: #4A4038;
+  --ink-faint: rgba(31, 26, 22, .28);
+  --chalk: #A9442B;
+  --chalk-deep: #8A3520;
+  --error: #8A1C12;
+  --face-latin: 'IM Fell English SC', 'Times New Roman', serif;
+  --face-latin-text: 'IM Fell English', 'Times New Roman', serif;
+  --face-han: 'Noto Serif TC', 'Songti TC', serif;
+  color-scheme: light;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; overflow-x: clip; }
+body {
+  margin: 0; overflow: hidden;
+  background-color: var(--paper);
+  /* laid lines and chain lines of hand-made paper, then foxing */
+  background-image:
+    radial-gradient(ellipse at 18% 82%, rgba(150, 110, 60, .10), transparent 40%),
+    radial-gradient(ellipse at 88% 12%, rgba(150, 110, 60, .08), transparent 35%),
+    repeating-linear-gradient(90deg, transparent 0 46px, rgba(31, 26, 22, .035) 46px 47px),
+    repeating-linear-gradient(0deg, transparent 0 2px, rgba(31, 26, 22, .018) 2px 3px);
+  color: var(--ink);
+  font-family: var(--face-han);
+  font-size: 15px; line-height: 1.7;
+}
+::selection { background: var(--chalk); color: var(--paper); }
+:focus-visible { outline: 2px solid var(--chalk); outline-offset: 3px; }
+button, input { font: inherit; color: inherit; }
+
+#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+/* the engraved sky: fine horizontal lines that thin out toward the horizon */
+.sky { position: fixed; inset: 0 0 45% 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 5px, rgba(31, 26, 22, .07) 5px 6px);
+  -webkit-mask: linear-gradient(180deg, #000 0%, transparent 100%); mask: linear-gradient(180deg, #000 0%, transparent 100%); }
+.plate { position: fixed; pointer-events: none; z-index: 4;
+  inset: max(14px, env(safe-area-inset-top, 0px)) max(14px, env(safe-area-inset-right, 0px)) max(14px, env(safe-area-inset-bottom, 0px)) max(14px, env(safe-area-inset-left, 0px));
+  border: 1px solid var(--ink-faint);
+  box-shadow: inset 2px 2px 0 rgba(255, 255, 255, .55), inset -1px -1px 0 rgba(31, 26, 22, .12), 0 0 0 6px rgba(255, 255, 255, .18); }
+
+.app { position: relative; z-index: 3; height: 100%; display: grid; grid-template-rows: 1fr auto; pointer-events: none;
+  padding-left: max(40px, calc(env(safe-area-inset-left, 0px) + 28px)); padding-right: max(40px, calc(env(safe-area-inset-right, 0px) + 28px)); }
+
+.stage { display: flex; flex-direction: column; justify-content: flex-start; min-height: 0; }
+/* station text, printed in the sky of the plate */
+.panel {
+  pointer-events: auto; align-self: start;
+  width: min(380px, 100%); box-sizing: border-box;
+  margin-top: 40px; padding: 22px 24px 20px;
+  max-height: calc(100% - 60px); overflow: auto;
+  background: radial-gradient(ellipse at 40% 45%, var(--paper) 62%, rgba(232, 225, 207, .0) 100%);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.js .panel:not(.is-active) { display: none; }
+.panel h1, .panel h2 { margin: 0; font-weight: 900; line-height: 1.3; text-wrap: balance; letter-spacing: .02em; }
+.panel h1 { font-size: clamp(30px, 3.6vw, 40px); }
+.panel h2 { font-size: 28px; }
+.panel h1:focus, .panel h2:focus { outline: none; }
+.panel p { margin: 0; color: var(--ink-soft); max-width: 34em; }
+.latin { font-family: var(--face-latin); font-size: 1.05em; letter-spacing: .04em; }
+.panel h2 .latin { display: block; font-size: 17px; font-weight: 400; color: var(--ink-soft); letter-spacing: .08em; margin-top: 2px; }
+.rule { height: 0; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); padding-top: 2px; width: 100%; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.ui-btn {
+  min-height: 46px; padding: 0 22px; border: 1.5px solid var(--ink); border-radius: 2px;
+  background: var(--ink); color: var(--paper); font-weight: 700; cursor: pointer;
+  transition: background-color .2s ease, border-color .2s ease;
+}
+.ui-btn:hover { background: var(--chalk); border-color: var(--chalk); }
+.ui-btn:active { transform: translateY(1px); }
+.ui-btn[disabled] { cursor: progress; background: var(--ink-soft); border-color: var(--ink-soft); }
+.ui-btn.quiet { background: transparent; color: var(--ink); }
+.ui-btn.quiet:hover { background: transparent; color: var(--chalk); border-color: var(--chalk); }
+.ui-link { background: none; border: 0; padding: 4px 0; min-height: 44px; cursor: pointer; color: var(--ink); text-decoration: underline; text-decoration-color: var(--chalk); text-underline-offset: 5px; text-decoration-thickness: 1.5px; }
+.ui-link:hover { color: var(--chalk); }
+.note { font-size: 13px; color: var(--ink-soft); }
+.chalk-note { font-family: var(--face-latin-text); font-style: italic; color: var(--chalk); font-size: 15px; }
+
+/* rostra: the exchange set as a dialogue in a printed book */
+.talk { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.talk li { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); gap: 8px; font-size: 15px; }
+.talk li::before { font-family: var(--face-latin); color: var(--ink-soft); }
+.talk .s::before { content: 'DISC.'; }
+.talk .a::before { content: 'INTER.'; color: var(--chalk); }
+.talk .a { font-weight: 700; }
+.legend-key { font-size: 13px; color: var(--ink-soft); }
+.polish { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-soft); }
+.polish i { flex: 1; height: 1px; background: var(--ink-faint); position: relative; }
+.polish b { position: absolute; left: 0; top: -1px; height: 3px; width: 100%; background: var(--ink); transform-origin: left; }
+
+/* tabularium */
+.sees { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sees li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; font-size: 15px; }
+.sees li.no { color: var(--ink-soft); text-decoration: line-through; text-decoration-color: var(--chalk); text-decoration-thickness: 1.5px; }
+
+/* curia door: the form as ruled lines on the sheet */
+.field { display: flex; flex-direction: column; gap: 2px; }
+.field label { font-size: 13px; color: var(--ink-soft); }
+.field input { height: 42px; border: 0; border-bottom: 1.5px solid var(--ink); background: transparent; padding: 0 2px; font-size: 17px; border-radius: 0; }
+.field input::placeholder { color: #665C4E; }
+.field input:focus-visible { outline: none; border-bottom-color: var(--chalk); box-shadow: 0 2px 0 var(--chalk); }
+.field input[aria-invalid="true"] { border-bottom-color: var(--error); }
+.err { font-size: 13px; color: var(--error); }
+.alert { font-size: 14px; padding: 6px 0 6px 12px; border-left: 1px solid currentColor; }
+.alert.bad { color: var(--error); }
+.alert.info { color: var(--ink); }
+.demo { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 13px; color: var(--ink-soft); }
+.demo button { background: none; border: 0; min-height: 36px; padding: 0 2px; cursor: pointer; color: var(--ink); text-decoration: underline dotted; text-underline-offset: 4px; }
+.demo button:hover { color: var(--chalk); }
+.accounts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink-faint); }
+.accounts button { width: 100%; min-height: 52px; display: flex; gap: 12px; align-items: center; border: 0; border-bottom: 1px solid var(--ink-faint); background: none; text-align: left; cursor: pointer; }
+.accounts button:hover { color: var(--chalk); }
+.avatar { font-family: var(--face-latin); width: 30px; height: 30px; border: 1px solid var(--ink); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
+.spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(232, 225, 207, .4); border-top-color: var(--paper); animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* the plate's title and numbered key */
+.foot { pointer-events: auto; position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 28px;
+  padding-block: 8px calc(30px + env(safe-area-inset-bottom, 0px)); }
+.title-plate { font-family: var(--face-latin); font-size: clamp(22px, 2.6vw, 34px); letter-spacing: .14em; line-height: 1; }
+.title-plate small { display: block; font-family: var(--face-han); font-size: 13px; letter-spacing: .2em; color: var(--ink-soft); margin-top: 6px; }
+.key { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.station { background: none; border: 0; cursor: pointer; min-height: 44px; display: inline-flex; align-items: baseline; gap: 8px; padding: 0 2px; font-size: 15px; color: var(--ink); }
+.station .n { font-family: var(--face-latin); font-size: 20px; }
+.station[aria-current="step"] { color: var(--chalk); }
+.station[aria-current="step"] .n { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 4px; }
+.station:hover { color: var(--chalk); }
+
+/* numerals engraved into the view, as on the plate's key */
+.pins { position: fixed; inset: 0; pointer-events: none; z-index: 2; }
+.pin { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; background: var(--paper); border: 1px solid var(--ink); border-radius: 50%;
+  width: 34px; height: 34px; font-family: var(--face-latin); font-size: 18px; line-height: 1; color: var(--ink); transition: color .2s, border-color .2s; }
+.pin:hover { color: var(--chalk); border-color: var(--chalk); }
+
+.skip { position: fixed; z-index: 6; top: max(26px, calc(env(safe-area-inset-top, 0px) + 18px)); right: max(32px, calc(env(safe-area-inset-right, 0px) + 22px)); }
+.flood { position: fixed; inset: 0; z-index: 8; background: var(--ink); pointer-events: none; clip-path: circle(0 at 50% 50%); }
+
+.home { position: fixed; inset: 0; z-index: 9; overflow: auto; background: var(--paper);
+  padding-block: calc(40px + env(safe-area-inset-top, 0px)) calc(40px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(24px, env(safe-area-inset-left, 0px)); padding-right: max(24px, env(safe-area-inset-right, 0px)); }
+.home-inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+.home-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px; }
+.home h1 { margin: 0; font-size: 40px; font-weight: 900; }
+.home-role { font-family: var(--face-latin-text); font-style: italic; color: var(--chalk); font-size: 18px; }
+.home-note { margin: 0; color: var(--ink-soft); }
+.home-card { border-top: 1px solid var(--ink); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.home-card h2 { margin: 0; font-size: 22px; }
+.home-meta { margin: 0; font-size: 14px; color: var(--ink-soft); }
+.home-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid var(--ink-faint); padding-top: 8px; }
+.home-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.home-tag { font-size: 13px; font-style: italic; color: var(--ink-soft); }
+
+.foot::before { content: ""; position: absolute; z-index: -1; inset: -28px calc(-1 * max(40px, calc(env(safe-area-inset-right, 0px) + 28px))) 0; background: linear-gradient(180deg, transparent, var(--paper) 45%); }
+@media (max-width: 759px) {
+  .app { grid-template-rows: 1fr auto; padding-left: max(28px, calc(env(safe-area-inset-left, 0px) + 20px)); padding-right: max(28px, calc(env(safe-area-inset-right, 0px) + 20px)); }
+  .stage { justify-content: flex-end; }
+  .panel { width: 100%; margin: 0; max-height: 54vh; padding: 16px 4px 10px; background: var(--paper); border-top: 1px solid var(--ink); }
+  .panel h1 { font-size: 28px; }
+  .panel h2 { font-size: 24px; }
+  .foot { padding-block: 4px calc(24px + env(safe-area-inset-bottom, 0px)); }
+  .title-plate { display: none; }
+  .station .label { font-size: 13px; }
+}
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } .ui-btn { transition: none; } }
+</style>
+
+<script>document.documentElement.classList.add('js');</script>
+<div class="sky" aria-hidden="true"></div>
+<canvas id="scene" aria-hidden="true"></canvas>
+<div class="pins" id="pins"></div>
+<div class="plate" aria-hidden="true"></div>
+<button type="button" class="ui-link skip" id="skip" hidden>略過刻版</button>
+
+<div class="app">
+  <main class="stage">
+    <section class="panel is-active" id="st-1" aria-labelledby="h1">
+      <h1 id="h1" data-h tabindex="-1">在廣場上，把理由說清楚</h1>
+      <p>在老師指定的哲學題目上，與 AI 多輪對話。它不給答案，只追問你的理由，直到想法站得住腳。</p>
+      <div class="actions">
+        <button type="button" class="ui-btn" data-go="4">前往元老院之門登入</button>
+        <button type="button" class="ui-link" data-go="2">先看一段對話</button>
+      </div>
+      <p class="chalk-note">Cicero 把蘇格拉底的問答帶進拉丁世界，在公開場合逐一詰問。</p>
+      <p class="note">待確認：Three.js 與 GSAP 屬新增前端依賴。本頁為 prototype，帳號皆為示意。</p>
+    </section>
+
+    <section class="panel" id="st-2" aria-labelledby="h2r">
+      <h2 id="h2r" data-h tabindex="-1">講壇上，AI 只負責追問<span class="latin">Rostra</span></h2>
+      <ol class="talk" id="talk" aria-label="示意對話"></ol>
+      <p class="legend-key"><span class="latin">DISC.</span> 學生　<span class="latin" style="color:var(--chalk)">INTER.</span> 提問的 AI</p>
+      <div class="polish"><span>想法的刻線</span><i><b id="meter"></b></i></div>
+      <div class="actions"><button type="button" class="ui-link" id="replay">重刻這段對話</button></div>
+    </section>
+
+    <section class="panel" id="st-3" aria-labelledby="h3c">
+      <h2 id="h3c" data-h tabindex="-1">檔案館：誰看得到紀錄<span class="latin">Tabularium</span></h2>
+      <ul class="sees">
+        <li><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9.5l3.6 3.6L15 4.6" fill="none" stroke="#1F1A16" stroke-width="1.6" stroke-linecap="round"/></svg><span>教師：學生的學習總結與主張分布</span></li>
+        <li><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9.5l3.6 3.6L15 4.6" fill="none" stroke="#1F1A16" stroke-width="1.6" stroke-linecap="round"/></svg><span>教師：已結束活動的對話原文，只能閱讀</span></li>
+        <li class="no"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 4l10 10M14 4L4 14" fill="none" stroke="#A9442B" stroke-width="1.6" stroke-linecap="round"/></svg><span>進行中的對話</span></li>
+        <li class="no"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 4l10 10M14 4L4 14" fill="none" stroke="#A9442B" stroke-width="1.6" stroke-linecap="round"/></svg><span>學生自己從題目庫開始的個人練習</span></li>
+      </ul>
+      <p class="note">教師只看得到自己建立的教室。管理者介面中的每則訊息一律顯示為 message。</p>
+    </section>
+
+    <section class="panel" id="st-4" aria-labelledby="h4d">
+      <div id="v-login" style="display:flex;flex-direction:column;gap:12px">
+        <h2 id="h4d" data-h tabindex="-1">元老院之門<span class="latin">Curia Iulia</span></h2>
+        <p>登入後，門會帶你到自己的教室。</p>
+        <div class="alert bad" id="a-bad" role="alert" hidden>電子郵件或密碼不正確，請再試一次。</div>
+        <div class="alert info" id="a-timeout" role="status" hidden>為保護你的帳號，已自動登出，請重新登入。</div>
+        <form id="login" novalidate style="display:flex;flex-direction:column;gap:14px">
+          <div class="field"><label for="email">電子郵件</label><input id="email" type="email" autocomplete="username" placeholder="name@school.edu" aria-describedby="email-err"><span class="err" id="email-err" hidden></span></div>
+          <div class="field"><label for="pw">密碼</label><input id="pw" type="password" autocomplete="current-password" aria-describedby="pw-err"><span class="err" id="pw-err" hidden></span></div>
+          <div class="actions"><button type="submit" class="ui-btn" id="submit">登入</button><button type="button" class="ui-link" id="google">使用 Google 帳號登入</button></div>
+        </form>
+        <p class="note">本系統不開放自行註冊，帳號由教師或管理者匯入名單後開通。忘記密碼請聯絡管理者重設。</p>
+        <div class="demo" id="demo"><span>示意帳號：</span></div>
+      </div>
+      <div id="v-google" hidden style="display:flex;flex-direction:column;gap:12px">
+        <p class="note">示意畫面，實際由 Google 提供</p>
+        <h2 id="h4g" tabindex="-1">選擇帳號</h2>
+        <ul class="accounts" id="accounts"></ul>
+        <div class="actions"><button type="button" class="ui-link" id="g-cancel">取消</button></div>
+      </div>
+      <div id="v-blocked" hidden style="display:flex;flex-direction:column;gap:12px">
+        <h2 id="h4b" tabindex="-1">你的帳號尚未開通</h2>
+        <p><b id="blocked-who"></b> 不在任何教室的修課名單內。請聯絡你的教師或管理者，把這個信箱加入名單。</p>
+        <div class="alert bad" id="a-recheck" role="status" hidden>剛剛重新檢查過，仍未在名單內。</div>
+        <div class="actions"><button type="button" class="ui-btn" id="recheck">我已被加入，重新檢查</button><button type="button" class="ui-link" id="other">改用其他帳號登入</button></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="title-plate">FORVM ROMANVM<small>對話入口・示意</small></div>
+    <nav aria-label="版畫圖例">
+      <ol class="key">
+        <li><button type="button" class="station" data-go="1" aria-current="step"><span class="n">I</span><span class="label">廣場</span></button></li>
+        <li><button type="button" class="station" data-go="2"><span class="n">II</span><span class="label">講壇</span></button></li>
+        <li><button type="button" class="station" data-go="3"><span class="n">III</span><span class="label">檔案館</span></button></li>
+        <li><button type="button" class="station" data-go="4"><span class="n">IV</span><span class="label">元老院之門</span></button></li>
+      </ol>
+    </nav>
+  </footer>
+</div>
+
+<div class="flood" id="flood" aria-hidden="true"></div>
+<section class="home" id="home" hidden aria-labelledby="home-h">
+  <div class="home-inner">
+    <div class="home-bar">
+      <div><span class="home-role" id="home-role"></span></div>
+      <div class="actions"><button type="button" class="ui-link" id="sim-timeout">模擬逾時</button><button type="button" class="ui-btn quiet" id="back">回到廣場</button></div>
+    </div>
+    <h1 id="home-h" tabindex="-1">我的教室</h1>
+    <div class="rule"></div>
+    <div id="home-body" style="display:flex;flex-direction:column;gap:26px"></div>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+/* forum-core:start (generated by inline-core.mjs, edit forum-core.js) */
+import * as THREE from 'three';
+const { reducedMotion, isPhone, $, SITES, buildForum, makeIdea, makeRig, runLoop, makePins, ACCOUNTS, HOMES, wireShell, TALK } = (() => {
+// Shared core for the prototype-B art-direction proposals (Moneta, Vedute, Salve).
+// Each proposal supplies its own materials, ground, renderer pass and UI skin;
+// this file owns the forum's geometry, the four camera stations and the login flow.
+
+
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const isPhone = () => innerWidth < 760;
+const $ = (s, r = document) => r.querySelector(s);
+
+/* ---------------- the forum, Roman buildings only ----------------
+   Ground plane y = 0. Looking west from the Via Sacra: Tabularium closes the far end,
+   the Temple of Saturn and the Rostra stand before it, the Curia on the north side,
+   the Basilica Julia along the south, the round Temple of Vesta near the viewer. */
+const SITES = {
+  tabularium: [0, -7.2], saturn: [3.6, -4.6], rostra: [-0.6, -2.6], curia: [-6.2, -1.6],
+  basilica: [7.2, 0.4], castor: [5.2, 4.4], vesta: [1.8, 6.4],
+};
+
+function buildForum({ mat, onMesh = () => {}, ruined = false, detail = 1 }) {
+  const root = new THREE.Group();
+  const sites = {};
+  const M = (geo, role, x = 0, y = 0, z = 0, parent) => {
+    const m = new THREE.Mesh(geo, mat(role));
+    m.position.set(x, y, z);
+    m.userData.role = role;
+    onMesh(m, role);
+    (parent || root).add(m);
+    return m;
+  };
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const seg = Math.max(8, Math.round(12 * detail));
+  const col = (r, h) => new THREE.CylinderGeometry(r * 0.88, r, h, seg);
+  const site = (name, ry = 0) => { const g = new THREE.Group(); g.position.set(SITES[name][0], 0, SITES[name][1]); g.rotation.y = ry; root.add(g); sites[name] = g; return g; };
+  const prism = (base, height, depth) => {
+    const s = new THREE.Shape(); s.moveTo(-base / 2, 0); s.lineTo(base / 2, 0); s.lineTo(0, height); s.closePath();
+    const g = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: false }); g.translate(0, 0, -depth / 2); return g;
+  };
+  // a row of round arches cut into a wall: piers + lintel blocks, so every material reads them
+  const arcade = (g, n, bay, h, d, y0, role, z = 0) => {
+    const w = n * bay;
+    for (let i = 0; i <= n; i++) M(box(bay * 0.28, h, d), role, -w / 2 + i * bay, y0 + h / 2, z, g);
+    M(box(w + bay * 0.28, h * 0.32, d), role, 0, y0 + h * 1.16, z, g);
+    for (let i = 0; i < n; i++) {
+      const a = new THREE.Mesh(new THREE.TorusGeometry(bay * 0.36, bay * 0.07, 6, seg, Math.PI), mat(role));
+      a.position.set(-w / 2 + (i + 0.5) * bay, y0 + h * 0.86, z + d / 2); onMesh(a, role); g.add(a);
+    }
+  };
+
+  // Tabularium: the records office, a high substructure wall with an arcade on top
+  const tab = site('tabularium');
+  M(box(14, 3.2, 2.2), 'stone2', 0, 1.6, 0, tab);
+  for (let i = 0; i < 7; i++) M(box(0.7, 1.1, 0.06), 'shadow', -5.4 + i * 1.8, 1.4, 1.13, tab);
+  arcade(tab, 7, 1.9, 1.7, 1.6, 3.2, 'stone', 0.3);
+  M(box(14.2, 0.35, 2.4), 'stone', 0, 5.65, 0, tab);
+
+  // Temple of Saturn: tall podium, eight-column front (ruined: the famous eight survivors only)
+  const sat = site('saturn');
+  M(box(4.6, 1.6, 6), 'stone2', 0, 0.8, 0, sat);
+  M(box(2.4, 0.8, 1.4), 'stone2', 0, 0.4, 3.6, sat);
+  for (let i = 0; i < 6; i++) M(col(0.17, 3.0), 'stone', -1.9 + i * 0.76, 3.1, 2.4, sat);
+  for (const x of [-1.9, 1.9]) M(col(0.17, 3.0), 'stone', x, 3.1, 1.5, sat);
+  M(box(4.6, 0.5, 1.9), 'stone', 0, 4.85, 1.95, sat);
+  if (!ruined) {
+    M(box(3.4, 3.0, 3.6), 'stone', 0, 3.1, -1.1, sat);
+    M(box(4.6, 0.5, 6), 'stone', 0, 4.85, 0, sat);
+    const p = M(prism(4.7, 1.0, 6.1), ['stone', 'roof'], 0, 5.1, 0, sat);
+    p.userData.role = 'pediment';
+  } else {
+    M(prism(4.7, 1.0, 0.5), 'stone', 0, 5.1, 2.1, sat);
+  }
+
+  // Rostra: the speakers' platform, its face set with ship beaks (rostra)
+  const ros = site('rostra');
+  M(box(5.2, 1.6, 2.4), 'stone2', 0, 0.8, 0, ros);
+  M(box(5.3, 0.22, 2.5), 'stone', 0, 1.7, 0, ros);
+  for (let i = 0; i < 5; i++) {
+    const beak = M(new THREE.ConeGeometry(0.16, 0.7, 6), 'bronze', -2 + i, 1.0, 1.42, ros);
+    beak.rotation.x = Math.PI / 2;
+  }
+  M(box(1.6, 0.8, 0.8), 'stone2', 0, 0.4, -1.6, ros);
+  const speakerA = new THREE.Group(), speakerB = new THREE.Group();
+  for (const [g, role, x] of [[speakerA, 'figureA', -0.9], [speakerB, 'figureB', 0.9]]) {
+    M(new THREE.CylinderGeometry(0.13, 0.24, 0.8, seg), role, 0, 0.4, 0, g);
+    M(new THREE.SphereGeometry(0.16, seg, 8), role, 0, 0.98, 0, g);
+    g.position.set(x, 1.81, 0.2); ros.add(g);
+  }
+
+  // Curia Julia: tall brick hall, gable, bronze double door facing the square (+x)
+  const cur = site('curia', Math.PI / 2);
+  M(box(4.2, 4.6, 3.6), 'brick', 0, 2.3, 0, cur);
+  M(prism(4.4, 1.1, 3.8), ['stone', 'roof'], 0, 4.6, 0, cur);
+  M(box(4.3, 0.3, 3.7), 'stone', 0, 4.5, 0, cur);
+  M(box(2.0, 0.4, 1.0), 'stone2', 0, 0.2, 2.2, cur);
+  M(box(1.5, 2.3, 0.1), 'shadow', 0, 1.55, 1.81, cur);
+  for (const x of [-1.2, 0, 1.2]) M(box(0.6, 1.1, 0.06), 'shadow', x, 3.5, 1.81, cur);
+  const doorL = new THREE.Group(), doorR = new THREE.Group();
+  doorL.position.set(-0.7, 1.55, 1.86); doorR.position.set(0.7, 1.55, 1.86);
+  M(box(0.68, 2.2, 0.08), 'bronze', 0.34, 0, 0, doorL);
+  M(box(0.68, 2.2, 0.08), 'bronze', -0.34, 0, 0, doorR);
+  cur.add(doorL, doorR);
+
+  // Basilica Julia: long two-storey arcade on the south side
+  const bas = site('basilica', -Math.PI / 2);
+  M(box(11, 0.4, 3), 'stone2', 0, 0.2, 0, bas);
+  arcade(bas, 6, 1.75, 1.6, 0.5, 0.4, 'stone', 1.2);
+  if (!ruined) arcade(bas, 6, 1.75, 1.3, 0.5, 2.5, 'stone', 1.2);
+
+  // Temple of Castor: three tall columns stand (ruined) or the whole front (intact)
+  const cas = site('castor', -Math.PI / 2.4);
+  M(box(3.6, 1.8, 4.4), 'stone2', 0, 0.9, 0, cas);
+  const nCas = ruined ? 3 : 6;
+  for (let i = 0; i < nCas; i++) M(col(0.16, 3.4), 'stone', -1.4 + i * 0.56, 3.5, 1.7, cas);
+  M(box(ruined ? 1.6 : 3.4, 0.45, 0.6), 'stone', ruined ? -0.84 : 0, 5.4, 1.7, cas);
+
+  // Temple of Vesta: the round one
+  const ves = site('vesta');
+  M(new THREE.CylinderGeometry(1.5, 1.6, 0.8, seg * 2), 'stone2', 0, 0.4, 0, ves);
+  M(new THREE.CylinderGeometry(1.0, 1.0, 2.2, seg * 2), 'stone', 0, 1.9, 0, ves);
+  for (let i = 0; i < 12; i++) { const a = (i / 12) * Math.PI * 2; M(col(0.1, 2.3), 'stone', Math.cos(a) * 1.35, 1.95, Math.sin(a) * 1.35, ves); }
+  if (!ruined) { const roof = M(new THREE.ConeGeometry(1.6, 0.9, seg * 2), 'roof', 0, 3.55, 0, ves); roof.userData.role = 'roof'; }
+
+  const anchors = {
+    2: new THREE.Vector3(SITES.rostra[0], 4.2, SITES.rostra[1]),
+    3: new THREE.Vector3(SITES.tabularium[0], 6.6, SITES.tabularium[1]),
+    4: new THREE.Vector3(SITES.curia[0], 6.4, SITES.curia[1]),
+  };
+  return { root, sites, anchors, doorL, doorR, speakerA, speakerB };
+}
+
+/* The idea above the Rostra: a rough body with one morph target that each proposal
+   defines (a struck coin, a clean engraving, a finished emblema). */
+function makeIdea(material, { radius = 0.72, target = (v, r) => v.clone().multiplyScalar(r), detail = 2 } = {}) {
+  const geo = new THREE.IcosahedronGeometry(radius, detail);
+  const pos = geo.attributes.position;
+  const goal = new Float32Array(pos.array.length);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).normalize();
+    const t = target(v, radius);
+    goal.set([t.x, t.y, t.z], i * 3);
+    const n = 1 + 0.34 * Math.sin(v.x * 5.1 + 1.3) * Math.cos(v.y * 4.3) + 0.24 * Math.sin(v.z * 6.7 + v.x * 2.0);
+    pos.setXYZ(i, v.x * radius * n, v.y * radius * n, v.z * radius * n);
+  }
+  geo.morphAttributes.position = [new THREE.Float32BufferAttribute(goal, 3)];
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.morphTargetInfluences = [0];
+  return mesh;
+}
+
+/* ---------------- camera stations ---------------- */
+function makeRig(camera, stations, { panelShift = 230, phonePush = 0.2 } = {}) {
+  const cam = { px: 0, py: 0, pz: 0, tx: 0, ty: 0, tz: 0 };
+  const view = (n) => {
+    const s = stations[n];
+    const k = isPhone() ? (s.phoneK ?? 1.3) : 1;
+    const p = s.pos.map((c, i) => s.tgt[i] + (c - s.tgt[i]) * k);
+    return { px: p[0], py: p[1], pz: p[2], tx: s.tgt[0], ty: s.tgt[1], tz: s.tgt[2] };
+  };
+  const apply = () => { camera.position.set(cam.px, cam.py, cam.pz); camera.lookAt(cam.tx, cam.ty, cam.tz); };
+  const resize = (renderer) => {
+    const w = innerWidth, h = innerHeight;
+    renderer.setPixelRatio(Math.min(devicePixelRatio, isPhone() ? 1.5 : 2));
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.fov = w < h ? 48 : 34;
+    // keep the subject clear of the panel by shifting the projection, never the camera
+    if (isPhone()) camera.setViewOffset(w, h, 0, h * phonePush, w, h);
+    else camera.setViewOffset(w, h, -Math.min(panelShift, w * 0.17), 0, w, h);
+    camera.updateProjectionMatrix();
+  };
+  return { cam, view, apply, resize };
+}
+
+/* ---------------- render loop with lifecycle ---------------- */
+function runLoop(renderer, frame) {
+  const clock = new THREE.Clock();
+  const tick = () => frame(clock.getElapsedTime(), clock);
+  const gsap = window.gsap;
+  // stop drawing and pause every tween while the tab is hidden
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { renderer.setAnimationLoop(null); gsap?.globalTimeline.pause(); clock.stop(); }
+    else { clock.start(); gsap?.globalTimeline.resume(); renderer.setAnimationLoop(tick); }
+  });
+  renderer.setAnimationLoop(tick);
+  return clock;
+}
+
+/* ---------------- pins projected from 3D anchors ---------------- */
+function makePins(container, anchors, labels, build) {
+  const els = {};
+  for (const [n, label] of Object.entries(labels)) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'pin'; b.dataset.go = n; b.tabIndex = -1;
+    b.setAttribute('aria-label', label.aria);
+    build(b, label);
+    container.append(b); els[n] = b;
+  }
+  const v = new THREE.Vector3();
+  return (camera, current, hidden) => {
+    for (const [n, el] of Object.entries(els)) {
+      if (hidden || Number(n) === current) { el.hidden = true; continue; }
+      v.copy(anchors[n]).project(camera);
+      if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) { el.hidden = true; continue; }
+      el.hidden = false;
+      el.style.transform = `translate(${((v.x + 1) / 2) * innerWidth}px, ${((1 - v.y) / 2) * innerHeight}px) translate(-50%, -100%)`;
+    }
+  };
+}
+
+/* ---------------- accounts, homes, and the login flow ---------------- */
+const ACCOUNTS = [
+  { email: 'student@demo.tw', role: 'student', label: '學生' },
+  { email: 'teacher@demo.tw', role: 'teacher', label: '教師' },
+  { email: 'admin@demo.tw', role: 'admin', label: '管理者' },
+  { email: 'outsider@demo.tw', role: null, label: '名單外' },
+];
+
+const HOMES = {
+  student: { role: '學生', title: '我的教室', html: `
+    <p class="home-note">活動中的對話與總結，教師會在活動結束後看到（唯讀）。從題目庫開始的個人練習只有你看得到。</p>
+    <section class="home-card"><h2>[教室名稱 A]</h2><p class="home-meta">[教師姓名]</p>
+      <div class="home-row"><span>[活動名稱 1]</span><span class="home-actions"><span class="home-tag">進行中</span><button type="button" class="ui-btn">繼續對話</button></span></div>
+      <div class="home-row"><span>[活動名稱 2]</span><span class="home-actions"><span class="home-tag">已結束</span><button type="button" class="ui-btn quiet">查看總結</button></span></div></section>
+    <section class="home-card"><h2>個人練習</h2><p class="home-meta">從題目庫挑一題自由練習，不屬於任何活動，教師看不到。</p><div class="home-actions"><button type="button" class="ui-btn quiet">瀏覽題目庫</button></div></section>` },
+  teacher: { role: '教師', title: '我的教室', html: `
+    <p class="home-note">你可以查看學生的學習總結，以及已結束活動的對話原文（唯讀）。進行中的對話與個人練習看不到。</p>
+    <section class="home-card"><h2>[教室名稱 A]</h2><p class="home-meta">[N] 位學生，[N] 個活動</p>
+      <div class="home-row"><span>[活動名稱 1]</span><span class="home-actions"><span class="home-tag">已結束</span><button type="button" class="ui-btn">查看學習總結</button></span></div>
+      <div class="home-row"><span>[活動名稱 2]</span><span class="home-actions"><span class="home-tag">進行中</span><button type="button" class="ui-btn quiet">查看進度</button></span></div></section>
+    <div class="home-actions"><button type="button" class="ui-btn">建立教室</button><button type="button" class="ui-btn quiet">匯入修課名單</button></div>` },
+  admin: { role: '系統管理者', title: '所有教室', html: `
+    <p class="home-note">介面中每則訊息一律顯示為 message；AI 總結、學生反思等敏感欄位遮蔽。</p>
+    <section class="home-card"><h2>[教室名稱 A]</h2><p class="home-meta">[教師姓名]，名單 [N] 人，使用中</p></section>
+    <section class="home-card"><h2>帳號與密碼</h2><p class="home-meta">不開放自行註冊；帳號由修課名單開通，密碼由管理者重設。</p><div class="home-actions"><button type="button" class="ui-btn quiet">重設密碼</button></div></section>` },
+};
+
+/* Wires the shared markup (see any proposal's index for the ids) to the proposal's hooks:
+   hooks.station(n, prev)  hooks.enter(acc) -> Promise  hooks.leave()  hooks.homeShown() */
+function wireShell(hooks) {
+  const state = { current: 1, busy: false, who: '' };
+  const panels = [1, 2, 3, 4].map((n) => $('#st-' + n));
+  const go = (n, { focus = true } = {}) => {
+    n = Number(n);
+    if (state.busy || !panels[n - 1]) return;
+    const prev = state.current; state.current = n;
+    panels.forEach((p, i) => p.classList.toggle('is-active', i + 1 === n));
+    document.querySelectorAll('[data-go]').forEach((b) => {
+      if (!b.classList.contains('station')) return;
+      if (Number(b.dataset.go) === n) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current');
+    });
+    hooks.station(n, prev);
+    if (focus) $('[data-h]', panels[n - 1])?.focus({ preventScroll: true });
+  };
+  document.addEventListener('click', (e) => { const b = e.target.closest('[data-go]'); if (b) go(b.dataset.go); });
+  addEventListener('keydown', (e) => {
+    if (e.target.closest('input, textarea') || !$('#home').hidden) return;
+    if (e.key === 'ArrowRight') go(Math.min(4, state.current + 1));
+    if (e.key === 'ArrowLeft') go(Math.max(1, state.current - 1));
+  });
+
+  const views = { login: $('#v-login'), google: $('#v-google'), blocked: $('#v-blocked') };
+  const view = (name, focusSel) => { for (const [k, el] of Object.entries(views)) el.hidden = k !== name; if (focusSel) $(focusSel)?.focus({ preventScroll: true }); };
+  const email = $('#email'), pw = $('#pw'), submit = $('#submit');
+  const submitLabel = submit.textContent;
+  const fieldError = (input, msg) => { const err = $('#' + input.id + '-err'); err.textContent = msg; err.hidden = !msg; input.setAttribute('aria-invalid', msg ? 'true' : 'false'); };
+  const clearBanners = () => { $('#a-bad').hidden = true; $('#a-timeout').hidden = true; };
+  const resetSubmit = () => { submit.disabled = false; submit.textContent = submitLabel; };
+
+  async function route(em) {
+    resetSubmit();
+    const acc = ACCOUNTS.find((a) => a.email === em.toLowerCase());
+    if (!acc) { $('#a-bad').hidden = false; pw.value = ''; pw.focus(); return; }
+    if (!acc.role) { $('#blocked-who').textContent = acc.email; $('#a-recheck').hidden = true; view('blocked', '#h4b'); return; }
+    if (state.current !== 4) go(4, { focus: false });
+    state.busy = true;
+    try { await hooks.enter(acc); } finally { state.busy = false; }
+    showHome(acc);
+  }
+  $('#login').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const em = email.value.trim();
+    let bad = false;
+    if (!em) { fieldError(email, '請輸入電子郵件。'); bad = true; }
+    else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { fieldError(email, '電子郵件格式不正確，例如 name@school.edu。'); bad = true; }
+    else fieldError(email, '');
+    if (!pw.value) { fieldError(pw, '請輸入密碼。'); bad = true; } else fieldError(pw, '');
+    if (bad) { (email.getAttribute('aria-invalid') === 'true' ? email : pw).focus(); return; }
+    clearBanners();
+    submit.disabled = true; submit.innerHTML = '<span class="spin" aria-hidden="true"></span>登入中';
+    setTimeout(() => route(em), 700);
+  });
+  $('#google').addEventListener('click', () => view('google', '#h4g'));
+  $('#g-cancel').addEventListener('click', () => view('login', '#h4d'));
+  $('#recheck').addEventListener('click', () => { $('#a-recheck').hidden = false; });
+  $('#other').addEventListener('click', () => { email.value = ''; pw.value = ''; view('login', '#email'); });
+  for (const a of [ACCOUNTS[0], ACCOUNTS[3], ACCOUNTS[1]]) {
+    const li = document.createElement('li');
+    const b = document.createElement('button'); b.type = 'button';
+    const av = document.createElement('span'); av.className = 'avatar'; av.setAttribute('aria-hidden', 'true'); av.textContent = a.email[0].toUpperCase();
+    const tx = document.createElement('span'); tx.textContent = a.email;
+    b.append(av, tx);
+    b.addEventListener('click', () => { view('login'); email.value = a.email; route(a.email); });
+    li.append(b); $('#accounts').append(li);
+  }
+  for (const a of ACCOUNTS) {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = a.label;
+    b.addEventListener('click', () => { email.value = a.email; pw.value = 'demo-pass'; fieldError(email, ''); fieldError(pw, ''); clearBanners(); submit.focus(); });
+    $('#demo').append(b);
+  }
+
+  function showHome(acc) {
+    state.who = acc.email;
+    const h = HOMES[acc.role];
+    $('#home-role').textContent = h.role;
+    $('#home-h').textContent = h.title;
+    $('#home-body').innerHTML = h.html;
+    $('#home').hidden = false;
+    hooks.homeShown?.();
+    $('#home-h').focus({ preventScroll: true });
+    pw.value = '';
+  }
+  function leaveHome(timeout) {
+    $('#home').hidden = true;
+    hooks.leave?.();
+    view('login');
+    if (timeout) { email.value = state.who; $('#a-timeout').hidden = false; go(4, { focus: false }); pw.focus(); }
+    else { email.value = ''; go(1); }
+  }
+  $('#back').addEventListener('click', () => leaveHome(false));
+  $('#sim-timeout').addEventListener('click', () => leaveHome(true));
+
+  return { state, go };
+}
+
+/* Shared markup for the panels and the home page, so each proposal only skins it. */
+const TALK = [
+  ['s', '民主一定比較公平。'], ['a', '「公平」指的是誰的標準？'],
+  ['s', '多數人同意就是標準。'], ['a', '少數人被忽略時呢？'],
+  ['s', '那要加上保障少數。'], ['a', '你剛才改變了什麼主張？'],
+];
+return { reducedMotion, isPhone, $, SITES, buildForum, makeIdea, makeRig, runLoop, makePins, ACCOUNTS, HOMES, wireShell, TALK };
+})();
+/* forum-core:end */
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const gsap = window.gsap;
+let RM = reducedMotion.matches; reducedMotion.addEventListener('change', (e) => { RM = e.matches; });
+const talk = $('#talk');
+for (const [w, t] of TALK) { const li = document.createElement('li'); li.className = w; li.textContent = t; talk.append(li); }
+
+const canvas = $('#scene');
+let renderer = null;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true }); } catch (e) { renderer = null; }
+
+const PAPER = new THREE.Color('#E8E1CF'), INK = new THREE.Color('#1F1A16');
+const U = { uPaper: { value: PAPER }, uInk: { value: INK }, uReveal: { value: 1 }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 } };
+
+/* Engraving: Lambert light decides the tone, the tone decides how many hatch layers the burin cuts.
+   Lines live in world space (triplanar), so they stay on the stone while the camera moves. */
+const HATCH = /* glsl */`
+  uniform vec3 uPaper; uniform vec3 uInk; uniform float uReveal; uniform vec2 uRes; uniform float uTime; uniform float uRough;
+  varying vec3 vWPos; varying vec3 vWN;
+  float lineAt(vec2 p, float ang, float d, float thr, float spacing) {
+    if (d < thr) return 0.0;
+    vec2 dir = vec2(cos(ang), sin(ang));
+    float u = dot(p, dir) / spacing;
+    u += (0.1 + uRough * 0.9) * sin(dot(p, vec2(1.7, 2.3)) * 2.6 + uTime * uRough * 5.0);
+    float aa = fwidth(u);
+    float dist = abs(fract(u + 0.5) - 0.5);
+    // the burin's width is measured in pixels, so close-ups stay fine-lined
+    float hw = min(0.42, (0.5 + (d - thr) * 2.6) * aa);
+    float l = 1.0 - smoothstep(hw - aa * 0.6, hw + aa * 0.6, dist);
+    return mix(l, clamp(2.0 * hw, 0.0, 1.0) * 0.8, clamp(aa * 2.0 - 0.6, 0.0, 1.0));
+  }
+`;
+function engrave(baseColor, rough) {
+  const m = new THREE.MeshLambertMaterial({ color: baseColor });
+  m.userData.rough = { value: rough ?? 0 };
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U, { uRough: m.userData.rough });
+    sh.vertexShader = 'varying vec3 vWPos; varying vec3 vWN;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz; vWN = normalize(mat3(modelMatrix) * objectNormal);`);
+    sh.fragmentShader = HATCH + sh.fragmentShader.replace('#include <dithering_fragment>', `#include <dithering_fragment>
+      float lum = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+      float d = clamp(1.0 - lum * 1.08, 0.0, 1.0);
+      vec3 an = abs(vWN);
+      vec2 p = an.y > max(an.x, an.z) ? vWPos.xz : (an.x > an.z ? vWPos.zy : vWPos.xy);
+      float h = 0.0;
+      h = max(h, lineAt(p, an.y > 0.6 ? 0.0 : 1.5708, d, 0.10, 0.085));
+      h = max(h, lineAt(p, 0.7854, d, 0.38, 0.08));
+      h = max(h, lineAt(p, -0.7854, d, 0.58, 0.075));
+      h = max(h, lineAt(p, an.y > 0.6 ? 1.5708 : 0.0, d, 0.78, 0.06));
+      float reveal = smoothstep(uReveal * (uRes.x + 300.0) - 300.0, uReveal * (uRes.x + 300.0), gl_FragCoord.x);
+      h *= 1.0 - reveal;
+      gl_FragColor = vec4(mix(uPaper, uInk, h), 1.0);`);
+  };
+  return m;
+}
+const hullMat = new THREE.ShaderMaterial({
+  uniforms: { uInk: U.uInk, uReveal: U.uReveal, uRes: U.uRes, thickness: { value: 0.03 } },
+  vertexShader: 'uniform float thickness; void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position + normal * thickness, 1.0); }',
+  fragmentShader: 'uniform vec3 uInk; uniform float uReveal; uniform vec2 uRes; void main(){ if (gl_FragCoord.x > uReveal * (uRes.x + 300.0) - 150.0) discard; gl_FragColor = vec4(uInk, 1.0); }',
+  side: THREE.BackSide,
+});
+function outline(mesh) {
+  let g = mesh.geometry.clone();
+  for (const n of Object.keys(g.attributes)) if (n !== 'position') g.deleteAttribute(n);
+  g = mergeVertices(g, 1e-3); g.computeVertexNormals();
+  mesh.add(new THREE.Mesh(g, hullMat));
+}
+// tones: how much light each material keeps; the hatch layers do the rest
+const TONE = { stone: '#FFFFFF', stone2: '#E2E2E2', brick: '#BDBDBD', roof: '#8C8C8C', bronze: '#707070', shadow: '#2A2A2A', figureA: '#9A9A9A', figureB: '#D6D6D6', ground: '#F4F4F4', drum: '#ECECEC' };
+const mats = {};
+const mat = (role) => Array.isArray(role) ? role.map(mat) : (mats[role] ||= engrave(TONE[role] || '#FFFFFF'));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 200);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.25));
+const sun = new THREE.DirectionalLight(0xffffff, 2.3); sun.position.set(9, 12, 6); scene.add(sun);
+
+const forum = buildForum({ mat, ruined: true, onMesh: (m, role) => { if (role !== 'shadow') outline(m); } });
+scene.add(forum.root);
+// the Campo Vaccino: worn paving, fallen drums, a broken column lying in the dirt
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(34, 26), mat('ground')); ground.rotation.x = -Math.PI / 2; scene.add(ground);
+let s = 11; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+for (let i = 0; i < 46; i++) {
+  const w = 0.9 + rnd() * 1.4, d = 0.7 + rnd() * 1.1;
+  const x = -9 + rnd() * 18, z = -5 + rnd() * 14;
+  if (Math.hypot(x - 1.8, z - 6.4) < 2.2) continue;
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), mat('stone2')); slab.position.set(x, 0.03, z); slab.rotation.y = (rnd() - 0.5) * 0.2; scene.add(slab);
+}
+for (const [x, z, r] of [[-2.8, 2.4, 0.4], [3.9, 1.2, 1.2], [-4.6, 4.8, 0.2], [0.6, 3.6, 2.1]]) {
+  const dr = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.9, 14), mat('drum'));
+  dr.rotation.z = Math.PI / 2; dr.rotation.y = r; dr.position.set(x, 0.34, z); outline(dr); scene.add(dr);
+}
+const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 3.4, 14), mat('stone')); shaft.rotation.z = Math.PI / 2; shaft.rotation.y = 0.5; shaft.position.set(-3.6, 0.2, 1.0); outline(shaft); scene.add(shaft);
+
+// the idea: scribbled at first, engraved clean as the questions land
+const ideaMat = engrave('#E9E9E9', 1);
+const idea = makeIdea(ideaMat, { radius: 0.62 });
+idea.position.set(-0.6, 3.6, -2.6); scene.add(idea);
+
+const STATIONS = {
+  1: { pos: [8.5, 4.6, 21], tgt: [-0.8, 2.4, -2.4], phoneK: 1.4 },
+  2: { pos: [2.4, 4.1, 5.0], tgt: [-0.6, 2.6, -2.6] },
+  3: { pos: [0.4, 4.6, 1.4], tgt: [0, 3.9, -7.2] },
+  4: { pos: [2.6, 2.7, 0.4], tgt: [-4.3, 2.0, -1.6] },
+};
+const rig = makeRig(camera, STATIONS, { panelShift: 210, phonePush: 0.22 });
+const pins = makePins($('#pins'), forum.anchors, { 2: { n: 'II', aria: '前往講壇' }, 3: { n: 'III', aria: '前往檔案館' }, 4: { n: 'IV', aria: '前往元老院之門' } }, (b, l) => { b.textContent = l.n; });
+
+/* ---- the idea: three questions engrave it ---- */
+const meter = $('#meter');
+const items = [...talk.children];
+let talkTl = null;
+const setPolish = (p) => { idea.morphTargetInfluences[0] = p; ideaMat.userData.rough.value = 1 - p; meter.style.transform = `scaleX(${p})`; };
+function stopTalk() { talkTl?.kill(); talkTl = null; gsap.set(items, { clearProps: 'all' }); setPolish(1); }
+function playTalk() {
+  stopTalk(); if (RM) return;
+  const st = { p: 0 }; setPolish(0);
+  talkTl = gsap.timeline({ delay: 1.0 }).set(items, { autoAlpha: 0 });
+  for (let i = 0; i < 3; i++) {
+    talkTl.to(items[i * 2], { autoAlpha: 1, duration: 0.4 }, '+=0.3')
+      .to(items[i * 2 + 1], { autoAlpha: 1, duration: 0.4 }, '+=0.6')
+      .to(st, { p: (i + 1) / 3, duration: 0.9, ease: 'power1.inOut', onUpdate: () => setPolish(st.p) }, '<');
+  }
+}
+$('#replay').addEventListener('click', playTalk);
+
+/* ---- intro: the burin cuts the plate from left to right ---- */
+let intro = null;
+function endIntro() { intro?.progress(1).kill(); intro = null; U.uReveal.value = 1; $('#skip').hidden = true; }
+$('#skip').addEventListener('click', endIntro);
+
+let flying = false, camTween = null;
+const shell = wireShell({
+  station(n, prev) {
+    if (intro) endIntro();
+    camTween?.kill();
+    const to = rig.view(n);
+    if (RM || !renderer) { Object.assign(rig.cam, to); rig.apply(); }
+    else camTween = gsap.to(rig.cam, { ...to, duration: prev === n ? 0.01 : 2.0, ease: 'power2.inOut', onUpdate: rig.apply });
+    if (n === 2) playTalk(); else stopTalk();
+  },
+  async enter() {
+    if (intro) endIntro();
+    if (RM || !renderer) return;
+    flying = true; camTween?.kill();
+    const door = forum.doorL.parent.localToWorld(new THREE.Vector3(0, 1.55, 1.86));
+    const tl = gsap.timeline();
+    tl.to(rig.cam, { px: door.x + 3.2, py: door.y + 0.2, pz: door.z, tx: door.x - 3, ty: door.y, tz: door.z, duration: 0.9, ease: 'power2.inOut', onUpdate: rig.apply })
+      .to(forum.doorL.rotation, { y: -1.8, duration: 0.8, ease: 'power2.out' }, '-=0.2')
+      .to(forum.doorR.rotation, { y: 1.8, duration: 0.8, ease: 'power2.out' }, '<')
+      .to(rig.cam, { px: door.x + 0.3, duration: 0.8, ease: 'power3.in', onUpdate: rig.apply }, '-=0.4')
+      .fromTo('#flood', { clipPath: 'circle(0% at 50% 50%)' }, { clipPath: 'circle(75% at 50% 50%)', duration: 0.6, ease: 'power2.in' }, '-=0.45');
+    await tl.then();
+    flying = false;
+  },
+  homeShown() {
+    if (RM) { gsap.set('#flood', { clipPath: 'circle(0% at 50% 50%)' }); return; }
+    gsap.to('#flood', { autoAlpha: 0, duration: 0.5, delay: 0.1, onComplete: () => gsap.set('#flood', { clipPath: 'circle(0% at 50% 50%)', autoAlpha: 1 }) });
+    gsap.from('#home .home-inner > *', { autoAlpha: 0, y: 12, duration: 0.5, stagger: 0.06, ease: 'power3.out', clearProps: 'all' });
+  },
+  leave() { forum.doorL.rotation.y = 0; forum.doorR.rotation.y = 0; },
+});
+
+if (renderer) {
+  const resize = () => { rig.resize(renderer); U.uRes.value.set(canvas.width, canvas.height); if (!flying && !camTween?.isActive()) { Object.assign(rig.cam, rig.view(shell.state.current)); rig.apply(); } };
+  addEventListener('resize', resize);
+  new ResizeObserver(resize).observe(document.documentElement);
+  Object.assign(rig.cam, rig.view(1)); resize(); setPolish(1);
+  if (!RM) {
+    U.uReveal.value = 0; $('#skip').hidden = false;
+    const wide = rig.view(1);
+    Object.assign(rig.cam, { ...wide, px: wide.px + 6, py: wide.py + 1.5 }); rig.apply();
+    intro = gsap.timeline({ onComplete: endIntro })
+      .to(U.uReveal, { value: 1, duration: 3.2, ease: 'power1.inOut' }, 0)
+      .to(rig.cam, { ...wide, duration: 3.6, ease: 'power2.out', onUpdate: rig.apply }, 0)
+      .from('#st-1', { autoAlpha: 0, duration: 0.8 }, 2.2);
+  }
+  runLoop(renderer, (t) => {
+    U.uTime.value = t;
+    if (!RM) { idea.rotation.y = t * 0.35; idea.position.y = 3.6 + Math.sin(t * 1.1) * 0.06; }
+    pins(camera, shell.state.current, flying || !!intro || !$('#home').hidden);
+    renderer.render(scene, camera);
+  });
+} else {
+  canvas.hidden = true;
+}
+</script>
