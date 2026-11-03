@@ -444,7 +444,7 @@ pub async fn find_password_account(
         .bind(normalized)
         .fetch_optional(pool)
         .await
-    } else if crate::roster::is_valid_student_id(&normalized) {
+    } else if crate::roster::is_valid_student_number(&normalized) {
         sqlx::query_as(
             "SELECT id, email, password_hash, disabled_at IS NOT NULL AS disabled
              FROM users WHERE student_id = $1",

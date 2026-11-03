@@ -118,7 +118,7 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["student_id"] == "98765432A")
+        .find(|row| row["student_number"] == "98765432A")
         .unwrap();
     let id = student["id"].as_str().unwrap();
     let rejected = send(
@@ -127,7 +127,7 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
             "DELETE",
             &format!("/api/students/{id}"),
             Some(&a.teacher),
-            Some(json!({"confirm_student_id":"98765432B"})),
+            Some(json!({"confirm_student_number":"98765432B"})),
         ),
     )
     .await;

@@ -193,7 +193,7 @@ pub(crate) struct ImportBody {
 pub struct StudentImportRow {
     pub line: usize,
     pub name: String,
-    pub student_id: String,
+    pub student_number: String,
 }
 
 #[derive(Debug, Serialize, PartialEq, utoipa::ToSchema)]
@@ -249,10 +249,10 @@ fn csv_fields(line: &str) -> Option<Vec<String>> {
 }
 
 /// 學號為 8 位數字加 1 個英文字母（與資料庫 CHECK 一致，大小寫皆收）。
-pub fn is_valid_student_id(id: &str) -> bool {
-    id.len() == 9
-        && id.as_bytes()[..8].iter().all(u8::is_ascii_digit)
-        && id.as_bytes()[8].is_ascii_alphabetic()
+pub fn is_valid_student_number(number: &str) -> bool {
+    number.len() == 9
+        && number.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        && number.as_bytes()[8].is_ascii_alphabetic()
 }
 
 /// 每行依序為姓名、學號兩欄；多出來的欄位（含舊格式的電子郵件）整行拒絕，錯誤不回顯個資。
@@ -282,7 +282,7 @@ pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
         }
         let valid = fields[0].chars().count() <= 30
             && !fields[0].contains('\0')
-            && is_valid_student_id(&fields[1]);
+            && is_valid_student_number(&fields[1]);
         if !valid {
             result.invalid.push(StudentImportError {
                 line: index + 1,
@@ -293,7 +293,7 @@ pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
         result.students.push(StudentImportRow {
             line: index + 1,
             name: fields[0].to_owned(),
-            student_id: fields[1].to_ascii_uppercase(),
+            student_number: fields[1].to_ascii_uppercase(),
         });
     }
     result
@@ -311,7 +311,7 @@ pub(crate) struct ImportResult {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Credential {
-    student_id: String,
+    student_number: String,
     temporary_password: String,
 }
 
@@ -371,20 +371,21 @@ pub(crate) async fn import_roster(
     for row in &parsed.students {
         // 電子郵件不經匯入：Google 登入靠電子郵件比對帳號，匯入若能設定信箱，
         // 知道學號的人就能接管別人的帳號，所以信箱只由學生自己填寫。
-        let user_id =
-            if let Some(id) = roster_store::find_import_account(&mut tx, &row.student_id).await? {
-                id
-            } else {
-                let temporary_password = password::generate_temporary();
-                let hash = hash_blocking(temporary_password.clone()).await?;
-                let id = roster_store::create_student(&mut tx, &row.student_id, &row.name, &hash)
-                    .await?;
-                credentials.push(Credential {
-                    student_id: row.student_id.clone(),
-                    temporary_password,
-                });
-                id
-            };
+        let user_id = if let Some(id) =
+            roster_store::find_import_account(&mut tx, &row.student_number).await?
+        {
+            id
+        } else {
+            let temporary_password = password::generate_temporary();
+            let hash = hash_blocking(temporary_password.clone()).await?;
+            let id = roster_store::create_student(&mut tx, &row.student_number, &row.name, &hash)
+                .await?;
+            credentials.push(Credential {
+                student_number: row.student_number.clone(),
+                temporary_password,
+            });
+            id
+        };
         if roster_store::add_user(&mut tx, classroom.id, user_id).await? {
             added += 1;
             audit(

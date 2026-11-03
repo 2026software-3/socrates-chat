@@ -10,7 +10,7 @@ import { server } from '@/test/server'
 
 const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => ({
   email,
-  student_id: '12345678A',
+  student_number: '12345678A',
   display_name: null,
   id: '11111111-1111-4111-8111-111111111111',
   has_account: true,
@@ -129,7 +129,7 @@ describe('student account management', () => {
     expect(await screen.findByText('學生帳號已刪除。')).toBeInTheDocument()
     expect(call).toEqual({
       url: '/api/students/11111111-1111-4111-8111-111111111111',
-      body: { confirm_student_id: '12345678a' },
+      body: { confirm_student_number: '12345678a' },
     })
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
   })
@@ -151,7 +151,7 @@ describe('student account management', () => {
   })
 
   it('allows deleting a student without email using the student ID', async () => {
-    mockStudents([student('unused@example.com', { email: null, student_id: '87654321A' })])
+    mockStudents([student('unused@example.com', { email: null, student_number: '87654321A' })])
     let body: unknown
     server.use(http.delete('/api/students/:id', async ({ request }) => {
       body = await request.json()
@@ -162,6 +162,6 @@ describe('student account management', () => {
     const dialog = await screen.findByRole('alertdialog')
     await userEvent.type(within(dialog).getByLabelText(/請輸入/u), '87654321a')
     await userEvent.click(within(dialog).getByRole('button', { name: '永久刪除' }))
-    await waitFor(() => expect(body).toEqual({ confirm_student_id: '87654321a' }))
+    await waitFor(() => expect(body).toEqual({ confirm_student_number: '87654321a' }))
   })
 })

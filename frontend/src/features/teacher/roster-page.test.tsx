@@ -315,7 +315,7 @@ describe('RosterPage', () => {
           added: 1,
           existing: 0,
           invalid: [],
-          credentials: [{ student_id: '12345678A', temporary_password: 'ABCD2345WXYZ' }],
+          credentials: [{ student_number: '12345678A', temporary_password: 'ABCD2345WXYZ' }],
         }),
       ),
     )

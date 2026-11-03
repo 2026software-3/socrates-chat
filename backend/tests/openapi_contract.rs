@@ -188,7 +188,7 @@ mod roster {
             assert!(result.get(field).is_some(), "ImportResult.{field}");
         }
         let credential = &document["components"]["schemas"]["Credential"]["properties"];
-        assert!(credential.get("student_id").is_some());
+        assert!(credential.get("student_number").is_some());
         assert!(credential.get("temporary_password").is_some());
         let error = &document["components"]["schemas"]["StudentImportError"]["properties"];
         assert!(error.get("line").is_some());
@@ -224,7 +224,7 @@ mod roster {
         for field in [
             "id",
             "email",
-            "student_id",
+            "student_number",
             "display_name",
             "has_account",
             "disabled",
@@ -232,6 +232,31 @@ mod roster {
         ] {
             assert!(row.get(field).is_some(), "StudentRow.{field}");
         }
+    }
+
+    /// #446：學號叫 `student_number`，學生的使用者 UUID 叫 `student_user_id`，API 不再有 `student_id`。
+    #[test]
+    fn student_identifiers_are_named_apart() {
+        let document = serde_json::to_value(openapi::document()).unwrap();
+        let schemas = &document["components"]["schemas"];
+        for (schema, field) in [
+            ("StudentRow", "student_number"),
+            ("Credential", "student_number"),
+            ("DeleteBody", "confirm_student_number"),
+            ("SummaryRow", "student_user_id"),
+            ("ConversationTranscript", "student_user_id"),
+        ] {
+            assert!(
+                schemas[schema]["properties"].get(field).is_some(),
+                "{schema}.{field}"
+            );
+        }
+        let text = document.to_string();
+        assert!(
+            !text.contains("\"student_id\""),
+            "student_id left in OpenAPI"
+        );
+        assert!(!text.contains("confirm_student_id"));
     }
 }
 

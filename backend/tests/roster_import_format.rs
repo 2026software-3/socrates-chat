@@ -60,8 +60,8 @@ fn parses_students_and_reports_invalid_lines_without_echoing_personal_data() {
     );
     assert_eq!(parsed.students.len(), 2);
     assert_eq!(parsed.students[0].name, "王小明");
-    assert_eq!(parsed.students[0].student_id, "11234567A");
-    assert_eq!(parsed.students[1].student_id, "12345678B");
+    assert_eq!(parsed.students[0].student_number, "11234567A");
+    assert_eq!(parsed.students[1].student_number, "12345678B");
     assert_eq!(
         parsed
             .invalid
@@ -152,7 +152,7 @@ async fn teacher_import_creates_one_account_and_credential_per_student(pool: PgP
         ["added", "credentials", "errors", "existing", "invalid"]
     );
     assert_eq!(result["added"], 1);
-    assert_eq!(result["credentials"][0]["student_id"], "11234567A");
+    assert_eq!(result["credentials"][0]["student_number"], "11234567A");
     assert!(result["credentials"][0]["temporary_password"].is_string());
     assert_eq!(result["errors"], 0);
     let result = json_body(send(&app, request()).await).await;

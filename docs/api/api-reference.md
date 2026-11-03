@@ -14,6 +14,7 @@
 - **請求逾時**：從收到請求到送出回應標頭為止（含讀取 request body 與 handler 處理）預設 10 秒（`REQUEST_TIMEOUT_SECS`），逾時回 `408 request_timeout`（統一的 JSON 錯誤格式），handler 中止、未提交的交易回滾。以下路由改用較長的逾時（`AI_TOTAL_TIMEOUT_SECS` + 60 秒，預設 120 秒）：同步等 AI 的 `POST /api/dashboard/class/regroup` 與 `POST /api/summaries/{id}/translation`、上傳音訊並等語音服務的 `POST /api/voice/transcribe`、同步等語音服務的 `POST /api/voice/speech`、匯入時逐一雜湊臨時密碼的 `POST /api/classrooms/{id}/roster/import`。逾時不含回應本文，SSE 的 `POST …/messages` 與 `GET …/stream` 在背景產生 AI 回覆，標頭送出後不會被截斷，串流長度由 AI 逾時限制（S-03.5）。
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
+- **學生識別欄位命名**（#446）：`student_number` 一律是學號（8 位數字加 1 個大寫英文字母，個資，可見範圍見 S-01.4）；學生的使用者 UUID 在學生列表是 `id`，在總結列表與對話原文是 `student_user_id`。API 不使用 `student_id` 這個名稱。資料庫欄位 `users.student_id`、`enrollments.student_id` 仍存學號，不對外。
 - **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
 
 ## 登入
@@ -53,15 +54,15 @@
 修課名單屬於教室（S-14、S-01.4）；名單端點的路徑都帶教室 ID，由教室的建立者或管理者操作。其他教師存取他人的教室，與教室不存在、ID 格式不正確一律回相同的 `404 not_found`；學生、名單外帳號回 `403`，未登入回 `401`。
 
 - `GET /api/classrooms/{id}/roster?limit=&cursor=`：該教室名單，依帳號 UUID 排序分頁，項目為 `{ "id": "<帳號 UUID>", "email": "..." | null }`；排序鍵不隨電子郵件變動；原本以電子郵件為鍵的游標失效，請重新從第一頁開始。
-- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；匯入沒有電子郵件欄，不會設定或修改任何帳號的電子郵件；`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields` 或 `invalid_format`（包含多出欄位，例如舊格式的電子郵件欄），不回顯姓名、學號。`credentials` 包含 `{ student_id, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
+- `POST /api/classrooms/{id}/roster/import`：`{ text }` → `{ added, existing, errors, invalid, credentials }`。`added`／`existing` 是相對這間教室新增／已存在的名單筆數；匯入沒有電子郵件欄，不會設定或修改任何帳號的電子郵件；`errors` 是錯誤筆數，`invalid` 為 `{ line, reason }` 陣列，原因為 `missing_fields` 或 `invalid_format`（包含多出欄位，例如舊格式的電子郵件欄），不回顯姓名、學號。`credentials` 包含 `{ student_number, temporary_password }`，僅本次新建帳號回傳，回應帶 `Cache-Control: no-store`。同一學號可加入多個教室，帳號仍只有一個。
 - `DELETE /api/classrooms/{id}/roster/{email}`：路徑參數可用學生信箱或帳號 UUID，只移出這間教室；原本就不在這間教室名單內回 `404`。學生仍在其他教室的名單時保有學生權限；不在任何教室名單內時，登入後看到 `403 not_enrolled`（尚未開通）。
-- `GET /api/classrooms/{id}/students?limit=&cursor=&q=`（#333）：該教室名單上的學生與帳號狀態（包含 `student_id` 學號，僅該教室的教師與管理者可存取），依帳號 UUID 排序分頁，回 `{ items, next_cursor, total }`。`q` 搜尋電子郵件與顯示名稱（不分大小寫的子字串，前後空白忽略，最多 100 字元；`%`、`_` 當一般字元），由後端對所有頁搜尋，不比對對話內容或其他欄位；空白或過長回 `400 invalid_filter`。`total` 是符合同一個 `q` 的學生總數，每一頁都帶，不受游標影響。舊版以電子郵件為鍵的游標失效，請從第一頁開始。游標綁定產生它時的 `q`（正規化後的雜湊，不含姓名或電子郵件）：換了 `q` 還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
+- `GET /api/classrooms/{id}/students?limit=&cursor=&q=`（#333）：該教室名單上的學生與帳號狀態（包含 `student_number` 學號；學生的帳號 UUID 是 `id`；僅該教室的教師與管理者可存取），依帳號 UUID 排序分頁，回 `{ items, next_cursor, total }`。`q` 搜尋電子郵件與顯示名稱（不分大小寫的子字串，前後空白忽略，最多 100 字元；`%`、`_` 當一般字元），由後端對所有頁搜尋，不比對對話內容或其他欄位；空白或過長回 `400 invalid_filter`。`total` 是符合同一個 `q` 的學生總數，每一頁都帶，不受游標影響。舊版以電子郵件為鍵的游標失效，請從第一頁開始。游標綁定產生它時的 `q`（正規化後的雜湊，不含姓名或電子郵件）：換了 `q` 還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。`completed_conversations` 是該學生在這間教室內已完成的活動對話數，個人練習與其他教室的對話不計入。
 - `GET /api/dashboard/class` 的 `students_total`：教師為自己建立的所有教室內不重複的學生數，管理者為全部教室。
 - 舊的 `/api/roster*` 與 `/api/students`（列表）已移除；`DELETE /api/students/{email}` 仍是全域的帳號刪除，路徑可用帳號 UUID 或電子郵件，會一併移除該帳號在所有教室的名單項目。教師只能刪除完全屬於自己建立的教室的學生，其餘（含他人教室的學生、同時在他人教室的學生）回與不存在相同的 `404`；管理者不受限。此範圍是暫定的保守做法，**待需求方確認**（S-02.5，見 `decisions.md`「尚未決定」）。
 - 匯入只新增、不移除；每行依序為姓名、學號兩欄，沒有標題列。姓名與學號必填，姓名去前後空白後最多 30 個 Unicode 字元；學號為八位數字加一個英文字母並轉大寫；多出的欄位（含舊格式的電子郵件欄）整行回 `invalid_format`。支援 CSV 引號與跳脫；每筆資料必須在同一行，不支援引號內跨行欄位。
 - 匯入結果的 `credentials` 是這次新建立的內建帳號與臨時密碼（只出現這一次）。**教師與管理者匯入都會建立帳號並回臨時密碼**（2026-10 修訂，規格見 `S-08.2-auth-verification.md`；原為只有管理者匯入才建立、教師匯入時為空陣列，實作隨 #393）；已有帳號（例如其他教室已匯入過的學號）與教師／管理者的信箱不在其中。
 - 移出名單不刪資料（重新加回後照舊）。
-- 刪除學生帳號：使用 DELETE，JSON body 的 `confirm_student_id` 必須與學生學號相同（去前後空白、不分大小寫），不接受電子郵件確認（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
+- 刪除學生帳號：使用 DELETE，JSON body 的 `confirm_student_number` 必須與學生學號相同（去前後空白、不分大小寫），不接受電子郵件確認（`confirmation_mismatch`）；一併刪除對話、總結與名單項目；教師與管理者帳號不能由此刪除（`not_a_student`）；寫入稽核日誌。
 - DELETE 刻意保留 JSON body，以沿用確認欄位與驗證規則；前端 fetch 與後端 Axum 均支援。部署的 proxy／client 必須保留 DELETE body。
 - 學生列表只有完成對話的**數量**，沒有內容。
 
@@ -115,12 +116,12 @@
 
 教師檢視學生的總結，並可打開自己教室內已結束的活動對話原文（S-02.1，2026-11 需求方決定）。總結列表本身不含原文。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
 
-- `GET /api/summaries/{conversation_id}/messages`：教師唯讀檢視一場對話的完整訊息，回 `{ conversation_id, classroom_id, title, language, student_id, student_name, ended_at, messages }`，`messages` 欄位與 `GET /api/conversations/{id}` 的訊息相同（依序、含 `source`）。只限對話屬於自己建立的教室、且已結束的活動對話；個人練習、進行中的對話、他人教室的對話與不存在的 ID 一律回 `404`（不區分原因）；學生與名單外帳號回 `403`，未登入 `401`。管理者可呼叫但每則 `content` 一律是固定字串 `message`（S-02.2）。此端點不呼叫 AI；日誌不記錄訊息內容。
+- `GET /api/summaries/{conversation_id}/messages`：教師唯讀檢視一場對話的完整訊息，回 `{ conversation_id, classroom_id, title, language, student_user_id, student_name, ended_at, messages }`（`student_user_id` 是學生的使用者 UUID，不是學號），`messages` 欄位與 `GET /api/conversations/{id}` 的訊息相同（依序、含 `source`）。只限對話屬於自己建立的教室、且已結束的活動對話；個人練習、進行中的對話、他人教室的對話與不存在的 ID 一律回 `404`（不區分原因）；學生與名單外帳號回 `403`，未登入 `401`。管理者可呼叫但每則 `content` 一律是固定字串 `message`（S-02.2）。此端點不呼叫 AI；日誌不記錄訊息內容。
 
 - 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件（教師雖然看得到原文，翻譯請求仍只含總結兩個欄位）；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
 
 - `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依 `ended_at DESC, conversation_id ASC` 回 `{ items, next_cursor }`；`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
-- `student`：學生的使用者 UUID（列表項目的 `student_id`，也是學生列表的 `id`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
+- `student`：學生的使用者 UUID（列表項目的 `student_user_id`，也是學生列表的 `id`；不是學號，傳學號回 `400 invalid_filter`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
 - `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
 - 兩個篩選可同時使用，也可與分頁一起用（換篩選時要從第一頁開始，舊游標會被拒絕）。格式錯誤（`student` 不是 UUID、`student` 或 `topic` 為空白）回 `400 invalid_filter`；格式正確但沒有符合的學生或題目，回空頁 `{ "items": [], "next_cursor": null }`，不洩漏學生或題目是否存在。
 - `q`：搜尋學生姓名、電子郵件或題目標題，不分大小寫的子字串；`%`、`_`、`\` 當一般字元處理。搜尋在後端對**所有頁**進行（不是只篩目前這一頁），可與 `student`、`topic` 並用。前後空白會被忽略，空白或超過 100 字元回 `400 invalid_filter`。查詢字串帶得到姓名與電子郵件，但應用程式的請求日誌只記路徑（不含查詢字串），反向代理等外部元件另行遵守 S-09.3 的日誌規則。

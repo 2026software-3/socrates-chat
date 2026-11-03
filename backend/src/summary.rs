@@ -323,7 +323,8 @@ pub(crate) struct SummaryRow {
     classroom_id: Uuid,
     title: String,
     ended_at: DateTime<Utc>,
-    student_id: Uuid,
+    /// 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號
+    student_user_id: Uuid,
     student_name: Option<String>,
     student_email: Option<String>,
     /// 對話建立時快照的原文語言。
@@ -431,13 +432,14 @@ pub(crate) async fn translate(
 
 /// 教師唯讀檢視的對話原文：對話本身的識別資訊加上全部訊息。
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct Transcript {
+pub(crate) struct ConversationTranscript {
     conversation_id: Uuid,
     classroom_id: Uuid,
     title: String,
     language: String,
     ended_at: DateTime<Utc>,
-    student_id: Uuid,
+    /// 學生的使用者 UUID，不是學號
+    student_user_id: Uuid,
     student_name: Option<String>,
     messages: Vec<Message>,
 }
@@ -448,7 +450,7 @@ struct TranscriptHead {
     title: String,
     language: String,
     ended_at: DateTime<Utc>,
-    student_id: Uuid,
+    student_user_id: Uuid,
     student_name: Option<String>,
 }
 
@@ -461,17 +463,17 @@ struct TranscriptHead {
     tag = "summaries",
     summary = "教室內學生已結束對話的完整訊息（唯讀；不含個人練習）",
     params(("id" = Uuid, Path, description = "對話 ID")),
-    responses((status = 200, description = "對話與全部訊息；管理者的 content 一律是 message", body = Transcript), crate::error::CommonErrors)
+    responses((status = 200, description = "對話與全部訊息；管理者的 content 一律是 message", body = ConversationTranscript), crate::error::CommonErrors)
 )]
 pub(crate) async fn transcript(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Transcript>, ApiError> {
+) -> Result<Json<ConversationTranscript>, ApiError> {
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let head: TranscriptHead = sqlx::query_as(
         "SELECT c.classroom_id, c.title, c.language, c.ended_at,
-                u.id AS student_id, u.display_name AS student_name
+                u.id AS student_user_id, u.display_name AS student_name
          FROM conversations c
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($2 OR cl.created_by = $3)
          JOIN users u ON u.id = c.user_id
@@ -490,13 +492,13 @@ pub(crate) async fn transcript(
             m.content = MASKED.into();
         }
     }
-    Ok(Json(Transcript {
+    Ok(Json(ConversationTranscript {
         conversation_id: id,
         classroom_id: head.classroom_id,
         title: head.title,
         language: head.language,
         ended_at: head.ended_at,
-        student_id: head.student_id,
+        student_user_id: head.student_user_id,
         student_name: head.student_name,
         messages,
     }))
@@ -517,7 +519,7 @@ pub(crate) struct SummaryQuery {
     page: Pagination,
     #[serde(flatten)]
     classroom: ClassroomFilter,
-    /// 學生的使用者 ID（即列表項目的 `student_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
+    /// 學生的使用者 UUID（即列表項目的 `student_user_id`）；用 ID 而非電子郵件，網址與日誌不帶個資
     student: Option<String>,
     /// 討論活動的 ID；只看這個活動的對話
     activity: Option<String>,
@@ -616,7 +618,7 @@ impl SummaryQuery {
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor；只對產生它時的 classroom_id／student／activity／topic／q 有效，換條件要從第一頁開始"),
         ("classroom_id" = Option<Uuid>, Query, description = "只看這間教室；不是自己管理的教室回 404"),
-        ("student" = Option<Uuid>, Query, description = "只看這位學生（列表項目的 student_id）"),
+        ("student" = Option<Uuid>, Query, description = "只看這位學生（使用者 UUID，即列表項目的 student_user_id；不是學號）"),
         ("activity" = Option<Uuid>, Query, description = "只看這個討論活動的對話（活動 ID）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
@@ -646,7 +648,7 @@ pub(crate) async fn list(
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
-                u.id AS student_id, u.display_name AS student_name, u.email AS student_email,
+                u.id AS student_user_id, u.display_name AS student_name, u.email AS student_email,
                 c.language,
                 s.stance, s.reasons, s.claim
          FROM summaries s

@@ -405,7 +405,7 @@ async fn roster_import_generates_temporary_passwords_for_new_students(pool: PgPo
 
     let s1 = creds
         .iter()
-        .find(|c| c["student_id"] == "11000001A")
+        .find(|c| c["student_number"] == "11000001A")
         .unwrap();
     let temp = s1["temporary_password"].as_str().unwrap();
     let res = login(&app, "s1@example.com", temp).await;

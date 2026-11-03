@@ -105,7 +105,7 @@ async fn students_items_only_carry_allowed_fields(pool: PgPool) {
             "email",
             "has_account",
             "id",
-            "student_id"
+            "student_number"
         ]
     );
     let mut top: Vec<&str> = page

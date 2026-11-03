@@ -57,7 +57,7 @@ const summary: TeacherSummary = {
   classroom_id: ROOM_A,
   title: '電車難題',
   ended_at: '2026-03-05T10:00:00Z',
-  student_id: STUDENT,
+  student_user_id: STUDENT,
   student_name: '王小明',
   student_email: 'ming@example.com',
   language: 'zh-TW',

@@ -291,7 +291,7 @@ pub(crate) async fn set_status(
 pub(crate) struct DeleteBody {
     /// 再次確認：必須與學生學號相同（不分大小寫）。
     #[schema(required)]
-    confirm_student_id: Option<String>,
+    confirm_student_number: Option<String>,
 }
 
 /// 刪除學生帳號：一併刪除對話、總結與所有教室的修課名單項目（S-02.5）。教師與管理者帳號不能由這裡刪除；
@@ -325,7 +325,7 @@ pub(crate) async fn delete_student(
     .bind(normalized_email.as_deref())
     .fetch_optional(&mut *tx)
     .await?;
-    let (user_id, email, student_id, is_admin) = account.ok_or_else(ApiError::not_found)?;
+    let (user_id, email, student_number, is_admin) = account.ok_or_else(ApiError::not_found)?;
     if is_admin
         || if let Some(email) = &email {
             is_staff_email(&state, &mut tx, email).await?
@@ -342,9 +342,9 @@ pub(crate) async fn delete_student(
     {
         return Err(ApiError::not_found());
     }
-    if !student_id
+    if !student_number
         .as_deref()
-        .zip(body.confirm_student_id.as_deref())
+        .zip(body.confirm_student_number.as_deref())
         .is_some_and(|(expected, supplied)| expected.eq_ignore_ascii_case(supplied.trim()))
     {
         return Err(ApiError::bad_request(
