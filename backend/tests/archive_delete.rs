@@ -772,7 +772,7 @@ async fn deleting_a_student_account_ignores_classroom_archiving(pool: PgPool) {
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            json!({"confirm_student_id": "10000000A"})
+            json!({"confirm_student_number": "10000000A"})
         )
         .await,
         StatusCode::NO_CONTENT

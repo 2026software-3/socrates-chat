@@ -444,7 +444,7 @@ pub async fn find_password_account(
         .bind(normalized)
         .fetch_optional(pool)
         .await
-    } else if crate::roster::is_valid_student_id(&normalized) {
+    } else if crate::roster::is_valid_student_number(&normalized) {
         sqlx::query_as(
             "SELECT id, email, password_hash, disabled_at IS NOT NULL AS disabled
              FROM users WHERE student_id = $1",
@@ -660,9 +660,9 @@ async fn invalidate_credentials(
 /// 管理者以學號重設密碼（#413）：只針對已有帳號的學生，不建立帳號。找不到學號回 `None`。
 /// 找到時的處理與 `reset_password` 相同；回傳使用者 id 與電子郵件（沒有則為 `None`）。
 /// 學號須已是大寫（呼叫端正規化）。呼叫端須與稽核紀錄一起提交。
-pub async fn reset_password_by_student_id(
+pub async fn reset_password_by_student_number(
     conn: &mut sqlx::PgConnection,
-    student_id: &str,
+    student_number: &str,
     password_hash: &str,
 ) -> Result<Option<(Uuid, Option<String>)>, sqlx::Error> {
     let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
@@ -670,7 +670,7 @@ pub async fn reset_password_by_student_id(
          WHERE student_id = $1
          RETURNING id, email",
     )
-    .bind(student_id)
+    .bind(student_number)
     .bind(password_hash)
     .fetch_optional(&mut *conn)
     .await?;

@@ -12,7 +12,7 @@ function transcript(over: Partial<Transcript> = {}): Transcript {
     title: '電車難題',
     language: 'zh-TW',
     ended_at: '2026-03-05T10:00:00Z',
-    student_id: 's1',
+    student_user_id: 's1',
     student_name: '王小明',
     messages: [
       { id: 'm1', role: 'student', content: '我會拉桿。', source: 'text', question_type: null, created_at: '2026-03-05T09:00:00Z' },

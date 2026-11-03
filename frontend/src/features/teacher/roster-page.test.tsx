@@ -316,7 +316,7 @@ describe('RosterPage', () => {
           added: 1,
           existing: 0,
           invalid: [],
-          credentials: [{ student_id: '12345678A', temporary_password: 'ABCD2345WXYZ' }],
+          credentials: [{ student_number: '12345678A', temporary_password: 'ABCD2345WXYZ' }],
         }),
       ),
     )
@@ -372,7 +372,7 @@ describe('RosterPage', () => {
     pageOf(
       [
         student(null, {
-          student_id: '11234567A',
+          student_number: '11234567A',
           display_name: '王小明',
           id: '22222222-2222-4222-8222-222222222222',
           ...over,
@@ -402,7 +402,7 @@ describe('RosterPage', () => {
     expect(within(dialog).getByText(/整個帳號/)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: '重設密碼' }))
     expect(await screen.findByLabelText('臨時密碼')).toHaveValue('WXYZ2345ABCD')
-    expect(sent).toEqual({ student_id: '11234567A' })
+    expect(sent).toEqual({ student_number: '11234567A' })
   })
 
   it('shows the student-ID reset only to admins and only for students who have an account', async () => {

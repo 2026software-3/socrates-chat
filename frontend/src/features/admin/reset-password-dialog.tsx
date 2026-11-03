@@ -22,12 +22,12 @@ import { api } from '@/lib/api'
  */
 export type ResetTarget =
   | { kind: 'email'; email: string }
-  | { kind: 'student'; studentId: string; name: string | null; classroom: string }
+  | { kind: 'student'; studentNumber: string; name: string | null; classroom: string }
 
 /** 對話框中指稱這個帳號的文字：有姓名就「姓名（學號）」。 */
 function labelOf(target: ResetTarget): string {
   if (target.kind === 'email') return target.email
-  return target.name ? `${target.name}（${target.studentId}）` : target.studentId
+  return target.name ? `${target.name}（${target.studentNumber}）` : target.studentNumber
 }
 
 /**
@@ -46,7 +46,7 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
     setResetting(true)
     setError(undefined)
     try {
-      const body = target.kind === 'email' ? { email: target.email } : { student_id: target.studentId }
+      const body = target.kind === 'email' ? { email: target.email } : { student_number: target.studentNumber }
       const res = await api.post<{ email: string | null; temporary_password: string }>(
         '/api/admin/users/reset-password',
         body,

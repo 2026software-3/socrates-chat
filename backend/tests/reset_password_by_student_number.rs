@@ -38,17 +38,23 @@ async fn reset(app: &Router, cookie: Option<&str>, body: Value) -> Response<Body
     .await
 }
 
-async fn reset_by_student_id(
+async fn reset_by_student_number(
     app: &Router,
     cookie: Option<&str>,
-    student_id: &str,
+    student_number: &str,
 ) -> Response<Body> {
-    reset(app, cookie, json!({"student_id": student_id})).await
+    reset(app, cookie, json!({"student_number": student_number})).await
 }
 
 /// 管理者把一位沒有電子郵件的學生匯入教室，回傳匯入時給的臨時密碼。
-async fn import_student_without_email(app: &Router, a: &Actors, student_id: &str) -> String {
-    let res = import_roster(app, &a.admin, &a.classroom, &format!("王小明,{student_id}")).await;
+async fn import_student_without_email(app: &Router, a: &Actors, student_number: &str) -> String {
+    let res = import_roster(
+        app,
+        &a.admin,
+        &a.classroom,
+        &format!("王小明,{student_number}"),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
     json_body(res).await["credentials"][0]["temporary_password"]
         .as_str()
@@ -57,12 +63,12 @@ async fn import_student_without_email(app: &Router, a: &Actors, student_id: &str
 }
 
 #[sqlx::test]
-async fn admin_resets_a_student_without_email_by_student_id(pool: PgPool) {
+async fn admin_resets_a_student_without_email_by_student_number(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let old = import_student_without_email(&app, &a, "11234567A").await;
     // 學號大小寫不分：小寫也能指定到同一個帳號
-    let res = reset_by_student_id(&app, Some(&a.admin), "11234567a").await;
+    let res = reset_by_student_number(&app, Some(&a.admin), "11234567a").await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = json_body(res).await;
     let new = body["temporary_password"].as_str().unwrap().to_string();
@@ -107,7 +113,7 @@ async fn student_reset_clears_sessions_and_the_lockout(pool: PgPool) {
     )
     .await;
 
-    let res = reset_by_student_id(&app, Some(&a.admin), "11234567A").await;
+    let res = reset_by_student_number(&app, Some(&a.admin), "11234567A").await;
     assert_eq!(res.status(), StatusCode::OK);
     let new = json_body(res).await["temporary_password"]
         .as_str()
@@ -126,10 +132,10 @@ async fn student_reset_clears_sessions_and_the_lockout(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn unknown_student_id_is_not_found_and_nothing_is_created(pool: PgPool) {
+async fn unknown_student_number_is_not_found_and_nothing_is_created(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let res = reset_by_student_id(&app, Some(&a.admin), "99999999Z").await;
+    let res = reset_by_student_number(&app, Some(&a.admin), "99999999Z").await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     assert!(!json_body(res).await.to_string().contains("99999999Z"));
     let (count,): (i64,) =
@@ -141,27 +147,27 @@ async fn unknown_student_id_is_not_found_and_nothing_is_created(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn malformed_student_id_is_rejected(pool: PgPool) {
+async fn malformed_student_number_is_rejected(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     for bad in ["1234567A", "abcdefgh", "12345678AB", ""] {
         assert_json_error(
-            reset_by_student_id(&app, Some(&a.admin), bad).await,
+            reset_by_student_number(&app, Some(&a.admin), bad).await,
             StatusCode::BAD_REQUEST,
-            "invalid_student_id",
+            "invalid_student_number",
         )
         .await;
     }
 }
 
 #[sqlx::test]
-async fn exactly_one_of_email_or_student_id_is_required(pool: PgPool) {
+async fn exactly_one_of_email_or_student_number_is_required(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let both = reset(
         &app,
         Some(&a.admin),
-        json!({"email": "student@example.com", "student_id": "10000000A"}),
+        json!({"email": "student@example.com", "student_number": "10000000A"}),
     )
     .await;
     assert_json_error(both, StatusCode::BAD_REQUEST, "invalid_target").await;
@@ -171,12 +177,12 @@ async fn exactly_one_of_email_or_student_id_is_required(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn student_id_reset_audits_the_internal_id_and_never_the_student_id(pool: PgPool) {
+async fn student_number_reset_audits_the_internal_id_and_never_the_student_number(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     import_student_without_email(&app, &a, "11234567A").await;
     assert_eq!(
-        reset_by_student_id(&app, Some(&a.admin), "11234567A")
+        reset_by_student_number(&app, Some(&a.admin), "11234567A")
             .await
             .status(),
         StatusCode::OK
@@ -197,11 +203,13 @@ async fn student_id_reset_audits_the_internal_id_and_never_the_student_id(pool: 
 }
 
 #[sqlx::test]
-async fn a_student_with_an_email_reset_by_student_id_returns_and_audits_the_email(pool: PgPool) {
+async fn a_student_with_an_email_reset_by_student_number_returns_and_audits_the_email(
+    pool: PgPool,
+) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     // seed 的學生有學號 10000000A 與信箱 student@example.com
-    let res = reset_by_student_id(&app, Some(&a.admin), "10000000a").await;
+    let res = reset_by_student_number(&app, Some(&a.admin), "10000000a").await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = json_body(res).await;
     assert_eq!(body["email"], "student@example.com");
@@ -239,7 +247,7 @@ async fn a_rejected_non_admin_attempt_leaves_the_password_unchanged(pool: PgPool
         (Some(&a.outsider), StatusCode::FORBIDDEN),
         (Some(&a.teacher), StatusCode::FORBIDDEN),
     ] {
-        let res = reset_by_student_id(&app, cookie.map(String::as_str), "11234567A").await;
+        let res = reset_by_student_number(&app, cookie.map(String::as_str), "11234567A").await;
         assert_eq!(res.status(), expected);
     }
     // 原本的臨時密碼仍然有效，也沒有留下任何重設的稽核紀錄

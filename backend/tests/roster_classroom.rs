@@ -263,7 +263,7 @@ async fn admin_and_teacher_get_credentials_for_new_students(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["added"], 1);
     assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
-    assert!(body["credentials"][0]["student_id"].is_string());
+    assert!(body["credentials"][0]["student_number"].is_string());
 
     let (_, body) = import(&app, Some(&a.teacher), &a.classroom, "other@example.com").await;
     assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
@@ -317,7 +317,7 @@ async fn deleting_a_student_account_removes_every_classroom_membership(pool: PgP
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            Some(json!({"confirm_student_id": "10000000A"})),
+            Some(json!({"confirm_student_number": "10000000A"})),
         ),
     )
     .await;

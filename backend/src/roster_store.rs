@@ -26,17 +26,17 @@ pub async fn add_user(
 /// 以學號找既有帳號並鎖住，確保同時匯入時不會建立重複帳號。
 pub async fn find_import_account(
     conn: &mut PgConnection,
-    student_id: &str,
+    student_number: &str,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar("SELECT id FROM users WHERE student_id = $1 FOR UPDATE")
-        .bind(student_id)
+        .bind(student_number)
         .fetch_optional(conn)
         .await
 }
 
 pub async fn create_student(
     conn: &mut PgConnection,
-    student_id: &str,
+    student_number: &str,
     name: &str,
     password_hash: &str,
 ) -> Result<Uuid, sqlx::Error> {
@@ -44,7 +44,7 @@ pub async fn create_student(
         "INSERT INTO users (student_id, imported_name, display_name, password_hash, must_change_password)
          VALUES ($1, $2, $2, $3, true) RETURNING id",
     )
-    .bind(student_id)
+    .bind(student_number)
     .bind(name)
     .bind(password_hash)
     .fetch_one(conn)
@@ -55,7 +55,8 @@ pub async fn create_student(
 pub struct StudentRow {
     pub id: Uuid,
     pub email: Option<String>,
-    pub student_id: String,
+    /// 學號（大寫）；學生的帳號 UUID 是 `id`
+    pub student_number: String,
     pub display_name: Option<String>,
     /// 學生是否已有帳號（登入過，或管理者匯入時建立了內建帳號）
     pub has_account: bool,
@@ -175,7 +176,7 @@ pub async fn list_students(
     search: Option<&str>,
 ) -> Result<Vec<StudentRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT u.id, u.email, u.student_id, u.display_name,
+        "SELECT u.id, u.email, u.student_id AS student_number, u.display_name,
                 true AS has_account,
                 (u.disabled_at IS NOT NULL) AS disabled,
                 (SELECT count(*) FROM summaries s

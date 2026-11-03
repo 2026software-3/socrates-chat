@@ -414,7 +414,7 @@ async fn roster_import_rolls_back_when_audit_fails_and_can_be_retried(pool: PgPo
     let result = json_body(res).await;
     assert_eq!(result["added"], 1);
     assert_eq!(result["existing"], 0);
-    assert_eq!(result["credentials"][0]["student_id"], "13000005A");
+    assert_eq!(result["credentials"][0]["student_number"], "13000005A");
     let id = user_id_of(&pool, "13000005A").await;
     assert!(trail(&pool).await.contains(&entry(
         "admin@example.com",

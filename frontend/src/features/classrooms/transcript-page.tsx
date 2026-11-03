@@ -47,7 +47,7 @@ export function TranscriptPage() {
       description={t('teacher.transcript.endedAt', { date: formatDate(data.ended_at, lang) })}
       crumbs={[
         { label: t('classrooms.nav'), to: base },
-        { label: studentName, to: `${base}/${classroomId ?? data.classroom_id}/students/${data.student_id}` },
+        { label: studentName, to: `${base}/${classroomId ?? data.classroom_id}/students/${data.student_user_id}` },
         { label: data.title },
       ]}
     >

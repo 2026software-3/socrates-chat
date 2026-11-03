@@ -103,7 +103,8 @@ export type TeacherSummary = {
   classroom_id: string
   title: string
   ended_at: string
-  student_id: string
+  /** 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號 */
+  student_user_id: string
   student_name: string | null
   student_email: string
   /** 對話建立時快照的原文語言。 */
@@ -120,7 +121,8 @@ export type Transcript = {
   title: string
   language: Lang
   ended_at: string
-  student_id: string
+  /** 學生的使用者 UUID，不是學號 */
+  student_user_id: string
   student_name: string | null
   messages: Message[]
 }
@@ -136,7 +138,8 @@ export type SummaryTranslation = {
 export type StudentRow = {
   id: string | null
   email: string | null
-  student_id: string
+  /** 學號（大寫）；學生的帳號 UUID 是 `id` */
+  student_number: string
   display_name: string | null
   /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */
   has_account: boolean
@@ -208,7 +211,7 @@ export type RosterImportResult = {
   existing: number
   invalid: { line: number; reason: ImportErrorReason }[]
   /** 這次新建立的內建帳號與臨時密碼（只出現一次；教師匯入時為空或沒有這個欄位） */
-  credentials?: { student_id: string; temporary_password: string }[]
+  credentials?: { student_number: string; temporary_password: string }[]
 }
 
 /** SSE `done` 事件的內容。 */
