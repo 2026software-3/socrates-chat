@@ -28,7 +28,11 @@
 
 ## 管理（管理者）
 
-- 重設密碼：臨時密碼**只出現在這次回應**；沒有帳號就建立；同時清除該使用者所有 session 與登入鎖定。
+- 重設密碼：`POST /api/admin/users/reset-password`，請求的 `email` 與 `student_id` **恰好擇一**（都有或都沒有回 `400 invalid_target`）。
+  - `{ email }`：有帳號就更新，沒有就建立；`email` 格式錯誤回 `400 invalid_email`。
+  - `{ student_id }`（#413，沒有電子郵件的學生）：學號不分大小寫、轉大寫比對；格式錯誤回 `400 invalid_student_id`；學號不屬於任何已有帳號的學生回 `404`，**不建立帳號**。稽核對象用信箱，沒有信箱時用帳號的內部識別碼，日誌與錯誤回應都不含學號。
+  - 回應 `{ email, temporary_password }`：`email` 為帳號的信箱，沒有信箱的學生為 `null`；臨時密碼**只出現在這次回應**。
+  - 兩種方式都清除該使用者所有 session 與登入鎖定（含學號與信箱兩種登入帳號輸入的計數），並要求下次登入先改密碼；寫入稽核日誌。
 - `PUT /api/admin/users/{id}/status` 接受 `{ disabled, reason? }`，id 為使用者 UUID（學生列表的 `id`，沒有帳號時為 null）；舊 disable／enable POST 已移除。同值重送回 204 且不重複稽核。停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
 - 新增教師重複送出也回 204（冪等）。
 
