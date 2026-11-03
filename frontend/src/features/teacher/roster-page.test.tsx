@@ -349,6 +349,63 @@ describe('RosterPage', () => {
     expect(await screen.findByLabelText('臨時密碼')).toHaveValue('ABCD2345WXYZ')
   })
 
+  /** 匯入後沒有電子郵件的學生（#413）。 */
+  const noEmailStudent = (over: Partial<{ has_account: boolean; display_name: string | null }> = {}) =>
+    pageOf(
+      [
+        {
+          email: null,
+          student_id: '11234567A',
+          display_name: '王小明',
+          id: '22222222-2222-4222-8222-222222222222',
+          has_account: true,
+          disabled: false,
+          completed_conversations: 0,
+          ...over,
+        },
+      ],
+      null,
+      { total: 1 },
+    )
+
+  it('lets an admin reset a student without email by student ID after checking name and classroom', async () => {
+    mockClassrooms()
+    server.use(http.get(students(ROOM_A), () => noEmailStudent()))
+    let sent: unknown
+    server.use(
+      http.post('/api/admin/users/reset-password', async ({ request }) => {
+        sent = await request.json()
+        return HttpResponse.json({ email: null, temporary_password: 'WXYZ2345ABCD' })
+      }),
+    )
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '重設學號 11234567A 的密碼' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/王小明（11234567A）/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/2026 春季班/)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: '重設密碼' }))
+    expect(await screen.findByLabelText('臨時密碼')).toHaveValue('WXYZ2345ABCD')
+    expect(sent).toEqual({ student_id: '11234567A' })
+  })
+
+  it('shows the student-ID reset only to admins and only for students who have an account', async () => {
+    mockClassrooms()
+    server.use(http.get(students(ROOM_A), () => noEmailStudent()))
+    setup()
+    await screen.findByText('11234567A')
+    expect(screen.queryByRole('button', { name: /重設學號/ })).not.toBeInTheDocument()
+  })
+
+  it('does not offer a student-ID reset for a student without an account', async () => {
+    mockClassrooms()
+    server.use(http.get(students(ROOM_A), () => noEmailStudent({ has_account: false })))
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await screen.findByText('11234567A')
+    expect(screen.queryByRole('button', { name: /重設學號/ })).not.toBeInTheDocument()
+  })
+
   it('loads the roster of the first classroom and names it', async () => {
     mockRoster()
     setup()
