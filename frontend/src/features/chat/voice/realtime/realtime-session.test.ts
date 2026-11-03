@@ -318,6 +318,18 @@ describe('realtime session', () => {
     session.close()
   })
 
+  it('stops timing once the reply has opened, however slowly the first text comes', async () => {
+    const session = await connected()
+    const ws = FakeSocket.last
+    ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    ws.event(created('resp_1'))
+    // 回覆已開：AI 慢是正常的（後端另有首字逾時），不能因為還沒出字就判定沒送出
+    vi.advanceTimersByTime(120_000)
+    expect(cb.onReplyFailed).not.toHaveBeenCalled()
+    expect(cb.onClosed).not.toHaveBeenCalled()
+    session.close()
+  })
+
   it('does not fail the turn when the reply starts within 25 seconds', async () => {
     const session = await connected()
     const ws = FakeSocket.last

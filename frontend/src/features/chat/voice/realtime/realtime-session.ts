@@ -149,6 +149,15 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
     ctx.close().catch((e: unknown) => console.warn('[voice] audio context did not close:', e))
   }
 
+  /** 沒有回覆開著時才計時；回覆一開（response.created）就停表，之後慢不慢由後端的首字逾時處理。 */
+  const armReplyWatchdog = () => {
+    window.clearTimeout(replyWatchdog)
+    replyWatchdog = window.setTimeout(() => {
+      cb.onReplyFailed()
+      fail('replyFailed')
+    }, REPLY_TIMEOUT_MS)
+  }
+
   const endText = (r: Reply) => {
     if (r.textEnded) return
     r.textEnded = true
@@ -208,15 +217,12 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         const text = event.transcript?.trim()
         if (text) {
           cb.onTranscript(text, reply !== undefined && !reply.interrupted && !reply.textEnded)
-          window.clearTimeout(replyWatchdog)
-          replyWatchdog = window.setTimeout(() => {
-            cb.onReplyFailed()
-            fail('replyFailed')
-          }, REPLY_TIMEOUT_MS)
+          armReplyWatchdog()
         }
         break
       }
       case 'response.created':
+        window.clearTimeout(replyWatchdog)
         reply = { id: event.response?.id ?? '', interrupted: false, serverDone: false, textEnded: false, hasOutput: false }
         phase('waiting')
         break
@@ -242,6 +248,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
           // 逾時會把它標成失敗而出現重試；有新的發言則照常接手。
           reply = undefined
           phase('transcribing')
+          armReplyWatchdog()
         } else if (reply && event.response?.id === reply.id) {
           reply.serverDone = true
           endText(reply)
