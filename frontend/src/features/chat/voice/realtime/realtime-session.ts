@@ -15,6 +15,8 @@ const OUTPUT_RATE = 24_000
 const FRAME_MS = 100
 /** 瀏覽器讀不到 WebSocket 升級失敗的原因，也可能連上後端但 cascade 沒回應。 */
 const CONNECT_TIMEOUT_MS = 10_000
+/** 字幕出現後多久沒有任何回覆，就視為這一輪沒送出去（cascade 放棄回覆時不會通知）。 */
+const REPLY_TIMEOUT_MS = 10_000
 
 export type RealtimePhase = 'connecting' | 'listening' | 'transcribing' | 'waiting' | 'speaking'
 
@@ -97,6 +99,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
   let capture: FrameCapture | undefined
   let socket: WebSocket | undefined
   let watchdog: number | undefined
+  let replyWatchdog: number | undefined
   let closed = false
   let answered = false
   let seq = 0
@@ -116,6 +119,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
     closed = true
     ctrl.abort()
     window.clearTimeout(watchdog)
+    window.clearTimeout(replyWatchdog)
     capture?.stop()
     capture = undefined
     mic?.close()
@@ -186,7 +190,13 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         break
       case 'conversation.item.input_audio_transcription.completed': {
         const text = event.transcript?.trim()
-        if (text) cb.onTranscript(text)
+        if (text) {
+          cb.onTranscript(text)
+          replyWatchdog = window.setTimeout(() => {
+            cb.onReplyFailed()
+            fail('replyFailed')
+          }, REPLY_TIMEOUT_MS)
+        }
         break
       }
       case 'response.created':
