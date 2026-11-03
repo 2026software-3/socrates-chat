@@ -41,7 +41,8 @@ export type RealtimeCloseReason = 'unreachable' | 'lost' | 'replyFailed' | 'perm
 export type RealtimeCallbacks = {
   onPhase: (phase: RealtimePhase) => void
   onMicrophone: (diagnostics: MicrophoneDiagnostics) => void
-  onTranscript: (text: string) => void
+  /** `replying`：這句話到達時，上一則回覆還開著（還在串流或唸）；那則回覆要先收尾，這句話才接在後面。 */
+  onTranscript: (text: string, replying?: boolean) => void
   onReplyDelta: (text: string) => void
   onReplyEnd: () => void
   /** 伺服器說這一輪失敗；在 `onReplyEnd` 之前呼叫，接著以 `replyFailed` 關閉。 */
