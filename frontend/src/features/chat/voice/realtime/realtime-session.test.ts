@@ -326,6 +326,23 @@ describe('realtime session', () => {
     expect(cb.onClosed).toHaveBeenCalledTimes(1)
   })
 
+  it('does not fire the reply timeout after the connection dropped or the session was closed', async () => {
+    await connected()
+    const dropped = FakeSocket.last
+    dropped.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    dropped.drop()
+    vi.advanceTimersByTime(60_000)
+    expect(cb.onReplyFailed).not.toHaveBeenCalled()
+    expect(cb.onClosed).toHaveBeenCalledTimes(1)
+
+    const session = await connected()
+    FakeSocket.last.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: '合成的發言' })
+    session.close()
+    vi.advanceTimersByTime(60_000)
+    expect(cb.onReplyFailed).not.toHaveBeenCalled()
+    expect(cb.onClosed).toHaveBeenCalledTimes(1)
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
