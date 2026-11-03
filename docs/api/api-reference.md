@@ -14,7 +14,7 @@
 - **請求逾時**：從收到請求到送出回應標頭為止（含讀取 request body 與 handler 處理）預設 10 秒（`REQUEST_TIMEOUT_SECS`），逾時回 `408 request_timeout`（統一的 JSON 錯誤格式），handler 中止、未提交的交易回滾。以下路由改用較長的逾時（`AI_TOTAL_TIMEOUT_SECS` + 60 秒，預設 120 秒）：同步等 AI 的 `POST /api/dashboard/class/regroup` 與 `POST /api/summaries/{id}/translation`、上傳音訊並等語音服務的 `POST /api/voice/transcribe`、同步等語音服務的 `POST /api/voice/speech`、匯入時逐一雜湊臨時密碼的 `POST /api/classrooms/{id}/roster/import`。逾時不含回應本文，SSE 的 `POST …/messages` 與 `GET …/stream` 在背景產生 AI 回覆，標頭送出後不會被截斷，串流長度由 AI 逾時限制（S-03.5）。
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
-- **學生識別欄位命名**（#446）：`student_number` 一律是學號（8 位數字加 1 個大寫英文字母，個資，可見範圍見 S-01.4）；學生的使用者 UUID 在學生列表是 `id`，在總結列表與對話原文是 `student_user_id`。API 不使用 `student_id` 這個名稱。資料庫欄位 `users.student_id`、`enrollments.student_id` 仍存學號，不對外。
+- **學生識別欄位命名**（#446）：`student_number` 一律是學號（8 位數字加 1 個大寫英文字母，個資，可見範圍見 S-01.4）；學生的使用者 UUID 在學生列表是 `id`，在總結列表與對話原文是 `student_user_id`。API 不使用 `student_id` 這個名稱（包含重設密碼請求）。資料庫欄位 `users.student_id`、`enrollments.student_id` 仍存學號，不對外。
 - **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
 
 ## 登入
@@ -29,7 +29,11 @@
 
 ## 管理（管理者）
 
-- 重設密碼：臨時密碼**只出現在這次回應**；沒有帳號就建立；同時清除該使用者所有 session 與登入鎖定。
+- 重設密碼：`POST /api/admin/users/reset-password`，請求的 `email` 與 `student_number` **恰好擇一**（都有或都沒有回 `400 invalid_target`）。
+  - `{ email }`：有帳號就更新，沒有就建立；`email` 格式錯誤回 `400 invalid_email`。
+  - `{ student_number }`（#413，沒有電子郵件的學生）：學號不分大小寫、轉大寫比對；格式錯誤回 `400 invalid_student_number`；學號不屬於任何已有帳號的學生回 `404`，**不建立帳號**。稽核對象用信箱，沒有信箱時用帳號的內部識別碼，日誌與錯誤回應都不含學號。
+  - 回應 `{ email, temporary_password }`：`email` 為帳號的信箱，沒有信箱的學生為 `null`；臨時密碼**只出現在這次回應**。
+  - 兩種方式都清除該使用者所有 session 與登入鎖定（含學號與信箱兩種登入帳號輸入的計數），並要求下次登入先改密碼；寫入稽核日誌。
 - `PUT /api/admin/users/{id}/status` 接受 `{ disabled, reason? }`，id 為使用者 UUID（學生列表的 `id`，沒有帳號時為 null）；舊 disable／enable POST 已移除。同值重送回 204 且不重複稽核。停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
 - 新增教師重複送出也回 204（冪等）。
 

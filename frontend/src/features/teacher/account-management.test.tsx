@@ -3,21 +3,10 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { mockClassrooms, renderTeacherPage, ROOM_A } from '@/features/teacher/test-helpers'
+import { mockClassrooms, renderTeacherPage, ROOM_A, student } from '@/features/teacher/test-helpers'
 import type { StudentRow } from '@/lib/types'
 import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
-
-const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => ({
-  email,
-  student_number: '12345678A',
-  display_name: null,
-  id: '11111111-1111-4111-8111-111111111111',
-  has_account: true,
-  disabled: false,
-  completed_conversations: 0,
-  ...over,
-})
 
 const roster = [
   student('active@example.com', { display_name: 'Ada', completed_conversations: 3 }),
