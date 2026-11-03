@@ -207,7 +207,10 @@ export function TeachersPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <ResetPasswordDialog email={toReset} onClose={() => setToReset(undefined)} />
+      <ResetPasswordDialog
+        target={toReset === undefined ? undefined : { kind: 'email', email: toReset }}
+        onClose={() => setToReset(undefined)}
+      />
     </Page>
   )
 }

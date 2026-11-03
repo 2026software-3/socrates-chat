@@ -17,25 +17,41 @@ import { errorText, useT } from '@/i18n'
 import { api } from '@/lib/api'
 
 /**
- * 管理者重設某個帳號的密碼：先確認，再把臨時密碼顯示一次（教師與學生共用）。
- * `email` 為 undefined 時不顯示；結束（取消或已記下）時呼叫 `onClose`。
+ * 要重設的帳號：有電子郵件的帳號以信箱指定；沒有電子郵件的學生以學號指定（#413），
+ * 對話框會顯示姓名與所屬教室供管理者核對。
  */
-export function ResetPasswordDialog({ email, onClose }: { email: string | undefined; onClose: () => void }) {
+export type ResetTarget =
+  | { kind: 'email'; email: string }
+  | { kind: 'student'; studentId: string; name: string | null; classroom: string }
+
+/** 對話框中指稱這個帳號的文字：有姓名就「姓名（學號）」。 */
+function labelOf(target: ResetTarget): string {
+  if (target.kind === 'email') return target.email
+  return target.name ? `${target.name}（${target.studentId}）` : target.studentId
+}
+
+/**
+ * 管理者重設某個帳號的密碼：先確認，再把臨時密碼顯示一次（教師與學生共用）。
+ * `target` 為 undefined 時不顯示；結束（取消或已記下）時呼叫 `onClose`。
+ */
+export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget | undefined; onClose: () => void }) {
   const t = useT()
   const [resetting, setResetting] = useState(false)
   const [error, setError] = useState<unknown>()
-  const [issued, setIssued] = useState<{ email: string; password: string }>()
+  const [issued, setIssued] = useState<{ label: string; password: string; byStudentId: boolean }>()
   const { isCopied, copyToClipboard } = useCopyToClipboard()
 
   async function onReset() {
-    if (!email || resetting) return
+    if (!target || resetting) return
     setResetting(true)
     setError(undefined)
     try {
-      const res = await api.post<{ email: string; temporary_password: string }>('/api/admin/users/reset-password', {
-        email,
-      })
-      setIssued({ email: res.email, password: res.temporary_password })
+      const body = target.kind === 'email' ? { email: target.email } : { student_id: target.studentId }
+      const res = await api.post<{ email: string | null; temporary_password: string }>(
+        '/api/admin/users/reset-password',
+        body,
+      )
+      setIssued({ label: labelOf(target), password: res.temporary_password, byStudentId: target.kind === 'student' })
     } catch (err) {
       setError(err)
     } finally {
@@ -51,11 +67,15 @@ export function ResetPasswordDialog({ email, onClose }: { email: string | undefi
 
   return (
     <>
-      <AlertDialog open={email !== undefined && !issued} onOpenChange={(o) => !o && !resetting && close()}>
+      <AlertDialog open={target !== undefined && !issued} onOpenChange={(o) => !o && !resetting && close()}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('admin.reset.resetTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('admin.reset.resetDesc', { email: email ?? '' })}</AlertDialogDescription>
+            <AlertDialogDescription>
+              {target?.kind === 'student'
+                ? t('admin.reset.studentDesc', { who: labelOf(target), classroom: target.classroom })
+                : t('admin.reset.resetDesc', { email: target ? labelOf(target) : '' })}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           {error ? (
             <Alert variant="destructive" role="alert">
@@ -76,7 +96,11 @@ export function ResetPasswordDialog({ email, onClose }: { email: string | undefi
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('admin.reset.tempTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('admin.reset.tempDesc', { email: issued?.email ?? '' })}</AlertDialogDescription>
+            <AlertDialogDescription>
+              {issued?.byStudentId
+                ? t('admin.reset.tempDescWho', { who: issued.label })
+                : t('admin.reset.tempDesc', { email: issued?.label ?? '' })}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-1.5">
             <Label htmlFor="temp-password">{t('admin.reset.tempLabel')}</Label>
