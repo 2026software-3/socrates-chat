@@ -51,7 +51,9 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
         '/api/admin/users/reset-password',
         body,
       )
-      setIssued({ label: labelOf(target), password: res.temporary_password, byStudentId: target.kind === 'student' })
+      // 信箱以伺服器正規化後實際重設的為準；學號則顯示姓名與學號
+      const label = target.kind === 'email' ? (res.email ?? target.email) : labelOf(target)
+      setIssued({ label, password: res.temporary_password, byStudentId: target.kind === 'student' })
     } catch (err) {
       setError(err)
     } finally {

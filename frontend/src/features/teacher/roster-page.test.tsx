@@ -349,6 +349,23 @@ describe('RosterPage', () => {
     expect(await screen.findByLabelText('臨時密碼')).toHaveValue('ABCD2345WXYZ')
   })
 
+  it('tells the admin to give the temporary password to the address the server reset', async () => {
+    mockClassrooms()
+    mockRoster(['alice@example.com'])
+    server.use(
+      http.post('/api/admin/users/reset-password', () =>
+        HttpResponse.json({ email: 'normalized@example.com', temporary_password: 'ABCD2345WXYZ' }),
+      ),
+    )
+    mockMe(makeMe({ admin: true }))
+    renderApp(<RosterPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '重設 alice@example.com 的密碼' }))
+    await userEvent.click(screen.getByRole('button', { name: '重設密碼' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/normalized@example\.com/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/alice@example\.com/)).not.toBeInTheDocument()
+  })
+
   /** 匯入後沒有電子郵件的學生（#413）。 */
   const noEmailStudent = (over: Partial<{ has_account: boolean; display_name: string | null }> = {}) =>
     pageOf(
@@ -384,6 +401,8 @@ describe('RosterPage', () => {
     const dialog = await screen.findByRole('alertdialog')
     expect(within(dialog).getByText(/王小明（11234567A）/)).toBeInTheDocument()
     expect(within(dialog).getByText(/2026 春季班/)).toBeInTheDocument()
+    // 學號是全域的：重設套用到整個帳號，不只這間教室
+    expect(within(dialog).getByText(/整個帳號/)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: '重設密碼' }))
     expect(await screen.findByLabelText('臨時密碼')).toHaveValue('WXYZ2345ABCD')
     expect(sent).toEqual({ student_id: '11234567A' })
