@@ -1,251 +1,263 @@
-# 輕量化叢集計劃書（可加入團隊成員電腦作為節點）
+# 對話服務輕量化叢集計劃書（可加入團隊成員電腦作為節點）
 
-> **狀態：草案（2026-11-03，第二版：主方案改為 Docker Swarm），不構成規格決策。** 正式環境部署方式（S-09.1）仍未定案；本文只規劃**非正式環境**的共用運算資源，並列出需要需求方或團隊確認的事項。確認後依 [CONTRIBUTING.md](../../CONTRIBUTING.md#規格決策流程) 以 PR 更新 `decisions.md`，再開始實作。
+> **狀態：草案（2026-11-03，第三版：範圍限定為對話服務），不構成規格決策。** 正式環境部署方式（S-09.1）仍未定案。本文規劃的叢集只服務**對話服務**，不含 CI、預覽環境或其他專案部分。是否可處理真實學生的對話，是需求方才能決定的事（第 2.1 節、第 10 節）。確認後依 [CONTRIBUTING.md](../../CONTRIBUTING.md#規格決策流程) 以 PR 更新 `decisions.md`，再開始實作。
 
-## 1. 背景與目標
+## 1. 範圍
 
-目前部署狀態：
+「對話服務」指學生與 AI 對話所經過的執行路徑：
 
-- 開發與 CI 用 Docker Compose（`docker-compose.yml`，S-09.1）。
-- 試用環境為單一台 NTNU 機器，以 Docker Compose 部署，經 Tailscale Funnel 對外（`docs/ntnu-ops.md`）。
-- 伺服器端語音（cascade、Whisper）已在成員的 RTX 4050 筆電（WSL2）上實測，需要 GPU 的工作目前沒有共用的執行位置。
-- 後端 CI 需要編譯 Rust、跑 PostgreSQL 整合測試與覆蓋率，耗時長。
+| 元件 | 內容 | 位置 |
+| --- | --- | --- |
+| 後端 `app` | 對話 API、SSE 回覆串流、總結、登入與權限、AI 呼叫、用量限制（`chat.rs`、`reply.rs`、`summary.rs`、`ai.rs`） | 單一映像，同網域提供前端（S-08.1） |
+| 語音即時路徑 | 瀏覽器 ⇄ Rust（WebSocket）⇄ cascade（VAD、斷句、打斷） | `cascade.rs`、`cascade-voice-spike.md` |
+| 語音模型 | ASR（Whisper）、TTS（含轉接層） | `scripts/whisper-server.py`、`OPENAI_STT_BASE_URL`／`OPENAI_TTS_BASE_URL` |
+| PostgreSQL | 對話、訊息、session | 沿用既有 |
 
-目標：讓團隊成員的電腦能**以低成本、可隨時加入與退出**的方式成為共用節點，提供：
+不在範圍：CI runner、PR 預覽環境、前端獨立部署、題目／點數／成就等其他功能的獨立擴充。
 
-1. 每個分支或 PR 一套獨立的預覽環境。
-2. 自架 CI runner。
-3. GPU／重運算工作（cascade、Whisper、`backend/eval` 的 AI 行為評測）。
+目標（待需求方確認，見第 10 節）：讓成員電腦可以加入並分擔對話服務中**吃資源的部分**，主要是語音模型的 GPU 運算，以及容量不足時的對話處理。
 
 非目標：
 
-- **不承載正式環境，不放真實學生資料。**
-- 不追求控制平面高可用。
-- 不動現有 NTNU 試用環境：它維持獨立的 Docker Compose，不加入 Swarm。
-- 不引入 Supabase、Redis 等 AGENTS.md 未列出的基礎設施。Swarm 內建於 Docker Engine，不需額外安裝元件，但仍是新的部署機制，需先經規格討論（第 9 節）。
+- 控制平面高可用。
+- 取代 S-09.1 的正式環境決策。
+- 引入 Supabase、Redis 等 AGENTS.md 未列出的基礎設施。Docker Swarm 內建於 Docker Engine，不需額外安裝元件，但仍是新的部署機制，需先經規格討論。
 
-## 2. 設計前提
+## 2. 設計前提（由程式碼與規格確認）
 
-### 2.1 成員電腦不適合當正式環境
+### 2.1 對話內容會經過節點，這是最大的決策點
 
-- 會休眠、關機、換網路；家用或校園 NAT 後方沒有固定位址。
-- 機器的使用者與 root 可讀取該節點上所有容器的環境變數與掛載內容（包含 Swarm 派送到該節點的 secret）。正式環境的資料庫、OpenAI 金鑰與真實個資（S-02）不得落在這類機器上。
-- AGENTS.md 要求測試資料只用合成資料；預覽環境符合此限制，正式環境不符合。
+成員電腦若執行對話服務的元件，就會在記憶體中處理學生的訊息或音訊：
 
-### 2.2 後端目前不能直接橫向擴展
+| 元件 | 該節點上的人能讀到什麼 |
+| --- | --- |
+| `app` | 學生與 AI 的訊息原文、session、PostgreSQL 憑證、OpenAI 金鑰 |
+| cascade／ASR | 學生語音（音訊只轉送、不保存，S-05.4），以及語音辨識出的文字 |
+| TTS | AI 回覆文字 |
 
-後端有存在程序記憶體的狀態（規格已載明）：
+AGENTS.md 規定管理介面、API、報表、日誌中訊息一律顯示為 `message`，且系統管理者讀取資料庫原文需留存取紀錄。成員電腦的使用者與 root 可以直接讀取程序記憶體與容器內容，**不在這套存取紀錄機制內**。因此：
 
-| 狀態 | 影響 | 出處 |
+- 使用真實學生資料前，需求方必須明確同意「成員電腦處理學生對話或音訊」。目前沒有這項決策。
+- 在此之前，叢集只能用合成資料（AGENTS.md：測試資料只用合成資料）。
+
+### 2.2 後端的對話狀態有一部分只存在單一程序的記憶體
+
+| 狀態 | 位置 | 多實例時的行為 |
 | --- | --- | --- |
-| 進行中的 AI 回覆 | 斷線重連只能接回同一程序；其他程序回 `409 reply_in_progress` | S-08.1 |
-| 登入頻率限制、失敗計數的部分 | 多實例各自計算 | S-08.2、`technical-details.md` |
-| 語音 `speech_busy` 限制 | 多實例各自計算 | S-05.5 |
-| `/admin/logs` 近期請求 | 只含當前程序 | S-09.3 |
+| 進行中回覆的已產生文字與正在收看的連線（`LiveReplies`） | `reply.rs` | 重連到其他實例會回 `409 reply_in_progress`，接不回原回覆 |
+| 語音對話的一次性代號（`voice_sessions`） | `cascade.rs` | cascade 回呼內部 LLM 端點時，必須打到建立該語音場次的同一個實例，否則解析不到 |
+| 每位使用者的 AI 用量（`ai_usage.rs`、`user_limit.rs`） | 記憶體 | 各實例各自計算，**實際上限變成「每實例的額度 x 實例數」**，AI 費用控管失效 |
+| 登入頻率限制、語音 `speech_busy` | 記憶體 | 各實例各自計算 |
+| API key 冷卻狀態（`key_pool.rs`） | 記憶體 | 各實例各自冷卻，影響較小 |
+| `/admin/logs` 近期請求 | 記憶體 | 只看到單一實例 |
 
-結論：叢集的價值**不是**把同一個服務開多份來擴容，而是**把彼此獨立的環境與工作排到不同機器**。每個環境內的 `app` 維持單一副本（`replicas: 1`）。Swarm 的 routing mesh 會把請求分散到服務的各個 task，副本數設為 1 即可避免此問題；日後若要多副本，需先處理上表（另案）。
+已經是多實例安全的部分：
+
+- 同一場對話只允許一條回覆在產生，靠資料庫的 `generating_since` 原子 claim，不靠記憶體。
+- 服務異常中斷留下的殘留 claim，會在 `ai_total_timeout x 2 + 10` 秒後視為過期（`config.rs`）。
+- session 存在 PostgreSQL（S-01.1）。
+
+結論：**`app` 在不改程式的前提下只能單實例**。多實例需先處理上表，這是另案（第 9 節階段 5）。語音模型側（cascade、ASR、TTS）則本來就是獨立的 HTTP／WebSocket 服務，由 `CASCADE_REALTIME_URL`、`OPENAI_STT_BASE_URL`、`OPENAI_TTS_BASE_URL` 指向，可以橫向擴充。
 
 ### 2.3 節點隨時會消失
 
-所有放到成員節點的工作負載必須可丟棄、可重排程：預覽環境可重建、CI job 可重跑、GPU 服務可降級（語音功能預設關閉，缺設定時不啟用）。需要持久狀態的東西只放在固定的 manager 節點，或留在 Swarm 之外。
+成員電腦會休眠、關機、換網路。放在成員節點上的工作必須能降級：
 
-## 3. 方案選擇
+- 語音即時功能預設關閉，缺設定時不啟用；前端連不上或 10 秒沒有回應，會視為無法使用並改用瀏覽器語音（`cascade-voice-spike.md`）。連線**中途**斷線時的前端行為，文件沒有記載，列為階段 2 驗證項目。
+- 文字對話不依賴成員節點（見 3.1），節點消失不影響文字對話。
 
-| 方案 | 優點 | 缺點 |
-| --- | --- | --- |
-| A. Tailscale ＋ 各機器 Docker Compose ＋ 自架 runner（無叢集） | 最少新元件；與現行部署一致 | 沒有排程；預覽環境要自己管埠與網址；節點增減靠人工 |
-| **B. Docker Swarm ＋ Tailscale（建議）** | 成員電腦本來就要裝 Docker；stack 檔與現有 Compose 檔格式相近；沒有額外二進位檔；加入／退出各一行指令；有排程、placement constraint、secret | 見 3.1 |
-| C. k3s ＋ Tailscale | 有 namespace、NetworkPolicy、內建排程標籤與污點機制 | 新增 Kubernetes 概念與維運負擔；成員機器作業系統不一時 agent 難裝（k3s 以 Linux 為主） |
-
-建議 B，原因：需求是「輕量」且「加入他人電腦」，團隊與 repo 已經以 Docker Compose 為基礎；Swarm 的概念（manager、worker、service、stack）遠少於 Kubernetes。C 保留為備案：若預覽環境之間需要網路層隔離（NetworkPolicy）或需要內建的網址路由，再改用 C。
-
-### 3.1 Swarm 的限制（官方文件確認的部分）
-
-- `docker stack deploy` 會忽略 Compose 的 `build`（輸出 `Ignoring unsupported options: build`）。現有 `docker-compose.yml` 的 `app` 用 `build: .`，因此 **stack 要用預先建好並推到 registry 的映像**，需另寫一份 stack 檔，不能直接重用 `docker-compose.yml`。`profiles`、`depends_on` 等其他選項在 stack 模式下的行為，本文未逐項查證，列為階段 1 檢查項目。
-- 頂層 `secrets` 的 `environment` 來源**不支援** `docker stack deploy`，只能用 `file` 來源（現有 `.apikeylist` 即是 `file`，不受影響）。
-- 放置規則用 `deploy.placement.constraints`，例如 `node.labels.pool==dev-laptop`；找不到符合條件的節點時 task 停在 `Pending`。
-- overlay 網路需要的埠：`2377/tcp`（manager 控制）、`7946/tcp+udp`（節點探索）、`4789/udp`（VXLAN 資料）。官方特別說明 VXLAN **沒有身分驗證**，只能對可信網路開放，絕不可開在邊界防火牆；網路不完全可信時建議用加密 overlay（`--opt encrypted`，需要 IP protocol 50 ESP 通過）。
-- manager 若多個，必須為奇數（建議 3 或 5），且需過半 manager 存活才能運作；成員筆電不適合當 manager。
-- 各節點必須用對方可連到的位址加入：`docker swarm init --advertise-addr <位址>`，多網卡或 NAT 時必須明確指定。
-- join token 是加入叢集的秘密，不得進版控；官方建議至少每 6 個月 `docker swarm join-token --rotate`，輪替不會踢掉已加入的節點。
-
-以下兩點是**依設計推論、尚未實測**，列為階段 1 的驗證項目：
-
-- Swarm **沒有 taint**。k3s 可用污點讓 Pod 預設不上成員電腦；Swarm 沒有同等機制，任何沒寫 constraint 的 service 都可能被排到成員電腦。對策見 4.1。
-- Docker Desktop（Windows、macOS）的引擎跑在虛擬機內，節點位址與 `2377`、`7946`、`4789` 能否從 tailnet 正確連到，需實測；WSL2 同理。若不行，該節點只能走方案 A。
-
-## 4. 架構
+## 3. 建議架構：可信核心 ＋ 工作池
 
 ```
                       tailnet（既有 Tailscale）
-   ┌────────────────────────────────────────────────────────┐
-   │                                                        │
-   │  manager 節點（固定、常駐，例如 NTNU 機器）              │
-   │   - Swarm manager（單一，不做 HA）                      │
-   │   - 預覽環境的 PostgreSQL 可放這裡（合成資料）           │
-   │   - NTNU 試用環境仍是獨立 Compose，不加入 Swarm         │
-   │                                                        │
-   │  worker 節點（成員電腦，label pool=dev-laptop）          │
-   │   - 預覽 stack、GPU 服務                                 │
-   │   - label gpu=true（有 GPU 者）                          │
-   └────────────────────────────────────────────────────────┘
-        成員以 tailnet 位址存取預覽環境；不使用 Funnel，不對公網開放
-        CI runner 直接裝在 worker 主機上，不放進 Swarm（見 4.3）
+ ┌───────────────────────────────────────────────────────────────┐
+ │ 可信核心（固定、常駐機器，例如 NTNU 機器）                       │
+ │   app（單實例）  PostgreSQL  OpenAI 金鑰  CASCADE_LLM_TOKEN      │
+ │   Swarm manager                                                │
+ │                                                               │
+ │ 工作池（成員電腦，label pool=voice-worker，只收 worker 角色）    │
+ │   cascade x N    ASR x N    TTS 轉接層＋模型 x N                │
+ │   沒有資料庫憑證、沒有 OpenAI 金鑰                               │
+ └───────────────────────────────────────────────────────────────┘
+   app ── WS ──> cascade（Swarm service VIP）
+   cascade ── Bearer CASCADE_LLM_TOKEN ──> app 的 /internal/cascade/v1/*
 ```
 
-### 4.1 排程規則（偽代碼）
+### 3.1 為什麼這樣切
 
-Swarm 沒有 taint，因此用「兩層 constraint」模擬：
+- `app` 持有資料庫憑證、OpenAI 金鑰、對話原文與所有記憶體內狀態，留在可信、固定的機器上，單實例，繞開 2.2 的問題。
+- 成員電腦只跑語音模型側。它們不持有資料庫憑證與 OpenAI 金鑰；唯一的憑證是 `CASCADE_LLM_TOKEN`，且該密鑰只能呼叫 `/internal/cascade/v1/*`（內部端點只認這個密鑰，不看 cookie）。外洩的影響範圍小於持有資料庫憑證。
+- 文字對話完全不經過成員節點。工作池全部下線，影響的只有即時語音（降級為瀏覽器語音）。
+- 成員節點仍會看到語音與回覆文字（2.1），所以真實學生資料仍受第 10 節決策管制。
+
+### 3.2 為什麼選 Docker Swarm（沿用第二版結論，並限縮到工作池）
+
+| 方案 | 評估 |
+| --- | --- |
+| 各機器直接跑 Compose，後端用 `CASCADE_REALTIME_URL` 指向某台 GPU 機器 | 最簡單；單台 GPU 時足夠。要在多台 GPU 之間分流、節點增減時，就得自己管清單與負載分配 |
+| **Docker Swarm（建議）** | Docker 已是必備；service 有 VIP，多個副本間自動分流；`placement constraints` 可限定只上有 GPU 的節點；加入／退出各一行指令 |
+| k3s | 功能更完整，但概念與維運成本較高；成員機器作業系統不一時 agent 較難裝 |
+
+先做各機器 Compose 的最小版本（階段 1），確認 GPU 工作真的能在成員機器上跑，再決定是否需要 Swarm 的排程，避免為了一台 GPU 機器就上叢集。
+
+Swarm 的已確認限制（官方文件）：
+
+- `docker stack deploy` 忽略 Compose 的 `build`，stack 檔必須用預先建好並推到 registry 的映像。其他選項（`depends_on`、`profiles`）的行為本文未逐項查證。
+- stack 的 secret 只支援 `file` 來源，不支援 `environment`。
+- overlay 需要 `2377/tcp`、`7946/tcp+udp`、`4789/udp`；VXLAN 埠沒有身分驗證，只能對可信網路開放，絕不可開在邊界防火牆。
+- 多個 manager 必須為奇數且過半存活；成員筆電不適合當 manager，因此只用單一 manager（不做 HA）。
+- 加入節點用 join token，屬秘密、不進版控，官方建議至少每 6 個月輪替；輪替不會踢掉已加入的節點。
+- 放置規則為 `deploy.placement.constraints`，找不到符合條件的節點時 task 停在 `Pending`。
+- Docker daemon 可用 `node-generic-resources`（`daemon.json`）向 Swarm 宣告自訂資源，例如 GPU。
+
+依設計推論、尚未實測（階段 1／2 驗證）：
+
+- Swarm 沒有 taint，沒寫 constraint 的 service 可能被排到成員電腦。對策見 3.3。
+- Docker Desktop／WSL2 節點的位址與 Swarm 埠能否從 tailnet 連到。
+- service 如何請求 GPU，以及在 WSL2 的行為。
+
+### 3.3 排程規則（偽代碼）
 
 ```
-for each stack file under deploy/:
-    if service.class == "production":
-        refuse                                   # 本叢集不承載正式環境
-    if service.class in {"preview", "gpu"}:
-        require constraint "node.labels.pool == dev-laptop"
+for each service in stack files:
+    if service.holds(DB credentials or OpenAI keys or user message plaintext at rest):
+        require constraint "node.role == manager"   # 留在可信核心
+    else if service in {cascade, asr, tts}:
+        require constraint "node.labels.pool == voice-worker"
         require constraint "node.labels.gpu == true" if service.needs_gpu
-        require resources.limits (cpu, memory)   # 避免吃光成員本機資源
-        require replicas == 1 for app            # 見 2.2
-    if service.class == "infra":                 # 例如預覽共用的資料庫
-        require constraint "node.role == manager"
+        require resources.limits (cpu, memory)
 
-CI check: reject any stack file whose service has no placement constraint
+CI check: every service must declare a placement constraint
+          app must declare replicas == 1
 ```
-
-「每個 service 都必須有 constraint」由 CI 檢查，而不是靠人記得，因為漏寫會讓服務默默落到某位成員的電腦。
 
 節點上線與退出：
 
 ```
 join(node):
-    tailscale up, tag the node (tag:socrates-node)
+    tailscale up, tag the node (tag:socrates-worker)
     docker swarm join --token <worker token> \
         --advertise-addr <node tailnet IP> <manager tailnet IP>:2377
-    # 在 manager 上設定 label（Swarm 的 label 由 manager 管理，可事後更改）
-    docker node update --label-add pool=dev-laptop <node>
-    docker node update --label-add gpu=true <node>   # 有 GPU 才加
-    verify: docker node ls shows Ready / Active
+    on manager: docker node update --label-add pool=voice-worker <node>
+    on manager: docker node update --label-add gpu=true <node>    # 有 GPU 才加
 
 leave(node):
-    docker node update --availability drain <node>   # task 被轉移，不再接新 task
-    on the node: docker swarm leave
-    on manager:  docker node rm <node>
+    docker node update --availability drain <node>
+    on node:    docker swarm leave
+    on manager: docker node rm <node>
     remove tailscale tag / device
 ```
 
-### 4.2 預覽環境
+### 3.4 網路與連線
 
-- 每個 PR 一個 stack（`docker stack deploy -c deploy/preview.yml pr-<number>`）：stack 名稱會成為網路、volume、service 名稱的前綴，達到基本隔離。一個 `app`（沿用現有單一映像，前後端同網域，S-08.1）加一個 `db`。
-- 映像由 CI 在 PR 時建置並推到 registry（候選：GHCR）；worker 從 registry 拉取。
-- 資料庫 volume 是節點本機的：task 被重排到別的節點時資料庫會是空的。預覽資料全為合成資料，重建並重新 seed 即可（可沿用 `scripts/seed-demo.sh` 的做法）。PR 關閉時 `docker stack rm`。
-- 每個預覽環境的 `APP_BASE_URL` 必須設為該環境自己的網址：後端 CSRF 檢查要求 `Origin` 等於 `APP_BASE_URL`（見 `docs/ntnu-ops.md`），沿用 `.env` 的值會讓寫入請求被拒。
-- **網址路由**：Swarm 的 routing mesh 以「發佈埠」為單位，沒有內建依主機名稱分流。每個預覽用獨立埠最簡單（例如依 PR 編號配埠）；若要用網址分流，需額外加反向代理（Traefik、Caddy 等），那是新增元件，列入第 9 節。
-- 預覽環境的 migration：沿用 `RUN_MIGRATIONS=true`（規格僅把它定位為本機／試用便利設定，S-09.3，正式環境不得使用）。
-- **AI 金鑰不得進成員節點。** 預覽環境需使用 mock AI 提供者，或具額度上限的專用金鑰。具體做法待決定（S-03.1 已把 AI 呼叫包成單一介面，可實作 mock；是否新增屬規格議題）。
+- `app` 與 cascade 之間：`CASCADE_REALTIME_URL` 指向 cascade 的 Swarm service 位址；cascade 的 `session_nodes.llm.base_url` 指向 `app` 的 `/internal/cascade/v1`。後者要求 `app` 能被工作池經 tailnet 連到。現行部署 `app` 綁 `127.0.0.1:3000` 並經 Funnel 對外，**需另外提供只在 tailnet 內可達的監聽位址**，具體做法（額外埠、或讓 `app` 也加入 overlay）待階段 2 決定。
+- 內部端點的存取控制：`check_origin`（`lib.rs`）對 `/internal/cascade/` 路徑跳過 CSRF 的 Origin 檢查，防護靠共用密鑰。若 Funnel 把整個 `app` 對公網開放，這些路徑是否同樣可從公網打到，需在階段 2 確認並視需要在代理層擋掉（尚未驗證）。
+- `CASCADE_LLM_TOKEN` 輪替：同一個值要同步更新 `app` 與所有 cascade 副本；人員離開團隊或節點遺失時輪替。
 
-### 4.3 CI runner
-
-- 使用 GitHub 自架 runner，註冊時以 `--labels` 加自訂標籤，workflow 以 `runs-on: [self-hosted, <label>]` 指定；`--ephemeral` 讓 runner 只接一個 job 後即註銷。
-- **runner 直接安裝在成員主機上，不放進 Swarm。** runner 執行 job 時需要 Docker（例如 `services: postgres`）；把它放進 Swarm 容器就得掛載 Docker socket，等同交出該節點的 root。
-- **前置條件：確認 repo 為私有，或 workflow 不讓 fork 的 PR 觸發自架 runner。** 公開 repo 上，外部貢獻者的 PR 可在成員電腦上執行任意程式碼。repo 目前的可見性與 fork PR 設定未在本次調查中確認。
-- 現有 `ci.yml` 的 job 全部使用 `ubuntu-latest`。是否轉移哪些 job、並存或取代，需在階段 3 實測編譯時間後決定，不預設全部搬移。
-
-### 4.4 GPU 工作
-
-- 有 GPU 的成員節點標 `gpu=true`；cascade、Whisper 服務（`scripts/whisper-server.py`、`scripts/cascade-launch.example.yaml`）以 constraint 排上去。
-- Docker daemon 支援用 `node-generic-resources`（`daemon.json`）向 Swarm 宣告自訂資源，例如 `NVIDIA-GPU=<UUID>`。service 如何請求這項資源，以及它在 WSL2／Docker Desktop 的實際行為，**本文未查證**，列為階段 4 的 PoC 項目。
-- 若 Swarm 無法穩定提供 GPU，退回方案 A：該機器以 Compose 直接跑，後端以 `CASCADE_REALTIME_URL` 指向該機器的 tailnet 位址。
-- 這類服務在規格中仍是暫定（`cascade-voice-spike.md`：部署與 GPU 規格待定），本計劃只提供執行位置，不決定正式採用。
-
-## 5. 網路與安全
+## 4. 安全
 
 | 項目 | 做法 |
 | --- | --- |
-| 節點間通訊 | 僅走 tailnet；`2377`、`7946`、`4789` 只在 tailnet 內可達，不對公網開放（VXLAN 無身分驗證） |
-| overlay 加密 | tailnet 本身已加密；是否仍啟用 `--opt encrypted`（需 ESP 通過、有額外開銷）於階段 1 評估 |
-| 節點身分 | Tailscale tag（`tag:socrates-node`）＋ ACL：節點只能連 manager 與 registry，不能連成員其他裝置；Tailscale 加入用的 key 設到期 |
-| join token | 屬秘密，不進版控、不貼 Issue 或聊天；人員離開團隊、節點遺失或 token 外洩時立即 `join-token --rotate`；固定每 6 個月輪替 |
-| 成員節點信任等級 | 視為半信任：不放正式金鑰與真實資料；容器以非 root 執行，不掛 `hostPath` 與 Docker socket；Swarm 沒有 NetworkPolicy，預覽 stack 之間靠各自獨立的 overlay 網路隔離 |
-| 日誌 | 沿用 AGENTS.md 規範：不記密碼、token、金鑰、聊天原文；容器日誌用 `local` driver 並限制大小（比照現有 compose 的 20m x 5） |
-| 本機保護 | service 設定 CPU／記憶體上限；成員可隨時 `drain` 自己的節點收回電腦 |
+| 節點間通訊 | 僅走 tailnet；Swarm 三個埠只在 tailnet 內可達 |
+| 節點身分 | Tailscale tag ＋ ACL：工作池節點只能連 manager 與 registry，不能連成員其他裝置，也不能連 PostgreSQL（5432） |
+| 憑證隔離 | 工作池不持有資料庫憑證與 OpenAI 金鑰；`CASCADE_LLM_TOKEN` 以 Swarm secret（`file` 來源）掛入，不寫進環境變數與版控 |
+| join token | 屬秘密；人員離開、節點遺失或外洩時 `join-token --rotate`，固定每 6 個月輪替 |
+| 成員節點信任等級 | 半信任：容器非 root，不掛 `hostPath` 與 Docker socket |
+| 日誌 | 沿用 AGENTS.md：不記密碼、token、金鑰、聊天原文、語音逐字稿；容器日誌用 `local` driver 並限制大小 |
+| 授權測試 | 不因部署方式放寬：未登入、角色不符、名單外帳號、存取他人資料等既有測試照常通過 |
+| 本機保護 | service 設定 CPU／記憶體上限；成員可隨時 `drain` 自己的節點 |
 
-授權檢查與資安測試證據的要求（AGENTS.md）不因環境不同而放寬：預覽環境仍須通過既有的授權測試。
+## 5. 實作階段與驗收
 
-## 6. 實作階段與驗收
+每階段結束都有 go／no-go：驗收不過就停在該階段，回頭修正計劃。
 
-每階段結束都有 go／no-go：任一階段驗收不過，就停在該階段並回頭修正計劃，不硬推進。
+### 階段 0：規格與決策（阻擋後續）
 
-### 階段 0：規格確認（阻擋後續）
+- 開規格 Issue（暫名 S-09.4「對話服務工作池」），掛在 S-09 底下。
+- 驗收：第 10 節的待決事項至少 1、2、3、4 有答案。
 
-- 開規格 Issue（暫名 S-09.4「共用運算叢集」），掛在 S-09 底下，並在 `decisions.md` 記錄需求方確認的範圍。
-- 驗收：第 9 節的待決事項至少 1、2、3、5 有答案。
+### 階段 1：單台 GPU 成員機器（不上 Swarm）
 
-### 階段 1：最小 PoC
+- 一台成員機器以 Compose 跑 cascade＋ASR＋TTS，`app` 以 `CASCADE_REALTIME_URL` 指向它的 tailnet 位址（如 `cascade-voice-spike.md` 的做法，但跨機器）。
+- 全部使用合成帳號與合成對話。
+- 驗收：另一台機器的瀏覽器經 `app` 完成一場 `zh-TW` 即時語音對話；cascade 回呼 `app` 內部端點成功；工作池機器上沒有資料庫憑證與 OpenAI 金鑰。
+- **go／no-go**：延遲相較於 `cascade-voice-spike.md` 的單機實測沒有不可接受的退化（門檻與負責人訂定）。不通過就不繼續。
 
-- 1 個 manager ＋ 1 個成員 worker（優先 Linux 原生機器，其次 WSL2、Docker Desktop），透過 Tailscale 連線。
+### 階段 2：Swarm 工作池
+
+- 1 個 manager（可信核心）＋ 2 個以上 GPU worker。
 - 驗證項目：
   - 加入、`drain`、離開、`docker node rm`。
-  - 把現有 compose 轉成 stack 檔（改用 registry 映像），確認 `depends_on`、`profiles`、healthcheck 等選項的實際行為，並記錄哪些需要改寫。
-  - worker 關機後，task 是被重排到 manager 還是停在 `Pending`；重新連線後是否恢復。
-  - 沒有 constraint 的 service 是否真的會被排到 worker（驗證 4.1 的推論）。
-  - Tailscale ACL 確實擋住節點存取不該連的裝置。
-- **go／no-go**：若成員的主要作業系統（Windows、macOS）無法穩定當 worker，且多數成員用這些系統，改走方案 A，不繼續階段 2。若發現預覽環境需要 NetworkPolicy 或依主機名稱分流且不想額外加代理，評估改用方案 C。
+  - 把階段 1 的 Compose 轉成 stack 檔（改用 registry 映像），記錄哪些選項需要改寫。
+  - cascade 副本間分流：兩場同時的語音對話是否分到不同副本；單一副本的並行場次上限（尚未測量，需先量）。
+  - worker 關機時：進行中的語音場次前端行為、新場次是否自動改用其他副本或降級為瀏覽器語音。
+  - 沒有 constraint 的 service 是否被排到 worker（驗證 3.3 的推論）。
+  - 3.4 的兩項網路確認（tailnet 內監聽位址、`/internal/cascade/` 是否可從公網打到）。
+  - Tailscale ACL 確實擋住 worker 連 PostgreSQL。
+- 驗收：關閉任一 worker，文字對話零影響，語音對話降級可用；`app` 日誌與管理介面不含訊息原文。
+- 若 Docker Desktop／WSL2 節點無法穩定加入，只收 Linux 節點，或退回階段 1 的 Compose 做法。
 
-### 階段 2：預覽環境
+### 階段 3：容量與負載驗證
 
-- CI 在 PR 開啟時建置映像（初期僅 linux/amd64）、推到 registry、`docker stack deploy`；PR 關閉時 `docker stack rm`。
-- 加入 4.1 的「每個 service 必須有 constraint」CI 檢查。
-- 驗收：一個 PR 對應一個可用網址（或埠）；以合成資料完成登入與一次完整對話；PR 關閉後 stack 與 volume 清除；預覽環境的寫入請求（CSRF）通過。
+- 依 S-10.3 的負載測試方法（約 60 人同時使用）驗證單實例 `app` 是否足夠；文字對話的瓶頸多半在 AI 供應商延遲而非 `app` CPU，但這是推論，未測量。
+- 驗收：量到 `app` 的 CPU、記憶體、資料庫連線在目標負載下的實際數字，再決定是否需要階段 5。
 
-### 階段 3：自架 runner
+### 階段 4：維運文件
 
-- 在 worker 主機上註冊 ephemeral runner；選一個 job（建議後端測試）遷移。
-- 驗收：同一 commit 在自架與託管 runner 上結果一致；記錄兩者耗時；fork PR 不會觸發自架 runner。
+- 新增 `docs/` 內的節點加入／退出／撤銷手冊，格式比照 `docs/ntnu-ops.md`；`CASCADE_LLM_TOKEN` 與 join token 輪替步驟；manager 損毀的重建步驟。
+- 驗收：另一位成員只依文件完成加入與退出。
 
-### 階段 4：GPU 節點
+### 階段 5（有條件，另案）：`app` 多實例
 
-- PoC GPU 暴露方式；cascade 或 Whisper 在 GPU 節點上通過 `cascade-voice-spike.md` 既有的實測項目。
-- 驗收：與該文件記錄的單機結果相比，延遲沒有顯著退化（門檻在階段 4 開始時與負責人訂定）。
+只在階段 3 證明單實例不夠時才做。前置工作都是程式與規格變更，需各自開 Issue：
 
-### 階段 5：維運文件
+1. 用量（`ai_usage`／`user_limit`）、登入頻率限制、`speech_busy` 改存 PostgreSQL 或其他共享儲存。
+2. `LiveReplies` 的接回改成路由層黏著（依對話 ID 一致性雜湊到同一實例），或把已產生文字存到共享儲存。
+3. `voice_sessions` 同理：cascade 回呼必須命中同一實例。
+4. 路由層：Swarm routing mesh 沒有依 URL 路徑做黏著的能力，需要另加反向代理（nginx、Caddy、HAProxy 等；各自的一致性雜湊能力本文未查證）。
+5. 重新檢視「app 實例不得放在成員電腦」這條原則：多實例若放在成員節點，這些節點就會持有資料庫憑證與 OpenAI 金鑰，與 3.1 衝突。建議多實例的 `app` 仍放在可信機器。
 
-- 新增 `docs/` 內的節點加入／退出／撤銷手冊，與 `docs/ntnu-ops.md` 同格式；列出 manager 損毀時的重建步驟（Swarm 狀態的備份與還原演練一次）。
-- 驗收：另一位成員只依文件完成加入與退出，無需口頭補充。
-
-## 7. 主要風險
+## 6. 風險
 
 | 風險 | 影響 | 對策 |
 | --- | --- | --- |
-| 成員用 Docker Desktop 或 WSL2，節點位址與 Swarm 埠不一定能從 tailnet 連到（未驗證） | 節點名單受限 | 階段 1 的 go／no-go；必要時只收 Linux 節點 |
-| Swarm 沒有 taint，漏寫 constraint 的服務會落到成員電腦 | 非預期資源占用，或不該上的服務上了不可信節點 | 4.1 的 CI 檢查；階段 1 實測確認行為 |
-| 單一 manager 故障 | 無法管理叢集（既有 task 是否續跑需實測） | 接受；定期備份 Swarm 狀態與重建手冊，不做 HA（HA 需 3 個以上穩定 manager，不適合筆電） |
-| VXLAN 埠無身分驗證，若誤對公網或不可信網路開放 | 流量被偽造或竊聽 | 只在 tailnet 內開放；ACL 限制；評估加密 overlay |
-| CPU 架構不一（x86_64 與 Apple Silicon） | 映像需多架構建置，Rust 編譯時間倍增 | 初期限定 linux/amd64 節點 |
-| 節點資源被預覽或 CI 吃滿，影響成員本機工作 | 成員不願加入 | 資源上限、隨時 `drain`、預設只開放使用者同意的時段 |
-| 公開 repo 的 fork PR 在成員電腦上執行任意程式 | 成員機器被入侵 | 階段 3 前置條件；不通過就不啟用 runner |
-| 預覽環境誤用真實金鑰或真實資料 | 違反資安與個資底線 | 預覽 stack 不掛載真實 secret；CI 檢查 |
-| 本文未查證 Swarm 的長期維護方向 | 未來可能需要遷移 | 預覽環境為可拋棄設計，遷移成本低；選型時由團隊自行確認 |
-| 維運負責人不明 | 叢集無人管，成為技術債 | 階段 0 指定負責人與備援（S-09.3 尚未決定人選，此處同樣需要） |
+| 成員節點看得到語音與回覆文字，不受存取紀錄機制約束 | 個資與規格底線 | 第 2.1、10 節：需求方決策前只用合成資料 |
+| `app` 單實例、單機 | 該機器故障，對話服務整體停擺 | 本計劃不處理 `app` 的可用性；屬 S-09.1；至少備份與重建手冊 |
+| 工作池節點離線 | 即時語音中斷 | 降級為瀏覽器語音；階段 2 驗證中途斷線行為 |
+| 內部端點被公網打到 | 密鑰猜測或濫用 | 階段 2 確認並在代理層擋掉；密鑰為高熵隨機值 |
+| Swarm 沒有 taint，漏寫 constraint | 服務落到不該去的節點 | CI 檢查每個 service 都有 constraint |
+| VXLAN 埠無身分驗證 | 流量偽造 | 只在 tailnet 內開放；ACL 限制 |
+| Docker Desktop／WSL2 節點不穩 | 節點名單受限 | 階段 2 的驗證；必要時只收 Linux 節點 |
+| 單一 GPU 的並行場次上限未知（6 GB 顯示卡） | 容量規劃失準 | 階段 2 先量測再決定副本數 |
+| 語音方案本身仍屬暫定（部署與 GPU 規格待定） | 叢集投資可能白費 | 階段 1 為低成本驗證；規格定案前不擴大 |
+| 本文未查證 Swarm 的長期維護方向 | 未來可能需要遷移 | 工作池為無狀態、可拋棄設計，遷移成本低 |
+| 維運負責人不明 | 成為技術債 | 階段 0 指定負責人與備援（S-09.3 尚未決定人選） |
 
-## 8. 與既有規格的關係
+## 7. 與既有規格的關係
 
-- 不改變 S-08.1（同網域部署）、S-08.3（環境變數與 `sqlx migrate`）、S-09.3（正式環境不自動 migrate）。
-- 不取代 S-09.1 的正式環境決策；NTNU 試用環境維持現狀。
-- 與 S-10.3（約 60 人同時使用）無關：預覽環境不做負載驗收。
+- 不改變 S-08.1（同網域部署）、S-08.3、S-09.3；不取代 S-09.1。
+- 語音側沿用 `cascade-voice-spike.md` 與 S-05.5 的暫定決策；本計劃只提供執行位置，不決定正式採用。
+- 與 S-10.3 的關係：階段 3 用其負載測試方法驗證容量。
 
-## 9. 待決事項（未定案，需需求方或團隊回答）
+## 8. 範圍外
 
-1. 叢集用途範圍：預覽環境、CI runner、GPU 工作三者是否都要做？優先順序？
-2. 是否同意把 Docker Swarm 列為新增的部署機制？是否同意為預覽環境引入 registry（GHCR）與（若要依網址分流）反向代理？
-3. manager 節點放在哪台機器？誰負責維運，備援是誰？
-4. 成員可提供的作業系統與 GPU 清單，以及是否接受 Docker Desktop／WSL2 節點。
-5. repo 目前是公開或私有？fork PR 是否會觸發 workflow？（決定階段 3 能否進行。）
-6. 預覽環境的 AI 呼叫用 mock 還是限額金鑰？由誰核可。
-7. 預覽環境的存取範圍：僅 tailnet 內，或需要給教師／需求方試用（若需要，需另案評估公開暴露與個資風險）。
-8. 成員參與是否自願、可隨時退出，以及機器資源上限的共識。
+- 正式環境的高可用與 `app` 的自動容錯。
+- 文字對話所用 OpenAI 模型的選擇（S-03.4）與改用自架 LLM。後端雖可用 `OPENAI_BASE_URL` 指向相容服務，但規格決定 AI 使用 OpenAI（S-03.1），改變屬規格議題。
+- CI、預覽環境、前端獨立部署。
 
-## 10. 範圍外
+## 9. 假設
 
-- 正式環境部署與 HA。
-- 單一環境內後端多副本（需先處理第 2.2 節的程序記憶體狀態）。
-- 自動擴縮容、集中式日誌或監控平台。
+以下為撰寫時的假設，若不成立需修正計劃：
+
+- 叢集的主要動機是分擔語音模型的 GPU 運算，以及未來可能的容量需求；而不是要讓 `app` 本身在成員電腦上多實例執行。
+- 工作池與 `app` 之間的延遲（tailnet 內）可被即時語音接受。
+
+## 10. 待決事項（需需求方或團隊回答）
+
+1. **是否允許成員電腦處理真實學生的對話或音訊？** 若否，叢集僅限合成資料，不能服務真實教室。若是，需補存取規範與告知學生的方式。
+2. 叢集要解決的問題：語音 GPU 分流、對話容量、可用性，還是三者？優先順序？
+3. 是否同意把 Docker Swarm 列為新增的部署機制？是否同意引入 registry（GHCR）？
+4. 可信核心放在哪台機器？誰負責維運，備援是誰？（也是 S-09.3 尚未決定的人選。）
+5. 成員可提供的作業系統與 GPU 清單，以及是否接受 Docker Desktop／WSL2 節點。
+6. `/internal/cascade/` 是否需要與公開入口分開（獨立監聽位址或代理規則）。
+7. 成員參與是否自願、可隨時退出，以及機器資源上限的共識。
