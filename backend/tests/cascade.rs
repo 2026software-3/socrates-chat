@@ -225,8 +225,8 @@ async fn a_spoken_turn_runs_the_normal_reply_pipeline(pool: PgPool) {
     assert_eq!(usage["used"], 1);
 }
 
-/// 依序送出兩輪 cascade 的請求，回傳資料庫裡這兩則學生訊息。
-async fn saved_speech(pool: PgPool, first: Value, second: Value) -> Vec<String> {
+/// 依序送出兩輪 cascade 的請求，回傳資料庫裡的學生訊息與最後的回合數。
+async fn saved_speech(pool: PgPool, first: Value, second: Value) -> (Vec<String>, i64) {
     let r = rig(
         pool.clone(),
         vec![Reply(REPLY.to_vec()), Reply(REPLY.to_vec())],
@@ -252,13 +252,15 @@ async fn saved_speech(pool: PgPool, first: Value, second: Value) -> Vec<String> 
         get(&format!("/api/conversations/{conv}"), Some(&a.student)),
     )
     .await;
-    json_body(detail).await["messages"]
+    let detail = json_body(detail).await;
+    let saved = detail["messages"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|m| m["source"] == "speech-cascade")
         .map(|m| m["content"].as_str().unwrap().to_string())
-        .collect()
+        .collect();
+    (saved, detail["turn_count"].as_i64().unwrap())
 }
 
 fn history(messages: &[(&str, &str)]) -> Value {
@@ -272,21 +274,24 @@ fn history(messages: &[(&str, &str)]) -> Value {
 }
 
 #[sqlx::test]
-async fn a_turn_cascade_joined_after_an_unheard_reply_is_saved_once(pool: PgPool) {
-    let saved = saved_speech(
+async fn a_turn_cascade_joined_after_an_unheard_reply_is_its_own_message_in_the_same_round(
+    pool: PgPool,
+) {
+    let (saved, rounds) = saved_speech(
         pool,
         history(&[("user", "合成的第一句")]),
         // 回覆一個字都沒被聽到：cascade 把回覆移除，前後兩句以空格併成一則
         history(&[("user", "合成的第一句 合成的第二句")]),
     )
     .await;
-    // 回覆沒被聽到，接著說的是同一句話：併回原本那則，不多算一回合
-    assert_eq!(saved, ["合成的第一句 合成的第二句"]);
+    // 兩句各是一則學生訊息（畫面上是兩個泡泡），但接著說的話不多算一回合
+    assert_eq!(saved, ["合成的第一句", "合成的第二句"]);
+    assert_eq!(rounds, 1);
 }
 
 #[sqlx::test]
 async fn a_student_repeating_themselves_is_not_trimmed(pool: PgPool) {
-    let saved = saved_speech(
+    let (saved, rounds) = saved_speech(
         pool,
         history(&[("user", "合成的第一句")]),
         history(&[
@@ -297,6 +302,7 @@ async fn a_student_repeating_themselves_is_not_trimmed(pool: PgPool) {
     )
     .await;
     assert_eq!(saved, ["合成的第一句", "合成的第一句 我再說一次"]);
+    assert_eq!(rounds, 2);
 }
 
 /// 一場開好語音會話的對話。
@@ -484,7 +490,7 @@ async fn a_late_join_waits_for_the_turn_before_it(pool: PgPool) {
     text_of(first).await;
     text_of(a).await;
     text_of(b).await;
-    assert_eq!(v.speech().await, ["第一句", "第二句 第三句"]);
+    assert_eq!(v.speech().await, ["第一句", "第二句", "第三句"]);
 }
 
 #[sqlx::test]
@@ -557,13 +563,14 @@ async fn a_reply_nobody_heard_leaves_the_history(pool: PgPool) {
 
     record_heard(&v.r.state, v.id, 0).await;
 
-    // cascade 也把回覆移除並併句；這不是未回覆的訊息，要能繼續
+    // cascade 也把回覆移除並併句；這不是未回覆的訊息，要能繼續，接著說的存成獨立的一則
     let res = v.say(&[("user", "第一句 第二句")]).await;
     assert_eq!(res.status(), StatusCode::OK);
     text_of(res).await;
-    assert_eq!(v.speech().await, ["第一句 第二句"]);
+    assert_eq!(v.speech().await, ["第一句", "第二句"]);
     let request = v.r.ai.requests.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(request.messages.last().unwrap().content, "第一句 第二句");
+    assert_eq!(request.messages.last().unwrap().content, "第二句");
+    assert!(request.messages.iter().any(|m| m.content == "第一句"));
     let turns: i32 = sqlx::query_scalar("SELECT turn_count FROM conversations WHERE id = $1")
         .bind(v.id)
         .fetch_one(&v.pool)

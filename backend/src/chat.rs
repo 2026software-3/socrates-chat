@@ -462,7 +462,7 @@ pub(crate) async fn submit_message(
     })
 }
 
-/// 把學生接著說的話併回上一則學生訊息，回合數不變，並取得產生回覆的權利。
+/// 學生在上一則回覆沒被聽到時接著說的話：存成獨立的一則學生訊息，回合數不變，並取得產生回覆的權利。
 /// 上一則 AI 回覆確定有被聽到（`heard_chars` 大於 0）時回傳 `None`：那是新的一輪。
 /// 還沒有紀錄不算聽到：cascade 併句代表它已移除回覆，回報可能還在路上。
 pub(crate) async fn rejoin_message(
@@ -470,6 +470,7 @@ pub(crate) async fn rejoin_message(
     user: Uuid,
     id: Uuid,
     content: &str,
+    source: &str,
 ) -> Result<Option<Submitted>, ApiError> {
     let mut tx = state.pool.begin().await?;
     let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
@@ -500,15 +501,13 @@ pub(crate) async fn rejoin_message(
         return Ok(None);
     }
     let m = sqlx::query_as(
-        "UPDATE messages SET content = $2
-         WHERE id = (
-             SELECT id FROM messages WHERE conversation_id = $1 AND role = 'student'
-             ORDER BY seq DESC LIMIT 1
-         )
+        "INSERT INTO messages (conversation_id, role, content, source)
+         VALUES ($1, 'student', $2, $3)
          RETURNING id, role, content, source, question_type, created_at",
     )
     .bind(id)
     .bind(content)
+    .bind(source)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
