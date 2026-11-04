@@ -216,7 +216,12 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
       case 'conversation.item.input_audio_transcription.completed': {
         const text = event.transcript?.trim()
         if (text) {
-          cb.onTranscript(text, reply !== undefined && !reply.interrupted && !reply.textEnded)
+          // 學生接著說了：還開著的回覆不必再等，直接打斷，這句話緊接著回覆
+          if (reply && !reply.interrupted) {
+            send({ type: 'response.cancel' })
+            cutOff(reply)
+          }
+          cb.onTranscript(text, false)
           armReplyWatchdog()
         }
         break
