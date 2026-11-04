@@ -47,7 +47,7 @@ use crate::{
     chat::{MAX_MESSAGE_CHARS, Submitted, rejoin_message, submit_message},
     error::ApiError,
     mutex::lock,
-    reply::{ReplyText, begin_text_stream, save_heard},
+    reply::{Abandoned, ReplyText, begin_text_stream, save_heard},
 };
 
 pub const INTERNAL_PREFIX: &str = "/internal/cascade/";
@@ -492,10 +492,11 @@ fn fixed_reply(text: &'static str) -> Response {
 /// 等到逾時。cascade 中途放棄這個串流時（打斷）不會有通知，下一輪保存學生訊息時會發現。
 fn streamed_reply(
     text: mpsc::UnboundedReceiver<ReplyText>,
+    abandoned: Abandoned,
     state: AppState,
     token: String,
 ) -> Response {
-    let begin = (text, state, token, ReplyWatch::default());
+    let begin = (text, state, token, ReplyWatch::new(abandoned));
     let chunks = stream::unfold(begin, |(mut text, state, token, mut watch)| async move {
         if watch.finished {
             return None;
@@ -528,14 +529,16 @@ struct ReplyWatch {
     started: Instant,
     sent_any: bool,
     finished: bool,
+    abandoned: Abandoned,
 }
 
-impl Default for ReplyWatch {
-    fn default() -> Self {
+impl ReplyWatch {
+    fn new(abandoned: Abandoned) -> Self {
         Self {
             started: Instant::now(),
             sent_any: false,
             finished: false,
+            abandoned,
         }
     }
 }
@@ -548,6 +551,10 @@ impl Drop for ReplyWatch {
                 elapsed_ms = self.started.elapsed().as_millis() as u64,
                 "voice reply stream dropped before it finished"
             );
+            // 一個字都沒送出就被放棄：學生不會聽到這次的回覆，不必再等 AI，也別擋住接著說的下一句
+            if !self.sent_any {
+                self.abandoned.notify_one();
+            }
         }
     }
 }
@@ -634,8 +641,14 @@ async fn spoken_turn(
             conversation,
             first,
         } => {
-            let text = begin_text_stream(state.clone(), user, conversation, first).await?;
-            Ok(streamed_reply(text, state.clone(), token.to_string()))
+            let (text, abandoned) =
+                begin_text_stream(state.clone(), user, conversation, first).await?;
+            Ok(streamed_reply(
+                text,
+                abandoned,
+                state.clone(),
+                token.to_string(),
+            ))
         }
     }
 }
