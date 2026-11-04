@@ -566,6 +566,9 @@ pub(crate) async fn logout(
 pub(crate) struct MeResponse {
     id: Uuid,
     email: Option<String>,
+    /// 自己的學號（大寫）。帳號本身有學號就回傳，與角色無關（同時具備教師身分的學生也看得到自己的）；
+    /// 沒有學號的帳號（教師、管理者等）為 `null`（S-01.4）
+    student_number: Option<String>,
     display_name: Option<String>,
     language: String,
     is_admin: bool,
@@ -579,6 +582,7 @@ impl From<CurrentUser> for MeResponse {
         Self {
             id: u.id,
             email: u.email,
+            student_number: u.student_number,
             display_name: u.display_name,
             language: u.language,
             is_admin: u.is_admin,
