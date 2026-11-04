@@ -393,6 +393,19 @@ describe('realtime session', () => {
     session.close()
   })
 
+  it('never writes a server-supplied status with control characters into the console', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const session = await connected()
+    const ws = FakeSocket.last
+    ws.event(created('resp_1'))
+    ws.event(done('resp_1', 'cancelled\n[voice] forged entry'))
+    const traced = info.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(traced).not.toContain('forged')
+    expect(traced).not.toContain('\n[voice] forged')
+    info.mockRestore()
+    session.close()
+  })
+
   it('settles when interrupted after the server already finished the reply', async () => {
     const session = await connected()
     const ws = FakeSocket.last
