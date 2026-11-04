@@ -27,8 +27,8 @@ fn items(body: &Value) -> &Vec<Value> {
 async fn finish(pool: &PgPool, conversation: &str) {
     let id: Uuid = conversation.parse().unwrap();
     sqlx::query(
-        "INSERT INTO summaries (conversation_id, status, stance, reasons, claim)
-         VALUES ($1, 'ready', '立場', '理由', '主張')",
+        "INSERT INTO summaries (conversation_id, status, stance, reasons, claim, completed_at)
+         VALUES ($1, 'ready', '立場', '理由', '主張', now())",
     )
     .bind(id)
     .execute(pool)
