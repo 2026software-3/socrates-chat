@@ -505,17 +505,27 @@ async fn a_reply_the_cascade_abandons_before_any_text_does_not_block_the_next_tu
         ..enabled()
     };
     let v = voice_with(pool, vec![Hang, Reply(REPLY.to_vec())], slow).await;
-    drop(v.say(&[("user", "第一句")]).await);
+    let first = v.say(&[("user", "第一句")]).await;
+    // 等第一輪真的呼叫了 AI（取走 Hang 腳本）再放棄，否則下一輪會取到 Hang
+    for _ in 0..100 {
+        if !v.r.ai.requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(v.r.ai.requests.lock().unwrap().len(), 1);
+    drop(first);
 
     // 下一句不能被還在等 AI 的第一輪卡住（否則要等到逾時才失敗）
-    let res = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        v.say(&[("user", "第一句 第二句")]),
-    )
-    .await
-    .expect("the next turn waited for the abandoned reply");
-    assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(deltas(&text_of(res).await), "你為什麼這樣認為？");
+    let next = async {
+        let res = v.say(&[("user", "第一句 第二句")]).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        text_of(res).await
+    };
+    let body = tokio::time::timeout(std::time::Duration::from_secs(3), next)
+        .await
+        .expect("the next turn waited for the abandoned reply");
+    assert_eq!(deltas(&body), "你為什麼這樣認為？");
     assert_eq!(v.speech().await, ["第一句", "第二句"]);
 }
 
