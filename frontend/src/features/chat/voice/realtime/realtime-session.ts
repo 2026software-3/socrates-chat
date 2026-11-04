@@ -198,7 +198,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
 
   const onEvent = (event: ServerEvent) => {
     if (TRACED_EVENTS.has(event.type)) {
-      console.info('[voice] event', event.type, event.response?.status ?? '', Math.round(performance.now()))
+      console.info('[voice] event', loggableCode(event.type), event.response?.status === undefined ? '' : loggableCode(event.response.status), Math.round(performance.now()))
     }
     if (!answered) {
       answered = true
