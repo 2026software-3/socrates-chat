@@ -608,9 +608,9 @@ async fn spoken_turn(
     let joined = fresh != content;
     let mut attempts = 0;
     let submitted = loop {
-        // 回覆沒被聽到又接著說：是同一句話被切開，併回去，不多算一回合
+        // 回覆沒被聽到又接著說：存成獨立的一則（畫面是兩個泡泡），但不多算一回合
         let rejoined = if joined {
-            rejoin_message(state, user, id, content).await
+            rejoin_message(state, user, id, &fresh, SOURCE).await
         } else {
             Ok(None)
         };
