@@ -279,12 +279,37 @@ fn validate_not_past(
     Ok(())
 }
 
-async fn topic_exists(pool: &PgPool, id: Uuid) -> Result<bool, ApiError> {
-    let (exists,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM topics WHERE id = $1)")
-        .bind(id)
-        .fetch_one(pool)
+/// 活動最多可含的題目數（資料表 `activity_topics.position` 的 CHECK 為同一個數字）。
+const MAX_TOPICS_PER_ACTIVITY: usize = 5;
+
+/// 題目清單格式：至少一個、不超過上限、不重複。
+fn validate_topic_list(ids: &[Uuid]) -> Result<(), ApiError> {
+    if ids.is_empty() {
+        return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
+    }
+    if ids.len() > MAX_TOPICS_PER_ACTIVITY {
+        return Err(ApiError::bad_request("invalid_topic", "題目數量最多 5 個"));
+    }
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    if unique.len() != ids.len() {
+        return Err(ApiError::bad_request("invalid_topic", "題目不可重複"));
+    }
+    Ok(())
+}
+
+/// 一次查詢確認所有題目都存在；`ids` 須已通過 `validate_topic_list`（不重複）。
+async fn ensure_topics_exist<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    ids: &[Uuid],
+) -> Result<(), ApiError> {
+    let found: i64 = sqlx::query_scalar("SELECT count(*) FROM topics WHERE id = ANY($1)")
+        .bind(ids)
+        .fetch_one(executor)
         .await?;
-    Ok(exists)
+    if found != ids.len() as i64 {
+        return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+    }
+    Ok(())
 }
 
 /// 活動分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
@@ -382,28 +407,13 @@ pub(crate) async fn create_activity(
         (None, Some(id)) => vec![id],
         (None, None) => return Err(ApiError::bad_request("invalid_topic", "請選擇題目")),
     };
-    if topic_ids.is_empty() {
-        return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
-    }
-    if topic_ids.len() > 5 {
-        return Err(ApiError::bad_request("invalid_topic", "題目數量最多 5 個"));
-    }
-    let mut seen = std::collections::HashSet::new();
-    for &id in &topic_ids {
-        if !seen.insert(id) {
-            return Err(ApiError::bad_request("invalid_topic", "題目不可重複"));
-        }
-    }
+    validate_topic_list(&topic_ids)?;
     let Some(classroom_id) = b.classroom_id else {
         return Err(ApiError::bad_request("invalid_classroom", "請選擇教室"));
     };
     // 不是自己管理的教室與不存在的教室回應相同
     let classroom = visible_classroom(&state, &cu, &classroom_id.to_string()).await?;
-    for &id in &topic_ids {
-        if !topic_exists(&state.pool, id).await? {
-            return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
-        }
-    }
+    ensure_topics_exist(&state.pool, &topic_ids).await?;
     validate_not_past((b.opens_at, b.closes_at), (None, None))?;
     validate_schedule(b.opens_at, b.closes_at)?;
     let mut tx = state.pool.begin().await?;
@@ -441,37 +451,17 @@ pub(crate) async fn update_activity(
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
     // 活動必須有題目：不能清除，若有傳入必須包含至少一個存在且不重複的題目（最多 5 個）
-    let new_topics = match (p.topic_ids, p.topic_id) {
+    // 舊欄位 `topic_id` 只換掉第一個題目，其餘題目與順序不變。
+    let (new_topics, legacy_topic) = match (p.topic_ids, p.topic_id) {
         (Some(None), _) | (_, Some(None)) => {
             return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
         }
         (Some(Some(ids)), _) => {
-            if ids.is_empty() {
-                return Err(ApiError::bad_request("invalid_topic", "請選擇題目"));
-            }
-            if ids.len() > 5 {
-                return Err(ApiError::bad_request("invalid_topic", "題目數量最多 5 個"));
-            }
-            let mut seen = std::collections::HashSet::new();
-            for &id in &ids {
-                if !seen.insert(id) {
-                    return Err(ApiError::bad_request("invalid_topic", "題目不可重複"));
-                }
-            }
-            for &id in &ids {
-                if !topic_exists(&state.pool, id).await? {
-                    return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
-                }
-            }
-            Some(ids)
+            validate_topic_list(&ids)?;
+            (Some(ids), None)
         }
-        (None, Some(Some(t))) => {
-            if !topic_exists(&state.pool, t).await? {
-                return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
-            }
-            Some(vec![t])
-        }
-        (None, None) => None,
+        (None, Some(Some(t))) => (None, Some(t)),
+        (None, None) => (None, None),
     };
     // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
     // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
@@ -495,78 +485,89 @@ pub(crate) async fn update_activity(
     validate_not_past((opens_at, closes_at), (old_opens, old_closes))?;
     validate_schedule(opens_at, closes_at)?;
 
-    if let Some(ref new_ids) = new_topics {
+    if new_topics.is_some() || legacy_topic.is_some() {
         let current_topics: Vec<Uuid> = sqlx::query_scalar(
             "SELECT topic_id FROM activity_topics WHERE activity_id = $1 ORDER BY position ASC",
         )
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
+        let new_ids: Vec<Uuid> = match (new_topics, legacy_topic) {
+            (Some(ids), _) => ids,
+            (None, first) => first
+                .into_iter()
+                .chain(
+                    current_topics
+                        .iter()
+                        .copied()
+                        .skip(1)
+                        .filter(|t| Some(*t) != first),
+                )
+                .collect(),
+        };
 
-        let (has_conversations,): (bool,) =
-            sqlx::query_as("SELECT EXISTS (SELECT 1 FROM conversations WHERE activity_id = $1)")
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await?;
+        if new_ids != current_topics {
+            ensure_topics_exist(&mut *tx, &new_ids).await?;
 
-        if has_conversations {
-            let conv_topics: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT DISTINCT topic_id FROM conversations WHERE activity_id = $1 AND topic_id IS NOT NULL",
+            // 對話的 topic_id 為 NULL（題目已被刪除）時不知道鎖的是哪一題，整份清單都視為已鎖
+            let conv_topics: Vec<Option<Uuid>> = sqlx::query_scalar(
+                "SELECT DISTINCT topic_id FROM conversations WHERE activity_id = $1",
             )
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
+            let locked_set: std::collections::HashSet<Uuid> = if conv_topics.contains(&None) {
+                current_topics.iter().copied().collect()
+            } else {
+                conv_topics.into_iter().flatten().collect()
+            };
+            let locked_err =
+                || ApiError::conflict("activity_topic_locked", "已有學生開始對話，不能更換題目");
 
-            let locked_set: std::collections::HashSet<Uuid> = conv_topics.into_iter().collect();
-
-            // 1. 已有對話的題目不能被移除或替換
-            for locked in &locked_set {
-                if !new_ids.contains(locked) {
-                    return Err(ApiError::conflict(
-                        "activity_topic_locked",
-                        "已有學生開始對話，不能更換題目",
-                    ));
+            if !locked_set.is_empty() {
+                // 1. 第一個題目決定新學生拿到哪一題，有對話後不能換
+                if new_ids.first() != current_topics.first() {
+                    return Err(locked_err());
                 }
-            }
 
-            // 2. 已有對話的題目不能被重排（其與其他既有題目的相對順序不能被更動）
-            for locked in &locked_set {
-                let cur_l_pos = current_topics.iter().position(|t| t == locked).unwrap();
-                let new_l_pos = new_ids.iter().position(|t| t == locked).unwrap();
+                // 2. 已有對話的題目不能被移除或替換
+                if locked_set.iter().any(|locked| !new_ids.contains(locked)) {
+                    return Err(locked_err());
+                }
 
-                for other in &current_topics {
-                    if other == locked {
-                        continue;
-                    }
-                    if let Some(new_o_pos) = new_ids.iter().position(|t| t == other) {
-                        let cur_o_pos = current_topics.iter().position(|t| t == other).unwrap();
-                        if (cur_o_pos < cur_l_pos && new_o_pos > new_l_pos)
-                            || (cur_o_pos > cur_l_pos && new_o_pos < new_l_pos)
-                        {
-                            return Err(ApiError::conflict(
-                                "activity_topic_locked",
-                                "已有學生開始對話，不能更換題目",
-                            ));
+                // 3. 已有對話的題目不能被重排（其與其他既有題目的相對順序不能被更動）
+                for locked in &locked_set {
+                    let cur_l_pos = current_topics.iter().position(|t| t == locked).unwrap();
+                    let new_l_pos = new_ids.iter().position(|t| t == locked).unwrap();
+
+                    for other in &current_topics {
+                        if other == locked {
+                            continue;
+                        }
+                        if let Some(new_o_pos) = new_ids.iter().position(|t| t == other) {
+                            let cur_o_pos = current_topics.iter().position(|t| t == other).unwrap();
+                            if (cur_o_pos < cur_l_pos && new_o_pos > new_l_pos)
+                                || (cur_o_pos > cur_l_pos && new_o_pos < new_l_pos)
+                            {
+                                return Err(locked_err());
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // 更新題目關聯
-        sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        for (pos, &topic_id) in new_ids.iter().enumerate() {
+            // 更新題目關聯
+            sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(
                 "INSERT INTO activity_topics (activity_id, topic_id, position)
-                 VALUES ($1, $2, $3)",
+                 SELECT $1, t.topic_id, (t.ord - 1)::integer
+                 FROM unnest($2::uuid[]) WITH ORDINALITY AS t(topic_id, ord)",
             )
             .bind(id)
-            .bind(topic_id)
-            .bind(pos as i32)
+            .bind(&new_ids)
             .execute(&mut *tx)
             .await?;
         }

@@ -336,3 +336,116 @@ async fn patch_activity_topics_locked_after_conversations(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(json_body(res).await["topic_ids"], json!([&t4, &t3]));
 }
+
+#[sqlx::test]
+async fn legacy_topic_id_only_replaces_the_first_topic(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let t1 = create_topic(&app, &a, "電車難題").await;
+    let t2 = create_topic(&app, &a, "說謊可以嗎").await;
+    let t3 = create_topic(&app, &a, "自由意志存在嗎").await;
+    let t4 = create_topic(&app, &a, "道德相對主義").await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&a.teacher),
+            Some(json!({
+                "title": "舊欄位相容",
+                "classroom_id": a.classroom,
+                "topic_ids": [&t1, &t2, &t3]
+            })),
+        ),
+    )
+    .await;
+    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let path = format!("/api/activities/{id}");
+    let patch = |body: Value| {
+        let app = app.clone();
+        let path = path.clone();
+        let cookie = a.teacher.clone();
+        async move { send(&app, json_req("PATCH", &path, Some(&cookie), Some(body))).await }
+    };
+
+    // 舊欄位帶目前的第一個題目：不動任何題目
+    let res = patch(json!({"topic_id": &t1})).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["topic_ids"], json!([&t1, &t2, &t3]));
+
+    // 舊欄位帶新題目：只換掉第一個，其餘順序不變
+    let res = patch(json!({"topic_id": &t4})).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["topic_ids"], json!([&t4, &t2, &t3]));
+    assert_eq!(body["topic_id"], json!(&t4));
+
+    // 不存在的題目仍回 400
+    let res = patch(json!({"topic_id": Uuid::new_v4()})).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
+async fn first_topic_and_null_topic_conversations_stay_locked(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let t1 = create_topic(&app, &a, "電車難題").await;
+    let t2 = create_topic(&app, &a, "說謊可以嗎").await;
+    let t3 = create_topic(&app, &a, "自由意志存在嗎").await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&a.teacher),
+            Some(json!({
+                "title": "鎖定",
+                "classroom_id": a.classroom,
+                "topic_ids": [&t1, &t2]
+            })),
+        ),
+    )
+    .await;
+    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/activities/{id}/publish"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    start_from_activity(&app, &a.student, &id).await;
+
+    let path = format!("/api/activities/{id}");
+    let patch = |body: Value| {
+        let app = app.clone();
+        let path = path.clone();
+        let cookie = a.teacher.clone();
+        async move { send(&app, json_req("PATCH", &path, Some(&cookie), Some(body))).await }
+    };
+
+    // 在最前面插入新題目會改變新學生拿到的題目 -> 409
+    let res = patch(json!({"topic_ids": [&t3, &t1, &t2]})).await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(res).await["error"]["code"],
+        "activity_topic_locked"
+    );
+
+    // 對話的題目被刪除（topic_id 變 NULL）後，仍不能換掉整份清單
+    sqlx::query("UPDATE conversations SET topic_id = NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = patch(json!({"topic_ids": [&t3]})).await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(res).await["error"]["code"],
+        "activity_topic_locked"
+    );
+}

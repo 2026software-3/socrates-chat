@@ -126,8 +126,8 @@ pub(crate) async fn create(
     Json(b): Json<NewConversation>,
 ) -> Result<(StatusCode, Json<Conversation>), ApiError> {
     // 來源必須是已發布的活動，或已啟用的題目。
-    // 活動列以 FOR SHARE 鎖住到交易結束：教師更換活動題目時會鎖同一列再檢查有沒有對話，
-    // 所以新對話與更換題目不會同時成立（S-04.7）。
+    // 活動列以 FOR SHARE 鎖住到交易結束：教師修改活動題目清單時會鎖同一列再檢查有沒有對話，
+    // 所以新對話與題目變更不會同時成立（S-04.7）。活動對話目前取活動的第一個題目。
     let mut tx = state.pool.begin().await?;
     // 活動必須在學生所屬教室的名單內；不在名單內與不存在的活動回應相同（不外露資源是否存在，S-14）。
     // 活動對話的教室取自活動；從題目庫開始的個人練習沒有教室。

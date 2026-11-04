@@ -15,8 +15,8 @@ pub struct Activity {
     pub description: String,
     /// 活動題目清單（S-04.7、F-29.1）
     pub topic_ids: Vec<Uuid>,
-    /// 相容舊欄位（回傳第一個題目）
-    pub topic_id: Uuid,
+    /// 相容舊欄位（第一個題目；沒有題目時為 null）
+    pub topic_id: Option<Uuid>,
     /// 活動所屬的教室，建立後不可更改（S-14）
     pub classroom_id: Uuid,
     pub status: String,
@@ -27,14 +27,33 @@ pub struct Activity {
     pub created_at: DateTime<Utc>,
 }
 
+/// `topic_ids`（依順序）與相容舊欄位 `topic_id`（第一個題目）兩個輸出欄位；需搭配 `topic_join!`。
+macro_rules! topic_columns {
+    () => {
+        "COALESCE(tp.ids, ARRAY[]::uuid[]) AS topic_ids, tp.ids[1] AS topic_id"
+    };
+}
+
+/// 取得活動（table alias 為 `$alias`）的有序題目陣列 `tp.ids`。
+macro_rules! topic_join {
+    ($alias:literal) => {
+        concat!(
+            "LEFT JOIN LATERAL (SELECT array_agg(topic_id ORDER BY position) AS ids
+                                FROM activity_topics WHERE activity_id = ",
+            $alias,
+            ".id) tp ON true "
+        )
+    };
+}
+
 macro_rules! activity_select {
     ($tail:literal) => {
         concat!(
-            "SELECT a.id, a.title, a.description,
-                    COALESCE((SELECT array_agg(at.topic_id ORDER BY at.position) FROM activity_topics at WHERE at.activity_id = a.id), ARRAY[]::uuid[]) AS topic_ids,
-                    COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = a.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
-                    a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+            "SELECT a.id, a.title, a.description, ",
+            topic_columns!(),
+            ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
+            topic_join!("a"),
             $tail
         )
     };
@@ -122,7 +141,7 @@ pub async fn create_with_schedule<'e>(
          )
          SELECT a.id, a.title, a.description,
                 $7::uuid[] AS topic_ids,
-                COALESCE($7[1]::uuid, '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
+                ($7::uuid[])[1] AS topic_id,
                 a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
          FROM a",
     )
@@ -145,7 +164,7 @@ pub async fn set_status_writable(
     is_admin: bool,
     status: &str,
 ) -> Result<Option<Activity>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "WITH upd AS (
             UPDATE activities a SET status = $2, updated_at = now()
             FROM classrooms cl
@@ -153,12 +172,12 @@ pub async fn set_status_writable(
               AND NOT cl.is_archived AND NOT a.is_archived
             RETURNING a.id, a.title, a.description, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
          )
-         SELECT u.id, u.title, u.description,
-                COALESCE((SELECT array_agg(at.topic_id ORDER BY at.position) FROM activity_topics at WHERE at.activity_id = u.id), ARRAY[]::uuid[]) AS topic_ids,
-                COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = u.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
-                u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
-         FROM upd u",
-    )
+         SELECT u.id, u.title, u.description, ",
+        topic_columns!(),
+        ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
+         FROM upd u ",
+        topic_join!("u")
+    ))
     .bind(id)
     .bind(status)
     .bind(is_admin)
@@ -197,18 +216,19 @@ pub struct Startable {
 }
 
 /// 找出學生能開始對話的活動（已發布，且學生在活動所屬教室的名單內），並以 `FOR SHARE` 鎖住活動列：
-/// 教師更換活動題目時會鎖同一列再檢查有沒有對話，所以新對話與更換題目不會同時成立（S-04.7）。
-/// 活動不存在、未發布或學生不在名單內都回 `None`，呼叫端不應區分原因，以免外露資源是否存在。
+/// 教師修改活動題目清單時會鎖同一列再檢查有沒有對話，所以新對話與題目變更不會同時成立（S-04.7）。
+/// 目前開始對話一律取活動的第一個題目（F-29.1 只做資料模型；每題各一場對話待後續實作）。
+/// 活動不存在、未發布、沒有題目或學生不在名單內都回 `None`，呼叫端不應區分原因，以免外露資源是否存在。
 pub async fn find_startable(
     conn: &mut PgConnection,
     id: Uuid,
     user_id: Uuid,
 ) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.id,
-                COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = a.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
-                a.classroom_id, a.title, a.description
+        "SELECT a.id, ft.topic_id, a.classroom_id, a.title, a.description
          FROM activities a
+         JOIN LATERAL (SELECT topic_id FROM activity_topics
+                       WHERE activity_id = a.id ORDER BY position LIMIT 1) ft ON true
          JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
            AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
@@ -229,17 +249,17 @@ pub async fn set_archived<'e>(
     id: Uuid,
     archived: bool,
 ) -> Result<Activity, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "WITH upd AS (
             UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
             RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
          )
-         SELECT u.id, u.title, u.description,
-                COALESCE((SELECT array_agg(at.topic_id ORDER BY at.position) FROM activity_topics at WHERE at.activity_id = u.id), ARRAY[]::uuid[]) AS topic_ids,
-                COALESCE((SELECT at.topic_id FROM activity_topics at WHERE at.activity_id = u.id ORDER BY at.position ASC LIMIT 1), '00000000-0000-0000-0000-000000000000'::uuid) AS topic_id,
-                u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
-         FROM upd u",
-    )
+         SELECT u.id, u.title, u.description, ",
+        topic_columns!(),
+        ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
+         FROM upd u ",
+        topic_join!("u")
+    ))
     .bind(id)
     .bind(archived)
     .fetch_one(conn)
