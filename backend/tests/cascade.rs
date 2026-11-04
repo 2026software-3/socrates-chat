@@ -317,7 +317,11 @@ struct Voice {
 }
 
 async fn voice(pool: PgPool, scripts: Vec<Script>) -> Voice {
-    let r = rig(pool.clone(), scripts, enabled());
+    voice_with(pool, scripts, enabled()).await
+}
+
+async fn voice_with(pool: PgPool, scripts: Vec<Script>, config: Config) -> Voice {
+    let r = rig(pool.clone(), scripts, config);
     let a = seed_actors(&r.app).await;
     let conv = start_conversation(&r.app, &a).await;
     let id: Uuid = conv.parse().unwrap();
@@ -491,6 +495,28 @@ async fn a_late_join_waits_for_the_turn_before_it(pool: PgPool) {
     text_of(a).await;
     text_of(b).await;
     assert_eq!(v.speech().await, ["第一句", "第二句", "第三句"]);
+}
+
+#[sqlx::test]
+async fn a_reply_the_cascade_abandons_before_any_text_does_not_block_the_next_turn(pool: PgPool) {
+    // 第一輪的 AI 遲遲不出字；cascade 因為學生接著說而放棄這個串流
+    let slow = Config {
+        ai_first_token_timeout: std::time::Duration::from_secs(30),
+        ..enabled()
+    };
+    let v = voice_with(pool, vec![Hang, Reply(REPLY.to_vec())], slow).await;
+    drop(v.say(&[("user", "第一句")]).await);
+
+    // 下一句不能被還在等 AI 的第一輪卡住（否則要等到逾時才失敗）
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        v.say(&[("user", "第一句 第二句")]),
+    )
+    .await
+    .expect("the next turn waited for the abandoned reply");
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(deltas(&text_of(res).await), "你為什麼這樣認為？");
+    assert_eq!(v.speech().await, ["第一句", "第二句"]);
 }
 
 #[sqlx::test]
