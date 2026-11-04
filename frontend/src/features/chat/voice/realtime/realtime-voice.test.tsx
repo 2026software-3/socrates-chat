@@ -208,6 +208,25 @@ describe('server voice conversation', () => {
     expect(await startButton()).toBeDisabled()
   })
 
+  it('does not add a queued utterance after the turn it waited for failed', async () => {
+    const { cb } = await startLive()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲', false)
+      cb.onReplyDelta('唸到一半')
+    })
+    await screen.findByText('唸到一半')
+    act(() => cb.onTranscript('乙', true))
+    // 失敗時 session 會先收尾這一輪的文字，再以 replyFailed 關閉
+    act(() => {
+      cb.onReplyFailed()
+      cb.onReplyEnd()
+      cb.onClosed('replyFailed')
+    })
+    expect(await screen.findByText(/這一輪沒有成功/)).toBeInTheDocument()
+    expect(screen.queryByText('乙')).not.toBeInTheDocument()
+  })
+
   it('offers a restart after a dropped connection', async () => {
     const { cb } = await startLive()
     act(() => cb.onClosed('lost'))

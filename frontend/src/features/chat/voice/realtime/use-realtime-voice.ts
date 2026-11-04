@@ -81,6 +81,7 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
           }
         },
         onReplyFailed() {
+          pendingRef.current = []
           turnRef.current?.fail()
           turnRef.current = undefined
         },
