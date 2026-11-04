@@ -14,6 +14,6 @@ RUN pip install sglang-omni==0.2.0 opencc-python-reimplemented
 RUN pip install --no-deps sox einops && pip install --no-deps qwen-tts==0.1.1
 
 WORKDIR /app
-COPY docker/cascade/tts_adapter.py docker/cascade/launch.yaml.tpl docker/cascade/entrypoint.sh /app/
+COPY docker/cascade/tts_adapter.py docker/cascade/patch_dialog.py docker/cascade/launch.yaml.tpl docker/cascade/entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]
