@@ -119,6 +119,22 @@ describe('server voice conversation', () => {
     act(() => cb.onReplyEnd())
   })
 
+  it('does not add a queued utterance to a later voice session after the first one ended', async () => {
+    const { user, cb } = await startLive()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲', false)
+      cb.onReplyDelta('第一次')
+    })
+    expect(await screen.findByText('第一次')).toBeInTheDocument()
+    act(() => cb.onTranscript('乙', true))
+
+    await user.click(screen.getByRole('button', { name: '結束語音對話' }))
+    await user.click(await startButton())
+    act(() => callbacks().onReplyEnd())
+    expect(screen.queryByText('乙')).not.toBeInTheDocument()
+  })
+
   it('takes stage and ending from the server after a turn', async () => {
     const { cb } = await startLive()
     server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: 'ended', voice_realtime: true }))))

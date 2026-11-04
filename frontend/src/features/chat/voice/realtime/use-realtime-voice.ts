@@ -87,6 +87,7 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
         onSettled: () => host.onSettled(),
         onClosed(reason: RealtimeCloseReason) {
           sessionRef.current = undefined
+          pendingRef.current = []
           endTurn()
           setActive(false)
           if (reason === 'unreachable') {
@@ -105,6 +106,7 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
   const stop = useCallback(() => {
     sessionRef.current?.close()
     sessionRef.current = undefined
+    pendingRef.current = []
     endTurn()
     setActive(false)
   }, [endTurn])
