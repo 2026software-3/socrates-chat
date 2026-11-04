@@ -106,9 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 4. 從資料庫重新查詢活動
     println!("\n[4/5] Fetching activity from database (find_by_id)");
-    let fetched = activity_store::find_by_id(&pool, activity.id)
-        .await?
-        .expect("activity should exist");
+    let fetched = activity_store::find_by_id(&pool, activity.id).await?;
     println!("  - Fetched topic_ids: {:?}", fetched.topic_ids);
     assert_eq!(fetched.topic_ids, desired_order);
     println!("  [PASS] Topic order verified from database records");
@@ -141,9 +139,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     tx.commit().await?;
 
-    let updated = activity_store::find_by_id(&pool, activity.id)
-        .await?
-        .expect("activity should exist");
+    let updated = activity_store::find_by_id(&pool, activity.id).await?;
     println!("  - Updated topic_ids: {:?}", updated.topic_ids);
     assert_eq!(updated.topic_ids, new_order);
     println!("  [PASS] Update and reordering verified");

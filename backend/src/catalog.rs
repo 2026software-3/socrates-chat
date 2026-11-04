@@ -297,6 +297,26 @@ fn validate_topic_list(ids: &[Uuid]) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// 活動已有對話時，題目清單的變更是否違反鎖定：第一個題目不能換（它決定新學生拿到哪一題）、
+/// 已有對話的題目不能移除，且與其他既有題目的相對順序不能改變。`locked` 為空表示沒有對話。
+fn topic_change_locked(current: &[Uuid], new: &[Uuid], locked: &[Uuid]) -> bool {
+    if locked.is_empty() {
+        return false;
+    }
+    if new.first() != current.first() {
+        return true;
+    }
+    let pos = |list: &[Uuid], t: &Uuid| list.iter().position(|x| x == t);
+    locked.iter().any(|l| {
+        let (Some(cur_l), Some(new_l)) = (pos(current, l), pos(new, l)) else {
+            return true;
+        };
+        current.iter().enumerate().any(|(cur_o, other)| {
+            other != l && pos(new, other).is_some_and(|new_o| (cur_o < cur_l) != (new_o < new_l))
+        })
+    })
+}
+
 /// 一次查詢確認所有題目都存在；`ids` 須已通過 `validate_topic_list`（不重複）。
 async fn ensure_topics_exist<'e>(
     executor: impl sqlx::PgExecutor<'e>,
@@ -402,11 +422,10 @@ pub(crate) async fn create_activity(
     if !valid_text(&b.title) {
         return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
     }
-    let topic_ids = match (b.topic_ids, b.topic_id) {
-        (Some(ids), _) => ids,
-        (None, Some(id)) => vec![id],
-        (None, None) => return Err(ApiError::bad_request("invalid_topic", "請選擇題目")),
-    };
+    let topic_ids = b
+        .topic_ids
+        .or(b.topic_id.map(|t| vec![t]))
+        .unwrap_or_default();
     validate_topic_list(&topic_ids)?;
     let Some(classroom_id) = b.classroom_id else {
         return Err(ApiError::bad_request("invalid_classroom", "請選擇教室"));
@@ -516,44 +535,16 @@ pub(crate) async fn update_activity(
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
-            let locked_set: std::collections::HashSet<Uuid> = if conv_topics.contains(&None) {
-                current_topics.iter().copied().collect()
+            let locked: Vec<Uuid> = if conv_topics.contains(&None) {
+                current_topics.clone()
             } else {
                 conv_topics.into_iter().flatten().collect()
             };
-            let locked_err =
-                || ApiError::conflict("activity_topic_locked", "已有學生開始對話，不能更換題目");
-
-            if !locked_set.is_empty() {
-                // 1. 第一個題目決定新學生拿到哪一題，有對話後不能換
-                if new_ids.first() != current_topics.first() {
-                    return Err(locked_err());
-                }
-
-                // 2. 已有對話的題目不能被移除或替換
-                if locked_set.iter().any(|locked| !new_ids.contains(locked)) {
-                    return Err(locked_err());
-                }
-
-                // 3. 已有對話的題目不能被重排（其與其他既有題目的相對順序不能被更動）
-                for locked in &locked_set {
-                    let cur_l_pos = current_topics.iter().position(|t| t == locked).unwrap();
-                    let new_l_pos = new_ids.iter().position(|t| t == locked).unwrap();
-
-                    for other in &current_topics {
-                        if other == locked {
-                            continue;
-                        }
-                        if let Some(new_o_pos) = new_ids.iter().position(|t| t == other) {
-                            let cur_o_pos = current_topics.iter().position(|t| t == other).unwrap();
-                            if (cur_o_pos < cur_l_pos && new_o_pos > new_l_pos)
-                                || (cur_o_pos > cur_l_pos && new_o_pos < new_l_pos)
-                            {
-                                return Err(locked_err());
-                            }
-                        }
-                    }
-                }
+            if topic_change_locked(&current_topics, &new_ids, &locked) {
+                return Err(ApiError::conflict(
+                    "activity_topic_locked",
+                    "已有學生開始對話，不能更換題目",
+                ));
             }
 
             // 更新題目關聯
@@ -586,9 +577,7 @@ pub(crate) async fn update_activity(
     .execute(&mut *tx)
     .await?;
 
-    let activity = activity_store::find_by_id(&mut *tx, id)
-        .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+    let activity = activity_store::find_by_id(&mut *tx, id).await?;
     tx.commit().await?;
     Ok(Json(activity))
 }

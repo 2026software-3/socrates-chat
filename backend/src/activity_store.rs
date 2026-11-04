@@ -110,10 +110,10 @@ pub async fn get_visible(
 pub async fn find_by_id<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     id: Uuid,
-) -> Result<Option<Activity>, sqlx::Error> {
+) -> Result<Activity, sqlx::Error> {
     sqlx::query_as(activity_select!("WHERE a.id = $1"))
         .bind(id)
-        .fetch_optional(executor)
+        .fetch_one(executor)
         .await
 }
 
