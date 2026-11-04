@@ -42,7 +42,7 @@ export type RealtimeCallbacks = {
   onPhase: (phase: RealtimePhase) => void
   onMicrophone: (diagnostics: MicrophoneDiagnostics) => void
   /** `replying`：這句話到達時，上一則回覆還開著（還在串流或唸）；那則回覆要先收尾，這句話才接在後面。 */
-  onTranscript: (text: string, replying?: boolean) => void
+  onTranscript: (text: string, replying: boolean) => void
   onReplyDelta: (text: string) => void
   onReplyEnd: () => void
   /** 伺服器說這一輪失敗；在 `onReplyEnd` 之前呼叫，接著以 `replyFailed` 關閉。 */
@@ -216,7 +216,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
       case 'conversation.item.input_audio_transcription.completed': {
         const text = event.transcript?.trim()
         if (text) {
-          cb.onTranscript(text)
+          cb.onTranscript(text, reply !== undefined && !reply.interrupted && !reply.textEnded)
           armReplyWatchdog()
         }
         break

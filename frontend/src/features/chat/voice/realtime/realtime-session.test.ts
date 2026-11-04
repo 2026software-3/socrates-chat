@@ -184,13 +184,29 @@ describe('realtime session', () => {
     session.close()
   })
 
+  it('tells the hook whether a reply is still open when an utterance arrives', async () => {
+    const session = await connected()
+    const ws = FakeSocket.last
+    const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
+    transcript('甲')
+    expect(cb.onTranscript).toHaveBeenLastCalledWith('甲', false)
+    ws.event(created('resp_1'))
+    transcript('乙')
+    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙', true)
+    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
+    ws.event(done('resp_1'))
+    transcript('丙')
+    expect(cb.onTranscript).toHaveBeenLastCalledWith('丙', false)
+    session.close()
+  })
+
   it('walks through a whole turn', async () => {
     const session = await connected()
     const ws = FakeSocket.last
     ws.event({ type: 'input_audio_buffer.speech_stopped' })
     expect(cb.onPhase).toHaveBeenLastCalledWith('transcribing')
     ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: ' 合成的發言 ' })
-    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言')
+    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言', false)
     ws.event(created('resp_1'))
     expect(cb.onPhase).toHaveBeenLastCalledWith('waiting')
     ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
