@@ -33,8 +33,6 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
 
   const sessionRef = useRef<RealtimeSession>(undefined)
   const turnRef = useRef<VoiceTurn>(undefined)
-  // 上一則回覆還開著時到達的發言：等那則回覆收尾才加進對話串，回覆的文字才不會跑進後面那句的泡泡
-  const pendingRef = useRef<string[]>([])
   const fallbackRef = useRef(onUnreachable)
   const interruptibleRef = useRef(interruptible)
 
@@ -61,34 +59,21 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
       {
         onPhase: setPhase,
         onMicrophone: setMicrophone,
-        onTranscript(text, replying) {
-          if (replying) {
-            pendingRef.current.push(text)
-            return
-          }
+        onTranscript(text) {
           // 上一輪的文字可能還沒收尾：新的一句開始，它就結束了
           endTurn()
           turnRef.current = host.turns.begin()
           host.appendStudent(text)
         },
         onReplyDelta: (text) => turnRef.current?.push(text),
-        onReplyEnd() {
-          endTurn()
-          const next = pendingRef.current.shift()
-          if (next !== undefined) {
-            turnRef.current = host.turns.begin()
-            host.appendStudent(next)
-          }
-        },
+        onReplyEnd: endTurn,
         onReplyFailed() {
-          pendingRef.current = []
           turnRef.current?.fail()
           turnRef.current = undefined
         },
         onSettled: () => host.onSettled(),
         onClosed(reason: RealtimeCloseReason) {
           sessionRef.current = undefined
-          pendingRef.current = []
           endTurn()
           setActive(false)
           if (reason === 'unreachable') {
@@ -107,7 +92,6 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
   const stop = useCallback(() => {
     sessionRef.current?.close()
     sessionRef.current = undefined
-    pendingRef.current = []
     endTurn()
     setActive(false)
   }, [endTurn])

@@ -83,7 +83,7 @@ describe('server voice conversation', () => {
     const { cb } = await startLive()
     act(() => {
       cb.onPhase('listening')
-      cb.onTranscript('合成的語音發言', false)
+      cb.onTranscript('合成的語音發言')
     })
     expect(await screen.findByText('合成的語音發言')).toBeInTheDocument()
     act(() => cb.onReplyDelta('那你認為'))
@@ -94,45 +94,30 @@ describe('server voice conversation', () => {
     expect(posts).toEqual([])
   })
 
-  it('keeps the rest of a reply in its own bubble when the next utterance arrives mid-stream', async () => {
+  it('puts an interrupted utterance and the reply to the next one in order', async () => {
     const { cb } = await startLive()
+    const aiBubbles = screen.getAllByText('蘇格拉底').length
     act(() => {
       cb.onPhase('listening')
-      cb.onTranscript('甲', false)
-      cb.onReplyDelta('第一次')
+      cb.onTranscript('甲')
     })
-    expect(await screen.findByText('第一次')).toBeInTheDocument()
+    expect(await screen.findByText('甲')).toBeInTheDocument()
 
-    // 第二句的逐字稿在第一次回覆還在串流時到達：它要等第一次回覆結束，才加進對話串
+    // 第二句辨識完成時 session 先打斷還開著的回覆（收尾），第二句馬上出現，回覆接在它下面
     act(() => {
-      cb.onTranscript('乙', true)
-      cb.onReplyDelta('回覆')
+      cb.onReplyEnd()
+      cb.onTranscript('乙')
     })
-    expect(await screen.findByText('第一次回覆')).toBeInTheDocument()
-    expect(screen.queryByText('乙')).not.toBeInTheDocument()
-
-    act(() => cb.onReplyEnd())
     expect(await screen.findByText('乙')).toBeInTheDocument()
-    act(() => cb.onReplyDelta('第二次'))
-    expect(await screen.findByText('第二次')).toBeInTheDocument()
-    expect(screen.getByText('第一次回覆')).toBeInTheDocument()
+    act(() => cb.onReplyDelta('回覆'))
+    const reply = await screen.findByText('回覆')
+    const first = screen.getByText('甲')
+    const second = screen.getByText('乙')
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(second.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 被打斷、沒有任何文字的那一輪不留空的 AI 泡泡
+    expect(screen.getAllByText('蘇格拉底')).toHaveLength(aiBubbles + 1)
     act(() => cb.onReplyEnd())
-  })
-
-  it('does not add a queued utterance to a later voice session after the first one ended', async () => {
-    const { user, cb } = await startLive()
-    act(() => {
-      cb.onPhase('listening')
-      cb.onTranscript('甲', false)
-      cb.onReplyDelta('第一次')
-    })
-    expect(await screen.findByText('第一次')).toBeInTheDocument()
-    act(() => cb.onTranscript('乙', true))
-
-    await user.click(screen.getByRole('button', { name: '結束語音對話' }))
-    await user.click(await startButton())
-    act(() => callbacks().onReplyEnd())
-    expect(screen.queryByText('乙')).not.toBeInTheDocument()
   })
 
   it('takes stage and ending from the server after a turn', async () => {
@@ -193,7 +178,7 @@ describe('server voice conversation', () => {
     const { cb } = await startLive()
     act(() => {
       cb.onPhase('listening')
-      cb.onTranscript('合成的語音發言', false)
+      cb.onTranscript('合成的語音發言')
     })
     await screen.findByText('合成的語音發言')
     act(() => cb.onReplyDelta('唸到一半'))
@@ -206,25 +191,6 @@ describe('server voice conversation', () => {
     expect(await screen.findByText(/這一輪沒有成功/)).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: '重試' })).toBeInTheDocument()
     expect(await startButton()).toBeDisabled()
-  })
-
-  it('does not add a queued utterance after the turn it waited for failed', async () => {
-    const { cb } = await startLive()
-    act(() => {
-      cb.onPhase('listening')
-      cb.onTranscript('甲', false)
-      cb.onReplyDelta('唸到一半')
-    })
-    await screen.findByText('唸到一半')
-    act(() => cb.onTranscript('乙', true))
-    // 失敗時 session 會先收尾這一輪的文字，再以 replyFailed 關閉
-    act(() => {
-      cb.onReplyFailed()
-      cb.onReplyEnd()
-      cb.onClosed('replyFailed')
-    })
-    expect(await screen.findByText(/這一輪沒有成功/)).toBeInTheDocument()
-    expect(screen.queryByText('乙')).not.toBeInTheDocument()
   })
 
   it('offers a restart after a dropped connection', async () => {
