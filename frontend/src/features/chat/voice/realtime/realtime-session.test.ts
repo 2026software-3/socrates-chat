@@ -184,19 +184,28 @@ describe('realtime session', () => {
     session.close()
   })
 
-  it('tells the hook whether a reply is still open when an utterance arrives', async () => {
+  it('interrupts the open reply and asks the server to cancel it when the next utterance arrives', async () => {
     const session = await connected()
     const ws = FakeSocket.last
     const transcript = (text: string) => ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: text })
     transcript('甲')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('甲', false)
     ws.event(created('resp_1'))
+    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '第一次' })
+    expect(cb.onReplyEnd).not.toHaveBeenCalled()
+
+    // 第二句辨識完成時第一次回覆還開著：直接打斷它，第二句接著回覆
     transcript('乙')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙', true)
-    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
-    ws.event(done('resp_1'))
-    transcript('丙')
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('丙', false)
+    expect(ws.ofType('response.cancel')).toHaveLength(1)
+    expect(cb.onReplyEnd).toHaveBeenCalledTimes(1)
+    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙', false)
+    expect(cb.onReplyEnd.mock.invocationCallOrder[0]).toBeLessThan(cb.onTranscript.mock.invocationCallOrder[1]!)
+
+    // 被打斷的回覆之後到的文字不能顯示；伺服器取消後馬上開第二次回覆
+    ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '遲到' })
+    ws.event(done('resp_1', 'cancelled'))
+    ws.event(created('resp_2'))
+    ws.event({ type: 'response.output_text.delta', response_id: 'resp_2', delta: '第二次' })
+    expect(cb.onReplyDelta.mock.calls.map((c) => c[0])).toEqual(['第一次', '第二次'])
     session.close()
   })
 
