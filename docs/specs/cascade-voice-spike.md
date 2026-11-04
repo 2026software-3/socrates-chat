@@ -35,7 +35,21 @@ cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），�
 
 其餘節點與連線（`inputs`、`session_publish`）照範本，不要改。後端這一端要設 `CASCADE_REALTIME_URL`（cascade 的 `/v1/realtime`）與 `CASCADE_LLM_TOKEN`。
 
-轉接層（`tts_adapter.py`，本機評估是 `127.0.0.1:8103`）目前不在 repo：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並補上 `max_new_tokens` 與繁轉簡；要在別的機器重現，需要另外取得。
+轉接層是 [`docker/cascade/tts_adapter.py`](../../docker/cascade/tts_adapter.py)（本機評估是 `127.0.0.1:8103`）：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並補上 `max_new_tokens` 與繁轉簡。
+
+## 用 docker compose 啟動整套 cascade
+
+`docker-compose.yml` 的 `cascade` profile 包含四個服務：`cascade-tts`（Qwen3-TTS 0.6B，使用 GPU）、`cascade-whisper`（CPU，small）、`cascade-adapter`（轉接層）、`cascade`（本體；LLM 回呼 `http://app:3000/internal/cascade/v1`）。**預設不啟用**，只在指定 profile 時才會建置與啟動，沒有 profile 的 `docker compose up` 與 CI 不受影響。
+
+| 項目 | 設定 |
+| --- | --- |
+| 啟用 | `COMPOSE_PROFILES=cascade`，或 `docker compose --profile app --profile cascade up -d --build` |
+| 後端環境變數 | `CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime`、`CASCADE_LLM_TOKEN`（與 cascade 容器同一個值，compose 會從 `.env` 帶入） |
+| 參考音 | `CASCADE_REFS_DIR`（預設 `./cascade-refs`）下放 `reference.wav`，逐字稿設在 `CASCADE_REFERENCE_TEXT`；參考音不進版控 |
+| 模型快取 | 預設存在 `cascade_hf` volume（首次啟動下載）；`CASCADE_HF_CACHE=~/.cache/huggingface` 可重用主機已下載的模型 |
+| 需求 | NVIDIA GPU（TTS 約 5 GB 顯存）與 NVIDIA Container Toolkit；服務之間走 compose 內部網路，不對主機開 port |
+
+映像固定 `sglang-omni==0.2.0`（實測版本），CUDA 13 開發版基底。cascade 與 TTS 沒有 GPU 時無法啟動，所以不要在沒有 GPU 的環境啟用這個 profile。
 
 ## 前端行為
 
