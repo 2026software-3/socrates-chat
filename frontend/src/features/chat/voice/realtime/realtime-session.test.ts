@@ -197,7 +197,7 @@ describe('realtime session', () => {
     transcript('乙')
     expect(ws.ofType('response.cancel')).toHaveLength(1)
     expect(cb.onReplyEnd).toHaveBeenCalledTimes(1)
-    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙', false)
+    expect(cb.onTranscript).toHaveBeenLastCalledWith('乙')
     expect(cb.onReplyEnd.mock.invocationCallOrder[0]).toBeLessThan(cb.onTranscript.mock.invocationCallOrder[1]!)
 
     // 被打斷的回覆之後到的文字不能顯示；伺服器取消後馬上開第二次回覆
@@ -215,7 +215,7 @@ describe('realtime session', () => {
     ws.event({ type: 'input_audio_buffer.speech_stopped' })
     expect(cb.onPhase).toHaveBeenLastCalledWith('transcribing')
     ws.event({ type: 'conversation.item.input_audio_transcription.completed', transcript: ' 合成的發言 ' })
-    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言', false)
+    expect(cb.onTranscript).toHaveBeenCalledWith('合成的發言')
     ws.event(created('resp_1'))
     expect(cb.onPhase).toHaveBeenLastCalledWith('waiting')
     ws.event({ type: 'response.output_text.delta', response_id: 'resp_1', delta: '你' })
