@@ -40,7 +40,7 @@ pub async fn record_completed_conversation_in_tx(
 ) -> Result<Vec<Unlock>, sqlx::Error> {
     // Serialize a student's progress evaluation so concurrent completions
     // cannot both observe a stale count and skip a threshold permanently.
-    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")
         .bind(user_id)
         .execute(&mut **tx)
         .await?;
@@ -162,10 +162,15 @@ async fn unlock_matching(
     let eligible: Vec<Unlock> = sqlx::query_as(
         "SELECT id AS achievement_id, level, points FROM achievements
          WHERE enabled AND condition_type = $1 AND threshold <= $2
+           AND NOT EXISTS (
+               SELECT 1 FROM achievement_unlocks u
+               WHERE u.user_id = $3 AND u.achievement_id = achievements.id
+                 AND u.level = achievements.level)
          ORDER BY sort_order, level",
     )
     .bind(kind)
     .bind(value)
+    .bind(user_id)
     .fetch_all(&mut **tx)
     .await?;
     let mut new_unlocks = Vec::new();

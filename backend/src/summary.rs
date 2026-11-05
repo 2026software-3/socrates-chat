@@ -17,7 +17,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, Postgres, Transaction};
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -114,9 +114,10 @@ const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
 
 /// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
 ///
-/// 目前只有發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）。
+/// 發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）；
+/// 接著記錄完成事件並判定成就（S-07.3）。
 async fn on_conversation_completed(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
     owner: Uuid,
 ) -> Result<(), sqlx::Error> {
@@ -128,7 +129,8 @@ async fn on_conversation_completed(
         points::Source::Conversation,
         &source_id,
     );
-    points::record(conn, &entry).await?;
+    points::record(tx, &entry).await?;
+    crate::achievements::record_completed_conversation_in_tx(tx, owner, id, Utc::now()).await?;
     Ok(())
 }
 
@@ -186,13 +188,6 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .rows_affected();
             if updated > 0 {
                 on_conversation_completed(&mut tx, id, owner).await?;
-                crate::achievements::record_completed_conversation_in_tx(
-                    &mut tx,
-                    owner,
-                    id,
-                    Utc::now(),
-                )
-                .await?;
             }
             tx.commit().await?;
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結

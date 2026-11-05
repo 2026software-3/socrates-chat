@@ -40,7 +40,6 @@ CREATE TABLE achievement_unlocks (
     PRIMARY KEY (user_id, achievement_id, level),
     FOREIGN KEY (achievement_id, level) REFERENCES achievements(id, level)
 );
-CREATE INDEX achievement_unlocks_user_idx ON achievement_unlocks (user_id, unlocked_at DESC);
 
 -- This slice records only achievement awards. The unified point ledger is owned by F-19.1.
 INSERT INTO achievements
