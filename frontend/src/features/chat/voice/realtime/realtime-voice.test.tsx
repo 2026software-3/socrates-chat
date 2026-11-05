@@ -120,6 +120,25 @@ describe('server voice conversation', () => {
     act(() => cb.onReplyEnd())
   })
 
+  it('counts an interrupted utterance and its follow-up as one turn in the header', async () => {
+    const { cb } = await startLive()
+    expect(screen.getByText('回合：1')).toBeInTheDocument()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲')
+    })
+    expect(await screen.findByText('回合：2')).toBeInTheDocument()
+
+    // 甲的回覆一個字都還沒有就被乙打斷：後端把乙存成獨立訊息但不加回合
+    act(() => {
+      cb.onReplyEnd()
+      cb.onTranscript('乙')
+    })
+    expect(await screen.findByText('乙')).toBeInTheDocument()
+    expect(screen.getByText('回合：2')).toBeInTheDocument()
+    act(() => cb.onReplyEnd())
+  })
+
   it('takes stage and ending from the server after a turn', async () => {
     const { cb } = await startLive()
     server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: 'ended', voice_realtime: true }))))
