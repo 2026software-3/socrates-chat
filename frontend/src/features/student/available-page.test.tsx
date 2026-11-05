@@ -16,6 +16,7 @@ const AVAILABLE: Available = {
       title: 'Activity One',
       description: 'Activity desc',
       topic_id: 'top-1',
+      topic_ids: ['top-1'],
       opens_at: null,
       closes_at: null,
       classroom_id: 'room-a',

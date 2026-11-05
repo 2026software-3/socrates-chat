@@ -26,6 +26,11 @@ const topics: Topic[] = [
   },
 ]
 
+const topics3: Topic[] = [
+  ...topics,
+  { id: 't3', title: '正義是什麼', description: '', category: null, is_active: true },
+]
+
 function act(over: Partial<Activity> = {}): Activity {
   return {
     id: 'a1',
@@ -33,6 +38,7 @@ function act(over: Partial<Activity> = {}): Activity {
     title: '第一週討論',
     description: '請討論公平',
     topic_id: 't1',
+    topic_ids: ['t1'],
     opens_at: null,
     closes_at: null,
     status: 'draft',
@@ -65,6 +71,15 @@ async function confirmAs(name: string) {
   await userEvent.click(within(dialog).getByRole('button', { name }))
 }
 
+/** 在表單的「新增題目」下拉選一個題目並按「加入題目」；scope 預設為整頁，編輯時傳對話框。 */
+async function addTopic(id: string, scope?: HTMLElement) {
+  const q = scope ? within(scope) : screen
+  const select = await q.findByLabelText('新增題目')
+  await waitFor(() => expect(select.querySelector(`option[value="${id}"]`)).not.toBeNull())
+  await userEvent.selectOptions(select, id)
+  await userEvent.click(q.getByRole('button', { name: '加入題目' }))
+}
+
 /** 開啟「建立討論活動」對話框。 */
 async function openCreate() {
   await userEvent.click(screen.getByRole('button', { name: '+ 建立活動' }))
@@ -73,7 +88,7 @@ async function openCreate() {
 
 describe('ActivitiesPanel', () => {
   it('lists activities with status badge and topic title', async () => {
-    mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2' })])
+    mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2', topic_ids: ['t2'] })])
     setup()
     expect(await screen.findByText('第一週討論')).toBeInTheDocument()
     expect(screen.getByText('草稿')).toBeInTheDocument()
@@ -138,8 +153,7 @@ describe('ActivitiesPanel', () => {
     await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
-    expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
-    expect(screen.getByLabelText('題目')).toHaveAttribute('aria-invalid', 'true')
+    expect(await screen.findByText('請至少加入一個題目。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
 
@@ -169,7 +183,7 @@ describe('ActivitiesPanel', () => {
       http.get('/api/activities', () => pageOf(list)),
       http.post('/api/activities', async ({ request }) => {
         body = await request.json()
-        list = [act({ title: '新活動', topic_id: 't2' })]
+        list = [act({ title: '新活動', topic_id: 't2', topic_ids: ['t2'] })]
         return HttpResponse.json(list[0], { status: 201 })
       }),
     )
@@ -177,10 +191,10 @@ describe('ActivitiesPanel', () => {
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
-    await userEvent.selectOptions(await screen.findByLabelText('題目'), 't2')
+    await addTopic('t2')
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('活動已建立（草稿）。')).toBeInTheDocument()
-    expect(body).toEqual({ title: '新活動', topic_id: 't2', classroom_id: ROOM_A })
+    expect(body).toEqual({ title: '新活動', topic_ids: ['t2'], classroom_id: ROOM_A })
     expect(await screen.findByText('草稿')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
@@ -199,7 +213,7 @@ describe('ActivitiesPanel', () => {
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
-    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    await addTopic('t1')
     const btn = screen.getByRole('button', { name: '儲存草稿' })
     await userEvent.dblClick(btn)
     await waitFor(() => expect(btn).toBeDisabled())
@@ -214,9 +228,9 @@ describe('ActivitiesPanel', () => {
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
-    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    await addTopic('t1')
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
-    expect(await screen.findByText('題目不存在。')).toBeInTheDocument()
+    expect(await screen.findByText('題目不存在、重複，或超過 5 個。')).toBeInTheDocument()
   })
 
   it('archives an activity out of the default list and deletes it after typing the title', async () => {
@@ -286,7 +300,7 @@ describe('ActivitiesPanel', () => {
       http.get('/api/activities', () => pageOf(list)),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
-        list = [act({ title: '改名', topic_id: 't2' })]
+        list = [act({ title: '改名', topic_id: 't2', topic_ids: ['t2'] })]
         return HttpResponse.json(list[0])
       }),
     )
@@ -298,19 +312,20 @@ describe('ActivitiesPanel', () => {
     expect(title).toHaveValue('第一週討論')
     await userEvent.clear(title)
     await userEvent.type(title, '改名')
-    await userEvent.selectOptions(within(dialog).getByLabelText('題目'), 't2')
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除「電車難題」' }))
+    await addTopic('t2', dialog)
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     expect(await screen.findByText('活動已更新。')).toBeInTheDocument()
     expect(body).toEqual({
       title: '改名',
       description: '請討論公平',
-      topic_id: 't2',
+      topic_ids: ['t2'],
     })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByText('改名')).toBeInTheDocument()
   })
 
-  it('omits topic_id when the topic is unchanged', async () => {
+  it('omits topic_ids when the topics are unchanged', async () => {
     let body: unknown
     server.use(
       http.get('/api/topics', () => HttpResponse.json(topics)),
@@ -329,49 +344,207 @@ describe('ActivitiesPanel', () => {
     expect(body).toEqual({ title: '第一週討論', description: '請討論公平' })
   })
 
-  it('offers no empty topic choice while editing', async () => {
+  it('shows the saved topics of an activity in order and keeps the picker for the rest', async () => {
     server.use(
-      http.get('/api/topics', () => HttpResponse.json(topics)),
-      http.get('/api/activities', () => pageOf([act()])),
+      http.get('/api/topics', () => HttpResponse.json(topics3)),
+      http.get('/api/activities', () => pageOf([act({ topic_ids: ['t2', 't1'] })])),
     )
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
-    const select = within(dialog).getByLabelText('題目')
-    await waitFor(() => expect(select).toHaveValue('t1'))
-    expect(within(dialog).getByRole('option', { name: '請選擇題目' })).toBeDisabled()
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(2))
+    const [first, second] = within(dialog).getAllByRole('listitem')
+    expect(first).toHaveTextContent('自由意志')
+    expect(second).toHaveTextContent('電車難題')
+    // 已選的題目不會再出現在「新增題目」下拉
+    const picker = within(dialog).getByLabelText('新增題目')
+    expect(within(picker).queryByRole('option', { name: '電車難題' })).not.toBeInTheDocument()
+    expect(within(picker).getByRole('option', { name: '正義是什麼' })).toBeInTheDocument()
   })
 
-  it('shows the locked-topic message when the topic of an started activity is changed', async () => {
+  it('lists every topic of an activity in order in the table', async () => {
     server.use(
-      http.get('/api/topics', () => HttpResponse.json(topics)),
-      http.get('/api/activities', () => pageOf([act()])),
+      http.get('/api/topics', () => HttpResponse.json(topics3)),
+      http.get('/api/activities', () => pageOf([act({ topic_id: 't3', topic_ids: ['t3', 't1', 'gone'] })])),
+    )
+    setup()
+    const items = await within(await screen.findByRole('table')).findAllByRole('listitem')
+    expect(items.map((c) => c.textContent)).toEqual(['正義是什麼', '電車難題', '（已停用或無法載入的題目）'])
+  })
+
+  it('creates an activity with several topics in the chosen order', async () => {
+    let body: unknown
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics3)),
+      http.get('/api/activities', () => pageOf([])),
+      http.post('/api/activities', async ({ request }) => {
+        body = await request.json()
+        return HttpResponse.json(act({ topic_ids: ['t3', 't2', 't1'] }), { status: 201 })
+      }),
+    )
+    setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
+    await userEvent.type(screen.getByLabelText('活動標題'), '多題活動')
+    await addTopic('t1')
+    await addTopic('t2')
+    await addTopic('t3')
+    // [t1, t2, t3] → 把 t3 上移兩次 → [t3, t1, t2]
+    await userEvent.click(screen.getByRole('button', { name: '上移「正義是什麼」' }))
+    await userEvent.click(screen.getByRole('button', { name: '上移「正義是什麼」' }))
+    const order = () => within(screen.getByRole('dialog')).getAllByRole('listitem').map((li) => li.textContent)
+    expect(order()).toEqual([
+      expect.stringContaining('正義是什麼'),
+      expect.stringContaining('電車難題'),
+      expect.stringContaining('自由意志'),
+    ])
+    // 再把 t1 往下移 → [t3, t2, t1]
+    await userEvent.click(screen.getByRole('button', { name: '下移「電車難題」' }))
+    await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
+    expect(await screen.findByText('活動已建立（草稿）。')).toBeInTheDocument()
+    expect(body).toEqual({ title: '多題活動', topic_ids: ['t3', 't2', 't1'], classroom_id: ROOM_A })
+  })
+
+  it('removes a chosen topic and offers it again in the picker', async () => {
+    mockList([])
+    setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
+    await addTopic('t1')
+    await userEvent.click(screen.getByRole('button', { name: '移除「電車難題」' }))
+    expect(within(screen.getByRole('dialog')).queryByRole('listitem')).not.toBeInTheDocument()
+    const picker = screen.getByLabelText('新增題目')
+    expect(within(picker).getByRole('option', { name: '電車難題' })).toBeInTheDocument()
+  })
+
+  it('disables moving the first topic up and the last topic down', async () => {
+    mockList([])
+    setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
+    await addTopic('t1')
+    await addTopic('t2')
+    expect(screen.getByRole('button', { name: '上移「電車難題」' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下移「電車難題」' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '上移「自由意志」' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '下移「自由意志」' })).toBeDisabled()
+  })
+
+  it('stops at five topics and explains the limit', async () => {
+    const many: Topic[] = ['1', '2', '3', '4', '5', '6'].map((n) => ({
+      id: `m${n}`, title: `題目${n}`, description: '', category: null, is_active: true,
+    }))
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(many)),
+      http.get('/api/activities', () => pageOf([])),
+    )
+    setup()
+    await screen.findByText('還沒有任何討論活動，請先建立一個。')
+    await openCreate()
+    for (const n of ['1', '2', '3', '4']) await addTopic(`m${n}`)
+    expect(screen.queryByText('最多只能加入 5 個題目。')).not.toBeInTheDocument()
+    await addTopic('m5')
+    expect(await screen.findByText('最多只能加入 5 個題目。')).toBeInTheDocument()
+    expect(screen.getByLabelText('新增題目')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '加入題目' })).toBeDisabled()
+    // 移除一個後又可以加入
+    await userEvent.click(screen.getByRole('button', { name: '移除「題目5」' }))
+    expect(screen.getByLabelText('新增題目')).toBeEnabled()
+  })
+
+  it('shows the locked-topic message, keeps the saved topics fixed and still allows adding', async () => {
+    const bodies: unknown[] = []
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics3)),
+      http.get('/api/activities', () => pageOf([act({ topic_ids: ['t1', 't2'] })])),
+      http.patch('/api/activities/a1', async ({ request }) => {
+        bodies.push(await request.json())
+        return bodies.length === 1 ? apiError(409, 'activity_topic_locked') : HttpResponse.json(act({ topic_ids: ['t1', 't2', 't3'] }))
+      }),
+    )
+    setup()
+    await screen.findByText('第一週討論')
+    await userEvent.click(screen.getByRole('button', { name: '編輯' }))
+    const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(2))
+    // 教師移除第一題後送出，後端回 409
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除「電車難題」' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    expect(await within(dialog).findAllByText(/此活動已有學生開始對話，既有題目不能移除、更換或調整順序/)).not.toHaveLength(0)
+    expect(screen.queryByText('activity_topic_locked')).not.toBeInTheDocument()
+    // 清單還原為已儲存的題目，既有題目的移除與排序都停用
+    const items = within(dialog).getAllByRole('listitem')
+    expect(items.map((li) => li.textContent)).toEqual([expect.stringContaining('電車難題'), expect.stringContaining('自由意志')])
+    for (const title of ['電車難題', '自由意志']) {
+      expect(within(dialog).getByRole('button', { name: `移除「${title}」` })).toBeDisabled()
+      expect(within(dialog).getByRole('button', { name: `上移「${title}」` })).toBeDisabled()
+      expect(within(dialog).getByRole('button', { name: `下移「${title}」` })).toBeDisabled()
+    }
+    // 仍可新增，新增的題目可以自由移除
+    await addTopic('t3', dialog)
+    expect(within(dialog).getByRole('button', { name: '移除「正義是什麼」' })).toBeEnabled()
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    expect(await screen.findByText('活動已更新。')).toBeInTheDocument()
+    expect(bodies[1]).toEqual({ title: '第一週討論', description: '請討論公平', topic_ids: ['t1', 't2', 't3'] })
+  })
+
+  it('does not let an added topic move above a locked one', async () => {
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics3)),
+      http.get('/api/activities', () => pageOf([act({ topic_ids: ['t1'] })])),
       http.patch('/api/activities/a1', () => apiError(409, 'activity_topic_locked')),
     )
     setup()
     await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
-    await userEvent.selectOptions(within(dialog).getByLabelText('題目'), 't2')
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(1))
+    // 先送出一次（後端回 409）讓清單鎖定，已儲存的題目固定在最前面
+    await addTopic('t2', dialog)
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    expect(await within(dialog).findByText('此活動已有學生開始對話，不能更換題目。')).toBeInTheDocument()
-    expect(screen.queryByText('activity_topic_locked')).not.toBeInTheDocument()
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '移除「電車難題」' })).toBeDisabled())
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(1)
+    await addTopic('t2', dialog)
+    await addTopic('t3', dialog)
+    expect(within(dialog).getByRole('button', { name: '上移「自由意志」' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: '上移「正義是什麼」' })).toBeEnabled()
+    expect(within(dialog).getByRole('button', { name: '下移「自由意志」' })).toBeEnabled()
   })
 
-  it('keeps an inactive topic selected and labelled instead of showing none', async () => {
-    mockList([act({ topic_id: 'gone' })])
+  it('blocks saving an edit that removes every topic', async () => {
+    let patched = false
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json(topics3)),
+      http.get('/api/activities', () => pageOf([act()])),
+      http.patch('/api/activities/a1', () => {
+        patched = true
+        return HttpResponse.json(act())
+      }),
+    )
     setup()
-    expect(await within(await screen.findByRole('table')).findByText('（已停用或無法載入的題目）')).toBeInTheDocument()
+    await screen.findByText('第一週討論')
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
-    expect(within(dialog).getByLabelText('題目')).toHaveValue('gone')
+    await userEvent.click(await within(dialog).findByRole('button', { name: '移除「電車難題」' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    expect(await within(dialog).findByText('請至少加入一個題目。')).toBeInTheDocument()
+    expect(patched).toBe(false)
+  })
+
+  it('keeps an inactive topic in the list, labelled as unavailable, and lets it be removed', async () => {
+    mockList([act({ topic_id: 'gone', topic_ids: ['gone', 't1'] })])
+    setup()
+    await userEvent.click(await screen.findByRole('button', { name: '編輯' }))
+    const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(2))
+    expect(within(dialog).getAllByRole('listitem')[0]).toHaveTextContent('（已停用或無法載入的題目）')
+    expect(within(dialog).getByRole('button', { name: '移除「（已停用或無法載入的題目）」' })).toBeEnabled()
   })
 
   it('only offers active topics even though /api/topics lists every topic', async () => {
     server.use(
-      http.get('/api/activities', () => pageOf([act({ topic_id: 't3' })])),
+      http.get('/api/activities', () => pageOf([act({ topic_id: 't3', topic_ids: ['t3'] })])),
       http.get('/api/topics', () =>
         HttpResponse.json([...topics, { id: 't3', title: '已停用題目', description: '', category: null, is_active: false }]),
       ),
@@ -379,7 +552,7 @@ describe('ActivitiesPanel', () => {
     setup()
     expect(await within(await screen.findByRole('table')).findByText('（已停用或無法載入的題目）')).toBeInTheDocument()
     await openCreate()
-    const select = await screen.findByLabelText('題目')
+    const select = await screen.findByLabelText('新增題目')
     await waitFor(() => expect(within(select).getByRole('option', { name: '電車難題' })).toBeInTheDocument())
     expect(within(select).queryByRole('option', { name: '已停用題目' })).not.toBeInTheDocument()
   })
@@ -395,7 +568,7 @@ describe('ActivitiesPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    expect(await within(dialog).findByText('題目不存在。')).toBeInTheDocument()
+    expect(await within(dialog).findByText('題目不存在、重複，或超過 5 個。')).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
@@ -499,7 +672,7 @@ describe('ActivitiesPanel', () => {
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
-    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    await addTopic('t1')
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
     expect(await screen.findByText('請先建立或選擇未封存的教室。')).toBeInTheDocument()
     expect(posted).toBe(false)
@@ -533,7 +706,7 @@ describe('ActivitiesPanel', () => {
     expect(await screen.findByText('無法載入題目清單，請重新整理頁面後再試。')).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
-    expect(await screen.findByText('請選擇題目。')).toBeInTheDocument()
+    expect(await screen.findByText('請至少加入一個題目。')).toBeInTheDocument()
     expect(posted).toBe(false)
   })
 })
@@ -545,9 +718,9 @@ describe('activity schedules', () => {
     server.use(http.post('/api/activities', () => { posted = true; return HttpResponse.json(act()) }))
     setup()
     await openCreate()
-    await screen.findByLabelText('題目')
+    await screen.findByLabelText('新增題目')
     await userEvent.type(screen.getByLabelText('活動標題'), 'scheduled')
-    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    await addTopic('t1')
     fireEvent.change(screen.getByLabelText('開始時間（選填）'), { target: { value: '2030-01-01T10:00' } })
     fireEvent.change(screen.getByLabelText('結束時間（選填）'), { target: { value: '2030-01-01T10:00' } })
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
@@ -568,7 +741,7 @@ describe('activity schedules', () => {
     expect(new Date(opens.min).getTime()).toBeGreaterThan(Date.now() - 2 * 60000)
     expect(new Date(opens.min).getTime()).toBeLessThanOrEqual(Date.now())
     await userEvent.type(screen.getByLabelText('活動標題'), 'past')
-    await userEvent.selectOptions(screen.getByLabelText('題目'), 't1')
+    await addTopic('t1')
     fireEvent.change(opens, { target: { value: '2020-01-01T10:00' } })
     fireEvent.change(closes, { target: { value: '2030-01-01T10:00' } })
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
@@ -657,7 +830,7 @@ describe('publishing while creating', () => {
     await screen.findByText('還沒有任何討論活動，請先建立一個。')
     await openCreate()
     await userEvent.type(screen.getByLabelText('活動標題'), '新活動')
-    await userEvent.selectOptions(await screen.findByLabelText('題目'), 't1')
+    await addTopic('t1')
     await userEvent.click(screen.getByRole('button', { name: '發布活動' }))
     expect(await screen.findByText('活動已發布。')).toBeInTheDocument()
     expect(calls).toEqual(['create', 'publish:new1'])
