@@ -44,6 +44,7 @@ const activity: Activity = {
   title: '第一週討論',
   description: '電車難題',
   topic_id: 't1',
+  topic_ids: ['t1'],
   opens_at: null,
   closes_at: null,
   classroom_id: ROOM_A,
