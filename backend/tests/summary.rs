@@ -14,23 +14,6 @@ use sqlx::PgPool;
 const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\"}";
 const INCOMPLETE: &str = "{\"stance\":\"會拉桿\"}";
 
-/// 輪詢到總結不再是 pending 為止（背景產生）。
-async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
-    for _ in 0..100 {
-        let res = send(
-            app,
-            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
-        )
-        .await;
-        let v = json_body(res).await;
-        if v["status"] != "pending" {
-            return v;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("summary stayed pending");
-}
-
 async fn end(app: &Router, cookie: &str, conv: &str) -> (StatusCode, Value) {
     let res = send(
         app,
@@ -681,9 +664,7 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     // 等第一代真的拿到 Hang 腳本，重試的第二代才會拿到 Reply
-    while ai.request_count() < 1 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&ai, 1).await;
     sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
         .execute(&pool)
         .await

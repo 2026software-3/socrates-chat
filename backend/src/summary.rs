@@ -5,6 +5,8 @@
 //! 教師看得到自己教室的總結，也能唯讀打開已結束的活動對話原文（S-02.1，2026-11 需求方決定）；
 //! 管理者介面一律遮蔽（以 `message` 取代）。
 
+use std::num::NonZeroU32;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -31,6 +33,7 @@ use crate::{
     classrooms::{ClassroomFilter, filtered_classroom},
     error::{ApiError, db_error_class},
     pagination::{self, Page, Pagination},
+    points,
 };
 
 /// 管理者介面看到的固定替代字串（S-02.2）。
@@ -106,13 +109,37 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
     );
 }
 
+/// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
+const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
+
+/// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
+///
+/// 目前只有發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）。
+async fn on_conversation_completed(
+    conn: &mut PgConnection,
+    id: Uuid,
+    owner: Uuid,
+) -> Result<(), sqlx::Error> {
+    let source_id = id.to_string();
+    let entry = points::Entry::award(
+        owner,
+        COMPLETION_POINTS,
+        "conversation_completed",
+        points::Source::Conversation,
+        &source_id,
+    );
+    points::record(conn, &entry).await?;
+    Ok(())
+}
+
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let ((title, description, activity_id, language), turns): (
-        (String, String, Option<Uuid>, String),
+    let ((owner, title, description, activity_id, language), turns): (
+        (Uuid, String, String, Option<Uuid>, String),
         _,
     ) = tokio::try_join!(
         sqlx::query_as(
-            "SELECT title, description, activity_id, language FROM conversations WHERE id = $1"
+            "SELECT user_id, title, description, activity_id, language
+             FROM conversations WHERE id = $1"
         )
         .bind(id)
         .fetch_one(&state.pool),
@@ -141,7 +168,9 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     }
     match summary {
         Some(s) => {
-            sqlx::query(
+            // 總結完成與發點在同一個交易內（S-07.2 2.2）：只有這一代真的把總結改成 ready 才發點
+            let mut tx = state.pool.begin().await?;
+            let updated = sqlx::query(
                 "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
                         rules_version = $4, completed_at = now(), claim = $6
                  WHERE conversation_id = $1 AND attempt = $5 AND status = 'pending'",
@@ -152,8 +181,13 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(rules_version(&language))
             .bind(attempt)
             .bind(s.claim.as_deref())
-            .execute(&state.pool)
-            .await?;
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if updated > 0 {
+                on_conversation_completed(&mut tx, id, owner).await?;
+            }
+            tx.commit().await?;
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
                 crate::claims::assign_group(state, id, activity, &title, claim).await;
