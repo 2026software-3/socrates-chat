@@ -100,6 +100,9 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
             setStage(d.stage)
             setSuggestEnd(d.converge_ready)
             setStatus(d.status)
+            // 回合數以後端為準：多出來的學生訊息是後端沒算回合的接話
+            const students = runtime.thread.getState().messages.filter((m) => m.role === 'user').length
+            setUncounted(Math.max(0, students - d.turn_count))
           })
           .catch((e: unknown) => console.warn('[voice] could not refresh the conversation:', e))
       },
