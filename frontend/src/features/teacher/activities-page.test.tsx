@@ -37,7 +37,6 @@ function act(over: Partial<Activity> = {}): Activity {
     classroom_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     title: '第一週討論',
     description: '請討論公平',
-    topic_id: 't1',
     topic_ids: ['t1'],
     opens_at: null,
     closes_at: null,
@@ -88,7 +87,7 @@ async function openCreate() {
 
 describe('ActivitiesPanel', () => {
   it('lists activities with status badge and topic title', async () => {
-    mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_id: 't2', topic_ids: ['t2'] })])
+    mockList([act(), act({ id: 'a2', title: '第二週', status: 'published', topic_ids: ['t2'] })])
     setup()
     expect(await screen.findByText('第一週討論')).toBeInTheDocument()
     expect(screen.getByText('草稿')).toBeInTheDocument()
@@ -183,7 +182,7 @@ describe('ActivitiesPanel', () => {
       http.get('/api/activities', () => pageOf(list)),
       http.post('/api/activities', async ({ request }) => {
         body = await request.json()
-        list = [act({ title: '新活動', topic_id: 't2', topic_ids: ['t2'] })]
+        list = [act({ title: '新活動', topic_ids: ['t2'] })]
         return HttpResponse.json(list[0], { status: 201 })
       }),
     )
@@ -230,7 +229,7 @@ describe('ActivitiesPanel', () => {
     await userEvent.type(screen.getByLabelText('活動標題'), 'X')
     await addTopic('t1')
     await userEvent.click(screen.getByRole('button', { name: '儲存草稿' }))
-    expect(await screen.findByText('題目不存在、重複，或超過 5 個。')).toBeInTheDocument()
+    expect(await screen.findByText('題目不存在、重複，或超過上限。')).toBeInTheDocument()
   })
 
   it('archives an activity out of the default list and deletes it after typing the title', async () => {
@@ -300,7 +299,7 @@ describe('ActivitiesPanel', () => {
       http.get('/api/activities', () => pageOf(list)),
       http.patch('/api/activities/a1', async ({ request }) => {
         body = await request.json()
-        list = [act({ title: '改名', topic_id: 't2', topic_ids: ['t2'] })]
+        list = [act({ title: '改名', topic_ids: ['t2'] })]
         return HttpResponse.json(list[0])
       }),
     )
@@ -366,7 +365,7 @@ describe('ActivitiesPanel', () => {
   it('lists every topic of an activity in order in the table', async () => {
     server.use(
       http.get('/api/topics', () => HttpResponse.json(topics3)),
-      http.get('/api/activities', () => pageOf([act({ topic_id: 't3', topic_ids: ['t3', 't1', 'gone'] })])),
+      http.get('/api/activities', () => pageOf([act({ topic_ids: ['t3', 't1', 'gone'] })])),
     )
     setup()
     const items = await within(await screen.findByRole('table')).findAllByRole('listitem')
@@ -533,7 +532,7 @@ describe('ActivitiesPanel', () => {
   })
 
   it('keeps an inactive topic in the list, labelled as unavailable, and lets it be removed', async () => {
-    mockList([act({ topic_id: 'gone', topic_ids: ['gone', 't1'] })])
+    mockList([act({ topic_ids: ['gone', 't1'] })])
     setup()
     await userEvent.click(await screen.findByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
@@ -544,7 +543,7 @@ describe('ActivitiesPanel', () => {
 
   it('only offers active topics even though /api/topics lists every topic', async () => {
     server.use(
-      http.get('/api/activities', () => pageOf([act({ topic_id: 't3', topic_ids: ['t3'] })])),
+      http.get('/api/activities', () => pageOf([act({ topic_ids: ['t3'] })])),
       http.get('/api/topics', () =>
         HttpResponse.json([...topics, { id: 't3', title: '已停用題目', description: '', category: null, is_active: false }]),
       ),
@@ -568,7 +567,7 @@ describe('ActivitiesPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    expect(await within(dialog).findByText('題目不存在、重複，或超過 5 個。')).toBeInTheDocument()
+    expect(await within(dialog).findByText('題目不存在、重複，或超過上限。')).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { NameConfirmDialog } from '@/components/name-confirm-dialog'
 import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
+import { nativeSelectClass } from '@/components/native-select-class'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,7 +17,7 @@ import { LoadMore } from '@/components/load-more'
 import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
-import { api, ApiError } from '@/lib/api'
+import { api, isApiError } from '@/lib/api'
 import type { Activity, ActivityStatus, Classroom, Topic } from '@/lib/types'
 import { useFetch, usePagedFetch } from '@/lib/use-fetch'
 import { TopicListField } from './topic-list-field'
@@ -45,14 +46,11 @@ function utcTime(local: string): string | null {
   return local ? new Date(local).toISOString() : null
 }
 
-const selectClass =
-  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 outline-none disabled:opacity-50'
-
 /** 建立與編輯共用的表單。 */
 function ActivityForm({
   idPrefix,
   initial,
-  topics,
+  topicById,
   topicsFailed,
   submitLabel,
   publishLabel,
@@ -60,7 +58,7 @@ function ActivityForm({
 }: {
   idPrefix: string
   initial: Values
-  topics: Topic[]
+  topicById: ReadonlyMap<string, Topic>
   topicsFailed: boolean
   submitLabel: string
   /** 有值時多一顆「儲存並發布」按鈕（建立表單用）。 */
@@ -75,7 +73,7 @@ function ActivityForm({
   const [topicError, setTopicError] = useState(false)
   const [serverError, setServerError] = useState<string>()
   // 後端回 409 activity_topic_locked 後，已儲存的題目固定在最前面，只能在其後新增
-  const [lockedCount, setLockedCount] = useState(0)
+  const [locked, setLocked] = useState(false)
   const busy = useRef(false)
 
   async function submit(e: FormEvent | undefined, publish = false) {
@@ -106,10 +104,10 @@ function ActivityForm({
     try {
       await onSubmit({ ...values, title: values.title.trim() }, publish)
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'activity_topic_locked') {
+      if (isApiError(err) && err.code === 'activity_topic_locked') {
         // 已有學生開始對話：題目清單還原成已儲存的內容並鎖住它們，教師只能在後面新增
         setValues((v) => ({ ...v, topicIds: initial.topicIds }))
-        setLockedCount(initial.topicIds.length)
+        setLocked(true)
       }
       // 前端自己丟的一般 Error（例如尚無可用教室）直接顯示其訊息
       setServerError(err instanceof Error && err.name !== 'ApiError' ? err.message : errorText(t, err))
@@ -147,8 +145,8 @@ function ActivityForm({
       <TopicListField
         idPrefix={idPrefix}
         topicIds={values.topicIds}
-        topics={topics}
-        lockedCount={lockedCount}
+        topicById={topicById}
+        lockedCount={locked ? initial.topicIds.length : 0}
         invalid={topicError}
         failed={topicsFailed}
         onChange={(topicIds) => {
@@ -522,7 +520,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
           {classroomId ? null : (
             <div className="space-y-1.5">
               <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
-              <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+              <select id="activity-classroom" className={nativeSelectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
                 {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
               </select>
             </div>
@@ -531,7 +529,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
           <ActivityForm
             idPrefix="create"
             initial={{ title: '', description: '', topicIds: [], opensAt: '', closesAt: '' }}
-            topics={topics}
+            topicById={topicById}
             topicsFailed={!!available.error}
             submitLabel={t('teacher.activities.saveDraft')}
             publishLabel={t('teacher.activities.publishNow')}
@@ -556,7 +554,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
                 opensAt: localTime(editing.opens_at),
                 closesAt: localTime(editing.closes_at),
               }}
-              topics={topics}
+              topicById={topicById}
               topicsFailed={!!available.error}
               submitLabel={t('common.save')}
               onSubmit={(v) => update(editing, v)}

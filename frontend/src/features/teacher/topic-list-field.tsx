@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, type ComponentType } from 'react'
 import { ArrowDown, ArrowUp, X } from 'lucide-react'
+import { nativeSelectClass } from '@/components/native-select-class'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { useT } from '@/i18n'
@@ -8,8 +9,23 @@ import type { Topic } from '@/lib/types'
 /** 一個活動最多可含的題目數（S-04.7）；後端同樣限制，超過回 `invalid_topic`。 */
 const MAX_ACTIVITY_TOPICS = 5
 
-const selectClass =
-  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 outline-none disabled:opacity-50'
+function IconButton({
+  label,
+  disabled,
+  icon: Icon,
+  onClick,
+}: {
+  label: string
+  disabled: boolean
+  icon: ComponentType<{ 'aria-hidden'?: boolean }>
+  onClick: () => void
+}) {
+  return (
+    <Button type="button" variant="ghost" size="icon" className="size-8" disabled={disabled} aria-label={label} onClick={onClick}>
+      <Icon aria-hidden />
+    </Button>
+  )
+}
 
 /**
  * 活動的題目清單：依序列出已選題目，可上下移動與移除，並從題庫加入（最多 5 個）。
@@ -18,7 +34,7 @@ const selectClass =
 export function TopicListField({
   idPrefix,
   topicIds,
-  topics,
+  topicById,
   lockedCount,
   invalid,
   failed,
@@ -26,8 +42,8 @@ export function TopicListField({
 }: {
   idPrefix: string
   topicIds: string[]
-  /** 可加入的題目（啟用中的題庫題目）。 */
-  topics: Topic[]
+  /** 可加入的題目（啟用中的題庫題目），依題庫順序。 */
+  topicById: ReadonlyMap<string, Topic>
   lockedCount: number
   /** 送出時清單是空的。 */
   invalid: boolean
@@ -37,9 +53,8 @@ export function TopicListField({
 }) {
   const t = useT()
   const [pick, setPick] = useState('')
-  const titleOf = (id: string) => topics.find((tp) => tp.id === id)?.title ?? t('teacher.activities.topicUnavailable')
   const full = topicIds.length >= MAX_ACTIVITY_TOPICS
-  const addable = topics.filter((tp) => !topicIds.includes(tp.id))
+  const addable = [...topicById.values()].filter((tp) => !topicIds.includes(tp.id))
   const errorId = `${idPrefix}-topic-error`
   const hintId = `${idPrefix}-topic-hint`
 
@@ -50,7 +65,7 @@ export function TopicListField({
   }
 
   function add() {
-    if (!pick || full || topicIds.includes(pick)) return
+    if (!pick) return
     onChange([...topicIds, pick])
     setPick('')
   }
@@ -59,54 +74,37 @@ export function TopicListField({
     <fieldset className="space-y-2" aria-describedby={hintId}>
       <legend className="text-sm leading-none font-medium">{t('teacher.activities.topicLabel')}</legend>
       <p id={hintId} className="text-muted-foreground text-sm">
-        {t(lockedCount > 0 ? 'teacher.activities.topicLockedHint' : 'teacher.activities.topicHint')}
+        {lockedCount > 0
+          ? t('teacher.activities.topicLockedHint')
+          : t('teacher.activities.topicHint', { max: MAX_ACTIVITY_TOPICS })}
       </p>
       {topicIds.length > 0 ? (
         <ol className="list-decimal space-y-1.5 pl-5">
           {topicIds.map((id, index) => {
-            const title = titleOf(id)
+            const title = topicById.get(id)?.title ?? t('teacher.activities.topicUnavailable')
             const locked = index < lockedCount
-            // 已鎖定的題目固定在最前面：第一個新題目不能往上越過它們
-            const canUp = !locked && index > lockedCount
-            const canDown = !locked && index < topicIds.length - 1
             return (
-              <li key={id} className="pl-1">
-                <div className="flex items-center gap-1">
-                  <span className="min-w-0 flex-1 text-sm break-words">{title}</span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8"
-                    disabled={!canUp}
-                    aria-label={t('teacher.activities.topicMoveUp', { title })}
-                    onClick={() => move(index, index - 1)}
-                  >
-                    <ArrowUp aria-hidden />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8"
-                    disabled={!canDown}
-                    aria-label={t('teacher.activities.topicMoveDown', { title })}
-                    onClick={() => move(index, index + 1)}
-                  >
-                    <ArrowDown aria-hidden />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8"
-                    disabled={locked}
-                    aria-label={t('teacher.activities.topicRemove', { title })}
-                    onClick={() => onChange(topicIds.filter((x) => x !== id))}
-                  >
-                    <X aria-hidden />
-                  </Button>
-                </div>
+              <li key={id} className="flex items-center gap-1 pl-1">
+                <span className="min-w-0 flex-1 text-sm break-words">{title}</span>
+                {/* 已鎖定的題目固定在最前面：第一個新題目不能往上越過它們 */}
+                <IconButton
+                  icon={ArrowUp}
+                  label={t('teacher.activities.topicMoveUp', { title })}
+                  disabled={locked || index <= lockedCount}
+                  onClick={() => move(index, index - 1)}
+                />
+                <IconButton
+                  icon={ArrowDown}
+                  label={t('teacher.activities.topicMoveDown', { title })}
+                  disabled={locked || index === topicIds.length - 1}
+                  onClick={() => move(index, index + 1)}
+                />
+                <IconButton
+                  icon={X}
+                  label={t('teacher.activities.topicRemove', { title })}
+                  disabled={locked}
+                  onClick={() => onChange(topicIds.filter((x) => x !== id))}
+                />
               </li>
             )
           })}
@@ -114,13 +112,13 @@ export function TopicListField({
       ) : (
         <p className="text-muted-foreground text-sm">{t('teacher.activities.topicEmpty')}</p>
       )}
-      {full ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicLimit')}</p> : null}
+      {full ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicLimit', { max: MAX_ACTIVITY_TOPICS })}</p> : null}
       <div className="space-y-1.5">
         <Label htmlFor={`${idPrefix}-topic-add`}>{t('teacher.activities.topicAddLabel')}</Label>
         <div className="flex items-center gap-2">
           <select
             id={`${idPrefix}-topic-add`}
-            className={selectClass}
+            className={nativeSelectClass}
             value={pick}
             disabled={full}
             aria-invalid={invalid}

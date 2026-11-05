@@ -31,8 +31,6 @@ export type Activity = {
   description: string
   /** 活動的題目清單（1 到 5 個，依教師排定的順序；S-04.7）。 */
   topic_ids: string[]
-  /** 相容舊欄位：第一個題目；前端改用 `topic_ids`。 */
-  topic_id: string
   opens_at: string | null
   closes_at: string | null
   classroom_id: string
