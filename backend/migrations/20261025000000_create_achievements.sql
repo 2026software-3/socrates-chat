@@ -1,23 +1,27 @@
--- F-18.1 / S-07.3: static achievement catalog, durable completion events,
--- one-time unlock records, and the achievement points ledger entries.
+-- F-18.1 / S-07.3: achievement catalog (seeded, then maintained by admins), durable
+-- completion events, and one-time unlock records. Awards go through the point ledger.
 CREATE TABLE achievements (
-    id text NOT NULL,
+    id text NOT NULL CHECK (id ~ '^[a-z][a-z0-9_]{0,63}$'),
     level integer NOT NULL CHECK (level > 0),
     condition_type text NOT NULL CHECK (condition_type IN (
         'completed_conversations', 'consecutive_days', 'dimension_score',
         'first_task_claim', 'first_purchase'
     )),
     threshold integer NOT NULL CHECK (
-        (condition_type = 'dimension_score' AND threshold BETWEEN 0 AND 5)
-        OR (condition_type <> 'dimension_score' AND threshold > 0)
+        CASE condition_type
+            WHEN 'dimension_score' THEN threshold BETWEEN 0 AND 5
+            WHEN 'first_task_claim' THEN threshold = 1
+            WHEN 'first_purchase' THEN threshold = 1
+            ELSE threshold > 0
+        END
     ),
     points integer NOT NULL DEFAULT 10 CHECK (points >= 0),
-    name_zh_tw text NOT NULL,
-    name_en text NOT NULL,
-    name_es text NOT NULL,
-    description_zh_tw text NOT NULL,
-    description_en text NOT NULL,
-    description_es text NOT NULL,
+    name_zh_tw text NOT NULL CHECK (btrim(name_zh_tw) <> ''),
+    name_en text NOT NULL CHECK (btrim(name_en) <> ''),
+    name_es text NOT NULL CHECK (btrim(name_es) <> ''),
+    description_zh_tw text NOT NULL CHECK (btrim(description_zh_tw) <> ''),
+    description_en text NOT NULL CHECK (btrim(description_en) <> ''),
+    description_es text NOT NULL CHECK (btrim(description_es) <> ''),
     enabled boolean NOT NULL DEFAULT true,
     sort_order integer NOT NULL DEFAULT 0,
     PRIMARY KEY (id, level)
@@ -41,7 +45,27 @@ CREATE TABLE achievement_unlocks (
     FOREIGN KEY (achievement_id, level) REFERENCES achievements(id, level)
 );
 
--- This slice records only achievement awards. The unified point ledger is owned by F-19.1.
+-- Thresholds of one achievement must strictly increase with its level (S-07.3 2.3).
+-- Checked when the transaction commits so several levels can be edited in one statement batch.
+CREATE FUNCTION achievements_thresholds_increase() RETURNS trigger AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM achievements a
+        JOIN achievements b ON b.id = a.id AND b.level > a.level AND b.threshold <= a.threshold
+        WHERE a.id = NEW.id
+    ) THEN
+        RAISE EXCEPTION 'achievement % thresholds must strictly increase with level', NEW.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER achievements_thresholds_increase
+    AFTER INSERT OR UPDATE ON achievements
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION achievements_thresholds_increase();
+
 INSERT INTO achievements
     (id, level, condition_type, threshold, points, name_zh_tw, name_en, name_es,
      description_zh_tw, description_en, description_es, sort_order)

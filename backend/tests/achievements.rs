@@ -173,3 +173,112 @@ async fn account_deletion_cascades_to_unlocks(pool: PgPool) {
         .unwrap();
     assert_eq!(counts(&pool, user_id).await.0, 0);
 }
+
+async fn streak_unlocks(pool: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM achievement_unlocks
+         WHERE user_id = $1 AND achievement_id = 'three_day_streak'",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+async fn a_missed_day_resets_the_streak_until_three_adjacent_days_follow(pool: PgPool) {
+    let user_id = user(&pool).await;
+    // Taipei days 1, 2, 4: the gap on day 3 means no streak of three yet.
+    let day = |n: i64| Utc.with_ymd_and_hms(2026, 10, 1, 4, 0, 0).unwrap() + Duration::days(n - 1);
+    for n in [1, 2, 4] {
+        complete(&pool, user_id, Uuid::new_v4(), day(n)).await;
+    }
+    assert_eq!(streak_unlocks(&pool, user_id).await, 0);
+
+    complete(&pool, user_id, Uuid::new_v4(), day(5)).await;
+    assert_eq!(
+        streak_unlocks(&pool, user_id).await,
+        0,
+        "days 4 and 5 are only two"
+    );
+    let sixth = complete(&pool, user_id, Uuid::new_v4(), day(6)).await;
+    assert!(sixth.iter().any(|u| u.achievement_id == "three_day_streak"));
+
+    // A later break neither revokes nor unlocks it again.
+    let after_gap = complete(&pool, user_id, Uuid::new_v4(), day(20)).await;
+    assert!(after_gap.is_empty());
+    assert_eq!(streak_unlocks(&pool, user_id).await, 1);
+}
+
+#[sqlx::test]
+async fn streak_days_are_split_at_taipei_midnight_not_utc_midnight(pool: PgPool) {
+    let user_id = user(&pool).await;
+    // 15:30 and 16:30 UTC are on the same UTC date but either side of Taipei midnight.
+    let late = Utc.with_ymd_and_hms(2026, 10, 20, 15, 59, 0).unwrap(); // Taipei 23:59
+    let after_midnight = late + Duration::minutes(2); // Taipei 00:01 next day
+    complete(&pool, user_id, Uuid::new_v4(), late).await;
+    complete(&pool, user_id, Uuid::new_v4(), after_midnight).await;
+    assert_eq!(
+        streak_unlocks(&pool, user_id).await,
+        0,
+        "two adjacent days are not three"
+    );
+
+    let third = complete(
+        &pool,
+        user_id,
+        Uuid::new_v4(),
+        after_midnight + Duration::days(1),
+    )
+    .await;
+    assert!(third.iter().any(|u| u.achievement_id == "three_day_streak"));
+
+    // Two completions inside one Taipei day count as a single day.
+    let other = common::seed_user(&pool, "same-day@example.com").await;
+    let morning = Utc.with_ymd_and_hms(2026, 10, 20, 16, 5, 0).unwrap(); // Taipei 00:05
+    for at in [
+        morning,
+        morning + Duration::hours(20),
+        morning + Duration::days(1),
+    ] {
+        complete(&pool, other, Uuid::new_v4(), at).await;
+    }
+    assert_eq!(
+        streak_unlocks(&pool, other).await,
+        0,
+        "two distinct days only"
+    );
+}
+
+#[sqlx::test]
+async fn completion_events_do_not_depend_on_the_conversation_still_existing(pool: PgPool) {
+    let referenced: Vec<String> = sqlx::query_scalar(
+        "SELECT ccu.table_name::text
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+         WHERE tc.table_name = 'achievement_completion_events' AND tc.constraint_type = 'FOREIGN KEY'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        referenced,
+        vec!["users".to_string()],
+        "deleting a conversation must not delete its completion event or unlocks"
+    );
+}
+
+#[sqlx::test]
+async fn zero_point_unlock_writes_no_ledger_row(pool: PgPool) {
+    sqlx::query("UPDATE achievements SET points = 0 WHERE id = 'first_dialogue'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let user_id = user(&pool).await;
+
+    let unlocked = complete(&pool, user_id, Uuid::new_v4(), Utc::now()).await;
+
+    assert_eq!(unlocked.len(), 1);
+    assert_eq!(unlocked[0].points, 0);
+    assert_eq!(counts(&pool, user_id).await, (1, 0));
+}

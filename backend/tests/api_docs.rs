@@ -99,6 +99,101 @@ async fn achievement_completion_uses_the_documented_summary_api_contract() {
 }
 
 #[tokio::test]
+async fn admin_achievement_api_contract_is_fixed() {
+    let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let schemas = &doc["components"]["schemas"];
+    let error = "#/components/schemas/ErrorBody";
+    let reference = |op: &serde_json::Value, status: &str| {
+        op["responses"][status]["content"]["application/json"]["schema"]["$ref"].clone()
+    };
+
+    let collection = &doc["paths"]["/api/admin/achievements"];
+    assert_eq!(
+        collection["get"]["responses"]["200"]["content"]["application/json"]["schema"]["items"]["$ref"],
+        "#/components/schemas/AchievementView"
+    );
+    let create = &collection["post"];
+    assert_eq!(
+        create["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/NewAchievement"
+    );
+    assert_eq!(
+        reference(create, "201"),
+        "#/components/schemas/AchievementResult"
+    );
+    for status in ["400", "401", "403", "409", "500"] {
+        assert_eq!(reference(create, status), error, "POST {status}");
+    }
+
+    let update = &doc["paths"]["/api/admin/achievements/{id}"]["patch"];
+    assert_eq!(
+        update["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/AchievementPatch"
+    );
+    assert_eq!(
+        reference(update, "200"),
+        "#/components/schemas/AchievementResult"
+    );
+    for status in ["400", "401", "403", "404", "500"] {
+        assert_eq!(reference(update, status), error, "PATCH {status}");
+    }
+    assert!(
+        doc["paths"]["/api/admin/achievements/{id}"]
+            .get("delete")
+            .is_none()
+    );
+
+    let property_names = |name: &str| -> Vec<String> {
+        let mut names: Vec<String> = schemas[name]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{name} has no properties"))
+            .keys()
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        property_names("AchievementView"),
+        [
+            "condition_type",
+            "description",
+            "enabled",
+            "id",
+            "levels",
+            "name",
+            "sort_order"
+        ]
+    );
+    assert_eq!(
+        property_names("AchievementResult"),
+        ["achievement", "retroactive_unlocks"]
+    );
+    assert_eq!(
+        property_names("LevelView"),
+        ["level", "points", "threshold"]
+    );
+    assert_eq!(
+        property_names("NewAchievement"),
+        [
+            "condition_type",
+            "description",
+            "id",
+            "name",
+            "points",
+            "sort_order",
+            "threshold"
+        ]
+    );
+    assert_eq!(
+        property_names("AchievementPatch"),
+        ["description", "enabled", "levels", "name", "sort_order"]
+    );
+}
+
+#[tokio::test]
 async fn api_docs_uses_the_wireframe_design_tokens() {
     let pool = PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused").unwrap();
     let app = test_app(pool);

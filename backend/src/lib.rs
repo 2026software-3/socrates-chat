@@ -38,6 +38,7 @@ macro_rules! generation_unclaimed {
 }
 
 pub mod accounts;
+pub mod achievement_admin;
 pub mod achievements;
 pub mod activity_store;
 pub mod ai;
@@ -184,6 +185,7 @@ pub fn app(state: AppState) -> Router {
         .merge(voice::routes())
         .merge(cascade::routes())
         .merge(points::routes())
+        .merge(achievement_admin::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供

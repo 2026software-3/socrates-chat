@@ -9,13 +9,17 @@ CREATE TABLE audit_logs (
         'login', 'account_disabled', 'account_enabled', 'student_deleted',
         'teacher_added', 'teacher_removed', 'roster_added', 'roster_removed', 'password_reset',
         'classroom_archived', 'classroom_restored', 'classroom_deleted',
-        'activity_archived', 'activity_restored', 'activity_deleted'
+        'activity_archived', 'activity_restored', 'activity_deleted',
+        'achievement_created', 'achievement_updated'
     )),
     -- 對象的電子郵件（帳號類動作）或名稱（教室、活動）：對象被刪除後仍需留下是誰
     target_email text NOT NULL,
     reason       text,
     -- 刪除教室或活動時一併刪除的對話數量（S-14）；其他動作為空
     item_count   integer CHECK (item_count >= 0),
+    -- 成就設定異動的舊值與新值（S-07.3 5.1）：只有成就設定，不含學生資料；其他動作為空
+    old_value    jsonb,
+    new_value    jsonb,
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
