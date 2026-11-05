@@ -51,6 +51,8 @@ cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），�
 
 映像固定 `sglang-omni==0.2.0`（實測版本），CUDA 13 開發版基底。cascade 與 TTS 沒有 GPU 時無法啟動，所以不要在沒有 GPU 的環境啟用這個 profile。
 
+**Dialog 補丁（`docker/cascade/patch_dialog.py`）：** sglang-omni 0.2.0 的 `Dialog` 在回覆一開始時若 VAD 仍判定使用者在說話，會把回覆當成「蓋在使用者說話上面」而立刻打斷。辨識要 1–4 秒，第一句辨識完成時學生常已在說第二句，第一句的回覆一開就被取消、學生什麼都沒聽到，畫面也沒有失敗提示。補丁只多一個條件：使用者說話中 `respond_to_waiting` 不開口，說完再開；沒有重疊的回合行為不變。cascade 啟動前由 `entrypoint.sh` 套用，補丁只認得 0.2.0 的原始碼，**對不上就以非 0 結束，cascade 不會啟動**（`set -eu`），升版時要重新檢視。測試需安裝 sglang-omni==0.2.0 的 python：`python3 docker/cascade/test_patch_dialog.py`（不在 CI 跑，CI 沒有該套件）。長期應把修正回報給 sglang-omni 上游，進版後即可移除補丁。
+
 ## 前端行為
 
 `frontend/src/features/chat/voice/realtime/`：
