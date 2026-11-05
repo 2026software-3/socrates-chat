@@ -359,6 +359,8 @@ pub(crate) struct SummaryRow {
     ended_at: DateTime<Utc>,
     /// 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號
     student_user_id: Uuid,
+    /// 學號（大寫）；管理者不遮蔽（S-01.4、S-02.2）
+    student_number: Option<String>,
     student_name: Option<String>,
     student_email: Option<String>,
     /// 對話建立時快照的原文語言。
@@ -682,7 +684,8 @@ pub(crate) async fn list(
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
         "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
-                u.id AS student_user_id, u.display_name AS student_name, u.email AS student_email,
+                u.id AS student_user_id, u.student_id AS student_number,
+                u.display_name AS student_name, u.email AS student_email,
                 c.language,
                 s.stance, s.reasons, s.claim
          FROM summaries s

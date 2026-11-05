@@ -275,6 +275,24 @@ mod roster {
         );
         assert!(!text.contains("confirm_student_id"));
     }
+
+    /// F-30.2：名單、教師總結列表與 `/api/me` 都帶學號。
+    #[test]
+    fn roster_summaries_and_me_carry_the_student_number() {
+        let document = serde_json::to_value(openapi::document()).unwrap();
+        let schemas = &document["components"]["schemas"];
+        for (schema, field) in [
+            ("RosterEntry", "student_number"),
+            ("RosterEntry", "display_name"),
+            ("SummaryRow", "student_number"),
+            ("MeResponse", "student_number"),
+        ] {
+            assert!(
+                schemas[schema]["properties"].get(field).is_some(),
+                "{schema}.{field}"
+            );
+        }
+    }
 }
 
 mod voice {
