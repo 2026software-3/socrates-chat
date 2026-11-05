@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::points::{self, Entry, Source};
@@ -16,23 +16,9 @@ pub struct Unlock {
 }
 
 /// Record a summarized conversation exactly once, then award every newly met
-/// completion-count or Taipei-streak level atomically with its points.
+/// completion-count or Taipei-streak level with its points. Runs in the caller's
+/// transaction so completion and awards commit or roll back together.
 pub async fn record_completed_conversation(
-    pool: &PgPool,
-    user_id: Uuid,
-    conversation_id: Uuid,
-    completed_at: DateTime<Utc>,
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let unlocked =
-        record_completed_conversation_in_tx(&mut tx, user_id, conversation_id, completed_at)
-            .await?;
-    tx.commit().await?;
-    Ok(unlocked)
-}
-
-/// Variant for callers that must commit completion and awards atomically.
-pub async fn record_completed_conversation_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     conversation_id: Uuid,
@@ -82,75 +68,6 @@ pub async fn record_completed_conversation_in_tx(
     unlocked.extend(unlock_matching(tx, user_id, "completed_conversations", count).await?);
     unlocked.extend(unlock_matching(tx, user_id, "consecutive_days", streak).await?);
     Ok(unlocked)
-}
-
-/// Call after the six persisted radar scores are available.
-pub async fn record_dimension_score(
-    pool: &PgPool,
-    user_id: Uuid,
-    scores: &[i32],
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let unlocked = record_dimension_score_in_tx(&mut tx, user_id, scores).await?;
-    tx.commit().await?;
-    Ok(unlocked)
-}
-
-/// Transaction-aware score hook. Incomplete or invalid score sets do not qualify.
-pub async fn record_dimension_score_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
-    scores: &[i32],
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    if scores.len() != 6 || scores.iter().any(|score| !(0..=5).contains(score)) {
-        return Ok(vec![]);
-    }
-    unlock_matching(
-        tx,
-        user_id,
-        "dimension_score",
-        i64::from(*scores.iter().max().unwrap()),
-    )
-    .await
-}
-
-/// Call only after a task reward has successfully been claimed.
-pub async fn record_first_task_reward(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let unlocked = record_first_task_reward_in_tx(&mut tx, user_id).await?;
-    tx.commit().await?;
-    Ok(unlocked)
-}
-
-/// Transaction-aware task hook; call in the reward-claim transaction.
-pub async fn record_first_task_reward_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    unlock_matching(tx, user_id, "first_task_claim", 1).await
-}
-
-/// Call only after a character part purchase has committed successfully.
-pub async fn record_first_character_part(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let unlocked = record_first_character_part_in_tx(&mut tx, user_id).await?;
-    tx.commit().await?;
-    Ok(unlocked)
-}
-
-/// Transaction-aware purchase hook; call only after the purchase succeeded,
-/// inside the transaction that commits the purchase.
-pub async fn record_first_character_part_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
-) -> Result<Vec<Unlock>, sqlx::Error> {
-    unlock_matching(tx, user_id, "first_purchase", 1).await
 }
 
 async fn unlock_matching(

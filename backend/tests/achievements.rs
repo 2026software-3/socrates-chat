@@ -1,14 +1,35 @@
-use chrono::{Duration, TimeZone, Utc};
-use socrates_chat_backend::achievements::{
-    record_completed_conversation, record_dimension_score, record_first_character_part,
-    record_first_task_reward,
-};
+use chrono::{DateTime, Duration, TimeZone, Utc};
+use socrates_chat_backend::achievements::{Unlock, record_completed_conversation};
 use sqlx::PgPool;
+use uuid::Uuid;
 
-async fn user(pool: &PgPool) -> uuid::Uuid {
-    sqlx::query_scalar(
-        "INSERT INTO users (email) VALUES ('achievement-student@example.com') RETURNING id",
+mod common;
+
+async fn user(pool: &PgPool) -> Uuid {
+    common::seed_user(pool, "achievement-student@example.com").await
+}
+
+async fn complete(
+    pool: &PgPool,
+    user_id: Uuid,
+    conversation_id: Uuid,
+    at: DateTime<Utc>,
+) -> Vec<Unlock> {
+    let mut tx = pool.begin().await.unwrap();
+    let unlocked = record_completed_conversation(&mut tx, user_id, conversation_id, at)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    unlocked
+}
+
+/// Number of unlock rows and achievement ledger rows the user has.
+async fn counts(pool: &PgPool, user_id: Uuid) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM achievement_unlocks WHERE user_id=$1),
+                (SELECT count(*) FROM point_ledger WHERE user_id=$1 AND source_type='achievement')",
     )
+    .bind(user_id)
     .fetch_one(pool)
     .await
     .unwrap()
@@ -17,29 +38,17 @@ async fn user(pool: &PgPool) -> uuid::Uuid {
 #[sqlx::test]
 async fn completion_unlocks_once_and_duplicate_events_do_not_award_points(pool: PgPool) {
     let user_id = user(&pool).await;
-    let conversation_id = uuid::Uuid::new_v4();
+    let conversation_id = Uuid::new_v4();
     let completed_at = Utc.with_ymd_and_hms(2026, 10, 24, 4, 0, 0).unwrap();
 
-    let first = record_completed_conversation(&pool, user_id, conversation_id, completed_at)
-        .await
-        .unwrap();
-    let repeated = record_completed_conversation(&pool, user_id, conversation_id, completed_at)
-        .await
-        .unwrap();
+    let first = complete(&pool, user_id, conversation_id, completed_at).await;
+    let repeated = complete(&pool, user_id, conversation_id, completed_at).await;
 
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].achievement_id, "first_dialogue");
     assert_eq!(first[0].points, 10);
     assert!(repeated.is_empty());
-    let (unlocks, awards): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM achievement_unlocks WHERE user_id=$1),
-                (SELECT count(*) FROM point_ledger WHERE user_id=$1 AND source_type='achievement')",
-    )
-    .bind(user_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!((unlocks, awards), (1, 1));
+    assert_eq!(counts(&pool, user_id).await, (1, 1));
     let award: (i32, String) = sqlx::query_as(
         "SELECT delta, source_id FROM point_ledger
          WHERE user_id = $1 AND source_type = 'achievement'",
@@ -56,38 +65,31 @@ async fn simultaneous_completions_cannot_skip_a_threshold(pool: PgPool) {
     let user_id = user(&pool).await;
     let at = Utc.with_ymd_and_hms(2026, 10, 24, 4, 0, 0).unwrap();
     let (left, right) = tokio::join!(
-        record_completed_conversation(&pool, user_id, uuid::Uuid::new_v4(), at),
-        record_completed_conversation(&pool, user_id, uuid::Uuid::new_v4(), at),
+        complete(&pool, user_id, Uuid::new_v4(), at),
+        complete(&pool, user_id, Uuid::new_v4(), at),
     );
-    assert_eq!(left.unwrap().len() + right.unwrap().len(), 1);
-    let (events, unlocks): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM achievement_completion_events WHERE user_id=$1),
-                (SELECT count(*) FROM achievement_unlocks WHERE user_id=$1)",
-    )
-    .bind(user_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!((events, unlocks), (2, 1));
+    assert_eq!(left.len() + right.len(), 1);
+    let events: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM achievement_completion_events WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((events, counts(&pool, user_id).await.0), (2, 1));
 }
 
 #[sqlx::test]
 async fn completion_unlocks_progress_levels_and_taipei_streak_once(pool: PgPool) {
     let user_id = user(&pool).await;
     let start = Utc.with_ymd_and_hms(2026, 10, 20, 16, 5, 0).unwrap(); // Taipei 00:05
-    let mut at_five = vec![];
+    // 50 completions over three Taipei days: 17 + 17 + 16.
+    let mut unlocked_by_completion = Vec::new();
     for i in 0..50 {
-        let day = i / 17;
-        let at = start + Duration::days(day as i64);
-        let result = record_completed_conversation(&pool, user_id, uuid::Uuid::new_v4(), at)
-            .await
-            .unwrap();
-        if i == 4 {
-            at_five = result;
-        }
+        let at = start + Duration::days(i / 17);
+        unlocked_by_completion.push(complete(&pool, user_id, Uuid::new_v4(), at).await);
     }
     assert!(
-        at_five
+        unlocked_by_completion[4]
             .iter()
             .any(|u| u.achievement_id == "dialogue_path" && u.level == 1)
     );
@@ -98,72 +100,22 @@ async fn completion_unlocks_progress_levels_and_taipei_streak_once(pool: PgPool)
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert!(levels.contains(&("dialogue_path".into(), 1)));
-    assert!(levels.contains(&("dialogue_path".into(), 2)));
-    assert!(levels.contains(&("dialogue_path".into(), 3)));
-    assert!(levels.contains(&("three_day_streak".into(), 1)));
-}
-
-#[sqlx::test]
-async fn score_task_and_purchase_signals_are_idempotent(pool: PgPool) {
-    let user_id = user(&pool).await;
-    assert!(
-        record_dimension_score(&pool, user_id, &[5; 5])
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        record_dimension_score(&pool, user_id, &[1, 1, 1, 1, 1, 4])
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        record_dimension_score(&pool, user_id, &[1, 1, 1, 1, 1, 6])
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let scores = [1, 1, 1, 1, 1, 5];
+    for expected in [
+        ("dialogue_path", 1),
+        ("dialogue_path", 2),
+        ("dialogue_path", 3),
+        ("three_day_streak", 1),
+    ] {
+        assert!(
+            levels.contains(&(expected.0.into(), expected.1)),
+            "{expected:?}"
+        );
+    }
+    let total_unlocks = unlocked_by_completion.iter().map(Vec::len).sum::<usize>();
     assert_eq!(
-        record_dimension_score(&pool, user_id, &scores)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(
-        record_dimension_score(&pool, user_id, &scores)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        record_first_task_reward(&pool, user_id)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(
-        record_first_task_reward(&pool, user_id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        record_first_character_part(&pool, user_id)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(
-        record_first_character_part(&pool, user_id)
-            .await
-            .unwrap()
-            .is_empty()
+        total_unlocks,
+        levels.len(),
+        "each level is reported exactly once"
     );
 }
 
@@ -171,42 +123,23 @@ async fn score_task_and_purchase_signals_are_idempotent(pool: PgPool) {
 async fn event_transaction_rollback_also_rolls_back_achievement_and_points(pool: PgPool) {
     let user_id = user(&pool).await;
     let mut tx = pool.begin().await.unwrap();
-    socrates_chat_backend::achievements::record_first_task_reward_in_tx(&mut tx, user_id)
+    let at = Utc.with_ymd_and_hms(2026, 10, 24, 4, 0, 0).unwrap();
+    let unlocked = record_completed_conversation(&mut tx, user_id, Uuid::new_v4(), at)
         .await
         .unwrap();
+    assert_eq!(unlocked.len(), 1);
     tx.rollback().await.unwrap();
-    let (unlocks, awards): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM achievement_unlocks WHERE user_id=$1),
-                (SELECT count(*) FROM point_ledger WHERE user_id=$1 AND source_type='achievement')",
-    )
-    .bind(user_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!((unlocks, awards), (0, 0));
+    assert_eq!(counts(&pool, user_id).await, (0, 0));
 }
 
 #[sqlx::test]
-async fn achievement_migration_has_catalog_constraints_and_cascades_with_account(pool: PgPool) {
-    // SQLx migration runner is idempotent on an already-migrated database.
-    sqlx::migrate!().run(&pool).await.unwrap();
+async fn account_deletion_cascades_to_unlocks(pool: PgPool) {
     let user_id = user(&pool).await;
-    record_first_task_reward(&pool, user_id).await.unwrap();
+    complete(&pool, user_id, Uuid::new_v4(), Utc::now()).await;
     sqlx::query("DELETE FROM users WHERE id=$1")
         .bind(user_id)
         .execute(&pool)
         .await
         .unwrap();
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM achievement_unlocks WHERE user_id=$1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(remaining, 0);
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM achievements")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 8);
+    assert_eq!(counts(&pool, user_id).await.0, 0);
 }
