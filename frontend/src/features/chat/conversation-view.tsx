@@ -39,7 +39,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState<unknown>()
   // 後端沒算回合的學生訊息（被打斷、沒聽到回覆的接話）：標題列的回合數要扣掉它們
-  const [uncounted] = useState(() =>
+  const [uncounted, setUncounted] = useState(() =>
     Math.max(0, detail.messages.filter((m) => m.role === 'student').length - detail.turn_count),
   )
 
@@ -87,7 +87,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
     return {
       conversationId: detail.id,
       turns: voiceTurns,
-      appendStudent: (text) => runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] }),
+      appendStudent(text, { followUp }) {
+        if (followUp) setUncounted((n) => n + 1)
+        runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] })
+      },
       onSettled() {
         markAiUsageStale()
         // 語音回合沒有 SSE 的 done 事件；達回合上限而結束時也靠這裡切成唯讀
