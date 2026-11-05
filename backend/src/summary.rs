@@ -130,7 +130,7 @@ async fn on_conversation_completed(
         &source_id,
     );
     points::record(tx, &entry).await?;
-    crate::achievements::record_completed_conversation(tx, owner, id, Utc::now()).await?;
+    crate::achievements::record_completed_conversation_in_tx(tx, owner, id, Utc::now()).await?;
     Ok(())
 }
 

@@ -1,5 +1,9 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use socrates_chat_backend::achievements::{Unlock, record_completed_conversation};
+use socrates_chat_backend::achievements::{
+    Unlock, record_completed_conversation, record_completed_conversation_in_tx,
+    record_dimension_score, record_first_character_part, record_first_task_reward,
+    record_first_task_reward_in_tx,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -15,12 +19,9 @@ async fn complete(
     conversation_id: Uuid,
     at: DateTime<Utc>,
 ) -> Vec<Unlock> {
-    let mut tx = pool.begin().await.unwrap();
-    let unlocked = record_completed_conversation(&mut tx, user_id, conversation_id, at)
+    record_completed_conversation(pool, user_id, conversation_id, at)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    unlocked
+        .unwrap()
 }
 
 /// Number of unlock rows and achievement ledger rows the user has.
@@ -120,14 +121,43 @@ async fn completion_unlocks_progress_levels_and_taipei_streak_once(pool: PgPool)
 }
 
 #[sqlx::test]
+async fn score_task_and_purchase_signals_are_idempotent(pool: PgPool) {
+    let user_id = user(&pool).await;
+    // Incomplete or out-of-range score sets never qualify.
+    for scores in [&[5; 5][..], &[1, 1, 1, 1, 1, 4], &[1, 1, 1, 1, 1, 6]] {
+        assert!(
+            record_dimension_score(&pool, user_id, scores)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let scores = [1, 1, 1, 1, 1, 5];
+    let results = [
+        record_dimension_score(&pool, user_id, &scores).await,
+        record_dimension_score(&pool, user_id, &scores).await,
+        record_first_task_reward(&pool, user_id).await,
+        record_first_task_reward(&pool, user_id).await,
+        record_first_character_part(&pool, user_id).await,
+        record_first_character_part(&pool, user_id).await,
+    ];
+    let unlocked: Vec<usize> = results.iter().map(|r| r.as_ref().unwrap().len()).collect();
+    assert_eq!(unlocked, [1, 0, 1, 0, 1, 0]);
+    assert_eq!(counts(&pool, user_id).await, (3, 3));
+}
+
+#[sqlx::test]
 async fn event_transaction_rollback_also_rolls_back_achievement_and_points(pool: PgPool) {
     let user_id = user(&pool).await;
-    let mut tx = pool.begin().await.unwrap();
     let at = Utc.with_ymd_and_hms(2026, 10, 24, 4, 0, 0).unwrap();
-    let unlocked = record_completed_conversation(&mut tx, user_id, Uuid::new_v4(), at)
+    let mut tx = pool.begin().await.unwrap();
+    let from_reward = record_first_task_reward_in_tx(&mut tx, user_id)
         .await
         .unwrap();
-    assert_eq!(unlocked.len(), 1);
+    let from_completion = record_completed_conversation_in_tx(&mut tx, user_id, Uuid::new_v4(), at)
+        .await
+        .unwrap();
+    assert_eq!((from_reward.len(), from_completion.len()), (1, 1));
     tx.rollback().await.unwrap();
     assert_eq!(counts(&pool, user_id).await, (0, 0));
 }
