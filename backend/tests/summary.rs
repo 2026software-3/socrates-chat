@@ -14,23 +14,6 @@ use sqlx::PgPool;
 const GOOD: &str = "{\"stance\":\"會拉桿\",\"reasons\":\"救五人優先\"}";
 const INCOMPLETE: &str = "{\"stance\":\"會拉桿\"}";
 
-/// 輪詢到總結不再是 pending 為止（背景產生）。
-async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
-    for _ in 0..100 {
-        let res = send(
-            app,
-            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
-        )
-        .await;
-        let v = json_body(res).await;
-        if v["status"] != "pending" {
-            return v;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("summary stayed pending");
-}
-
 async fn end(app: &Router, cookie: &str, conv: &str) -> (StatusCode, Value) {
     let res = send(
         app,
@@ -73,6 +56,17 @@ async fn ending_generates_a_saved_summary(pool: PgPool) {
         unlocks, 1,
         "a ready summary awards the first-dialogue achievement"
     );
+    let awards: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT source_type, delta FROM point_ledger p JOIN users ON users.id = p.user_id
+         WHERE email = 'student@example.com' ORDER BY source_type",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        awards,
+        vec![("achievement".into(), 10), ("conversation".into(), 10)]
+    );
 
     // 對話已結束，不能再送訊息；AI 收到的是完整逐字稿
     let (st, _) = student_says(&app, &a, &conv, "還想補充").await;
@@ -80,6 +74,65 @@ async fn ending_generates_a_saved_summary(pool: PgPool) {
     let reqs = ai.requests.lock().unwrap();
     assert!(reqs[0].messages[0].content.contains("學生：我會拉桿"));
     assert!(reqs[0].system.contains("電車難題"));
+}
+
+#[sqlx::test]
+async fn spanish_conversation_uses_spanish_summary_prompt_transcript_and_version(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![
+        "{\"stance\":\"Accionaría la palanca\",\"reasons\":\"Salvar a cinco personas\",\"claim\":\"Accionar la palanca\"}",
+    ])]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let updated = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.student),
+            Some(json!({"language": "es"})),
+        ),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "Accionaría la palanca.").await;
+
+    assert_eq!(end(&app, &a.student, &conv).await.0, StatusCode::ACCEPTED);
+    assert_eq!(
+        settled_summary(&app, &a.student, &conv).await["status"],
+        "ready"
+    );
+    for _ in 0..100 {
+        if ai.request_count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(ai.request_count(), 2, "claim grouping did not call the AI");
+
+    {
+        let requests = ai.requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .system
+                .contains("Escribe el resumen únicamente en español")
+        );
+        assert!(
+            requests[0].messages[0]
+                .content
+                .contains("Estudiante: Accionaría la palanca.")
+        );
+        // 群組名稱給教室擁有者（這裡是預設的繁體中文教師）看，不跟著學生的對話語言
+        assert!(requests[1].system.contains("只使用繁體中文"));
+        assert!(!requests[1].system.contains("Agrupa la afirmación"));
+    }
+    let version: String =
+        sqlx::query_scalar("SELECT rules_version FROM summaries WHERE conversation_id = $1")
+            .bind(uuid::Uuid::parse_str(&conv).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(version, "v1.23/es");
 }
 
 #[sqlx::test]
@@ -343,14 +396,15 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let res = send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await;
+    let res = send(&app, get("/api/summaries", Some(&a.teacher))).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let list = json_body(res).await;
+    let list = json_body(res).await["items"].clone();
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["conversation_id"], conv);
     assert_eq!(rows[0]["student_email"], "student@example.com");
-    assert_eq!(rows[0]["student_name"], "User sub-student");
+    assert_eq!(rows[0]["student_name"], "學生");
+    assert_eq!(rows[0]["language"], "zh-TW");
     assert_eq!(rows[0]["stance"], "會拉桿");
     assert!(!list.to_string().contains("私密的對話原文"));
 
@@ -365,8 +419,127 @@ async fn teacher_sees_identified_summaries_but_never_message_text(pool: PgPool) 
         ),
     )
     .await;
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+#[sqlx::test]
+async fn teacher_translates_a_summary_into_their_account_language_without_conversation_text(
+    pool: PgPool,
+) {
+    let translated = "{\"stance\":\"Would pull the lever\",\"reasons\":\"Save more people\"}";
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![translated])]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "這句是私密的對話原文").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+    let updated = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.teacher),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/summaries/{conv}/translation"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await,
+        json!({
+            "language": "en",
+            "stance": "Would pull the lever",
+            "reasons": "Save more people",
+        })
+    );
+
+    let requests = ai.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let translation = &requests[1];
+    assert!(
+        translation
+            .system
+            .contains("Translate the summary into English")
+    );
+    assert!(translation.messages[0].content.contains("會拉桿"));
+    assert!(translation.messages[0].content.contains("救五人優先"));
+    for private in ["這句是私密的對話原文", "student@example.com", "學生"] {
+        assert!(!translation.messages[0].content.contains(private));
+    }
+}
+
+#[sqlx::test]
+async fn summary_translation_keeps_teacher_scope_and_admin_masking_boundaries(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Fail]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "想法").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+    let path = format!("/api/summaries/{conv}/translation");
+
+    for (cookie, expected) in [
+        (Some(a.admin.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.student.as_str()), StatusCode::FORBIDDEN),
+        (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
+        (None, StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(
+            send(&app, json_req("POST", &path, cookie, None))
+                .await
+                .status(),
+            expected
+        );
+    }
+
+    send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/teachers",
+            Some(&a.admin),
+            Some(json!({"email": "other-teacher@example.com"})),
+        ),
+    )
+    .await;
+    let other = login_as(&app, "sub-other-teacher", "other-teacher@example.com").await;
+    assert_eq!(
+        send(&app, json_req("POST", &path, Some(&other), None))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.teacher),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    let failed = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
+    assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(json_body(failed).await["error"]["code"], "ai_unavailable");
+    assert_eq!(ai.request_count(), 2, "拒絕的請求不得呼叫 AI");
 }
 
 #[sqlx::test]
@@ -379,7 +552,8 @@ async fn admin_view_of_summaries_is_masked(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     let row = &list[0];
     for f in ["stance", "reasons"] {
         assert_eq!(row[f], "message");
@@ -397,9 +571,7 @@ async fn teacher_summary_list_denies_everyone_else(pool: PgPool) {
         (None, StatusCode::UNAUTHORIZED),
     ] {
         assert_eq!(
-            send(&app, get("/api/teacher/summaries", cookie))
-                .await
-                .status(),
+            send(&app, get("/api/summaries", cookie)).await.status(),
             expected
         );
     }
@@ -425,7 +597,8 @@ async fn deleting_conversation_removes_summary_from_teacher_view(pool: PgPool) {
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     assert!(list.as_array().unwrap().is_empty());
 }
 
@@ -450,7 +623,8 @@ async fn admin_who_is_also_teacher_still_sees_masked_summaries(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.admin))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.admin))).await).await["items"].clone();
     assert_eq!(list[0]["stance"], "message");
     assert!(!list.to_string().contains("會拉桿"));
 }
@@ -480,7 +654,8 @@ async fn teacher_list_only_contains_student_conversations(pool: PgPool) {
     end(&app, &a.student, &conv).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     let ids: Vec<&str> = list
         .as_array()
         .unwrap()
@@ -527,10 +702,9 @@ async fn ending_waits_for_an_in_flight_ai_reply(pool: PgPool) {
 async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     // 第一代卡住（Hang）；在它逾時前手動重試，第二代很快成功。
     // 第一代之後失敗收尾時，不能把已完成的結果改成 failed。
-    // 第一代的首字逾時要遠大於手動重試的等待，否則它自己的自動重試會先拿走第二個腳本
+    // 總結只受完整回覆上限限制；這個上限要遠大於手動重試的等待，否則第一代的自動重試會先拿走第二個腳本
     let config = Config {
-        ai_first_token_timeout: Duration::from_millis(1500),
-        ai_total_timeout: Duration::from_millis(4000),
+        ai_total_timeout: Duration::from_millis(1500),
         ..test_config()
     };
     let ai = FakeAi::with(vec![Hang, Reply(vec![GOOD])]);
@@ -540,9 +714,7 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     // 等第一代真的拿到 Hang 腳本，重試的第二代才會拿到 Reply
-    while ai.request_count() < 1 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&ai, 1).await;
     sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
         .execute(&pool)
         .await
@@ -592,5 +764,198 @@ async fn orphaned_pending_summaries_are_failed_on_startup(pool: PgPool) {
     assert_eq!(
         settled_summary(&app, &a.student, &conv).await["status"],
         "failed"
+    );
+}
+
+/// 學生結束一場繁體中文對話並等總結完成，回傳 (app, actors, 對話 id)。
+async fn translation_fixture(
+    pool: PgPool,
+    ai: std::sync::Arc<FakeAi>,
+    limit: Option<(usize, Duration)>,
+) -> (Router, Actors, String) {
+    translation_fixture_with_config(pool, ai, limit, test_config()).await
+}
+
+/// 同上，但用指定的設定建立 app。前置步驟（登入、建立對話、等總結）也用這份設定，
+/// 所以不要放短的請求逾時（`short_timeout()`）：機器忙碌時前置步驟會回 408（#427）。
+async fn translation_fixture_with_config(
+    pool: PgPool,
+    ai: std::sync::Arc<FakeAi>,
+    limit: Option<(usize, Duration)>,
+    config: Config,
+) -> (Router, Actors, String) {
+    register_fixture_pool(&pool);
+    let mut state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        config,
+        std::sync::Arc::new(FakeIdentity),
+        ai,
+    );
+    if let Some((max, window)) = limit {
+        state = state.with_translation_limit(max, window);
+    }
+    let app = socrates_chat_backend::app(state);
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "想法").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+    (app, a, conv)
+}
+
+async fn set_teacher_language(app: &Router, a: &Actors, language: &str) {
+    let res = send(
+        app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.teacher),
+            Some(json!({"language": language})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+async fn translate(app: &Router, a: &Actors, conv: &str) -> (StatusCode, Value) {
+    let res = send(
+        app,
+        json_req(
+            "POST",
+            &format!("/api/summaries/{conv}/translation"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    (res.status(), json_body(res).await)
+}
+
+fn translation_reply(reasons_chars: usize) -> &'static str {
+    let body = json!({"stance": "Would pull", "reasons": "x".repeat(reasons_chars)});
+    Box::leak(body.to_string().into_boxed_str())
+}
+
+#[sqlx::test]
+async fn translation_is_not_cut_off_by_the_general_request_timeout(pool: PgPool) {
+    // 翻譯同步等一次 AI 呼叫，推理模型常常比一般請求逾時慢得多；要用長逾時，不能回 408
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Paced(vec![translation_reply(10)], Duration::from_millis(500)),
+    ]);
+    // 登入、建立資料等前置步驟用一般設定完成（300ms 的逾時在機器忙碌時會讓前置步驟回 408），
+    // 只有被測的翻譯請求換成短逾時的 app。session 存在資料庫，cookie 兩個 app 通用；兩個 app 共用同一個 AI 佇列
+    let (app, a, conv) = translation_fixture(pool.clone(), ai.clone(), None).await;
+    set_teacher_language(&app, &a, "en").await;
+    let short_app = socrates_chat_backend::app(socrates_chat_backend::AppState::new(
+        pool,
+        short_timeout(),
+        std::sync::Arc::new(FakeIdentity),
+        ai,
+    ));
+    let (status, body) = translate(&short_app, &a, &conv).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stance"], "Would pull");
+}
+
+#[sqlx::test]
+async fn translation_counts_against_the_ai_usage_limit_and_failures_are_refunded(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let config = Config {
+        ai_usage_max: 1,
+        ..test_config()
+    };
+    let (app, a, conv) = translation_fixture_with_config(pool, ai.clone(), None, config).await;
+    set_teacher_language(&app, &a, "en").await;
+
+    // AI 失敗：不扣額度
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
+    // 成功一次後用完；再按被擋，而且不碰 AI
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    let before = ai.request_count();
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "ai_usage_exceeded");
+    assert_eq!(ai.request_count(), before);
+}
+
+#[sqlx::test]
+async fn translation_that_grows_past_the_summary_limit_is_not_silently_truncated(pool: PgPool) {
+    // 2000 字的中文理由翻成拉丁字母常常超過 2000 字元；不能被總結欄位的上限悄悄截斷
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Reply(vec![translation_reply(3000)]),
+    ]);
+    let (app, a, conv) = translation_fixture(pool, ai, None).await;
+    set_teacher_language(&app, &a, "en").await;
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["reasons"].as_str().unwrap().chars().count(), 3000);
+}
+
+#[sqlx::test]
+async fn translation_over_the_hard_cap_fails_instead_of_returning_a_cut_text(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Reply(vec![translation_reply(9000)]),
+    ]);
+    let (app, a, conv) = translation_fixture(pool, ai, None).await;
+    set_teacher_language(&app, &a, "en").await;
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "ai_unavailable");
+}
+
+#[sqlx::test]
+async fn translation_requests_are_rate_limited_per_teacher(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Reply(vec![translation_reply(10)]),
+        Reply(vec![translation_reply(10)]),
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let (app, a, conv) =
+        translation_fixture(pool, ai.clone(), Some((2, Duration::from_secs(600)))).await;
+
+    // 語言相同不會呼叫 AI，不吃額度
+    for _ in 0..5 {
+        assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    }
+    assert_eq!(ai.request_count(), 1);
+
+    set_teacher_language(&app, &a, "en").await;
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    let (status, body) = translate(&app, &a, &conv).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "too_many_translations");
+    assert_eq!(ai.request_count(), 3, "超過額度的請求不得呼叫 AI");
+}
+
+#[sqlx::test]
+async fn a_failed_translation_does_not_use_up_the_teachers_quota(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,                                 // AI 逾時
+        Reply(vec!["{\"stance\":\"x\"}"]),    // 格式不完整
+        Reply(vec![translation_reply(9000)]), // 譯文過長
+        Reply(vec![translation_reply(10)]),
+    ]);
+    let (app, a, conv) = translation_fixture(pool, ai, Some((1, Duration::from_secs(600)))).await;
+    set_teacher_language(&app, &a, "en").await;
+
+    // 額度只有 1：三次失敗都不能吃掉它，之後的成功請求仍然可以通過
+    for _ in 0..3 {
+        assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
+    }
+    assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    // 成功的那次才算數
+    assert_eq!(
+        translate(&app, &a, &conv).await.0,
+        StatusCode::TOO_MANY_REQUESTS
     );
 }

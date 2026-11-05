@@ -1,0 +1,15 @@
+# cargo-audit 設定（CI 的 backend-audit job 會讀取）。
+# 只豁免「本專案無法自行修復」的項目；新增豁免前請先確認無法靠更新 Cargo.lock 解決，並附上理由與重新檢視條件。
+
+[advisories]
+ignore = [
+    # rsa 0.9.10 — Marvin attack（RSA 解密的計時側通道）。目前沒有修復版本。
+    # 只經 openidconnect（Google 登入）引入，且我們只用 Google 的公鑰「驗證」ID token 簽章，
+    # 不持有 RSA 私鑰，也不做 RSA 解密，攻擊前提不成立。
+    # 重新檢視：rsa 釋出修復版本，或 openidconnect 改用其他 RSA 實作時。
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5.5 — 計時差異。只經 openidconnect → p256／p384 → elliptic-curve 引入，
+    # 用途同上（以公鑰驗證 ID token），不處理本系統持有的祕密；需等 openidconnect 升級相依才能修。
+    # 重新檢視：openidconnect 釋出使用 crypto-bigint >= 0.7.6 的版本時。
+    "RUSTSEC-2026-0387",
+]

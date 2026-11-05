@@ -1,0 +1,178 @@
+[
+  {
+    "id": "CONV_01",
+    "stage": 3,
+    "turn": 6,
+    "title": "電車難題",
+    "description": "失控的電車即將撞上五人，你是否會拉下轉轍器讓電車轉向撞上一人？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你支持拉下轉轍器犧牲一人拯救五人，但如果情境變成：你必須親手把身旁一位無辜的路人推下天橋來擋住電車，你仍會做出同樣的選擇嗎？"
+      },
+      {
+        "role": "user",
+        "content": "我不會推他下去。因為拉轉轍器是改變失控列車的方向，雖然造成一人死亡但目的是救五人；但親手推人則是把無辜的人當作達成目的的工具，這跨越了道德底線。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": ["wrap_up"],
+    "learning_goal": "學生已針對天橋反例做出明確且有理由的區分（手段與目的），符合收斂條件，AI 應提議收尾。",
+    "annotation_reason": "學生已在第 3 階段充分回應反例，展現對義務論與效益論衝突的省思，應收斂並引導整理結論。"
+  },
+  {
+    "id": "CONV_02",
+    "stage": 3,
+    "turn": 5,
+    "title": "校園手機管理",
+    "description": "學校是否應全面禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "若課堂上有即時查閱資料的需求，或學生家中發生緊急事故需要聯繫，全面禁止是否反而阻礙學習或造成危險？"
+      },
+      {
+        "role": "user",
+        "content": "這確實是個好問題。我想我可以修正原本的看法：原則上課堂禁止個人娛樂使用，但若老師規劃了數位教學活動，或有預先通報的緊急狀況，則應允許例外使用。這樣既維持課堂專注，又兼顧彈性。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": ["wrap_up"],
+    "learning_goal": "學生面對教學與緊急聯繫之反例，主動修正原則並提出合理的例外界線，符合收斂條件。",
+    "annotation_reason": "學生已回應反例並完成立場調適，此時應收尾整理學生思考轉折，不宜無休止提出新反例。"
+  },
+  {
+    "id": "CONV_03",
+    "stage": 3,
+    "turn": 6,
+    "title": "說謊與誠實",
+    "description": "在任何情況下說謊都是錯誤的嗎？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "如果你堅持任何時候都不能說謊，那麼在一個極端情境下：有殺人兇手追問你朋友的藏身處，如果你說實話朋友就會喪命，你依然認為不能說謊嗎？"
+      },
+      {
+        "role": "user",
+        "content": "在這種情況下我會選擇說謊。我認為保護無辜者的生命價值，優先於遵守絕對不說謊的規則。道德規則是為了維護人的善，當規則與生命直接衝突時，拯救生命是更高的責任。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": ["wrap_up"],
+    "learning_goal": "學生明確權衡了「保護生命」與「不說謊」的價值順序，成功回應極端反例，符合收斂條件。",
+    "annotation_reason": "學生已給出清晰的價值優先順序判斷，第 3 階段任務達成，AI 應適時收斂。"
+  },
+  {
+    "id": "CONV_04",
+    "stage": 3,
+    "turn": 7,
+    "title": "資源分配",
+    "description": "有限的獎學金應該完全依據成績還是依據家庭經濟需求發放？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你主張完全看經濟需求，但如果完全不考慮學業表現，是否會削弱學生努力學習的誘因，甚至對成績優異但家境普通的學生不公平？"
+      },
+      {
+        "role": "user",
+        "content": "我明白這層考量。我認為獎學金可以分為兩類：基本助學金以需求為主，保障經濟弱勢的受教權；另外設立小額的學業優良獎，提供誘因。兩者並行就能兼顧公平與激勵。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": ["wrap_up"],
+    "learning_goal": "學生面對不同價值的衝突反例，提出結構性的整合解決方案，達成收斂條件。",
+    "annotation_reason": "反例已被實質消化並提出兼顧方案，應引導收尾總結。"
+  },
+  {
+    "id": "NOT_CONV_01",
+    "stage": 3,
+    "turn": 5,
+    "title": "志工服務",
+    "description": "學校是否應把志工服務列為畢業門檻？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你反對強制志工服務，但如果完全不要求，許多公益團體將面臨人力匱乏，弱勢群體可能因此得不到照顧，這項後果該如何衡量？"
+      },
+      {
+        "role": "user",
+        "content": "隨便啦，反正那是政府的事，跟我沒關係，我不喜歡被強迫。"
+      }
+    ],
+    "expected_advance": false,
+    "expected_type": "perspective",
+    "acceptable_types": ["perspective", "counterexample", "clarify"],
+    "learning_goal": "學生逃避面對反例與對立觀點，未提出實質考量，不可判為收斂，應繼續追問。",
+    "annotation_reason": "學生以情緒性字眼迴避核心道德衝突，未達成第 3 階段挑戰，advance 必須為 false。"
+  },
+  {
+    "id": "NOT_CONV_02",
+    "stage": 3,
+    "turn": 4,
+    "title": "隱私與校園安全",
+    "description": "學校是否應在走廊與教室廣設監視器？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你認為為了防範霸凌應該廣設監視器。但如果有同學因為隨時被鏡頭注視而感到焦慮不自在，甚至擔心隱私被外洩，這個代價是可以接受的嗎？"
+      },
+      {
+        "role": "user",
+        "content": "我不知道耶，我沒想過這個問題。"
+      }
+    ],
+    "expected_advance": false,
+    "expected_type": "perspective",
+    "acceptable_types": ["perspective", "clarify"],
+    "learning_goal": "學生坦承未曾思考該反例，尚未做出立場檢驗，不可收斂，應引導其思考該代價。",
+    "annotation_reason": "學生尚未給出實質回應，反例檢視尚未完成，不可過早結束對話。"
+  },
+  {
+    "id": "NOT_CONV_03",
+    "stage": 3,
+    "turn": 5,
+    "title": "死刑存廢",
+    "description": "國家是否應廢除死刑？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你支持廢除死刑以避免冤獄。但若面對犯下連續重大罪行且毫無悔意者，終身監禁若有逃獄風險或浪費納稅人巨額資源，受害者家屬的司法正義又該如何實現？"
+      },
+      {
+        "role": "user",
+        "content": "反正廢死就是國際趨勢，其他國家都這樣做，我們不能落後。"
+      }
+    ],
+    "expected_advance": false,
+    "expected_type": "assumption",
+    "acceptable_types": ["assumption", "perspective"],
+    "learning_goal": "學生訴諸從眾原則（國際趨勢）而避開了正義與被害人家屬權益的反例，尚未達成挑戰階段。",
+    "annotation_reason": "學生未針對反例進行論證性回應，僅訴諸外在權威，不得判為收斂。"
+  },
+  {
+    "id": "TURN_LIMIT_01",
+    "stage": 2,
+    "turn": 15,
+    "title": "安樂死合法化",
+    "description": "國家是否應該允許絕症患者自主選擇安樂死？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你提到維護病人尊嚴與免於痛苦是主要理由，那家屬的情感負擔呢？"
+      },
+      {
+        "role": "user",
+        "content": "我認為最終決定權仍在患者本人，但家屬的溝通與理解也是不可或缺的環節。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": ["wrap_up"],
+    "learning_goal": "回合數已達 15 回合（wrap_up_turn），即使處於第 2 階段，依規格亦必須開始引導學生結論並提議收尾。",
+    "annotation_reason": "S-03.3 規定第 15 回合起 AI 開始引導學生整理結論並提議收尾，不可再引入新一輪探究。"
+  }
+]

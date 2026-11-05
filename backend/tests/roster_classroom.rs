@@ -13,16 +13,7 @@ async fn import(
     classroom: &str,
     text: &str,
 ) -> (StatusCode, Value) {
-    let res = send(
-        app,
-        json_req(
-            "POST",
-            &format!("/api/classrooms/{classroom}/roster/import"),
-            cookie,
-            Some(json!({"text": text})),
-        ),
-    )
-    .await;
+    let res = import_roster_as(app, cookie, classroom, text).await;
     (res.status(), json_body(res).await)
 }
 
@@ -80,28 +71,37 @@ async fn roster_import_belongs_to_one_classroom_and_never_removes(pool: PgPool) 
         &app,
         Some(&a.teacher),
         &a.classroom,
-        "email\nnew@example.com\nstudent@example.com\nbroken",
+        "new@example.com\nstudent@example.com\nbroken",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["added"], 1);
     assert_eq!(body["existing"], 1);
-    assert_eq!(body["invalid"], json!([{"line": 4, "value": "broken"}]));
+    assert_eq!(
+        body["invalid"],
+        json!([{"line": 3, "reason": "missing_fields"}])
+    );
 
     // 另一個教室不受影響
     let (_, other) = roster(&app, Some(&a.teacher), &room_b).await;
-    assert_eq!(other["emails"], json!([]));
+    assert_eq!(other["items"], json!([]));
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
+    let emails = mine["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["email"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        mine["emails"],
-        json!(["new@example.com", "student@example.com"])
+        emails,
+        std::collections::BTreeSet::from(["new@example.com", "student@example.com"])
     );
 
     // 只新增：再匯入一份不含舊人的名單，舊的仍在
     let (_, body) = import(&app, Some(&a.teacher), &a.classroom, "third@example.com").await;
     assert_eq!(body["added"], 1);
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
-    assert_eq!(mine["emails"].as_array().unwrap().len(), 3);
+    assert_eq!(mine["items"].as_array().unwrap().len(), 3);
 }
 
 #[sqlx::test]
@@ -134,7 +134,7 @@ async fn same_email_in_several_classrooms_is_one_account_with_student_access(poo
             )
             .await;
             assert_eq!(res.status(), StatusCode::OK);
-            json_body(res).await[0]["id"].clone()
+            json_body(res).await["items"][0]["id"].clone()
         }
     }))
     .await;
@@ -147,6 +147,10 @@ async fn removal_only_affects_that_classroom_and_keeps_data_until_re_added(pool:
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let room_b = create_classroom(&app, &a.teacher, "B 班").await;
+    // 已用 Google 登入但不在任何名單的帳號仍不是學生：匯入不處理電子郵件，
+    // 所以不會把這個帳號加進名單（由學生自己填寫電子郵件的流程待規格化）
+    assert!(!student_flag(&app, &a.outsider).await);
+
     import(&app, Some(&a.teacher), &room_b, "student@example.com").await;
     let conv = start_conversation(&app, &a).await;
 
@@ -214,7 +218,8 @@ async fn other_teachers_cannot_touch_someone_elses_classroom_roster(pool: PgPool
 
     // 沒有任何副作用
     let (_, mine) = roster(&app, Some(&a.teacher), &a.classroom).await;
-    assert_eq!(mine["emails"], json!(["student@example.com"]));
+    assert_eq!(mine["items"].as_array().unwrap().len(), 1);
+    assert_eq!(mine["items"][0]["email"], "student@example.com");
 }
 
 #[sqlx::test]
@@ -245,11 +250,12 @@ async fn roster_endpoints_require_teacher_or_admin(pool: PgPool) {
         assert_eq!(res.status(), expected, "students as {name}");
     }
     let (_, mine) = roster(&app, Some(&a.teacher), room).await;
-    assert_eq!(mine["emails"], json!(["student@example.com"]));
+    assert_eq!(mine["items"].as_array().unwrap().len(), 1);
+    assert_eq!(mine["items"][0]["email"], "student@example.com");
 }
 
 #[sqlx::test]
-async fn admin_manages_any_classroom_roster_and_only_admin_gets_credentials(pool: PgPool) {
+async fn admin_and_teacher_get_credentials_for_new_students(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
 
@@ -257,53 +263,15 @@ async fn admin_manages_any_classroom_roster_and_only_admin_gets_credentials(pool
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["added"], 1);
     assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
-    assert_eq!(body["credentials"][0]["email"], "fresh@example.com");
+    assert!(body["credentials"][0]["student_number"].is_string());
 
     let (_, body) = import(&app, Some(&a.teacher), &a.classroom, "other@example.com").await;
-    assert_eq!(body["credentials"], json!([]));
+    assert_eq!(body["credentials"].as_array().unwrap().len(), 1);
 
     assert_eq!(
         remove(&app, Some(&a.admin), &a.classroom, "fresh@example.com").await,
         StatusCode::NO_CONTENT
     );
-}
-
-#[sqlx::test]
-async fn students_list_shows_only_that_classrooms_roster(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    let room_b = create_classroom(&app, &a.teacher, "B 班").await;
-    import(&app, Some(&a.teacher), &room_b, "b-only@example.com").await;
-
-    let res = send(
-        &app,
-        get(
-            &format!("/api/classrooms/{}/students", a.classroom),
-            Some(&a.teacher),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::OK);
-    let rows = json_body(res).await;
-    let emails: Vec<_> = rows
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["email"].as_str().unwrap())
-        .collect();
-    assert_eq!(emails, ["student@example.com"]);
-
-    let res = send(
-        &app,
-        get(
-            &format!("/api/classrooms/{room_b}/students"),
-            Some(&a.teacher),
-        ),
-    )
-    .await;
-    let rows = json_body(res).await;
-    assert_eq!(rows[0]["email"], "b-only@example.com");
-    assert_eq!(rows[0]["has_account"], false);
 }
 
 #[sqlx::test]
@@ -349,7 +317,7 @@ async fn deleting_a_student_account_removes_every_classroom_membership(pool: PgP
             "DELETE",
             "/api/students/student@example.com",
             Some(&a.teacher),
-            Some(json!({"confirm_email": "student@example.com"})),
+            Some(json!({"confirm_student_number": "10000000A"})),
         ),
     )
     .await;

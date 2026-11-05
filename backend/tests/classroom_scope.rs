@@ -90,7 +90,9 @@ async fn finish(pool: &PgPool, conversation: &str, claim: &str) {
 async fn list(app: &Router, path: &str, cookie: &str) -> Value {
     let res = send(app, get(path, Some(cookie))).await;
     assert_eq!(res.status(), StatusCode::OK, "{path}");
-    json_body(res).await
+    // 分頁列表的項目在 items；其餘端點直接回傳
+    let body = json_body(res).await;
+    body.get("items").cloned().unwrap_or(body)
 }
 
 fn titles(rows: &Value) -> Vec<String> {
@@ -282,7 +284,9 @@ async fn two_classrooms_share_one_topic_but_keep_separate_activities(pool: PgPoo
 // ---- 對話的教室歸屬 ----
 
 #[sqlx::test]
-async fn an_activity_conversation_keeps_the_activitys_classroom_for_good(pool: PgPool) {
+async fn an_activity_conversation_keeps_the_activitys_classroom_until_the_activity_is_deleted(
+    pool: PgPool,
+) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     let topic = create_topic(&app, &a, "電車難題").await;
@@ -295,7 +299,7 @@ async fn an_activity_conversation_keeps_the_activitys_classroom_for_good(pool: P
     assert_eq!(conv["classroom_id"], a.classroom);
     let conv_id = conv["id"].as_str().unwrap();
 
-    // 停用、刪除活動後歸屬不變
+    // 停用活動後歸屬不變；刪除活動則連同其對話一併刪除（S-14）
     send(
         &app,
         json_req(
@@ -306,19 +310,24 @@ async fn an_activity_conversation_keeps_the_activitys_classroom_for_good(pool: P
         ),
     )
     .await;
+    let classroom_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT classroom_id FROM conversations WHERE id = $1")
+            .bind(conv_id.parse::<Uuid>().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(classroom_id, Some(a.classroom.parse().unwrap()));
     sqlx::query("DELETE FROM activities WHERE id = $1")
         .bind(act.parse::<Uuid>().unwrap())
         .execute(&pool)
         .await
         .unwrap();
-    let (activity_id, classroom_id): (Option<Uuid>, Option<Uuid>) =
-        sqlx::query_as("SELECT activity_id, classroom_id FROM conversations WHERE id = $1")
-            .bind(conv_id.parse::<Uuid>().unwrap())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(activity_id, None);
-    assert_eq!(classroom_id, Some(a.classroom.parse().unwrap()));
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM conversations WHERE id = $1")
+        .bind(conv_id.parse::<Uuid>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
 }
 
 #[sqlx::test]
@@ -392,7 +401,7 @@ async fn students_see_their_activity_and_practice_conversations(pool: PgPool) {
     let (_, practice) = start(&app, &a.student, json!({"topic_id": topic})).await;
 
     let page = list(&app, "/api/conversations", &a.student).await;
-    let mut ids: Vec<&str> = page["items"]
+    let mut ids: Vec<&str> = page
         .as_array()
         .unwrap()
         .iter()
@@ -489,7 +498,7 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
     let app = test_app(pool.clone());
     let s = scene(&app, &pool).await;
 
-    let rows = list(&app, "/api/teacher/summaries", &s.a.teacher).await;
+    let rows = list(&app, "/api/summaries", &s.a.teacher).await;
     assert_eq!(claims(&rows), ["A 主張", "B 主張"]);
     assert!(!rows.to_string().contains("私下練習"));
     assert!(
@@ -499,13 +508,13 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
             .all(|r| r["classroom_id"].is_string())
     );
 
-    let rows = list(&app, "/api/teacher/summaries", &s.other_teacher).await;
+    let rows = list(&app, "/api/summaries", &s.other_teacher).await;
     assert_eq!(claims(&rows), ["他班主張"]);
 
     // 依教室篩選；他人的教室與不存在的教室回應相同
     let rows = list(
         &app,
-        &format!("/api/teacher/summaries?classroom_id={}", s.room_b),
+        &format!("/api/summaries?classroom_id={}", s.room_b),
         &s.a.teacher,
     )
     .await;
@@ -514,7 +523,7 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
         let res = send(
             &app,
             get(
-                &format!("/api/teacher/summaries?classroom_id={room}"),
+                &format!("/api/summaries?classroom_id={room}"),
                 Some(&s.a.teacher),
             ),
         )
@@ -523,9 +532,121 @@ async fn teacher_summaries_only_cover_own_classrooms_and_never_personal_practice
     }
 
     // 管理者看得到所有教室的活動對話（內容遮蔽），同樣看不到個人練習
-    let rows = list(&app, "/api/teacher/summaries", &s.a.admin).await;
+    let rows = list(&app, "/api/summaries", &s.a.admin).await;
     assert_eq!(rows.as_array().unwrap().len(), 3);
     assert!(!rows.to_string().contains("主張"));
+}
+
+/// 每場對話放一則學生訊息與一則 AI 回覆，內容帶對話 id，方便判斷讀到的是哪一場。
+async fn seed_transcripts(pool: &PgPool) {
+    let ids: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM conversations")
+        .fetch_all(pool)
+        .await
+        .unwrap();
+    for (id,) in ids {
+        for (role, prefix) in [("student", "學生說"), ("ai", "AI 追問")] {
+            sqlx::query(
+                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+            )
+            .bind(id)
+            .bind(role)
+            .bind(format!("{prefix}:{id}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+}
+
+fn conversation_ids(rows: &Value) -> Vec<String> {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["conversation_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn messages_of(app: &Router, conv: &str, cookie: Option<&str>) -> (StatusCode, Value) {
+    let res = send(app, get(&format!("/api/summaries/{conv}/messages"), cookie)).await;
+    (res.status(), json_body(res).await)
+}
+
+#[sqlx::test]
+async fn teacher_reads_full_transcripts_of_own_ended_activity_conversations_only(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let s = scene(&app, &pool).await;
+    seed_transcripts(&pool).await;
+
+    let mine = conversation_ids(&list(&app, "/api/summaries", &s.a.teacher).await);
+    assert_eq!(mine.len(), 2);
+    let theirs = conversation_ids(&list(&app, "/api/summaries", &s.other_teacher).await);
+    assert_eq!(theirs.len(), 1);
+    let (practice,): (Uuid,) =
+        sqlx::query_as("SELECT id FROM conversations WHERE classroom_id IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // 自己兩間教室的已結束活動對話：完整訊息、依序、含學生與 AI
+    for conv in &mine {
+        let (status, body) = messages_of(&app, conv, Some(&s.a.teacher)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["conversation_id"], *conv);
+        assert!(body["classroom_id"].is_string());
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "student");
+        assert_eq!(messages[0]["content"], format!("學生說:{conv}"));
+        assert_eq!(messages[1]["role"], "ai");
+        assert_eq!(messages[1]["content"], format!("AI 追問:{conv}"));
+    }
+
+    // 他人教室、個人練習、不存在的對話：回應相同，不外露是否存在
+    for conv in [theirs[0].as_str(), &practice.to_string(), NOPE] {
+        let (status, _) = messages_of(&app, conv, Some(&s.a.teacher)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{conv}");
+    }
+    // 其他教師看不到我的教室
+    let (status, _) = messages_of(&app, &mine[0], Some(&s.other_teacher)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 進行中的對話原文不開放
+    sqlx::query("UPDATE conversations SET status = 'active', ended_at = NULL WHERE id = $1")
+        .bind(mine[0].parse::<Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = messages_of(&app, &mine[0], Some(&s.a.teacher)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn transcripts_are_closed_to_students_outsiders_and_anonymous_and_masked_for_admin(
+    pool: PgPool,
+) {
+    let app = test_app(pool.clone());
+    let s = scene(&app, &pool).await;
+    seed_transcripts(&pool).await;
+    let conv = conversation_ids(&list(&app, "/api/summaries", &s.a.teacher).await).remove(0);
+
+    for (cookie, expected) in [
+        (Some(s.a.student.as_str()), StatusCode::FORBIDDEN),
+        (Some(s.a.outsider.as_str()), StatusCode::FORBIDDEN),
+        (None, StatusCode::UNAUTHORIZED),
+    ] {
+        let (status, body) = messages_of(&app, &conv, cookie).await;
+        assert_eq!(status, expected);
+        assert!(!body.to_string().contains("學生說"));
+    }
+
+    // 管理者仍只看到固定字串
+    let (status, body) = messages_of(&app, &conv, Some(&s.a.admin)).await;
+    assert_eq!(status, StatusCode::OK);
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|m| m["content"] == "message"));
+    assert!(!body.to_string().contains("學生說"));
+    assert!(!body.to_string().contains("AI 追問"));
 }
 
 #[sqlx::test]

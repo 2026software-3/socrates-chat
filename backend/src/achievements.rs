@@ -1,8 +1,12 @@
 //! Achievement evaluation and idempotent unlocks (F-18.1, S-07.3).
+use std::num::NonZeroU32;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
+
+use crate::points::{self, Entry, Source};
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow, PartialEq, Eq)]
 pub struct Unlock {
@@ -178,20 +182,11 @@ async fn unlock_matching(
         .rows_affected()
             == 1;
         if inserted {
-            if item.points > 0 {
-                sqlx::query(
-                    "INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id)
-                     VALUES ($1, $2, $3, 'achievement', $4)",
-                )
-                .bind(user_id)
-                .bind(item.points)
-                .bind(format!(
-                    "Achievement {} level {}",
-                    item.achievement_id, item.level
-                ))
-                .bind(format!("{}:{}", item.achievement_id, item.level))
-                .execute(&mut **tx)
-                .await?;
+            if let Some(points) = NonZeroU32::new(item.points as u32) {
+                let reason = format!("Achievement {} level {}", item.achievement_id, item.level);
+                let source_id = format!("{}:{}", item.achievement_id, item.level);
+                let entry = Entry::award(user_id, points, &reason, Source::Achievement, &source_id);
+                points::record(tx, &entry).await?;
             }
             new_unlocks.push(item);
         }

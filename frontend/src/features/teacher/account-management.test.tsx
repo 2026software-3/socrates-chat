@@ -3,20 +3,10 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { RosterPage } from '@/features/teacher/roster-page'
-import { mockClassrooms, renderTeacherPage, ROOM_A } from '@/features/teacher/test-helpers'
+import { mockClassrooms, renderTeacherPage, ROOM_A, student } from '@/features/teacher/test-helpers'
 import type { StudentRow } from '@/lib/types'
-import { apiError } from '@/test/render'
+import { apiError, pageOf } from '@/test/render'
 import { server } from '@/test/server'
-
-const student = (email: string, over: Partial<StudentRow> = {}): StudentRow => ({
-  email,
-  display_name: null,
-  id: '11111111-1111-4111-8111-111111111111',
-  has_account: true,
-  disabled: false,
-  completed_conversations: 0,
-  ...over,
-})
 
 const roster = [
   student('active@example.com', { display_name: 'Ada', completed_conversations: 3 }),
@@ -26,7 +16,7 @@ const roster = [
 
 function mockStudents(rows: StudentRow[] = roster) {
   mockClassrooms()
-  server.use(http.get(`/api/classrooms/${ROOM_A}/students`, () => HttpResponse.json(rows)))
+  server.use(http.get(`/api/classrooms/${ROOM_A}/students`, () => pageOf(rows, null, { total: rows.length })))
 }
 
 describe('student account management', () => {
@@ -104,7 +94,7 @@ describe('student account management', () => {
     expect(await within(dialog).findByText('至少需保留一位啟用中的管理者。')).toBeInTheDocument()
   })
 
-  it('deleting an account requires typing the email again', async () => {
+  it('deleting an account requires the student ID', async () => {
     mockStudents()
     let call: { url: string; body: unknown } | undefined
     server.use(
@@ -119,16 +109,16 @@ describe('student account management', () => {
     const dialog = await screen.findByRole('alertdialog')
     const confirm = within(dialog).getByRole('button', { name: '永久刪除' })
     expect(confirm).toBeDisabled()
-    await userEvent.type(within(dialog).getByLabelText(/請輸入/u), 'wrong@example.com')
+    await userEvent.type(within(dialog).getByLabelText(/請輸入/u), '87654321B')
     expect(confirm).toBeDisabled()
     await userEvent.clear(within(dialog).getByLabelText(/請輸入/u))
-    await userEvent.type(within(dialog).getByLabelText(/請輸入/u), 'Active@example.com')
+    await userEvent.type(within(dialog).getByLabelText(/請輸入/u), '12345678a')
     expect(confirm).toBeEnabled()
     await userEvent.click(confirm)
     expect(await screen.findByText('學生帳號已刪除。')).toBeInTheDocument()
     expect(call).toEqual({
-      url: '/api/students/active%40example.com',
-      body: { confirm_email: 'Active@example.com' },
+      url: '/api/students/11111111-1111-4111-8111-111111111111',
+      body: { confirm_student_number: '12345678a' },
     })
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
   })
@@ -147,5 +137,20 @@ describe('student account management', () => {
     await userEvent.click(screen.getByRole('button', { name: '刪除 active@example.com 的帳號' }))
     await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '取消' }))
     expect(called).toBe(false)
+  })
+
+  it('allows deleting a student without email using the student ID', async () => {
+    mockStudents([student('unused@example.com', { email: null, student_number: '87654321A' })])
+    let body: unknown
+    server.use(http.delete('/api/students/:id', async ({ request }) => {
+      body = await request.json()
+      return new HttpResponse(null, { status: 204 })
+    }))
+    renderTeacherPage(<RosterPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '刪除 87654321A 的帳號' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await userEvent.type(within(dialog).getByLabelText(/請輸入/u), '87654321a')
+    await userEvent.click(within(dialog).getByRole('button', { name: '永久刪除' }))
+    await waitFor(() => expect(body).toEqual({ confirm_student_number: '87654321a' }))
   })
 })

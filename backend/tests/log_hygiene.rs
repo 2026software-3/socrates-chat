@@ -10,10 +10,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+    Json, Router,
+    http::{StatusCode, header},
+    response::IntoResponse,
+    routing::post,
+};
 use common::*;
 use serde_json::json;
-use socrates_chat_backend::{AppState, ai::OpenAiProvider, app};
+use socrates_chat_backend::{AppState, ai::OpenAiProvider, app, key_pool::KeyPool};
 use sqlx::PgPool;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -65,13 +70,17 @@ async fn failing_ai_base_url() -> String {
 #[sqlx::test]
 async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) {
     let logs = Captured::default();
-    tracing_subscriber::fmt()
+    socrates_chat_backend::logging::json_subscriber()
         .with_writer(logs.clone())
-        .with_ansi(false)
         .with_max_level(tracing::Level::TRACE)
         .init();
 
-    let provider = OpenAiProvider::new(&failing_ai_base_url().await, "SECRETAPIKEY", "some-model");
+    let provider = OpenAiProvider::new(
+        &failing_ai_base_url().await,
+        Arc::new(KeyPool::new(vec!["SECRETAPIKEY".into()]).unwrap()),
+        "some-model",
+    );
+    register_fixture_pool(&pool);
     let app = app(AppState::new(
         pool,
         test_config(),
@@ -80,8 +89,52 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     ));
 
     let a = seed_actors(&app).await;
+    let roster_response = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/classrooms/{}/roster/import", a.classroom),
+            Some(&a.teacher),
+            Some(json!({"text": "隱私測試姓名,98765432a\n隱私錯誤姓名,98765433b,invalid"})),
+        ),
+    )
+    .await;
+    assert_eq!(roster_response.status(), StatusCode::OK);
+    let roster_result = json_body(roster_response).await;
+    assert!(!roster_result.to_string().contains("隱私錯誤姓名"));
+    assert!(!roster_result.to_string().contains("98765433"));
+    let roster = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/classrooms/{}/students", a.classroom),
+                Some(&a.teacher),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let student = roster["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["student_number"] == "98765432A")
+        .unwrap();
+    let id = student["id"].as_str().unwrap();
+    let rejected = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/students/{id}"),
+            Some(&a.teacher),
+            Some(json!({"confirm_student_number":"98765432B"})),
+        ),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert!(!json_body(rejected).await.to_string().contains("98765432"));
     // 名單外與錯誤密碼的登入嘗試
-    send(
+    let login_res = send(
         &app,
         json_req(
             "POST",
@@ -91,6 +144,11 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         ),
     )
     .await;
+    assert_eq!(login_res.status(), StatusCode::UNAUTHORIZED);
+    let login_request_id = login_res.headers()[header::HeaderName::from_static("x-request-id")]
+        .to_str()
+        .unwrap()
+        .to_string();
     // 管理者替另一個信箱重設密碼（回應裡有臨時密碼；重設學生本人會讓其 session 失效）
     let res = send(
         &app,
@@ -111,6 +169,54 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     student_says(&app, &a, &conv, STUDENT_MESSAGE).await;
 
     let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    let entries: Vec<serde_json::Value> = output
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("每行 tracing 輸出都應為 JSON"))
+        .collect();
+    assert!(!entries.is_empty(), "應擷取到 JSON 日誌");
+    let request_fields = entries
+        .iter()
+        .filter_map(|entry| entry.get("fields"))
+        .find(|fields| {
+            fields.get("message") == Some(&json!("request completed"))
+                && fields.get("request_id") == Some(&json!(login_request_id))
+        })
+        .expect("每個 request 都應以回應的 x-request-id 留下完成紀錄");
+    // 沒有錯誤的 request 不輸出 error_code（與 API 的 null 一致），而不是空字串
+    let completions: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| entry.get("fields"))
+        .filter(|fields| fields.get("message") == Some(&json!("request completed")))
+        .collect();
+    assert!(
+        completions
+            .iter()
+            .all(|f| f.get("error_code") != Some(&json!("")))
+    );
+    assert!(
+        completions
+            .iter()
+            .any(|f| { f.get("status") == Some(&json!(200)) && f.get("error_code").is_none() })
+    );
+    assert_eq!(request_fields["method"], "POST");
+    assert_eq!(request_fields["route"], "/api/auth/login");
+    assert_eq!(request_fields["status"], 401);
+    assert_eq!(request_fields["error_code"], "invalid_credentials");
+    assert!(request_fields["duration_ms"].is_u64());
+    let provider_entry = entries
+        .iter()
+        .find(|entry| entry["fields"]["message"] == "AI provider returned an error status")
+        .expect("應擷取到 AI provider 錯誤事件");
+    assert_eq!(
+        provider_entry["span"]["route"],
+        "/api/conversations/{id}/messages"
+    );
+    assert!(
+        provider_entry["span"]["request_id"]
+            .as_str()
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+        "request 內部事件應繼承可用的 request ID"
+    );
     assert!(
         output.contains("AI provider returned an error status"),
         "擷取到會寫日誌的路徑，才能證明下面的斷言有意義：{output}"
@@ -127,6 +233,10 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         ("重設對象電子郵件", "reset@example.com"),
         ("管理者電子郵件", "admin@example.com"),
         ("臨時密碼", temporary_password.as_str()),
+        ("匯入姓名", "隱私測試姓名"),
+        ("匯入學號", "98765432"),
+        ("錯誤列姓名", "隱私錯誤姓名"),
+        ("錯誤列學號", "98765433"),
     ] {
         assert!(!output.contains(secret), "日誌不應包含：{name}");
     }

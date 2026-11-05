@@ -17,9 +17,20 @@ export class ApiError extends Error {
   }
 }
 
+import { markAiUsageStale } from '@/lib/ai-usage-events'
+
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
 
+/** 寫入類請求結束後通知用量顯示重新載入：任何一個都可能呼叫了 AI（教師翻譯、重新分組等），成功或失敗都一樣。 */
 async function request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  try {
+    return await send<T>(method, path, body, signal)
+  } finally {
+    if (method !== 'GET') markAiUsageStale()
+  }
+}
+
+async function send<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let res: Response
   try {
     res = await fetch(path, {
@@ -33,7 +44,7 @@ async function request<T>(method: Method, path: string, body?: unknown, signal?:
       signal,
     })
   } catch (e) {
-    if (e instanceof DOMException && e.name === 'AbortError') throw e
+    if (isAbortError(e)) throw e
     // 網路中斷或伺服器沒回應
     throw new ApiError(0, 'network', '')
   }
@@ -42,6 +53,11 @@ async function request<T>(method: Method, path: string, body?: unknown, signal?:
     const text = await res.text()
     return (text ? JSON.parse(text) : undefined) as T
   }
+  throw await apiErrorFrom(res)
+}
+
+/** 由失敗的回應組出 `ApiError`：優先取 JSON 內容的 `error`，否則退回 `x-request-id` 標頭。 */
+export async function apiErrorFrom(res: Response): Promise<ApiError> {
   let code = 'internal'
   let requestId = res.headers.get('x-request-id') ?? ''
   try {
@@ -51,7 +67,7 @@ async function request<T>(method: Method, path: string, body?: unknown, signal?:
   } catch {
     // 非 JSON 錯誤（例如反向代理的 502）
   }
-  throw new ApiError(res.status, code, requestId)
+  return new ApiError(res.status, code, requestId)
 }
 
 export const api = {
@@ -64,4 +80,9 @@ export const api = {
 
 export function isApiError(e: unknown): e is ApiError {
   return e instanceof ApiError
+}
+
+/** fetch 被 `AbortSignal` 中止時丟出的錯誤。 */
+export function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError'
 }

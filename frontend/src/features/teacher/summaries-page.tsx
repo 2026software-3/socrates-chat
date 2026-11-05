@@ -1,12 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { formatDate } from '@/features/teacher/format'
-import { useI18n, useT } from '@/i18n'
-import type { TeacherSummary } from '@/lib/types'
+import { useClassroomsBase } from '@/features/classrooms/use-base'
+import { api } from '@/lib/api'
+import { translateInBrowser } from '@/lib/browser-translator'
+import { formatDate } from '@/lib/format'
+import { errorText, useI18n, useT } from '@/i18n'
+import type { Page as PageResult, SummaryTranslation, TeacherSummary } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 function Field({ label, value }: { label: string; value: string | null }) {
@@ -19,16 +24,50 @@ function Field({ label, value }: { label: string; value: string | null }) {
   )
 }
 
-function SummaryCard({ row }: { row: TeacherSummary }) {
+/** 一場對話的總結卡片；學生姓名預設連到該學生在這間教室的討論情形。 */
+export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; linkStudent?: boolean }) {
   const t = useT()
+  const base = useClassroomsBase()
   const { lang } = useI18n()
+  const [translation, setTranslation] = useState<SummaryTranslation | null>(null)
+  const [showTranslation, setShowTranslation] = useState(false)
+  const [translating, setTranslating] = useState(false)
+  const [translationError, setTranslationError] = useState<unknown>(null)
+  const shown = showTranslation && translation?.language === lang ? translation : null
+  const visible = shown ?? row
+
+  async function translate() {
+    setTranslating(true)
+    setTranslationError(null)
+    try {
+      const local = await translateInBrowser(row.language, lang, [row.stance ?? '', row.reasons ?? ''])
+      const result = local
+        ? { language: lang, stance: local[0], reasons: local[1] }
+        : await api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`)
+      setTranslation(result)
+      setShowTranslation(true)
+    } catch (error) {
+      setTranslationError(error)
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   return (
     <li>
       <Card>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
             <div className="min-w-0">
-              <p className="font-medium break-words">{row.student_name ?? t('teacher.summaries.unnamed')}</p>
+              <p className="font-medium break-words">
+                {linkStudent ? (
+                  <Link to={`${base}/${row.classroom_id}/students/${row.student_user_id}`} className="underline-offset-4 hover:underline">
+                    {row.student_name ?? t('teacher.summaries.unnamed')}
+                  </Link>
+                ) : (
+                  (row.student_name ?? t('teacher.summaries.unnamed'))
+                )}
+              </p>
               <p className="text-muted-foreground text-sm break-all">{row.student_email}</p>
             </div>
             <div className="sm:text-right">
@@ -44,53 +83,125 @@ function SummaryCard({ row }: { row: TeacherSummary }) {
           </div>
           {row.claim ? <p className="text-sm font-medium break-words">{row.claim}</p> : null}
           <dl className="space-y-2">
-            <Field label={t('teacher.summaries.stance')} value={row.stance} />
-            <Field label={t('teacher.summaries.reasons')} value={row.reasons} />
+            <Field label={t('teacher.summaries.stance')} value={visible.stance} />
+            <Field label={t('teacher.summaries.reasons')} value={visible.reasons} />
           </dl>
+          <Link
+            to={`${base}/${row.classroom_id}/conversations/${row.conversation_id}`}
+            className="text-sm underline-offset-4 hover:underline"
+          >
+            {t('teacher.summaries.viewTranscript')}
+          </Link>
+          {translationError ? (
+            <p role="alert" className="text-destructive text-sm">
+              {errorText(t, translationError)}
+            </p>
+          ) : null}
+          {shown ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowTranslation(false)}>
+              {t('teacher.summaries.showOriginal')}
+            </Button>
+          ) : row.language !== lang ? (
+            <Button type="button" variant="outline" size="sm" disabled={translating} onClick={() => void translate()}>
+              {translating ? t('teacher.summaries.translating') : t('teacher.summaries.translate')}
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
     </li>
   )
 }
 
-/** 教師：學生的 AI 總結列表。只有總結，沒有也不請求對話原文（S-02.1）。 */
+/** 教師：學生的 AI 總結列表。列表只載入總結，對話原文要點進去才請求（S-02.1）。依後端的不透明游標前後翻頁；搜尋交給後端（`q`），涵蓋所有頁。 */
 export function SummariesPage() {
   const t = useT()
-  const summaries = useFetch<TeacherSummary[]>('/api/teacher/summaries')
-  const [query, setQuery] = useState('')
-  const data = summaries.data
+  const [draft, setDraft] = useState('')
+  const [search, setSearch] = useState('')
+  const [cursors, setCursors] = useState<(string | null)[]>([null])
+  const cursor = cursors[cursors.length - 1]
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return data ?? []
-    return (data ?? []).filter((r) => [r.student_name ?? '', r.student_email, r.title].some((s) => s.toLowerCase().includes(q)))
-  }, [data, query])
+  // 換搜尋條件時游標失去意義，從第一頁開始
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    setSearch(draft.trim())
+    setCursors([null])
+  }
 
   return (
     <Page title={t('teacher.summaries.title')}>
       <Alert>
         <AlertDescription>{t('teacher.summaries.privacyNote')}</AlertDescription>
       </Alert>
+      <form role="search" onSubmit={submit} className="flex max-w-sm items-end gap-2">
+        <div className="flex-1 space-y-1.5">
+          <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
+          <Input id="summaries-search" type="search" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        </div>
+        <Button type="submit" variant="outline">
+          {t('teacher.summaries.search')}
+        </Button>
+      </form>
+      <SummaryList
+        key={`${search}\n${cursor ?? ''}`}
+        search={search}
+        cursor={cursor}
+        onNext={(next) => setCursors((previous) => [...previous, next])}
+        onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
+      />
+    </Page>
+  )
+}
+
+function summariesPath(search: string, cursor: string | null): string {
+  const params = new URLSearchParams()
+  if (search) params.set('q', search)
+  if (cursor) params.set('cursor', cursor)
+  const query = params.toString()
+  return `/api/summaries${query ? `?${query}` : ''}`
+}
+
+function SummaryList({
+  search,
+  cursor,
+  onNext,
+  onPrevious,
+}: {
+  search: string
+  cursor: string | null
+  onNext: (cursor: string) => void
+  onPrevious?: () => void
+}) {
+  const t = useT()
+  const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor))
+  const data = summaries.data?.items
+  const nextCursor = summaries.data?.next_cursor
+
+  return (
+    <>
       {summaries.loading && !data ? <LoadingBlock /> : null}
       {summaries.error ? <ErrorBlock error={summaries.error} onRetry={summaries.reload} /> : null}
-      {data && data.length === 0 ? <EmptyBlock>{t('teacher.summaries.empty')}</EmptyBlock> : null}
+      {data && data.length === 0 ? <EmptyBlock>{search ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
       {data && data.length > 0 ? (
-        <>
-          <div className="max-w-sm space-y-1.5">
-            <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
-            <Input id="summaries-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          {filtered.length === 0 ? (
-            <EmptyBlock>{t('teacher.summaries.noMatch')}</EmptyBlock>
-          ) : (
-            <ul className="space-y-3">
-              {filtered.map((r) => (
-                <SummaryCard key={r.conversation_id} row={r} />
-              ))}
-            </ul>
-          )}
-        </>
+        <ul className="space-y-3">
+          {data.map((r) => (
+            <SummaryCard key={r.conversation_id} row={r} />
+          ))}
+        </ul>
       ) : null}
-    </Page>
+      {onPrevious || nextCursor ? (
+        <div className="flex gap-2">
+          {onPrevious ? (
+            <Button variant="outline" onClick={onPrevious}>
+              {t('teacher.summaries.previous')}
+            </Button>
+          ) : null}
+          {nextCursor ? (
+            <Button variant="outline" disabled={summaries.loading} onClick={() => onNext(nextCursor)}>
+              {t('teacher.summaries.next')}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
   )
 }

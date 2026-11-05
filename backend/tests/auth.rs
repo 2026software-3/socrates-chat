@@ -64,6 +64,46 @@ async fn callback_creates_session_with_secure_cookie(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn first_login_uses_accept_language_but_later_logins_keep_the_saved_preference(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let res = send(&app, get("/api/auth/google/login", None)).await;
+    let state = location(&res).split("state=").nth(1).unwrap().to_string();
+    let first = Request::get(format!(
+        "/api/auth/google/callback?code=ok:sub-lang:lang@example.com&state={state}"
+    ))
+    .header(header::ACCEPT_LANGUAGE, "fr-FR, es-MX;q=0.9, en;q=0.8")
+    .body(Body::empty())
+    .unwrap();
+    let cookie = session_cookie(&send(&app, first).await).unwrap();
+    let me = json_body(send(&app, get("/api/me", Some(&cookie))).await).await;
+    assert_eq!(me["language"], "es");
+
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&cookie),
+            Some(serde_json::json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = send(&app, get("/api/auth/google/login", None)).await;
+    let state = location(&res).split("state=").nth(1).unwrap().to_string();
+    let later = Request::get(format!(
+        "/api/auth/google/callback?code=ok:sub-lang:lang@example.com&state={state}"
+    ))
+    .header(header::ACCEPT_LANGUAGE, "zh-TW")
+    .body(Body::empty())
+    .unwrap();
+    let cookie = session_cookie(&send(&app, later).await).unwrap();
+    let me = json_body(send(&app, get("/api/me", Some(&cookie))).await).await;
+    assert_eq!(me["language"], "en");
+}
+
+#[sqlx::test]
 async fn callback_with_unknown_state_is_rejected_without_session(pool: PgPool) {
     let app = test_app(pool.clone());
     let res = send(

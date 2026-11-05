@@ -19,6 +19,7 @@ export function makeMe(roles: Partial<Roles> = {}, overrides: Partial<Me> = {}):
     id: '00000000-0000-4000-8000-000000000001',
     email: 'user@example.com',
     display_name: 'Test User',
+    language: 'zh-TW',
     is_admin: r.admin,
     must_change_password: false,
     roles: r,
@@ -29,6 +30,11 @@ export function makeMe(roles: Partial<Roles> = {}, overrides: Partial<Me> = {}):
 /** 後端錯誤回應（只有 code 與 request_id，S-12.1）。 */
 export function apiError(status: number, code: string, requestId = 'req-test-1') {
   return HttpResponse.json({ error: { code, request_id: requestId } }, { status })
+}
+
+/** 分頁列表的一頁（`{ items, next_cursor }`）；預設為最後一頁。 */
+export function pageOf<T>(items: T[], nextCursor: string | null = null, extra: object = {}) {
+  return HttpResponse.json({ items, next_cursor: nextCursor, ...extra })
 }
 
 /** `/api/me` 回傳指定使用者；傳 `null` 代表未登入（401）。 */

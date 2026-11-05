@@ -1,0 +1,207 @@
+[
+  {
+    "id": "C01",
+    "stage": 1,
+    "title": "Reparto de recursos",
+    "description": "¿Cómo debería repartir la escuela un fondo limitado de becas?",
+    "conversation": [
+      { "role": "user", "content": "Creo que la escuela debería repartir las becas de una manera justa." }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "El estudiante no ha dicho qué significa «justa»; podría ser a partes iguales, según la necesidad o según las notas, así que primero hay que aclarar el concepto clave.",
+    "acceptable_types": ["clarify"],
+    "learning_goal": "Aclarar qué criterio de reparto quiere decir el estudiante con «justa»."
+  },
+  {
+    "id": "C02",
+    "stage": 1,
+    "title": "Móviles en la escuela",
+    "description": "¿Debería la escuela prohibir que los estudiantes usen el móvil durante las clases?",
+    "conversation": [
+      { "role": "user", "content": "Estoy de acuerdo con algunas restricciones, pero no con que nos controlen demasiado." }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "El estudiante no ha dicho qué restricciones acepta, así que el alcance concreto de su postura no está claro y conviene pedirle que lo defina.",
+    "acceptable_types": ["clarify"],
+    "learning_goal": "Aclarar qué restricciones del uso del móvil apoya el estudiante y cuáles rechaza."
+  },
+  {
+    "id": "C03",
+    "stage": 1,
+    "title": "Privacidad y seguridad",
+    "description": "Por la seguridad del centro, ¿debería la escuela instalar más cámaras de vigilancia?",
+    "conversation": [
+      { "role": "assistant", "content": "Algunas personas valoran la seguridad que dan las cámaras y otras temen por su privacidad. ¿Tú qué opinas?" },
+      { "role": "user", "content": "Creo que eso es más importante." }
+    ],
+    "expected_type": "clarify",
+    "annotation_reason": "No está claro a qué se refiere «eso», así que primero hay que confirmar si el estudiante habla de la seguridad o de la privacidad.",
+    "acceptable_types": ["clarify"],
+    "learning_goal": "Aclarar si «eso» se refiere a la seguridad o a la privacidad."
+  },
+  {
+    "id": "R01",
+    "stage": 2,
+    "title": "El dilema del tranvía",
+    "description": "¿Se debería cambiar la vía para salvar a cinco personas?",
+    "conversation": [
+      { "role": "user", "content": "Creo que se debería cambiar la vía para salvar a las cinco personas." }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "El estudiante ha expresado una postura clara pero no ha dado ninguna razón que la respalde, así que hay que preguntar por la razón.",
+    "acceptable_types": ["reason"],
+    "learning_goal": "Guiar al estudiante para que dé una razón a favor de cambiar la vía."
+  },
+  {
+    "id": "R02",
+    "stage": 2,
+    "title": "Móviles en la escuela",
+    "description": "¿Debería la escuela prohibir que los estudiantes usen el móvil durante las clases?",
+    "conversation": [
+      { "role": "user", "content": "Apoyo prohibir el móvil durante las clases, porque en clase simplemente no se debería usar el móvil." }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "El estudiante dice «porque», pero la segunda mitad solo repite la postura y no ofrece una razón de fondo.",
+    "acceptable_types": ["reason"],
+    "learning_goal": "Guiar al estudiante para que dé una razón de fondo que no se limite a repetir la postura original."
+  },
+  {
+    "id": "R03",
+    "stage": 2,
+    "title": "Voluntariado",
+    "description": "¿Debería la escuela exigir horas de voluntariado para graduarse?",
+    "conversation": [
+      { "role": "assistant", "content": "¿Estás a favor o en contra de exigir voluntariado para graduarse?" },
+      { "role": "user", "content": "Estoy en contra." },
+      { "role": "assistant", "content": "¿Cuál es tu razón principal para oponerte?" },
+      { "role": "user", "content": "Simplemente siento que no debería ser obligatorio, pero todavía no he pensado bien por qué." }
+    ],
+    "expected_type": "reason",
+    "annotation_reason": "El estudiante sigue sin dar una razón; conviene preguntar de una forma más concreta para ayudarle a formarla, sin suponer que ya tiene un argumento completo.",
+    "acceptable_types": ["reason"],
+    "learning_goal": "Ayudar al estudiante a convertir una intuición vaga en una razón para oponerse a exigir voluntariado."
+  },
+  {
+    "id": "A01",
+    "stage": 2,
+    "title": "Decisión por mayoría",
+    "description": "¿Debería una clase decidir las actividades comunes por mayoría?",
+    "conversation": [
+      { "role": "user", "content": "Se debería decidir por mayoría, porque cada persona tiene un solo voto y la opción con más votos representa los intereses de todos en la clase." }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "El estudiante ha dado una razón, pero pasar del apoyo mayoritario a representar los intereses de todos se apoya en una premisa que merece examinarse.",
+    "acceptable_types": ["assumption", "counterexample"],
+    "learning_goal": "Examinar si el apoyo de la mayoría significa que los intereses de todos están representados."
+  },
+  {
+    "id": "A02",
+    "stage": 2,
+    "title": "Riesgo voluntario",
+    "description": "¿Deberían las personas que participan voluntariamente en una actividad de alto riesgo asumir por sí mismas todas las consecuencias?",
+    "conversation": [
+      { "role": "user", "content": "Sí, porque firmó un consentimiento al inscribirse, lo que significa que entendió por completo todos los riesgos y aceptó voluntariamente cualquier consecuencia." }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "El estudiante trata la firma del consentimiento como comprensión y aceptación total de todos los riesgos, así que hay que examinar la premisa de esa inferencia.",
+    "acceptable_types": ["assumption", "clarify"],
+    "learning_goal": "Examinar si firmar un consentimiento demuestra que se entienden y se aceptan todos los riesgos."
+  },
+  {
+    "id": "A03",
+    "stage": 2,
+    "title": "Exámenes y esfuerzo",
+    "description": "¿Bastan las notas de un examen para juzgar cuánto se ha esforzado un estudiante?",
+    "conversation": [
+      { "role": "user", "content": "Sí, porque todos hacen el mismo examen, así que las diferencias en las notas solo pueden deberse al esfuerzo." }
+    ],
+    "expected_type": "assumption",
+    "annotation_reason": "El estudiante supone que el mismo examen descarta otros factores como la base previa, los recursos y la salud, así que conviene examinar esa premisa.",
+    "acceptable_types": ["assumption", "clarify"],
+    "learning_goal": "Examinar si hacer el mismo examen demuestra que las diferencias de nota solo pueden deberse al esfuerzo; si hace falta, aclarar primero qué significa «esfuerzo»."
+  },
+  {
+    "id": "X01",
+    "stage": 3,
+    "title": "Sacrificar a unos pocos",
+    "description": "Para salvar a más personas, ¿es aceptable sacrificar a unas pocas?",
+    "conversation": [
+      { "role": "user", "content": "Mientras se salve a más gente, sacrificar a unos pocos es razonable, porque que sobrevivan más personas es el único criterio que importa." },
+      { "role": "assistant", "content": "Aunque esas pocas personas no hayan dado su consentimiento, ¿sigues pensando que el número de personas es el único criterio?" },
+      { "role": "user", "content": "Sí. En cualquier situación, si se salva a más gente, es razonable." }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "El estudiante ha confirmado un principio universal, así que conviene proponer un caso límite concreto para comprobar si todavía lo acepta.",
+    "acceptable_types": ["counterexample", "assumption"],
+    "learning_goal": "Llevar al estudiante a comprobar hasta dónde vale, y cuáles son sus límites, usar el número de vidas salvadas como único criterio."
+  },
+  {
+    "id": "X02",
+    "stage": 3,
+    "title": "El deber de ser honesto",
+    "description": "¿Es mentir incorrecto en todas las situaciones?",
+    "conversation": [
+      { "role": "user", "content": "Mentir siempre está mal, porque mentir destruye la confianza entre las personas." },
+      { "role": "assistant", "content": "¿Crees que el deber de ser honesto debe tener prioridad en todas las situaciones?" },
+      { "role": "user", "content": "Sí. Aunque decir la verdad tenga malas consecuencias, no puede haber excepciones." }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "El estudiante descarta explícitamente todas las excepciones, así que se puede poner a prueba el principio con una situación concreta en la que decir la verdad podría hacer daño a alguien.",
+    "acceptable_types": ["counterexample", "assumption"],
+    "learning_goal": "Llevar al estudiante a comprobar si la prohibición absoluta de mentir se sostiene en un conflicto concreto."
+  },
+  {
+    "id": "X03",
+    "stage": 3,
+    "title": "Cumplir las promesas",
+    "description": "¿Se debe cumplir una promesa en todas las situaciones?",
+    "conversation": [
+      { "role": "user", "content": "Una promesa hay que cumplirla, porque los demás organizan sus cosas según lo que prometiste." },
+      { "role": "assistant", "content": "Si las circunstancias cambian después de prometer, ¿crees que la obligación sigue siendo exactamente la misma?" },
+      { "role": "user", "content": "Sí, pase lo que pase, hay que hacer lo que se prometió." }
+    ],
+    "expected_type": "counterexample",
+    "annotation_reason": "El estudiante sostiene que ni un cambio de circunstancias permite una excepción, así que se puede probar con un caso concreto en el que cumplir la promesa choque con una emergencia.",
+    "acceptable_types": ["counterexample", "assumption"],
+    "learning_goal": "Llevar al estudiante a comprobar si el deber absoluto de cumplir las promesas se sostiene en una emergencia."
+  },
+  {
+    "id": "V01",
+    "stage": 3,
+    "title": "Resultados y reglas",
+    "description": "Al juzgar si algo está bien o mal, ¿cómo se deben sopesar los resultados y las reglas?",
+    "conversation": [
+      { "role": "user", "content": "Yo doy más importancia a los resultados, porque los efectos reales de una acción importan mucho. Pero también entiendo que algunas personas valoran las reglas, porque todos necesitamos un criterio estable de conducta. No sé cómo sopesar ambas cosas cuando chocan." }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "El estudiante ha presentado dos criterios con una razón para cada uno y duda de forma explícita sobre cómo sopesarlos, así que conviene guiarle a comparar las perspectivas.",
+    "acceptable_types": ["perspective", "counterexample"],
+    "learning_goal": "Ayudar al estudiante a comparar el criterio de los resultados con el de las reglas y a pensar cómo sopesarlos cuando chocan."
+  },
+  {
+    "id": "V02",
+    "stage": 3,
+    "title": "Libertad e interés público",
+    "description": "¿Cómo deberían los límites de ruido en los lugares públicos equilibrar la libertad con los derechos de los demás?",
+    "conversation": [
+      { "role": "user", "content": "Valoro la libertad de los artistas callejeros, porque el espacio público debería permitir distintas formas de expresión. Los vecinos de la zona valoran su descanso y piensan que no deberían verse obligados a soportar el ruido. Creo que ambas partes tienen su parte de razón, pero no sé dónde debería ponerse el límite." }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "El estudiante entiende los intereses y las razones de ambas partes, así que conviene pedirle que compare los dos conjuntos de criterios en lugar de volver a preguntar la razón de una sola postura.",
+    "acceptable_types": ["perspective", "counterexample"],
+    "learning_goal": "Ayudar al estudiante a sopesar la libertad de los artistas callejeros frente al derecho al descanso de los vecinos y a encontrar un límite razonable."
+  },
+  {
+    "id": "V03",
+    "stage": 3,
+    "title": "Familia y justicia",
+    "description": "Cuando faltan recursos, ¿cómo se debe sopesar el deber de cuidar a la familia frente a un reparto justo?",
+    "conversation": [
+      { "role": "user", "content": "Tiendo a cuidar primero de mi familia, porque tenemos obligaciones especiales entre nosotros. Pero también creo que las necesidades de los desconocidos no deberían ignorarse por eso. Quiero aclarar cuánto peso deberían tener la cercanía y el grado de necesidad." }
+    ],
+    "expected_type": "perspective",
+    "annotation_reason": "El estudiante ha planteado con claridad dos criterios, las obligaciones de la relación y la justicia según la necesidad, así que conviene comparar cuánto peso debe tener cada uno al decidir un reparto.",
+    "acceptable_types": ["perspective", "counterexample"],
+    "learning_goal": "Ayudar al estudiante a comparar el deber especial hacia la familia con la justicia según la necesidad y a formar un criterio para sopesarlos al repartir recursos."
+  }
+]

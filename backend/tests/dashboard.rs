@@ -16,21 +16,6 @@ const GROUP_PULL: &str = "{\"group\":\"拉桿\"}";
 const GROUP_NOT_PULL: &str = "{\"group\":\"不拉桿\"}";
 const NO_CLASS: &str = "{\"stance\":\"還在想\",\"reasons\":\"不確定\",\"turning_points\":\"無\"}";
 
-async fn done_summary(app: &Router, cookie: &str, conv: &str) {
-    for _ in 0..100 {
-        let res = send(
-            app,
-            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
-        )
-        .await;
-        if json_body(res).await["status"] != "pending" {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("summary stayed pending");
-}
-
 /// 總結完成後，背景還會把主張歸群；等到歸群完成（沒有主張的、個人練習的不用等），讓 AI 腳本的順序固定。
 async fn settle_grouping(pool: &PgPool, conv: &str) {
     let id: uuid::Uuid = conv.parse().unwrap();
@@ -72,7 +57,7 @@ async fn finished_conversation(app: &Router, cookie: &str, source: Value, pool: 
         ),
     )
     .await;
-    done_summary(app, cookie, &conv).await;
+    settled_summary(app, cookie, &conv).await;
     settle_grouping(pool, &conv).await;
     conv
 }
@@ -226,7 +211,8 @@ async fn builtin_trolley_problem_is_seeded_once_and_respects_edits(pool: PgPool)
 #[sqlx::test]
 async fn summary_has_a_claim_but_no_school_classification(pool: PgPool) {
     let Seeded { app, a, .. } = seeded(pool).await;
-    let list = json_body(send(&app, get("/api/teacher/summaries", Some(&a.teacher))).await).await;
+    let list =
+        json_body(send(&app, get("/api/summaries", Some(&a.teacher))).await).await["items"].clone();
     let claims: Vec<Value> = list
         .as_array()
         .unwrap()

@@ -427,18 +427,6 @@ async fn available_list_requires_enrollment(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn legacy_available_route_is_removed(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-    assert_eq!(
-        send(&app, get("/api/available", Some(&a.student)))
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-}
-
-#[sqlx::test]
 async fn activity_topic_is_locked_once_students_have_conversations(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;

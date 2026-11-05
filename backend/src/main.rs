@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config,
-    identity::GoogleIdentity, password, summary,
+    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo,
+    identity::GoogleIdentity, logging, password, summary,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
+    logging::json_subscriber()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
@@ -44,6 +44,13 @@ async fn main() {
             Err(_) => tracing::error!("failed to bootstrap admin accounts"),
         }
     }
+    // 示範模式：固定密碼的示範教師與學生（不含管理者）；每次啟動都重設回公開的密碼
+    if config.demo_mode {
+        match demo::seed_accounts(&pool).await {
+            Ok(()) => tracing::warn!("DEMO_MODE is on: public demo accounts are active"),
+            Err(_) => tracing::error!("failed to seed demo accounts"),
+        }
+    }
     let identity = GoogleIdentity::discover(
         &config.google_client_id,
         &config.google_client_secret,
@@ -55,9 +62,11 @@ async fn main() {
     let addr = config.listen_addr.clone();
     let ai = OpenAiProvider::new(
         &config.openai_base_url,
-        &config.openai_api_key,
+        config.openai_keys.clone(),
         &config.openai_model,
-    );
+    )
+    .with_fallbacks(config.openai_fallback_models.clone())
+    .with_reasoning_effort(config.openai_reasoning_effort.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

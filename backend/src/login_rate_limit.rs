@@ -17,11 +17,22 @@ use crate::{
 };
 
 /// 每個來源 IP 一次最多可連續送出幾個登入請求。暫定值，待需求方確認。
-pub const BURST: u32 = 60;
-/// 額度回補的間隔：每 500 毫秒回補一個請求（平均每秒 2 個）。暫定值，待需求方確認。
-const REPLENISH_EVERY: Duration = Duration::from_millis(500);
+/// 刻意不低於一個班的人數（效能目標以 60 人同時使用量測）：校園 NAT 後整班同時登入不能被誤擋。
+pub const DEFAULT_BURST: u32 = 60;
+/// 額度回補的間隔：每 3 秒回補一個請求（平均每分鐘 20 個，原為每 0.5 秒一個）。
+/// 登入每次都要做一次 Argon2 雜湊，持續的洪水主要耗 CPU，所以收緊的是持續速率而不是瞬間額度。暫定值，待需求方確認。
+pub const DEFAULT_REPLENISH: Duration = Duration::from_secs(3);
+/// 舊名稱，保留給既有測試。
+pub const BURST: u32 = DEFAULT_BURST;
 /// 清掉閒置來源的記憶體的間隔。
 const CLEANUP_EVERY: Duration = Duration::from_secs(60);
+
+/// 登入嘗試過多：IP 頻率限制與（信箱, IP）失敗鎖定共用同一個錯誤碼與格式。
+pub(crate) const TOO_MANY_ATTEMPTS: ApiError = ApiError::new(
+    axum::http::StatusCode::TOO_MANY_REQUESTS,
+    "too_many_attempts",
+    "嘗試次數過多，請稍後再試",
+);
 
 /// 以來源 IP（`client_ip` 的規則）為鍵；沒有連線資訊時所有請求共用空字串這一個鍵。
 #[derive(Clone)]
@@ -41,22 +52,17 @@ impl KeyExtractor for ClientIpKey {
             .headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok());
-        Ok(
-            client_ip::resolve(peer, forwarded_for, &self.trusted_proxies)
-                .map(client_ip::rate_limit_key)
-                .unwrap_or_default(),
-        )
+        Ok(client_ip::client_key(
+            peer,
+            forwarded_for,
+            &self.trusted_proxies,
+        ))
     }
 }
 
 /// 超過額度時的回應：與信箱鎖定同一個錯誤碼與格式，前端不用改。
 fn too_many_requests(error: GovernorError) -> axum::response::Response {
-    let mut response = ApiError::new(
-        axum::http::StatusCode::TOO_MANY_REQUESTS,
-        "too_many_attempts",
-        "嘗試次數過多，請稍後再試",
-    )
-    .into_response();
+    let mut response = TOO_MANY_ATTEMPTS.into_response();
     if let GovernorError::TooManyRequests {
         headers: Some(headers),
         ..
@@ -68,11 +74,16 @@ fn too_many_requests(error: GovernorError) -> axum::response::Response {
 }
 
 /// 把頻率限制套到登入路由上。
-pub fn apply(route: MethodRouter<AppState>, trusted_proxies: Vec<Cidr>) -> MethodRouter<AppState> {
+pub fn apply(
+    route: MethodRouter<AppState>,
+    trusted_proxies: Vec<Cidr>,
+    burst: u32,
+    replenish: Duration,
+) -> MethodRouter<AppState> {
     let config = Arc::new(
         GovernorConfigBuilder::default()
-            .period(REPLENISH_EVERY)
-            .burst_size(BURST)
+            .period(replenish)
+            .burst_size(burst)
             .key_extractor(ClientIpKey {
                 trusted_proxies: Arc::new(trusted_proxies),
             })

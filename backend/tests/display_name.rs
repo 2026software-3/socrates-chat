@@ -18,6 +18,20 @@ async fn me_name(app: &axum::Router, cookie: &str) -> Value {
     json_body(res).await["display_name"].clone()
 }
 
+async fn set_language(app: &axum::Router, cookie: &str, language: &str) -> (StatusCode, Value) {
+    let res = send(
+        app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(cookie),
+            Some(json!({"language": language})),
+        ),
+    )
+    .await;
+    (res.status(), json_body(res).await)
+}
+
 #[sqlx::test]
 async fn unauthenticated_is_401(pool: PgPool) {
     let app = test_app(pool);
@@ -34,6 +48,39 @@ async fn non_students_are_403(pool: PgPool) {
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
     assert_eq!(me_name(&app, &a.teacher).await, "User sub-teacher");
+}
+
+#[sqlx::test]
+async fn every_authenticated_role_can_persist_a_supported_language(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    for (cookie, language) in [
+        (&a.student, "en"),
+        (&a.teacher, "es"),
+        (&a.admin, "zh-TW"),
+        (&a.outsider, "en"),
+    ] {
+        let (status, body) = set_language(&app, cookie, language).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["language"], language);
+
+        let me = json_body(send(&app, get("/api/me", Some(cookie))).await).await;
+        assert_eq!(me["language"], language);
+    }
+}
+
+#[sqlx::test]
+async fn unsupported_language_is_rejected_without_changing_preference(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    let (status, body) = set_language(&app, &a.student, "fr").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_language");
+
+    let me = json_body(send(&app, get("/api/me", Some(&a.student))).await).await;
+    assert_eq!(me["language"], "zh-TW");
 }
 
 #[sqlx::test]
@@ -54,7 +101,7 @@ async fn student_renames_self_and_it_shows_in_me_and_students(pool: PgPool) {
     )
     .await;
     let list = json_body(res).await;
-    let row = list
+    let row = list["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -81,8 +128,8 @@ async fn null_and_blank_clear_the_name(pool: PgPool) {
         rename(&app, Some(&a.student), json!({"display_name": "小明"})).await;
         let (status, body) = rename(&app, Some(&a.student), json!({"display_name": cleared})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["display_name"], Value::Null);
-        assert_eq!(me_name(&app, &a.student).await, Value::Null);
+        assert_eq!(body["display_name"], "學生");
+        assert_eq!(me_name(&app, &a.student).await, "學生");
     }
 }
 
@@ -92,27 +139,27 @@ async fn absent_field_keeps_the_name(pool: PgPool) {
     let a = seed_actors(&app).await;
     let (status, body) = rename(&app, Some(&a.student), json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["display_name"], "User sub-student");
+    assert_eq!(body["display_name"], "學生");
 }
 
 #[sqlx::test]
-async fn length_limit_is_20_characters_not_bytes(pool: PgPool) {
+async fn length_limit_is_30_characters_not_bytes(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let exactly_20 = "字".repeat(20);
-    let (status, body) = rename(&app, Some(&a.student), json!({"display_name": exactly_20})).await;
+    let exactly_30 = "字".repeat(30);
+    let (status, body) = rename(&app, Some(&a.student), json!({"display_name": exactly_30})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["display_name"], exactly_20);
+    assert_eq!(body["display_name"], exactly_30);
 
     let (status, body) = rename(
         &app,
         Some(&a.student),
-        json!({"display_name": "字".repeat(21)}),
+        json!({"display_name": "字".repeat(31)}),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "invalid_display_name");
-    assert_eq!(me_name(&app, &a.student).await, exactly_20);
+    assert_eq!(me_name(&app, &a.student).await, exactly_30);
 }
 
 #[sqlx::test]
@@ -134,7 +181,7 @@ async fn control_characters_inside_the_name_are_rejected(pool: PgPool) {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name:?}");
         assert_eq!(body["error"]["code"], "invalid_display_name");
     }
-    assert_eq!(me_name(&app, &a.student).await, "User sub-student");
+    assert_eq!(me_name(&app, &a.student).await, "學生");
 }
 
 #[sqlx::test]
@@ -151,7 +198,7 @@ async fn other_unusual_characters_are_still_allowed(pool: PgPool) {
 async fn length_is_counted_after_trimming(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let padded = format!("  {}  ", "字".repeat(20));
+    let padded = format!("  {}  ", "字".repeat(30));
     let (status, _) = rename(&app, Some(&a.student), json!({"display_name": padded})).await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -179,4 +226,60 @@ async fn google_login_fills_the_name_when_it_was_cleared(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(again.display_name.as_deref(), Some("New"));
+}
+
+#[sqlx::test]
+async fn patch_with_name_and_language_is_all_or_nothing(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    // 讓任何把語言改成 es 的寫入失敗，模擬第二個欄位寫入時資料庫出錯
+    sqlx::query(
+        "CREATE FUNCTION reject_es() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'es rejected'; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_es BEFORE UPDATE ON users
+         FOR EACH ROW WHEN (NEW.language = 'es' AND OLD.language <> 'es')
+         EXECUTE FUNCTION reject_es()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let before = me_name(&app, &a.student).await;
+    let (status, _) = rename(
+        &app,
+        Some(&a.student),
+        json!({"display_name": "小明", "language": "es"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        me_name(&app, &a.student).await,
+        before,
+        "the name must not be saved when the same PATCH fails"
+    );
+}
+
+#[sqlx::test]
+async fn patch_with_name_and_language_applies_both(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let (status, body) = rename(
+        &app,
+        Some(&a.student),
+        json!({"display_name": "小明", "language": "es"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "小明");
+    assert_eq!(body["language"], "es");
+    // 兩個欄位都沒帶時不改任何東西
+    let (status, body) = rename(&app, Some(&a.student), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "小明");
+    assert_eq!(body["language"], "es");
 }
