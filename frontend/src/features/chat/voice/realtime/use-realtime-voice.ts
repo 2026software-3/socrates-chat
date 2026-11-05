@@ -12,8 +12,11 @@ import type { VoiceTurn, VoiceTurns } from '@/features/chat/voice/realtime/voice
 export type RealtimeHost = {
   conversationId: string
   turns: VoiceTurns
-  /** 學生這句話已由後端保存：加進對話串並開始顯示回覆。 */
-  appendStudent: (text: string) => void
+  /**
+   * 學生這句話已由後端保存：加進對話串並開始顯示回覆。
+   * `followUp`：上一句的回覆一個字都沒出現就被這句打斷，後端另存一則訊息但不加回合數。
+   */
+  appendStudent: (text: string, options: { followUp: boolean }) => void
   /** 一輪結束：階段、建議收斂與對話是否已結束都以後端為準。 */
   onSettled: () => void
 }
@@ -33,6 +36,8 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
 
   const sessionRef = useRef<RealtimeSession>(undefined)
   const turnRef = useRef<VoiceTurn>(undefined)
+  // 這場語音最後一句發言得到的回覆是否還沒有任何文字
+  const unansweredRef = useRef(false)
   const fallbackRef = useRef(onUnreachable)
   const interruptibleRef = useRef(interruptible)
 
@@ -54,6 +59,7 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
     if (!host || sessionRef.current) return
     setNotice(undefined)
     setActive(true)
+    unansweredRef.current = false
     sessionRef.current = createRealtimeSession(
       host.conversationId,
       {
@@ -63,9 +69,13 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
           // 上一輪的文字可能還沒收尾：新的一句開始，它就結束了
           endTurn()
           turnRef.current = host.turns.begin()
-          host.appendStudent(text)
+          host.appendStudent(text, { followUp: unansweredRef.current })
+          unansweredRef.current = true
         },
-        onReplyDelta: (text) => turnRef.current?.push(text),
+        onReplyDelta(text) {
+          unansweredRef.current = false
+          turnRef.current?.push(text)
+        },
         onReplyEnd: endTurn,
         onReplyFailed() {
           turnRef.current?.fail()
