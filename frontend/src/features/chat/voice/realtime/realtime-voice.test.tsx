@@ -139,6 +139,29 @@ describe('server voice conversation', () => {
     act(() => cb.onReplyEnd())
   })
 
+  it('takes the turn count from the server after a turn, even when text arrived but was never heard', async () => {
+    const user = userEvent.setup()
+    renderPage(makeDetail({ voice_realtime: true, turn_count: 1 }))
+    await user.click(await startButton())
+    const cb = callbacks()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲')
+    })
+    // 甲的回覆已有文字，但學生還沒聽到就被乙打斷：畫面無從得知，後端不為乙加回合
+    act(() => cb.onReplyDelta('回'))
+    act(() => {
+      cb.onReplyEnd()
+      cb.onTranscript('乙')
+    })
+    expect(await screen.findByText('回合：3')).toBeInTheDocument()
+
+    server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ voice_realtime: true, turn_count: 2 }))))
+    act(() => cb.onSettled())
+    expect(await screen.findByText('回合：2')).toBeInTheDocument()
+    act(() => cb.onReplyEnd())
+  })
+
   it('takes stage and ending from the server after a turn', async () => {
     const { cb } = await startLive()
     server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: 'ended', voice_realtime: true }))))
