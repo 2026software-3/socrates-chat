@@ -38,6 +38,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   const [suggestEnd, setSuggestEnd] = useState(detail.converge_ready)
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState<unknown>()
+  // 後端沒算回合的學生訊息（被打斷、沒聽到回覆的接話）：標題列的回合數要扣掉它們
+  const [uncounted] = useState(() =>
+    Math.max(0, detail.messages.filter((m) => m.role === 'student').length - detail.turn_count),
+  )
 
   // 下一則學生訊息的輸入來源：語音輸入後送出時記錄為語音（S-05.4），送出後回到文字
   const messageSource = useMessageSource()
@@ -127,7 +131,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
             </div>
             {detail.description ? <p className="text-muted-foreground text-xs break-words">{detail.description}</p> : null}
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <RoundCount />
+              <RoundCount uncounted={uncounted} />
               <StageIndicator stage={stage} />
             </div>
           </div>
@@ -159,10 +163,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   )
 }
 
-/** 回合數：學生送出幾則訊息就是第幾回合；跟著對話串即時更新。 */
-function RoundCount() {
+/** 回合數：學生送出幾則訊息就是第幾回合（扣掉後端不算回合的接話）；跟著對話串即時更新。 */
+function RoundCount({ uncounted }: { uncounted: number }) {
   const t = useT()
-  const count = useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length)
+  const count = useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length) - uncounted
   return <span className="text-xs font-medium">{t('chat.round', { count })}</span>
 }
 
