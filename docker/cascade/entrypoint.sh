@@ -26,6 +26,7 @@ text = os.environ["CASCADE_REFERENCE_TEXT"].replace("\\", "\\\\").replace('"', '
 src = open("/app/launch.yaml.tpl", encoding="utf-8").read()
 open("/tmp/launch.yaml", "w", encoding="utf-8").write(src.replace("${CASCADE_REFERENCE_TEXT}", text))
 PY
+    python3 /app/patch_dialog.py
     exec sgl-omni serve --config /tmp/launch.yaml --host 0.0.0.0 --port 8110 --enable-realtime
     ;;
   *)
