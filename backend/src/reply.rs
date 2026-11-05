@@ -27,7 +27,7 @@ use futures_util::{FutureExt, StreamExt, stream::BoxStream};
 use serde::Serialize;
 use serde_json::json;
 use tokio::{
-    sync::mpsc,
+    sync::{Notify, mpsc},
     time::{Instant, timeout_at},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -272,6 +272,7 @@ pub(crate) async fn stream(
         messages,
         None,
         None,
+        None,
     ))
 }
 
@@ -292,6 +293,7 @@ pub async fn begin_stream(
             messages,
             Some(first),
             None,
+            None,
         )),
         Err(e) => {
             release_generation(&state, conversation.id).await;
@@ -300,6 +302,10 @@ pub async fn begin_stream(
     }
 }
 
+/// 語音回覆被收聽方放棄（打斷）的信號：收聽方在一個字都沒收到就放棄時通知，產生回覆的工作隨即中止，
+/// 才不會讓接著說的下一句等這一輪的 AI 回覆。
+pub(crate) type Abandoned = Arc<Notify>;
+
 /// 與 `begin_stream` 相同，但回覆文字走回傳的通道（語音對話用）；通道關閉表示回覆結束，
 /// 沒有存成回覆時最後一個是 `ReplyText::Failed`。
 pub(crate) async fn begin_text_stream(
@@ -307,7 +313,7 @@ pub(crate) async fn begin_text_stream(
     user: Uuid,
     conversation: Conversation,
     first: Event,
-) -> Result<mpsc::UnboundedReceiver<ReplyText>, ApiError> {
+) -> Result<(mpsc::UnboundedReceiver<ReplyText>, Abandoned), ApiError> {
     let messages = match load_messages(&state, conversation.id).await {
         Ok(messages) => messages,
         Err(e) => {
@@ -316,6 +322,7 @@ pub(crate) async fn begin_text_stream(
         }
     };
     let (tap, text) = mpsc::unbounded_channel();
+    let abandoned = Abandoned::default();
     drop(spawn_stream(
         state,
         user,
@@ -323,8 +330,9 @@ pub(crate) async fn begin_text_stream(
         messages,
         Some(first),
         Some(tap),
+        Some(abandoned.clone()),
     ));
-    Ok(text)
+    Ok((text, abandoned))
 }
 
 /// 只送出一個事件就結束的串流（例如達回合上限、沒有 AI 回覆時）。
@@ -340,6 +348,7 @@ fn spawn_stream(
     messages: Vec<Message>,
     first: Option<Event>,
     tap: Option<mpsc::UnboundedSender<ReplyText>>,
+    abandoned: Option<Abandoned>,
 ) -> EventStream {
     let (tx, rx) = mpsc::unbounded_channel();
     if let Some(first) = first {
@@ -354,23 +363,33 @@ fn spawn_stream(
             let last = match state.charge_ai(user) {
                 Err(_) => event("error", json!({"code": crate::ai_usage::EXCEEDED_CODE})),
                 Ok(slot) => {
-                    let result =
-                        AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
-                            .catch_unwind()
-                            .await;
+                    let run = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
+                        .catch_unwind();
+                    let result = match &abandoned {
+                        Some(abandoned) => tokio::select! {
+                            result = run => Some(result),
+                            () = abandoned.notified() => None,
+                        },
+                        None => Some(run.await),
+                    };
                     match result {
-                        Ok(Ok(done)) => {
+                        Some(Ok(Ok(done))) => {
                             failed = false;
                             done
                         }
                         // 沒有得到回覆：不扣額度，AI 當機時的重試不該把學生鎖在外面
-                        Ok(Err(error)) => {
+                        Some(Ok(Err(error))) => {
                             state.refund_ai(user, slot);
                             error
                         }
-                        Err(_) => {
+                        Some(Err(_)) => {
                             state.refund_ai(user, slot);
                             event("error", json!({"code": "internal"}))
+                        }
+                        // 收聽方在一個字都沒收到時放棄：學生已經接著說了，不必再等這次的回覆
+                        None => {
+                            state.refund_ai(user, slot);
+                            event("error", json!({"code": "abandoned"}))
                         }
                     }
                 }
