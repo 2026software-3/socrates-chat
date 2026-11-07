@@ -22,6 +22,8 @@ CREATE TABLE achievements (
     description_zh_tw text NOT NULL CHECK (btrim(description_zh_tw) <> ''),
     description_en text NOT NULL CHECK (btrim(description_en) <> ''),
     description_es text NOT NULL CHECK (btrim(description_es) <> ''),
+    source_language text CHECK (source_language IN ('zh-TW', 'en', 'es')),
+    pending_languages text[] NOT NULL DEFAULT ARRAY[]::text[] CHECK (pending_languages <@ ARRAY['zh-TW', 'en', 'es']::text[]),
     enabled boolean NOT NULL DEFAULT true,
     sort_order integer NOT NULL DEFAULT 0,
     PRIMARY KEY (id, level)
@@ -94,3 +96,41 @@ VALUES
     ('first_character_part', 1, 'first_purchase', 1, 10,
      '時尚入門', 'First Outfit', 'Primer atuendo',
      '第一次用點數解鎖角色部件', 'Unlock a character part with points for the first time', 'Desbloquea por primera vez una pieza del personaje con puntos', 8);
+
+-- 既有對話完成點數代表已產生總結。保留帳本時間作為完成時間，包含已刪除的對話。
+INSERT INTO achievement_completion_events (user_id, conversation_id, completed_at)
+SELECT user_id, source_id::uuid, created_at
+FROM point_ledger
+WHERE source_type = 'conversation'
+ON CONFLICT DO NOTHING;
+
+-- 對歷史完成事件立即判定並一次入帳，與即時判定使用相同唯一鍵。
+WITH days AS (
+    SELECT DISTINCT user_id, (completed_at AT TIME ZONE 'Asia/Taipei')::date AS day
+    FROM achievement_completion_events
+), grouped_days AS (
+    SELECT user_id, day - (row_number() OVER (PARTITION BY user_id ORDER BY day))::int AS grp
+    FROM days
+), streaks AS (
+    SELECT user_id, max(streak)::bigint AS longest
+    FROM (SELECT user_id, count(*) AS streak FROM grouped_days GROUP BY user_id, grp) AS runs
+    GROUP BY user_id
+), totals AS (
+    SELECT user_id, count(*)::bigint AS completed FROM achievement_completion_events GROUP BY user_id
+), inserted AS (
+    INSERT INTO achievement_unlocks (user_id, achievement_id, level)
+    SELECT totals.user_id, a.id, a.level
+    FROM totals JOIN streaks ON streaks.user_id = totals.user_id
+    JOIN achievements a ON a.enabled AND (
+        (a.condition_type = 'completed_conversations' AND a.threshold <= totals.completed)
+        OR (a.condition_type = 'consecutive_days' AND a.threshold <= streaks.longest)
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING user_id, achievement_id, level
+)
+INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id)
+SELECT i.user_id, a.points, 'Achievement ' || i.achievement_id || ' level ' || i.level,
+       'achievement', i.achievement_id || ':' || i.level
+FROM inserted i JOIN achievements a ON a.id = i.achievement_id AND a.level = i.level
+WHERE a.points > 0
+ON CONFLICT (user_id, source_type, source_id) DO NOTHING;

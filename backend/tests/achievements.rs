@@ -282,3 +282,74 @@ async fn zero_point_unlock_writes_no_ledger_row(pool: PgPool) {
     assert_eq!(unlocked[0].points, 0);
     assert_eq!(counts(&pool, user_id).await, (1, 0));
 }
+
+#[sqlx::test]
+async fn achievements_and_points_survive_removal_and_account_disabling(pool: PgPool) {
+    use axum::http::StatusCode;
+    use common::{get, import_roster, json_body, json_req, login_as, seed_actors, send, test_app};
+    use serde_json::json;
+
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let user_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'student@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    complete(&pool, user_id, Uuid::new_v4(), Utc::now()).await;
+    assert_eq!(counts(&pool, user_id).await, (1, 1));
+
+    let path = format!(
+        "/api/classrooms/{}/roster/student@example.com",
+        actors.classroom
+    );
+    assert_eq!(
+        send(&app, json_req("DELETE", &path, Some(&actors.teacher), None))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&app, get("/api/points", Some(&actors.student)))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(counts(&pool, user_id).await, (1, 1));
+    assert!(
+        import_roster(
+            &app,
+            &actors.teacher,
+            &actors.classroom,
+            "student@example.com"
+        )
+        .await
+        .status()
+        .is_success()
+    );
+    assert_eq!(
+        json_body(send(&app, get("/api/points", Some(&actors.student))).await).await["balance"],
+        10
+    );
+
+    let status_path = format!("/api/admin/users/{user_id}/status");
+    for disabled in [true, false] {
+        let response = send(
+            &app,
+            json_req(
+                "PUT",
+                &status_path,
+                Some(&actors.admin),
+                Some(json!({"disabled": disabled})),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(counts(&pool, user_id).await, (1, 1));
+    }
+    let student = login_as(&app, "sub-student", "student@example.com").await;
+    assert_eq!(
+        json_body(send(&app, get("/api/points", Some(&student))).await).await["balance"],
+        10
+    );
+}

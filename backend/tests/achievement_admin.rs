@@ -754,3 +754,172 @@ async fn a_streak_achievement_added_later_counts_past_taipei_days(pool: PgPool) 
         (StatusCode::OK, &json!(1))
     );
 }
+
+#[sqlx::test]
+async fn admin_creates_multiple_levels_and_backfills_each_met_threshold(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let student = student(&pool, 90).await;
+    complete_n(&pool, student, 3).await;
+    let mut body = new_achievement("multi_level", "completed_conversations", 1);
+    body.as_object_mut().unwrap().remove("threshold");
+    body["levels"] = json!([
+        {"threshold": 1, "points": 5},
+        {"threshold": 3, "points": 7},
+        {"threshold": 5, "points": 9}
+    ]);
+    let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(
+        result["achievement"]["levels"],
+        json!([
+            {"level": 1, "threshold": 1, "points": 5},
+            {"level": 2, "threshold": 3, "points": 7},
+            {"level": 3, "threshold": 5, "points": 9}
+        ])
+    );
+    assert_eq!(result["retroactive_unlocks"], 2);
+    assert_eq!(
+        ledger_rows(&pool, student, "multi_level").await,
+        vec![(5, "multi_level:1".into()), (7, "multi_level:2".into())]
+    );
+}
+
+#[sqlx::test]
+async fn admin_cannot_create_levels_with_non_increasing_thresholds(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    let mut body = new_achievement("invalid_multi", "completed_conversations", 1);
+    body.as_object_mut().unwrap().remove("threshold");
+    body["levels"] = json!([{"threshold": 3}, {"threshold": 3}]);
+    let (status, _) = call(&app, "POST", LIST, &a.admin, body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM achievements WHERE id = 'invalid_multi'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[sqlx::test]
+async fn creating_in_one_language_translates_and_records_completion_status(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Script::Reply(vec![
+            r#"{"name":"New insight","description":"Complete a dialogue"}"#,
+        ]),
+        Script::Reply(vec![
+            r#"{"name":"Nueva idea","description":"Completa un diálogo"}"#,
+        ]),
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let body = json!({"id":"translated", "condition_type":"completed_conversations", "threshold":1,
+        "source_language":"zh-TW", "name":"新見解", "description":"完成一場對話"});
+    let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(
+        result["achievement"]["name"],
+        json!({"zh_tw":"新見解", "en":"New insight", "es":"Nueva idea"})
+    );
+    assert_eq!(result["achievement"]["pending_languages"], json!([]));
+    let requests = ai.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.system.contains("achievement-translation-v1"))
+    );
+}
+
+#[sqlx::test]
+async fn failed_translation_uses_original_and_can_be_corrected_by_admin(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Script::Fail,
+        Script::Reply(vec![
+            r#"{"name":"Nueva idea","description":"Completa un diálogo"}"#,
+        ]),
+    ]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    let body = json!({"id":"pending_translation", "condition_type":"completed_conversations", "threshold":1,
+        "source_language":"zh-TW", "name":"新見解", "description":"完成一場對話"});
+    let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["achievement"]["name"]["en"], "新見解");
+    assert_eq!(result["achievement"]["description"]["en"], "完成一場對話");
+    assert_eq!(result["achievement"]["pending_languages"], json!(["en"]));
+    let (status, revised) = call(
+        &app,
+        "PATCH",
+        &format!("{LIST}/pending_translation"),
+        &a.admin,
+        json!({"name":{"zh_tw":"更新的見解"}, "description":{"zh_tw":"更新的說明"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{revised}");
+    assert_eq!(revised["achievement"]["name"]["en"], "更新的見解");
+    assert_eq!(revised["achievement"]["description"]["en"], "更新的說明");
+    assert_eq!(revised["achievement"]["pending_languages"], json!(["en"]));
+    let (status, updated) = call(
+        &app,
+        "PATCH",
+        &format!("{LIST}/pending_translation"),
+        &a.admin,
+        json!({"name":{"en":"New insight"}, "description":{"en":"Complete a dialogue"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["achievement"]["pending_languages"], json!([]));
+    assert_eq!(updated["achievement"]["name"]["en"], "New insight");
+}
+
+#[sqlx::test]
+async fn slow_translations_are_not_cut_off_by_the_standard_request_timeout(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Script::Paced(
+            vec![r#"{"name":"New","description":"Description"}"#],
+            std::time::Duration::from_millis(150),
+        ),
+        Script::Paced(
+            vec![r#"{"name":"Nuevo","description":"Descripción"}"#],
+            std::time::Duration::from_millis(150),
+        ),
+    ]);
+    let config = socrates_chat_backend::config::Config {
+        request_timeout: std::time::Duration::from_millis(100),
+        ai_total_timeout: std::time::Duration::from_secs(1),
+        ..test_config()
+    };
+    let setup_app = test_app(pool.clone());
+    let a = seed_actors(&setup_app).await;
+    let app = test_app_with_config(pool, ai, config);
+    let body = json!({"id":"slow_translation", "condition_type":"completed_conversations", "threshold":1,
+        "source_language":"zh-TW", "name":"新成就", "description":"說明"});
+    let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["achievement"]["pending_languages"], json!([]));
+}
+
+#[sqlx::test]
+async fn translation_missing_a_placeholder_remains_pending(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Script::Reply(vec![
+            r#"{"name":"Path","description":"Complete dialogues"}"#,
+        ]),
+        Script::Reply(vec![
+            r#"{"name":"Camino","description":"Completa {n} diálogos"}"#,
+        ]),
+    ]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    let body = json!({"id":"placeholder_translation", "condition_type":"completed_conversations", "threshold":1,
+        "source_language":"zh-TW", "name":"思辨之路", "description":"累積完成 {n} 場對話"});
+    let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["achievement"]["pending_languages"], json!(["en"]));
+    assert_eq!(
+        result["achievement"]["description"]["en"],
+        "累積完成 {n} 場對話"
+    );
+}

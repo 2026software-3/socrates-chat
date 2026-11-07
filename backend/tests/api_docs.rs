@@ -164,7 +164,9 @@ async fn admin_achievement_api_contract_is_fixed() {
             "id",
             "levels",
             "name",
-            "sort_order"
+            "pending_languages",
+            "sort_order",
+            "source_language"
         ]
     );
     assert_eq!(
@@ -181,11 +183,18 @@ async fn admin_achievement_api_contract_is_fixed() {
             "condition_type",
             "description",
             "id",
+            "levels",
             "name",
             "points",
             "sort_order",
+            "source_language",
             "threshold"
         ]
+    );
+    assert_eq!(property_names("NewLevel"), ["points", "threshold"]);
+    assert_eq!(
+        schemas["AchievementView"]["properties"]["pending_languages"]["type"],
+        "array"
     );
     assert_eq!(
         property_names("AchievementPatch"),
