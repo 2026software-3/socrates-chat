@@ -15,7 +15,7 @@ async fn existing_database_upgrades_without_losing_conversations(pool: PgPool) {
     let legacy = Migrator {
         migrations: Cow::Owned(
             all.iter()
-                .filter(|migration| migration.version < 20261107000000)
+                .filter(|migration| migration.version < 20261107000100)
                 .cloned()
                 .collect(),
         ),
