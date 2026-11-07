@@ -195,7 +195,7 @@
 - `POST /api/conversations/{id}/end` 回 202（首次）與 200（已結束）：狀態碼雙義，對前端是額外分支。建議一律 202 或一律 200 + body `{ status }`。
 - `POST /api/conversations` 的來源錯誤回 `invalid_conversation_source`；`POST …/messages` 的非法 `source` 仍回 `invalid_source`。
 - `POST /api/classrooms/{id}/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅匯入者（教師或管理者，2026-10 修訂，原為僅管理者）可取得；教師知道臨時密碼的風險已由需求方接受（`S-08.2-auth-verification.md`）；回應帶 `Cache-Control: no-store`。
-- 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
+- 登入失敗鎖定已改為以（登入帳號輸入, 來源 IP）為單位，另有每登入帳號輸入的跨 IP 總量上限，登入端點本身也有來源 IP 的請求頻率限制（#295 已完成；規則見 S-08.2 與上方「登入」的說明）。其他未登入端點目前沒有 IP 請求頻率限制，見 #475。
 - #324、#325 已完成：全域 request body 上限（1 MiB，超過回 `413 payload_too_large`）與請求逾時（10 秒，SSE 等長時間路由用較長逾時，逾時回 `408 request_timeout`），見「通則」。
 - `/health` 之外沒有 `/ready`（見「規劃中的端點」）。
 - 稽核（`audit_logs`）涵蓋登入、disable／enable／delete、教師與名單異動、reset-password（F-22.1）；日後的調價（S-07 §5 要求）也要進 `audit_logs`。
