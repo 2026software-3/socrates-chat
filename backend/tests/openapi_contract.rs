@@ -130,6 +130,32 @@ mod classroom_scope {
     }
 
     #[test]
+    fn conversation_creation_documents_activity_topic_selection() {
+        let doc = document();
+        let schema = &doc["components"]["schemas"]["NewConversation"]["properties"];
+        assert!(schema["activity_id"].is_object());
+        assert!(
+            schema["topic_id"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("活動")
+        );
+        let operation = &doc["paths"]["/api/conversations"]["post"];
+        assert!(
+            operation["responses"]["400"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("題目不屬於活動")
+        );
+        assert!(
+            operation["responses"]["409"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("activity_already_started")
+        );
+    }
+
+    #[test]
     fn teacher_side_lists_take_an_explicit_classroom() {
         let doc = document();
         for (path, method) in [
