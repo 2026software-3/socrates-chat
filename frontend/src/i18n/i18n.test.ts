@@ -50,7 +50,8 @@ describe('i18n', () => {
       .filter((file): file is string => typeof file === 'string' && file.endsWith('.rs'))
       .map((file) => readFileSync(resolve(backend, file), 'utf8'))
       .join('\n')
-    const codes = new Set<string>()
+    // These codes are passed to a shared validator, so the literal scanner cannot see them.
+    const codes = new Set<string>(['invalid_name', 'invalid_description'])
     const patterns = [
       /ApiError::(?:bad_request|conflict|forbidden)\(\s*"([a-z][a-z0-9_]+)"/g,
       /(?:ApiError|Self)::new\(\s*[^,]+,\s*"([a-z][a-z0-9_]+)"/g,
