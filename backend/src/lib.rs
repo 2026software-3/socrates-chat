@@ -38,6 +38,8 @@ macro_rules! generation_unclaimed {
 }
 
 pub mod accounts;
+pub mod achievement_admin;
+pub mod achievements;
 pub mod activity_store;
 pub mod ai;
 pub mod ai_usage;
@@ -79,7 +81,9 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 5] = [
+pub const LONG_RUNNING_ROUTES: [&str; 6] = [
+    // 管理者新增成就時同步翻譯名稱與說明
+    "/api/admin/achievements",
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
@@ -183,6 +187,7 @@ pub fn app(state: AppState) -> Router {
         .merge(voice::routes())
         .merge(cascade::routes())
         .merge(points::routes())
+        .merge(achievement_admin::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
