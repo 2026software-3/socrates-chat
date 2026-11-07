@@ -12,6 +12,7 @@
 | --- | --- |
 | `backend/` | Rust + Axum API 服務（`src/lib.rs` 提供 `app()` router，`src/main.rs` 啟動服務） |
 | `backend/tests/` | 後端整合測試 |
+| `e2e/` | 獨立的黑箱端對端測試（Node 內建 test runner，零依賴；非阻擋的 CI，見 [`e2e/README.md`](e2e/README.md)） |
 | `frontend/` | 前端專案（React + TypeScript + Vite + Tailwind + shadcn/ui + assistant-ui，S-11 已定案，見 `frontend/README.md`） |
 | `.github/workflows/` | CI（後端）與 commitlint |
 
