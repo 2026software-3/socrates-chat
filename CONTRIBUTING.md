@@ -373,11 +373,14 @@ Labels 一律使用英文、可多選，只加在實際要做的 Issue（葉節�
 
 ## 資料庫 migration
 
-專案**尚未正式上線**，沒有需要保留的資料，所以**不需考慮資料庫轉移**：
+NTNU 試用環境自 **2026-11-07** 起視為正式環境，裡面的資料要保留，所以 migration **只往前**（[S-09.3](docs/specs/S-09.3-ops-procedures.md)）：
 
-- 不寫 `ALTER TABLE`、`DROP INDEX` 這類轉移語句；要改 schema，直接修改 `backend/migrations/` 裡原本建立該資料表的 `CREATE` 語句。
-- 新資料表才新增 migration 檔（`sqlx migrate add <描述>`）。
-- 正式上線後此規則作廢，改為只往前新增 migration（見 [S-09.3](docs/specs/S-09.3-ops-procedures.md)）。
+- 已合併的 migration 檔不修改也不刪除。後端以 checksum 比對已套用的 migration，檔案內容一變，部署時就會 `VersionMismatch`、後端無法啟動。
+- 要改 schema，一律用 `sqlx migrate add <描述>` 新增 migration，包含 `ALTER TABLE`、`DROP COLUMN` 與既有資料的搬移；不再直接改原本的 `CREATE`。
+- 會讓舊資料失效的變更（刪欄位、加 `NOT NULL`）要在同一個 migration 內處理既有資料，並寫測試：先套用到變更前的 migration、放入合成資料，再套用全部，檢查資料搬移結果。
+- 已套用的 migration 內容以 NTNU 資料庫的記錄為準。2026-11-07 之前直接改過 `CREATE` 而造成不一致的（F-29.1 的 `20261002010000`），由還原舊檔加上新增 migration 補齊。
+
+這只決定資料保留與 migration 規則，不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
 
 ## 規格決策流程
 
