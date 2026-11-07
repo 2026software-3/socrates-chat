@@ -245,7 +245,8 @@ async fn health() -> Response {
 
 /// 就緒檢查（S-09.3）：以 `SELECT 1` 確認資料庫連得上，失敗或逾時回 503。
 /// 與 `/health`（只表示程序存活）不同；探針不需登入。日誌與回應只帶固定的錯誤種類，
-/// 不含連線字串、主機或資料庫的錯誤訊息。
+/// 不含連線字串、主機或資料庫的錯誤訊息。任何回應（成功、失敗）都不進 request log ring，與 `/health` 一致；
+/// 失敗的紀錄看 stdout 的 tracing 輸出。
 #[utoipa::path(
     get,
     path = "/ready",
@@ -268,21 +269,23 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
         Ok(Ok(_)) => request_logs::not_in_ring(Json(Health { status: "ok" })),
         Ok(Err(e)) => {
             tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
-            database_unavailable().into_response()
+            database_unavailable()
         }
         Err(_) => {
             tracing::warn!(class = "timeout", "readiness check failed");
-            database_unavailable().into_response()
+            database_unavailable()
         }
     }
 }
 
-fn database_unavailable() -> ApiError {
-    ApiError::new(
+/// 失敗的回應同樣不進 request log ring：長時間故障時探針每隔幾秒一筆，會擠掉真正的請求。
+/// 失敗仍由上面的 `tracing::warn!` 輸出到 stdout。
+fn database_unavailable() -> Response {
+    request_logs::not_in_ring(ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
         "database_unavailable",
         "資料庫暫時無法使用",
-    )
+    ))
 }
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，

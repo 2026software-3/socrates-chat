@@ -164,8 +164,8 @@ async fn ready_returns_503_in_bounded_time_when_database_hangs(pool: PgPool) {
     );
 }
 
-/// 探針每隔幾秒就會呼叫，成功的就緒檢查不進管理者的 request log ring（與 `/health` 相同），
-/// 以免擠掉真正的應用請求。
+/// 探針每隔幾秒就會呼叫，/ready 的任何回應（成功、失敗）都不進管理者的 request log ring（與 `/health` 相同），
+/// 以免長時間故障時擠掉真正的應用請求。失敗仍由 tracing 輸出到 stdout。
 #[sqlx::test]
 async fn successful_ready_probe_stays_out_of_the_request_log_ring(pool: PgPool) {
     let app = test_app(pool);
@@ -199,5 +199,56 @@ fn ready_is_documented_in_openapi() {
             .as_str()
             .unwrap()
             .contains("database_unavailable")
+    );
+}
+
+/// 失敗的 /ready 也不進 ring。要讀得到 /admin/logs 就需要可用的資料庫（session 存在 PostgreSQL），
+/// 所以用兩個共用同一個 request log store 的 app：一個接正常的資料庫，供管理者登入與讀 log；
+/// 另一個只把 pool 換成壞的，專門讓 /ready 失敗。先放進一筆別的真實請求，證明 /admin/logs 讀得到東西。
+#[sqlx::test]
+async fn failed_ready_probe_stays_out_of_the_request_log_ring(pool: PgPool) {
+    register_fixture_pool(&pool);
+    let healthy = AppState::new(
+        pool.clone(),
+        test_config(),
+        Arc::new(FakeIdentity),
+        FakeAi::with(vec![]),
+    );
+    let ok_app = app(healthy.clone());
+    let actors = seed_actors(&ok_app).await;
+
+    // 連不上（取連線逾時）與資料庫回錯誤（帳密錯誤）兩條失敗路徑
+    let unreachable = unreachable_pool();
+    let rejected = PgPoolOptions::new().connect_lazy_with(
+        (*pool.connect_options())
+            .clone()
+            .username("leaky_user")
+            .password("leaky_pass")
+            .database("leaky_db"),
+    );
+    for broken in [unreachable, rejected] {
+        let mut state = healthy.clone();
+        state.pool = broken;
+        let res = send(&app(state), get("/ready", None)).await;
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // 一筆會被記錄的真實請求
+    assert_eq!(
+        send(&ok_app, get("/api/me", Some(&actors.admin)))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    let body = json_body(send(&ok_app, get("/api/admin/logs", Some(&actors.admin))).await).await;
+    let items = body["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|entry| entry["route"] == "/api/me"),
+        "/admin/logs should show the real request: {items:?}"
+    );
+    assert!(
+        items.iter().all(|entry| entry["route"] != "/ready"),
+        "failed /ready should not be in the ring: {items:?}"
     );
 }

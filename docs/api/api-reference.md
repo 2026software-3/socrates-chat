@@ -196,7 +196,7 @@
 - `POST /api/classrooms/{id}/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅匯入者（教師或管理者，2026-10 修訂，原為僅管理者）可取得；教師知道臨時密碼的風險已由需求方接受（`S-08.2-auth-verification.md`）；回應帶 `Cache-Control: no-store`。
 - 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
 - #324、#325 已完成：全域 request body 上限（1 MiB，超過回 `413 payload_too_large`）與請求逾時（10 秒，SSE 等長時間路由用較長逾時，逾時回 `408 request_timeout`），見「通則」。
-- `GET /ready`（S-09.3）已實作：公開，不需登入；以 `SELECT 1` 檢查資料庫連線（最多等 3 秒），成功回 `200 { status: "ok" }`，失敗或逾時回 `503 database_unavailable`（標準錯誤格式，不含連線資訊）。成功的探測不進 `/admin/logs` 的 request log；`/health` 仍只表示程序存活。
+- `GET /ready`（S-09.3）已實作：公開，不需登入；以 `SELECT 1` 檢查資料庫連線（最多等 3 秒），成功回 `200 { status: "ok" }`，失敗或逾時回 `503 database_unavailable`（標準錯誤格式，不含連線資訊）。`/ready` 的探測（成功或失敗）一律不進 `/admin/logs` 的 request log，與 `/health` 一致；失敗仍由 tracing 輸出到 stdout。`/health` 仍只表示程序存活。
 - 稽核（`audit_logs`）涵蓋登入、disable／enable／delete、教師與名單異動、reset-password（F-22.1）；日後的調價（S-07 §5 要求）也要進 `audit_logs`。
 
 ## 建議的處理順序
