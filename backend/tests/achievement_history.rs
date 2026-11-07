@@ -32,7 +32,7 @@ async fn historical_conversation_rewards_create_events_and_award_met_achievement
         }
     }
     sqlx::raw_sql(include_str!(
-        "../migrations/20261025000000_create_achievements.sql"
+        "../migrations/20261107000200_create_achievements.sql"
     ))
     .execute(&pool)
     .await
@@ -68,4 +68,36 @@ async fn historical_conversation_rewards_create_events_and_award_met_achievement
             ("three_day_streak:1".into(), 10)
         ]
     );
+}
+
+#[sqlx::test(migrations = false)]
+async fn upgrade_from_deployed_schema_preserves_audit_and_backfills_achievements(pool: PgPool) {
+    let migrator = sqlx::migrate!();
+    migrator.run_to(20261107000100, &pool).await.unwrap();
+    let already_has_column: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'old_value')",
+    ).fetch_one(&pool).await.unwrap();
+    assert!(
+        !already_has_column,
+        "deployed audit schema must be unchanged"
+    );
+    let user_id: Uuid =
+        sqlx::query_scalar("INSERT INTO users (email) VALUES ('upgrade@example.com') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO audit_logs (actor_id, action, target_email) VALUES ($1, 'login', 'upgrade@example.com')")
+        .bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id) VALUES ($1, 10, 'conversation_completed', 'conversation', $2)")
+        .bind(user_id).bind(Uuid::new_v4().to_string()).execute(&pool).await.unwrap();
+    migrator.run(&pool).await.unwrap();
+    migrator.run(&pool).await.unwrap();
+    let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE action = 'login' AND target_email = 'upgrade@example.com'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(audit, 1);
+    let achievements: i64 = sqlx::query_scalar("SELECT count(*) FROM achievement_unlocks WHERE user_id=$1 AND achievement_id='first_dialogue'")
+        .bind(user_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(achievements, 1);
+    sqlx::query("INSERT INTO audit_logs (actor_id, action, target_email, new_value) VALUES ($1, 'achievement_created', 'first_dialogue', '{}'::jsonb)")
+        .bind(user_id).execute(&pool).await.unwrap();
 }

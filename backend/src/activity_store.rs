@@ -217,18 +217,31 @@ pub struct Startable {
 
 /// 找出學生能開始對話的活動（已發布，且學生在活動所屬教室的名單內），並以 `FOR SHARE` 鎖住活動列：
 /// 教師修改活動題目清單時會鎖同一列再檢查有沒有對話，所以新對話與題目變更不會同時成立（S-04.7）。
-/// 目前開始對話一律取活動的第一個題目（F-29.1 只做資料模型；每題各一場對話待後續實作）。
 /// 活動不存在、未發布、沒有題目或學生不在名單內都回 `None`，呼叫端不應區分原因，以免外露資源是否存在。
 pub async fn find_startable(
     conn: &mut PgConnection,
     id: Uuid,
     user_id: Uuid,
 ) -> Result<Option<Startable>, sqlx::Error> {
+    find_startable_topic(conn, id, user_id, None).await
+}
+
+/// 指定題目必須屬於活動；未指定時暫時沿用舊客戶端的第一題行為。
+pub async fn find_startable_topic(
+    conn: &mut PgConnection,
+    id: Uuid,
+    user_id: Uuid,
+    topic_id: Option<Uuid>,
+) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.id, ft.topic_id, a.classroom_id, a.title, a.description
+        "SELECT a.id, ft.topic_id, a.classroom_id,
+                CASE WHEN $3::uuid IS NULL THEN a.title ELSE t.title END,
+                CASE WHEN $3::uuid IS NULL THEN a.description ELSE t.description END
          FROM activities a
          JOIN LATERAL (SELECT topic_id FROM activity_topics
-                       WHERE activity_id = a.id ORDER BY position LIMIT 1) ft ON true
+                       WHERE activity_id = a.id AND ($3::uuid IS NULL OR topic_id = $3)
+                       ORDER BY position LIMIT 1) ft ON true
+         JOIN topics t ON t.id = ft.topic_id
          JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
            AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
@@ -239,6 +252,7 @@ pub async fn find_startable(
     )
     .bind(id)
     .bind(user_id)
+    .bind(topic_id)
     .fetch_optional(conn)
     .await
 }
