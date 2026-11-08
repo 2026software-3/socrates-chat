@@ -2,7 +2,7 @@
 
 對應 [Issue #190：收斂判定：AI 提示與行為評估](https://github.com/2026software-3/socrates-chat/issues/190)。規格依據為 `docs/specs/technical-details.md` 的 S-03.3（對話回合上限、主動收尾）與 `docs/specs/decisions.md` 的 S-03.4（AI 行為評分準則與情境集）；本文記錄目前評估實作，不新增或取代產品規格。
 
-> **狀態：只跑過一輪真實評估（Run `1794149101`，8 題通過 7 題），尚無人工複核。** 這一輪每題只跑一次，受測與評審是同一個模型，不能當作穩定的通過率，也不是團隊約定的驗收門檻。結果見下方「評估紀錄」。
+> **狀態：只跑過一輪真實評估（Run `1794149101`，8 題通過 7 題），尚無人工複核。** 這一輪每題只跑一次，受測與評審是同一個模型，不能當作穩定的通過率，也不是團隊約定的驗收門檻。完整紀錄放在 [Discussion #485](https://github.com/2026software-3/socrates-chat/discussions/485)。
 
 ## 要解決的問題
 
@@ -48,7 +48,7 @@ cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯�
 | `EVAL_DELAY_SECS` | 2 | 題與題之間暫停的秒數，用來避開限流 |
 | `CASE` | 未設定 | 只跑指定題號，例如 `CASE=CONV_01` |
 
-結果寫在 `backend/eval/results/f08_<run-id>/`（`<run-id>` 是執行時的 Unix 秒數）。該目錄被 `.gitignore` 排除，不會進版本控制；要保留的紀錄請整理進本文件的「評估紀錄」。
+結果寫在 `backend/eval/results/f08_<run-id>/`（`<run-id>` 是執行時的 Unix 秒數）。該目錄被 `.gitignore` 排除，不會進版本控制；要保留的紀錄請整理後發到 Discussions，並登記在本文件的「評估紀錄」。
 
 ## 固定情境集
 
@@ -92,63 +92,11 @@ cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯�
 
 ## 評估紀錄
 
-失敗樣本保留原始紀錄，不以重跑的成功覆蓋。新增一輪時，在下方加一節，並記錄 Run ID、各版本、受測與評審模型、各題結果與人工複核。
+評估紀錄不放在這份文件，改發在 GitHub Discussions（比照 F-07.1 的 [#311](https://github.com/2026software-3/socrates-chat/discussions/311)），避免結果隨文件版本混在一起。每一輪請新增一篇或在同一篇補一節，並記錄 Run ID、各版本、受測與評審模型、各題結果與人工複核；失敗樣本保留原始紀錄，不以重跑的成功覆蓋。
 
-### Run `1794149101`（2026-11-08）
-
-| 項目 | 值 |
-| --- | --- |
-| Run ID | `1794149101` |
-| `rules_version` | `v1.23/zh-TW` |
-| `evaluator_version` | `f08-eval-v1` |
-| `judge_version` | `f08-rubric-v1/zh-TW` |
-| `schema_version` | `1` |
-| 受測模型 | `gpt-6-luna` |
-| 評審模型 | `gpt-6-luna`（與受測相同；`.env` 未設定 `OPENAI_JUDGE_MODEL`，執行時以環境變數暫設） |
-| 題數 | 8 題，全部取得受測回覆（`no_result_cases` 為 0） |
-| 通過 | 7／8（`pass_rate_evaluated_cases` 0.875） |
-| 人工複核 | 尚未 |
-
-各題結果（`offline` 為程式檢查，`advance`／`convergence` 為評審判定；通過需評審兩項都是 `PASS`）：
-
-| 題號 | 預期 | 模型輸出（`advance`／`question_type`） | offline | advance | convergence | 通過 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `CONV_01` | 收斂 | `true`／`wrap_up` | PASS | PASS | PASS | 是 |
-| `CONV_02` | 收斂 | `true`／`wrap_up` | PASS | PASS | PASS | 是 |
-| `CONV_03` | 收斂 | `true`／`wrap_up` | PASS | PASS | PASS | 是 |
-| `CONV_04` | 收斂 | `true`／`wrap_up` | PASS | PASS | PASS | 是 |
-| `NOT_CONV_01` | 不收斂 | `true`／`wrap_up` | MISMATCH | FAIL | FAIL | **否** |
-| `NOT_CONV_02` | 不收斂 | `false`／`perspective` | PASS | PASS | PASS | 是 |
-| `NOT_CONV_03` | 不收斂 | `false`／`counterexample` | MISMATCH | PASS | PASS | 是 |
-| `TURN_LIMIT_01` | 收斂 | `true`／`wrap_up` | PASS | PASS | PASS | 是 |
-
-**失敗樣本：`NOT_CONV_01`（志工服務，過早收斂）。** 第 3 階段，AI 上一輪提出反例（志工不足可能讓弱勢得不到照顧），學生回：
-
-> 隨便啦，反正那是政府的事，跟我沒關係，我不喜歡被強迫。
-
-這是以情緒性字眼迴避反例，情境預期 `advance=false`、繼續追問。受測模型的原始輸出：
-
-```text
-我聽見你重視不被強迫。你認為照顧公益團體的人力應由政府負責，即使志工不足可能影響弱勢，也不足以成為把服務列為畢業門檻的理由。討論到此結束，謝謝你坦白說出自己的想法。
-<<<META>>>
-{"question_type":"wrap_up","advance":true,"reason":"學生已回應志工人力不足可能影響弱勢的具體後果，並以政府責任與反對強迫說明立場。"}
-```
-
-模型把「推給政府」當成對後果的實質回應，標 `advance=true` 並直接結束討論。評審判定（`advance_verdict`、`convergence_verdict` 皆為 `FAIL`）：
-
-- `advance_reason`：學生以「隨便」及「跟我沒關係」迴避公益團體人力不足對弱勢的影響，尚未實質回應反例；AI 卻判定應收斂。
-- `convergence_reason`：尚未達收斂條件，AI 卻直接總結並結束討論，沒有指出迴避之處或繼續追問。
-
-原始紀錄在 `backend/eval/results/f08_1794149101/NOT_CONV_01.json`（該目錄不進版本控制）。
-
-**`NOT_CONV_03`（死刑存廢）的 `MISMATCH` 不是失敗。** 模型輸出 `advance=false`、`question_type=counterexample`，追問「假如有些國家仍保留死刑……你會如何看待」；情境的 `acceptable_types` 只有 `assumption`、`perspective`，所以程式檢查標為 `MISMATCH`。評審判定兩項都 `PASS`，認為模型延續探問、沒有過早收尾。是否要把 `counterexample` 列入這題的可接受類型，待團隊決定，本 PR 不改情境檔。
-
-**這一輪的限制。**
-
-- 每題只跑一次，沒有重跑；單次結果不代表穩定。
-- 受測與評審是同一個模型，有自評偏差風險。
-- 「已知限制」列的三個落差都還在：runner 沒有接 `closing_instruction`（影響 `TURN_LIMIT_01`）、評審準則措辭未跟上 v1.23、不經過後端的收尾保護。
-- 沒有人工複核；README 建議至少抽查所有 `PASS` 的題目。
+| Run ID | `rules_version` | 結果 | 紀錄 |
+| --- | --- | --- | --- |
+| `1794149101`（2026-11-08） | `v1.23/zh-TW` | 8 題通過 7 題；失敗：`NOT_CONV_01`（過早收斂） | [Discussion #485](https://github.com/2026software-3/socrates-chat/discussions/485) |
 
 ## 已知限制
 
