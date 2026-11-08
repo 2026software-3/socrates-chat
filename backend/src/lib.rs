@@ -66,6 +66,7 @@ pub mod pagination;
 pub mod password;
 pub mod pii;
 pub mod points;
+pub mod purchase;
 pub mod reply;
 pub mod request_logs;
 pub mod roster;
@@ -197,6 +198,7 @@ pub fn app(state: AppState) -> Router {
         .merge(cascade::routes())
         .merge(points::routes())
         .merge(tasks::routes())
+        .merge(purchase::routes())
         .merge(achievement_admin::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())

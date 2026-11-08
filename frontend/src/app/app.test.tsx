@@ -177,6 +177,7 @@ describe('app shell', () => {
       '題目庫',
       '執行日誌',
       '任務設定',
+      '部件設定',
     ])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })
