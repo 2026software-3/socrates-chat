@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use socrates_chat_backend::{
     ai::{
         AiRequest, ChatRole, ChatTurn, META_DELIM, OpenAiProvider, PromptContext,
-        build_system_prompt, collect,
+        build_system_prompt, collect, rules_version,
     },
     config::load_openai_keys,
     key_pool::KeyPool,
@@ -162,6 +162,87 @@ fn grade(
     (grade_status.to_string(), parsed)
 }
 
+/// 評估語言：F-08.2 的固定情境與評審準則目前都只有繁體中文版。
+const LANGUAGE: &str = "zh-TW";
+/// 受測提示詞使用的引導收尾回合（與正式系統預設相同）。
+const WRAP_UP_TURN: u32 = 15;
+/// 修改評估邏輯（評分、重試、通過條件）時更新。
+const EVALUATOR_VERSION: &str = "f08-eval-v1";
+/// 修改 `JUDGE_PROMPT` 評審準則時更新；後綴是評審準則的語言。
+const JUDGE_VERSION: &str = "f08-rubric-v1/zh-TW";
+const JUDGE_PROMPT_LANGUAGE: &str = "zh-TW";
+/// 結果欄位有不相容變更時更新。
+const SCHEMA_VERSION: u32 = 1;
+
+/// 每筆結果與摘要都帶的版本與設定：之後才能知道這份結果是哪一版提示詞、哪一版評估程式與準則跑出來的。
+fn run_metadata(model: &str, judge_model: &str) -> Value {
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "evaluator_version": EVALUATOR_VERSION,
+        "rules_version": rules_version(LANGUAGE),
+        "language": LANGUAGE,
+        "wrap_up_turn": WRAP_UP_TURN,
+        "model_requested": model,
+        "judge_model": judge_model,
+        "judge_version": JUDGE_VERSION,
+        "judge_prompt_language": JUDGE_PROMPT_LANGUAGE,
+    })
+}
+
+/// 單一情境的結果檔內容：版本與設定加上這一題的回覆與評分。
+fn case_record(
+    metadata: &Value,
+    run_id: u64,
+    case_id: &str,
+    raw_reply: &str,
+    offline_status: &str,
+    parsed: &Value,
+    judgment: &Value,
+) -> Value {
+    let mut record = metadata.clone();
+    let fields = json!({
+        "run_id": run_id,
+        "case_id": case_id,
+        "raw_reply": raw_reply,
+        "offline_status": offline_status,
+        "parsed": parsed,
+        "judgment": judgment,
+    });
+    if let (Some(record), Some(fields)) = (record.as_object_mut(), fields.as_object()) {
+        record.extend(fields.clone());
+    }
+    record
+}
+
+/// 整輪的摘要。`rows` 只含有拿到受測回覆、評分過的題目；沒有回覆（API 失敗）的題目算在 `no_result_cases`。
+/// 通過條件是評審的 advance 與 convergence 兩項都是 PASS；這不是團隊約定的驗收門檻。
+fn summary(metadata: &Value, run_id: u64, total_cases: usize, rows: &[Value]) -> Value {
+    let passed = rows
+        .iter()
+        .filter(|r| r["advance_verdict"] == "PASS" && r["convergence_verdict"] == "PASS")
+        .count();
+    let evaluated = rows.len();
+    let mut out = metadata.clone();
+    let fields = json!({
+        "run_id": run_id,
+        "total_cases": total_cases,
+        "evaluated_cases": evaluated,
+        "no_result_cases": total_cases - evaluated,
+        "passed": passed,
+        "pass_rate_evaluated_cases": if evaluated > 0 {
+            Some(passed as f64 / evaluated as f64)
+        } else {
+            None
+        },
+        "acceptance_note": "評審結果不是團隊約定的驗收門檻；仍需人工抽查與團隊審閱。",
+        "cases": rows,
+    });
+    if let (Some(out), Some(fields)) = (out.as_object_mut(), fields.as_object()) {
+        out.extend(fields.clone());
+    }
+    out
+}
+
 /// 評審模型的 Prompt：評估受測模型是否「適時收斂」還是「無限追問」
 const JUDGE_PROMPT: &str = r#"你是哲學討論對話的客觀評審。依據【S-03.3 收斂條件】評估 AI 回應是否適時收斂。
 
@@ -256,6 +337,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "Loaded {} test cases. Target model: {model}, Judge model: {judge_model}",
         cases.len()
     );
+    println!(
+        "Rules: {}; evaluator: {EVALUATOR_VERSION}; rubric: {JUDGE_VERSION}; schema: {SCHEMA_VERSION}",
+        rules_version(LANGUAGE)
+    );
+    let metadata = run_metadata(&model, &judge_model);
 
     let run_id = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let out_dir = Path::new("eval/results").join(format!("f08_{run_id}"));
@@ -286,6 +372,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     let mut passed = 0;
     let mut total = 0;
+    let mut rows: Vec<Value> = Vec::new();
 
     for case in &cases {
         if total > 0 && !delay.is_zero() {
@@ -320,8 +407,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 description: &case.description,
                 stage: case.stage,
                 turn: case.turn,
-                wrap_up_turn: 15,
-                language: "zh-TW",
+                wrap_up_turn: WRAP_UP_TURN,
+                language: LANGUAGE,
             }),
             messages,
         };
@@ -440,20 +527,38 @@ async fn run() -> Result<(), Box<dyn Error>> {
             passed += 1;
         }
 
-        let result_json = json!({
+        let result_json = case_record(
+            &metadata,
+            run_id,
+            &case.id,
+            &raw_reply,
+            &offline_status,
+            &parsed,
+            &judgment,
+        );
+        rows.push(json!({
             "case_id": case.id,
-            "raw_reply": raw_reply,
-            "parsed": parsed,
-            "judgment": judgment,
-        });
+            "offline_status": offline_status,
+            "advance_verdict": judgment["advance_verdict"],
+            "convergence_verdict": judgment["convergence_verdict"],
+            "file": format!("{}.json", case.id),
+        }));
 
         save_json(&out_dir.join(format!("{}.json", case.id)), &result_json)?;
     }
+    save_json(
+        &out_dir.join("summary.json"),
+        &summary(&metadata, run_id, cases.len(), &rows),
+    )?;
 
     println!("\n==========================================");
     println!(
         "Evaluation complete: Passed {passed}/{total} ({:.1}%)",
-        (passed as f64 / total as f64) * 100.0
+        if total > 0 {
+            passed as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        }
     );
     println!("Detailed results saved in: {}", out_dir.display());
     println!("==========================================");
@@ -487,5 +592,100 @@ mod tests {
         let (status, val) = grade(raw, true, "wrap_up", &[]);
         assert_eq!(status, "FORMAT_ERROR");
         assert_eq!(val["format_valid"], false);
+    }
+
+    fn metadata() -> Value {
+        run_metadata("target-model", "judge-model")
+    }
+
+    #[test]
+    fn run_metadata_records_the_rules_evaluator_and_rubric_versions() {
+        let m = metadata();
+        assert_eq!(m["schema_version"], SCHEMA_VERSION);
+        assert_eq!(m["language"], "zh-TW");
+        // 受測提示詞版本必須是產品實際使用的那個，而不是 runner 自己抄一份
+        assert_eq!(
+            m["rules_version"],
+            socrates_chat_backend::ai::rules_version("zh-TW")
+        );
+        assert!(m["rules_version"].as_str().unwrap().ends_with("/zh-TW"));
+        assert!(
+            m["evaluator_version"]
+                .as_str()
+                .unwrap()
+                .starts_with("f08-eval-")
+        );
+        let judge = m["judge_version"].as_str().unwrap();
+        assert!(judge.starts_with("f08-rubric-") && judge.ends_with("/zh-TW"));
+        assert_eq!(m["judge_prompt_language"], "zh-TW");
+        assert_eq!(m["wrap_up_turn"], 15);
+        assert_eq!(m["model_requested"], "target-model");
+        assert_eq!(m["judge_model"], "judge-model");
+    }
+
+    #[test]
+    fn a_case_record_keeps_its_result_and_carries_the_run_metadata() {
+        let parsed = json!({"advance": true, "question_type": "wrap_up"});
+        let judgment = json!({"advance_verdict": "PASS", "convergence_verdict": "PASS"});
+        let record = case_record(
+            &metadata(),
+            1234,
+            "CONV_01",
+            "原始回覆",
+            "PASS",
+            &parsed,
+            &judgment,
+        );
+        assert_eq!(record["case_id"], "CONV_01");
+        assert_eq!(record["run_id"], 1234);
+        assert_eq!(record["raw_reply"], "原始回覆");
+        assert_eq!(record["offline_status"], "PASS");
+        assert_eq!(record["parsed"], parsed);
+        assert_eq!(record["judgment"], judgment);
+        for key in [
+            "schema_version",
+            "evaluator_version",
+            "rules_version",
+            "language",
+            "judge_version",
+            "model_requested",
+            "judge_model",
+        ] {
+            assert_eq!(record[key], metadata()[key], "{key}");
+        }
+    }
+
+    fn row(id: &str, advance: &str, convergence: &str) -> Value {
+        json!({"case_id": id, "advance_verdict": advance, "convergence_verdict": convergence})
+    }
+
+    #[test]
+    fn the_summary_records_versions_and_counts_only_double_passes() {
+        let rows = vec![
+            row("A", "PASS", "PASS"),
+            row("B", "PASS", "FAIL"),
+            row("C", "ERROR", "ERROR"),
+            row("D", "PASS", "UNCERTAIN"),
+        ];
+        let s = summary(&metadata(), 99, 5, &rows);
+        assert_eq!(s["run_id"], 99);
+        assert_eq!(s["total_cases"], 5);
+        assert_eq!(s["evaluated_cases"], 4);
+        assert_eq!(s["no_result_cases"], 1);
+        assert_eq!(s["passed"], 1);
+        assert_eq!(s["pass_rate_evaluated_cases"], 0.25);
+        assert_eq!(s["rules_version"], metadata()["rules_version"]);
+        assert_eq!(s["evaluator_version"], metadata()["evaluator_version"]);
+        assert_eq!(s["judge_version"], metadata()["judge_version"]);
+        assert_eq!(s["schema_version"], SCHEMA_VERSION);
+        assert_eq!(s["cases"].as_array().unwrap().len(), 4);
+        assert!(s["acceptance_note"].as_str().unwrap().contains("人工"));
+    }
+
+    #[test]
+    fn an_empty_run_has_no_pass_rate_instead_of_nan() {
+        let s = summary(&metadata(), 1, 0, &[]);
+        assert_eq!(s["evaluated_cases"], 0);
+        assert!(s["pass_rate_evaluated_cases"].is_null());
     }
 }

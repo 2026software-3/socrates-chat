@@ -21,7 +21,7 @@
 
 - `POST /api/auth/login`：`{ account, password }`，`account` 接受**學號或電子郵件**（含 `@` 以電子郵件比對，否則以學號比對，大小寫不分、前後空白忽略；舊欄位名稱 `email` 仍可使用）。成功回 `{ must_change_password }` 並設定 `sid` cookie；失敗一律 `401 invalid_credentials`（帳號不存在、格式不符與密碼錯誤相同），密碼正確但帳號已停用才回 `403 account_disabled`。沒有電子郵件的學生只能用學號登入。限流記錄只存登入帳號輸入的雜湊。稽核日誌的登入紀錄，對象沒有電子郵件時以帳號 UUID 識別。
 - 沒有註冊 API：內建帳號只由系統建立（管理者重設密碼、教師或管理者匯入修課名單、部署時的 `ADMIN_INITIAL_PASSWORD`）。
-- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一個登入帳號輸入（學號或電子郵件，先去前後空白；含 `@` 轉小寫，否則轉大寫，因此大小寫不能繞過）從同一個 IP 連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`（別的 IP 的少量失敗不會鎖住本人）；同一個登入帳號輸入不論 IP 累計失敗 30 次（暫定值）則在所有 IP 鎖定 15 分鐘；另外每個來源 IP 有請求頻率限制（連續 60 個、之後平均每秒 2 個，暫定值），超過同樣回 `429 too_many_attempts`。
+- 內建登入失敗一律回同一個 `invalid_credentials`（帳號不存在與密碼錯誤相同）；同一個登入帳號輸入（學號或電子郵件，先去前後空白；含 `@` 轉小寫，否則轉大寫，因此大小寫不能繞過）從同一個 IP 連續失敗 5 次鎖定 15 分鐘，期間回 `429 too_many_attempts`（別的 IP 的少量失敗不會鎖住本人）；同一個登入帳號輸入不論 IP 累計失敗 30 次（暫定值）則在所有 IP 鎖定 15 分鐘；另外每個來源 IP 有請求頻率限制（連續 60 個、之後每 3 秒回補一個，即平均每分鐘 20 個，暫定值），超過同樣回 `429 too_many_attempts`。
 - Google 回呼成功設定 `sid` cookie 並導回 `APP_BASE_URL`；失敗導回 `/login?error=<code>`（`invalid_state`、`email_not_verified`、`access_denied`、`login_failed`）。
 - 用臨時密碼登入時 `must_change_password` 為 `true`：前端導向改密碼頁，除了 `GET /api/me`、改密碼與登出，其他 API 都回 `password_change_required`。旗標在 session 上，不在使用者上。
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
@@ -194,7 +194,7 @@
 - `POST /api/conversations/{id}/end` 回 202（首次）與 200（已結束）：狀態碼雙義，對前端是額外分支。建議一律 202 或一律 200 + body `{ status }`。
 - `POST /api/conversations` 的來源錯誤回 `invalid_conversation_source`；`POST …/messages` 的非法 `source` 仍回 `invalid_source`。
 - `POST /api/classrooms/{id}/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅匯入者（教師或管理者，2026-10 修訂，原為僅管理者）可取得；教師知道臨時密碼的風險已由需求方接受（`S-08.2-auth-verification.md`）；回應帶 `Cache-Control: no-store`。
-- 登入鎖定 5 次／15 分鐘是以信箱為單位，可被用來鎖住他人帳號；加 IP 維度見 #295（會改 S-08.2，需先更新規格）。
+- 登入失敗鎖定已改為以（登入帳號輸入, 來源 IP）為單位，另有每登入帳號輸入的跨 IP 總量上限，登入端點本身也有來源 IP 的請求頻率限制（#295 已完成；規則見 S-08.2 與上方「登入」的說明）。其他未登入端點目前沒有 IP 請求頻率限制，見 #475。
 - #324、#325 已完成：全域 request body 上限（1 MiB，超過回 `413 payload_too_large`）與請求逾時（10 秒，SSE 等長時間路由用較長逾時，逾時回 `408 request_timeout`），見「通則」。
 - `GET /ready`（S-09.3）已實作：公開，不需登入；以 `SELECT 1` 檢查資料庫連線（最多等 3 秒），成功回 `200 { status: "ok" }`，失敗或逾時回 `503 database_unavailable`（標準錯誤格式，不含連線資訊）。`/ready` 的探測（成功或失敗）一律不進 `/admin/logs` 的 request log，與 `/health` 一致；失敗仍由 tracing 輸出到 stdout。`/health` 仍只表示程序存活。
 - 稽核（`audit_logs`）涵蓋登入、disable／enable／delete、教師與名單異動、reset-password（F-22.1）；日後的調價（S-07 §5 要求）也要進 `audit_logs`。
