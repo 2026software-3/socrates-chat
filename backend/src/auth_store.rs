@@ -503,25 +503,35 @@ pub async fn record_login_failure(
     account: &str,
     ip_key: &str,
     now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
     // 順便清掉很久以前的紀錄，避免用大量不存在的信箱讓資料表無限成長
     sqlx::query("DELETE FROM login_failures WHERE last_failed_at < $1")
         .bind(now - Duration::days(1))
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     let key = login_key(account);
-    bump_failures(pool, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
-    bump_failures(pool, &key, ACCOUNT_TOTAL_KEY, MAX_EMAIL_LOGIN_FAILURES, now).await
+    let ip_locked = bump_failures(&mut tx, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
+    let account_locked = bump_failures(
+        &mut tx,
+        &key,
+        ACCOUNT_TOTAL_KEY,
+        MAX_EMAIL_LOGIN_FAILURES,
+        now,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(ip_locked || account_locked)
 }
 
 async fn bump_failures(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     login_key: &str,
     key: &str,
     max_failures: i32,
     now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
         "INSERT INTO login_failures (login_key, ip, failures, locked_until, last_failed_at)
          VALUES ($1, $2, 1, NULL, $3)
          ON CONFLICT (login_key, ip) DO UPDATE SET
@@ -533,16 +543,16 @@ async fn bump_failures(
                     THEN NULL
                 WHEN login_failures.failures + 1 >= $4 THEN $5
                 ELSE login_failures.locked_until END,
-            last_failed_at = $3",
+            last_failed_at = $3
+         RETURNING failures = $4 AND locked_until IS NOT NULL",
     )
     .bind(login_key)
     .bind(key)
     .bind(now)
     .bind(max_failures)
     .bind(now + LOGIN_LOCK_DURATION)
-    .execute(pool)
-    .await?;
-    Ok(())
+    .fetch_one(conn)
+    .await
 }
 
 /// 成功登入：清掉這個（登入帳號輸入, 來源 IP）的計數與這個登入帳號輸入的跨 IP 總量；別的 IP

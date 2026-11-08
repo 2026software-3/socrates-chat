@@ -27,6 +27,8 @@ use crate::{
     login_rate_limit, password,
 };
 
+use crate::diagnostics::{self, Failure};
+
 const COOKIE_NAME: &str = "sid";
 
 /// 帳號已被管理者停用（S-01.3）：登入後看到「帳號已停用」。
@@ -324,15 +326,32 @@ pub(crate) async fn callback(
         return finish_link(&state, &headers, p).await;
     }
     match finish_login(&state, p, preferred_language(&headers)).await {
-        Ok(token) => (
-            [(
-                header::SET_COOKIE,
-                session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
-            )],
-            Redirect::to(&state.config.app_base_url),
-        )
-            .into_response(),
-        Err(code) => login_error(&state, code),
+        Ok((token, user)) => {
+            diagnostics::login(&state.pool, "google_login", Some(user), Ok(())).await;
+            (
+                [(
+                    header::SET_COOKIE,
+                    session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
+                )],
+                Redirect::to(&state.config.app_base_url),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            let class = if error.code == "account_disabled" {
+                Failure::AccountDisabled
+            } else {
+                Failure::InvalidCredentials
+            };
+            diagnostics::login(
+                &state.pool,
+                "google_login",
+                error.user,
+                Err((class, ApiError::new(StatusCode::SEE_OTHER, error.code, ""))),
+            )
+            .await;
+            login_error(&state, error.code)
+        }
     }
 }
 
@@ -474,11 +493,22 @@ pub(crate) async fn unlink_google(
 }
 
 /// 成功時回傳新 session 的 token；失敗時回傳導回前端的錯誤代碼。
+struct LoginRejection {
+    code: &'static str,
+    user: Option<Uuid>,
+}
+
+impl From<&'static str> for LoginRejection {
+    fn from(code: &'static str) -> Self {
+        Self { code, user: None }
+    }
+}
+
 async fn finish_login(
     state: &AppState,
     p: CallbackParams,
     preferred_language: &str,
-) -> Result<String, &'static str> {
+) -> Result<(String, Uuid), LoginRejection> {
     // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
     let stored = match p.state.as_deref() {
         Some(s) => auth_store::take_login_state(&state.pool, s, Utc::now())
@@ -487,14 +517,15 @@ async fn finish_login(
         None => None,
     };
     if let Some(err) = p.error {
-        return Err(if err == "access_denied" {
+        return Err((if err == "access_denied" {
             "access_denied"
         } else {
             "login_failed"
-        });
+        })
+        .into());
     }
     let (Some(stored), Some(code)) = (stored, p.code) else {
-        return Err("invalid_state");
+        return Err("invalid_state".into());
     };
     let identity = state
         .identity
@@ -502,7 +533,7 @@ async fn finish_login(
         .await
         .map_err(|_| "login_failed")?;
     if !identity.email_verified {
-        return Err("email_not_verified");
+        return Err("email_not_verified".into());
     }
     let is_admin = state
         .config
@@ -518,7 +549,10 @@ async fn finish_login(
     .await
     .map_err(|_| "login_failed")?;
     if user.disabled {
-        return Err("account_disabled");
+        return Err(LoginRejection {
+            code: "account_disabled",
+            user: Some(user.id),
+        });
     }
     user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
         .await
@@ -537,7 +571,7 @@ async fn finish_login(
     )
     .await
     .map_err(|_| "login_failed")?;
-    Ok(token)
+    Ok((token, user.id))
 }
 
 #[utoipa::path(
@@ -748,19 +782,50 @@ pub(crate) async fn password_login(
         &state.config.trusted_proxies,
     );
     if auth_store::is_locked(&state.pool, &login_account, &ip_key, now).await? {
+        let user = auth_store::find_password_account(&state.pool, &login_account)
+            .await
+            .ok()
+            .flatten()
+            .map(|account| account.id);
+        diagnostics::login(
+            &state.pool,
+            "password_login",
+            user,
+            Err((Failure::AccountLocked, login_rate_limit::TOO_MANY_ATTEMPTS)),
+        )
+        .await;
         return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
     }
     let account = auth_store::find_password_account(&state.pool, &login_account).await?;
     let real_hash = account.as_ref().and_then(|a| a.password_hash.clone());
     let has_password = real_hash.is_some();
     let ok = verify_blocking(body.password, real_hash).await && has_password;
+    let user = account.as_ref().map(|account| account.id);
     let (Some(account), true) = (account, ok) else {
-        auth_store::record_login_failure(&state.pool, &login_account, &ip_key, now).await?;
+        let locked =
+            auth_store::record_login_failure(&state.pool, &login_account, &ip_key, now).await?;
+        diagnostics::login(
+            &state.pool,
+            "password_login",
+            user,
+            Err((Failure::InvalidCredentials, INVALID_CREDENTIALS)),
+        )
+        .await;
+        if locked {
+            diagnostics::account_lock(&state.pool, user, &INVALID_CREDENTIALS).await;
+        }
         return Err(INVALID_CREDENTIALS);
     };
     auth_store::clear_login_failures_for(&state.pool, &login_account, &ip_key).await?;
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if account.disabled {
+        diagnostics::login(
+            &state.pool,
+            "password_login",
+            Some(account.id),
+            Err((Failure::AccountDisabled, ACCOUNT_DISABLED)),
+        )
+        .await;
         return Err(ACCOUNT_DISABLED);
     }
     auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
@@ -774,6 +839,7 @@ pub(crate) async fn password_login(
         .clone()
         .unwrap_or_else(|| account.id.to_string());
     audit(&state.pool, account.id, "login", &target, None).await?;
+    diagnostics::login(&state.pool, "password_login", Some(account.id), Ok(())).await;
     Ok((
         [(
             header::SET_COOKIE,

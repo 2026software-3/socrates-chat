@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo,
+    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo, diagnostics,
     identity::GoogleIdentity, logging, password, summary,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -67,6 +67,7 @@ async fn main() {
     )
     .with_fallbacks(config.openai_fallback_models.clone())
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
+    diagnostics::spawn_retention(pool.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
