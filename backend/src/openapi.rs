@@ -8,7 +8,7 @@ use utoipa::{
 
 use crate::{
     accounts, achievement_admin, ai_usage, auth, cascade, catalog, chat, claims, classroom_store,
-    classrooms, dashboard, demo, error::ErrorBody, points, reply, request_logs, roster,
+    classrooms, dashboard, demo, error::ErrorBody, points, purchase, reply, request_logs, roster,
     roster_store, summary, voice,
 };
 
@@ -133,6 +133,7 @@ impl Modify for SessionCookie {
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech, cascade::socket,
         points::mine, demo::accounts, crate::ready,
+        purchase::list, purchase::buy, purchase::admin_list, purchase::update,
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
     ),
     components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
