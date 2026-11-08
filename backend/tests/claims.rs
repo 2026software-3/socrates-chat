@@ -323,7 +323,7 @@ async fn groups_are_scoped_to_the_activity_not_the_topic(pool: PgPool) {
     let a = seed_actors(&app).await;
     let student2 = add_student(&app, &a, "sub-student2", "student2@example.com").await;
     // 同一個題目開成兩個活動
-    let topic = create_topic(&app, &a, "電車難題").await;
+    let topic = seed_topic("電車難題").await;
     let act1 = publish_activity(&app, &a, "第一週", &topic).await;
     let act2 = publish_activity(&app, &a, "第二週", &topic).await;
     finish(&app, &a.student, &act1, &ai, &pool, 2).await;

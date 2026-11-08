@@ -68,6 +68,19 @@ async fn main() {
     .with_fallbacks(config.openai_fallback_models.clone())
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
+    let seed_state = state.clone();
+    tokio::spawn(async move {
+        if socrates_chat_backend::topic_dimensions::generate(
+            &seed_state,
+            catalog::TROLLEY_TOPIC_ID,
+            "zh-TW",
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("failed to persist built-in topic dimensions");
+        }
+    });
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind listener");

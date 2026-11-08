@@ -125,11 +125,19 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     responses((status = 201, description = "已建立", body = Topic))
 )]
 pub(crate) async fn create_topic_for_teacher(
-    _: RequireTeacher,
+    RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Json(b): Json<NewTopic>,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
-    insert_topic(&state, b).await
+    let created = insert_topic(&state, b).await?;
+    let id = created.1.0.id;
+    if crate::topic_dimensions::generate(&state, id, &user.user.language)
+        .await
+        .is_err()
+    {
+        tracing::warn!(topic_id = %id, "failed to persist topic dimensions");
+    }
+    Ok(created)
 }
 
 async fn insert_topic(
@@ -194,7 +202,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
 }
 
 /// 內建題目的固定 ID：重複啟動時不會重複建立，教師改動或停用後也不會被覆寫。
-const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
+pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
 
 /// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
