@@ -132,7 +132,7 @@ impl Modify for SessionCookie {
         summary::end, summary::get_summary, summary::retry, summary::list, summary::transcript, summary::translate,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech, cascade::socket,
-        points::mine, demo::accounts,
+        points::mine, demo::accounts, crate::ready,
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
     ),
     components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
