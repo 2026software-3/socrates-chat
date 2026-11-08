@@ -120,6 +120,7 @@ pub(crate) async fn claim(
     Json(body): Json<Claim>,
 ) -> Result<Json<TaskView>, ApiError> {
     let mut tx = state.pool.begin().await?;
+    achievements::lock_catalog_for_event(&mut tx).await?;
     sqlx::query("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE")
         .bind(cu.user.id)
         .execute(&mut *tx)

@@ -56,6 +56,7 @@ pub mod config;
 pub mod dashboard;
 pub mod demo;
 pub mod error;
+mod google_translation;
 pub mod identity;
 pub mod key_pool;
 pub mod logging;
@@ -105,6 +106,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
     /// 自架語音同時進行中的使用者（S-05.5）。
@@ -129,6 +131,10 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let google_translation = config
+            .google_translation_api_key
+            .as_deref()
+            .and_then(google_translation::GoogleTranslation::new);
         let ai_usage = Arc::new(user_limit::UserLimiter::new(
             config.ai_usage_max,
             config.ai_usage_window,
@@ -139,6 +145,7 @@ impl AppState {
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
+            google_translation,
             voice,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
