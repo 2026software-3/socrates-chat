@@ -357,6 +357,12 @@ pub(crate) struct SummaryRow {
     conversation_id: Uuid,
     /// 對話所屬的教室
     classroom_id: Uuid,
+    /// 對話所屬的活動 ID（個人練習為 None）
+    activity_id: Option<Uuid>,
+    /// 對話所屬的題目 ID
+    topic_id: Option<Uuid>,
+    /// 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3）；非活動對話為 false
+    activity_completed: bool,
     title: String,
     ended_at: DateTime<Utc>,
     /// 排序與游標用，不輸出
@@ -694,7 +700,33 @@ pub(crate) async fn list(
     // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
-        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at, s.completed_at,
+        "SELECT s.conversation_id, c.classroom_id, c.activity_id, c.topic_id,
+                COALESCE(
+                    c.activity_id IS NOT NULL
+                    AND (
+                        SELECT count(*)
+                        FROM activity_topics at
+                        WHERE at.activity_id = c.activity_id
+                    ) > 0
+                    AND (
+                        SELECT count(DISTINCT at.topic_id)
+                        FROM activity_topics at
+                        JOIN conversations conv
+                          ON conv.activity_id = at.activity_id
+                         AND conv.topic_id = at.topic_id
+                         AND conv.user_id = c.user_id
+                        JOIN summaries sm
+                          ON sm.conversation_id = conv.id
+                         AND sm.status = 'ready'
+                        WHERE at.activity_id = c.activity_id
+                    ) = (
+                        SELECT count(*)
+                        FROM activity_topics at
+                        WHERE at.activity_id = c.activity_id
+                    ),
+                    false
+                ) AS activity_completed,
+                c.title, c.ended_at, s.completed_at,
                 u.id AS student_user_id, u.student_id AS student_number,
                 u.display_name AS student_name, u.email AS student_email,
                 c.language,
