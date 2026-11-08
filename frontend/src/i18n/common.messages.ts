@@ -101,6 +101,8 @@ export const common = defineMessages({
     'usage.resetsMinutes': '約 {n} 分鐘後釋出額度',
     'usage.resetsHours': '約 {n} 小時後釋出額度',
     'error.conflict': '操作衝突，請重新整理後再試。',
+    'error.part_owned': '你已經擁有這個部件。',
+    'error.insufficient_points': '點數不足，無法解鎖。',
     'error.unknown': '發生未知的錯誤。',
   },
   en: {
@@ -202,6 +204,8 @@ export const common = defineMessages({
     'usage.resetsMinutes': 'A slot frees up in about {n} min',
     'usage.resetsHours': 'A slot frees up in about {n} h',
     'error.conflict': 'Conflict. Reload the page and try again.',
+    'error.part_owned': 'You already own this part.',
+    'error.insufficient_points': 'You do not have enough points to unlock this part.',
     'error.unknown': 'An unknown error occurred.',
   },
   es: {
@@ -303,6 +307,8 @@ export const common = defineMessages({
     'usage.resetsMinutes': 'Se libera un cupo en unos {n} min',
     'usage.resetsHours': 'Se libera un cupo en unas {n} h',
     'error.conflict': 'Conflicto. Recarga la página e inténtalo de nuevo.',
+    'error.part_owned': 'Ya tienes esta pieza.',
+    'error.insufficient_points': 'No tienes suficientes puntos para desbloquear esta pieza.',
     'error.unknown': 'Ocurrió un error desconocido.',
   },
 })
