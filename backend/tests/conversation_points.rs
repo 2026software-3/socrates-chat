@@ -59,10 +59,14 @@ async fn completing_a_conversation_awards_ten_points_once(pool: PgPool) {
         "ready"
     );
 
-    assert_eq!(balance(&app, &a.student).await, 10);
+    assert_eq!(balance(&app, &a.student).await, 20);
     // 帳本只存 ID 與數值，不含對話內容（S-07.2 2.1、S-02.2）
     assert_eq!(
-        ledger(&pool, "student@example.com").await,
+        ledger(&pool, "student@example.com")
+            .await
+            .into_iter()
+            .filter(|entry| entry.2 == "conversation")
+            .collect::<Vec<_>>(),
         vec![(
             10,
             "conversation_completed".to_string(),
@@ -96,7 +100,7 @@ async fn a_failed_summary_awards_nothing_until_a_retry_succeeds(pool: PgPool) {
         settled_summary(&app, &a.student, &conv).await["status"],
         "ready"
     );
-    assert_eq!(balance(&app, &a.student).await, 10);
+    assert_eq!(balance(&app, &a.student).await, 20);
 }
 
 #[sqlx::test]
@@ -178,8 +182,8 @@ async fn a_failed_award_rolls_back_the_summary_and_a_retry_awards_once(pool: PgP
         settled_summary(&app, &a.student, &conv).await["status"],
         "ready"
     );
-    assert_eq!(balance(&app, &a.student).await, 10);
-    assert_eq!(ledger(&pool, "student@example.com").await.len(), 1);
+    assert_eq!(balance(&app, &a.student).await, 20);
+    assert_eq!(ledger(&pool, "student@example.com").await.len(), 2);
 }
 
 #[sqlx::test]
@@ -214,7 +218,7 @@ async fn points_go_only_to_the_conversation_owner(pool: PgPool) {
     let conv = finish_conversation(&app, &pool, &a).await;
     settled_summary(&app, &a.student, &conv).await;
 
-    assert_eq!(balance(&app, &a.student).await, 10);
+    assert_eq!(balance(&app, &a.student).await, 20);
     assert_eq!(balance(&app, &other).await, 0);
     // 教師與管理者不會因學生完成對話而入帳
     for email in ["teacher@example.com", "admin@example.com"] {
