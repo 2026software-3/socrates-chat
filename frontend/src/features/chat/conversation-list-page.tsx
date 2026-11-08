@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
-import { api, isApiError } from '@/lib/api'
+import { api, isApiError, isInvalidCursor } from '@/lib/api'
 import type { Conversation, Page as PageResult } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
@@ -19,10 +19,10 @@ export function ConversationListPage() {
   const archived = params.get('archived') === 'true'
   const [cursors, setCursors] = useState<(string | null)[]>([null])
   const cursor = cursors[cursors.length - 1]
-  return <ConversationList key={`${archived}:${cursor ?? ''}`} archived={archived} onViewChange={(next) => { setParams(next ? { archived: 'true' } : {}); setCursors([null]) }} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} />
+  return <ConversationList key={`${archived}:${cursor ?? ''}`} archived={archived} onViewChange={(next) => { setParams(next ? { archived: 'true' } : {}); setCursors([null]) }} cursor={cursor} onNext={(next) => setCursors((previous) => [...previous, next])} onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined} onRestart={() => setCursors([null])} />
 }
 
-function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious }: { archived: boolean; onViewChange: (archived: boolean) => void; cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void }) {
+function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious, onRestart }: { archived: boolean; onViewChange: (archived: boolean) => void; cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void; onRestart: () => void }) {
   const t = useT()
   const { data, error, loading, reload } = useFetch<PageResult<Conversation>>(`/api/conversations?${new URLSearchParams({ ...(archived ? { archived: 'true' } : {}), ...(cursor ? { cursor } : {}) }).toString()}`)
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set())
@@ -68,7 +68,7 @@ function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious }
     <Page title={t('chat.list.title')} description={t('chat.list.subtitle')}>
       <ArchiveViewToggle archived={archived} onChange={onViewChange} />
       {loading && !data ? <LoadingBlock /> : null}
-      {error && !data ? <ErrorBlock error={error} onRetry={reload} /> : null}
+      {error && !data ? <ErrorBlock error={error} onRetry={isInvalidCursor(error) ? onRestart : reload} /> : null}
       {items && items.length === 0 ? (
         <EmptyBlock>
           <span className="block">{t(archived ? 'chat.list.emptyArchived' : 'chat.list.empty')}</span>
