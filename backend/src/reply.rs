@@ -37,11 +37,12 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta, build_system_prompt,
-        closing_instruction, parse_meta, rules_version,
+        AiError, AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta,
+        build_system_prompt, closing_instruction, parse_meta, rules_version,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, heard_only, load_messages},
+    diagnostics::{self, AiActivity, Failure},
     error::ApiError,
     mutex::lock,
 };
@@ -361,7 +362,7 @@ fn spawn_stream(
     }
     let id = conversation.id;
     let reply = state.live.start(id, tx, tap);
-    tokio::spawn(
+    tokio::spawn(diagnostics::inherit_request(
         async move {
             // 每位使用者的 AI 用量上限：用完時學生訊息已保存，但不呼叫 AI，以 error 事件結束（之後可重試）
             let mut failed = true;
@@ -370,8 +371,9 @@ fn spawn_stream(
             let last = match state.charge_ai(user) {
                 Err(_) => event("error", json!({"code": crate::ai_usage::EXCEEDED_CODE})),
                 Ok(slot) => {
-                    let run = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
-                        .catch_unwind();
+                    let run =
+                        AssertUnwindSafe(generate(&state, user, &conversation, messages, &reply))
+                            .catch_unwind();
                     let result = match &abandoned {
                         Some(abandoned) => tokio::select! {
                             result = run => Some(result),
@@ -414,7 +416,7 @@ fn spawn_stream(
             state.live.finish(reply, last, failed);
         }
         .in_current_span(),
-    );
+    ));
     event_stream(rx)
 }
 
@@ -447,6 +449,7 @@ struct Done {
 /// 產生並保存回覆，片段經 `reply` 送給所有連線；回傳最後一個事件（done／error）。
 async fn generate(
     state: &AppState,
+    user: Uuid,
     conv: &Conversation,
     messages: Vec<Message>,
     reply: &LiveReply,
@@ -478,13 +481,25 @@ async fn generate(
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
-    for _ in 0..2 {
-        match attempt(state, reply, &req).await {
+    let activity = AiActivity::new("chat_reply", Some(user), conv.classroom_id).statuses(200, 200);
+    for retry in 0..2 {
+        let started = Instant::now();
+        let result = attempt(state, reply, &req).await;
+        activity
+            .record(
+                state,
+                Some(&state.config.openai_model),
+                retry,
+                started.into_std(),
+                result.as_ref().err().map(|(error, _)| error),
+            )
+            .await;
+        match result {
             Ok(r) => {
                 outcome = Some(r);
                 break;
             }
-            Err(emitted_any) if emitted_any => break,
+            Err((_, true)) => break,
             Err(_) => {}
         }
     }
@@ -521,7 +536,7 @@ async fn attempt(
     state: &AppState,
     reply: &LiveReply,
     req: &AiRequest,
-) -> Result<(String, TurnMeta), bool> {
+) -> Result<(String, TurnMeta), (AiError, bool)> {
     let start = Instant::now();
     // 建立連線與等待第一個片段共用同一個首 token 期限（S-03.5）
     let first_token_deadline = start + state.config.ai_first_token_timeout;
@@ -530,7 +545,8 @@ async fn attempt(
     let mut stream = match timeout_at(first_token_deadline, state.ai.stream_chat(req.clone())).await
     {
         Ok(Ok(s)) => s,
-        _ => return Err(false),
+        Ok(Err(error)) => return Err((error, false)),
+        Err(_) => return Err((AiError::classified(Failure::Timeout), false)),
     };
     let mut got_chunk = false;
     let mut emitted = false;
@@ -543,7 +559,8 @@ async fn attempt(
             first_token_deadline.min(total_deadline)
         };
         match timeout_at(limit, stream.next()).await {
-            Err(_) | Ok(Some(Err(_))) => return Err(emitted),
+            Err(_) => return Err((AiError::classified(Failure::Timeout), emitted)),
+            Ok(Some(Err(error))) => return Err((error, emitted)),
             Ok(None) => break,
             Ok(Some(Ok(chunk))) => {
                 // 空片段（模型開始推理）也算首個 token，但沒有文字可送
@@ -564,7 +581,7 @@ async fn attempt(
         reply.delta(&rest);
     }
     if text.trim().is_empty() {
-        return Err(emitted);
+        return Err((AiError, emitted));
     }
     Ok((text.trim().to_string(), parse_meta(&meta_raw)))
 }

@@ -613,17 +613,23 @@ async fn speech_stays_metered_without_a_tts_base_url() {
 async fn openai_voice_reports_failure_when_the_service_is_unreachable() {
     // 預設假位址 127.0.0.1:1 連不上
     let v = openai_voice("http://127.0.0.1:1");
+    let expected =
+        VoiceError::Classified(socrates_chat_backend::diagnostics::Failure::ConnectionFailed);
     assert_eq!(
         v.transcribe(vec![1], "audio/webm", "en").await,
-        Err(VoiceError::Failed)
+        Err(expected)
     );
-    assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+    assert_eq!(v.speak("hi", "en").await, Err(expected));
 }
 
 #[tokio::test]
 async fn openai_voice_failures_never_change_the_shared_key_state() {
     use axum::http::StatusCode;
-    for status in [StatusCode::FORBIDDEN, StatusCode::TOO_MANY_REQUESTS] {
+    use socrates_chat_backend::diagnostics::Failure;
+    for (status, class) in [
+        (StatusCode::FORBIDDEN, Failure::InvalidKey),
+        (StatusCode::TOO_MANY_REQUESTS, Failure::RateLimited),
+    ] {
         let app = Router::new()
             .route("/audio/transcriptions", post(move || async move { status }))
             .route("/audio/speech", post(move || async move { status }));
@@ -637,9 +643,12 @@ async fn openai_voice_failures_never_change_the_shared_key_state() {
         let v = OpenAiVoice::from_config(&c);
         assert_eq!(
             v.transcribe(vec![1], "audio/webm", "en").await,
-            Err(VoiceError::Failed)
+            Err(VoiceError::Classified(class))
         );
-        assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+        assert_eq!(
+            v.speak("hi", "en").await,
+            Err(VoiceError::Classified(class))
+        );
         // 語音端點的錯誤（例如模型沒開放）不能讓對話用的 key 被冷卻或停用
         assert_eq!(c.openai_keys.usable_count(), 1, "{status}");
         assert!(c.openai_keys.acquire().is_some(), "{status}");
