@@ -6,6 +6,8 @@ import { classroomsMessages } from '@/features/classrooms/messages'
 import { voiceMessages } from '@/features/chat/voice/messages'
 import { dashboardMessages } from '@/features/dashboard/messages'
 import { studentMessages } from '@/features/student/messages'
+import { taskMessages } from '@/features/tasks/messages'
+import { purchaseMessages } from '@/features/purchase/messages'
 import { teacherMessages } from '@/features/teacher/messages'
 import { common } from '@/i18n/common.messages'
 import { DEFAULT_LANG, isLang, pickLang, type Lang } from '@/i18n/define'
@@ -16,6 +18,8 @@ const bundles = [
   common,
   authMessages,
   studentMessages,
+  taskMessages,
+  purchaseMessages,
   chatMessages,
   classroomsMessages,
   voiceMessages,

@@ -167,6 +167,15 @@ impl AiProvider for FakeAi {
     }
 }
 
+/// 直接寫入一個只有電子郵件的合成帳號，回傳使用者 ID。
+pub async fn seed_user(pool: &PgPool, email: &str) -> uuid::Uuid {
+    sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 pub fn test_app(pool: PgPool) -> Router {
     test_app_with_ai(pool, FakeAi::with(vec![]))
 }
