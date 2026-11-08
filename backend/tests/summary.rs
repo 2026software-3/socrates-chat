@@ -657,9 +657,7 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
     seed_student_message(&pool, &conv, "想法").await;
     end(&app, &a.student, &conv).await;
     // 等第一代真的拿到 Hang 腳本，重試的第二代才會拿到 Reply
-    while ai.request_count() < 1 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&ai, 1).await;
     sqlx::query("UPDATE summaries SET started_at = now() - interval '1 hour'")
         .execute(&pool)
         .await

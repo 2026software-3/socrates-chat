@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, LazyLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -23,7 +23,7 @@ use utoipa_redoc::{Redoc, Servable};
 use crate::{
     ai::AiProvider,
     config::Config,
-    error::ApiError,
+    error::{ApiError, ErrorBody},
     identity::IdentityProvider,
     pii::MaskingAi,
     voice::{OpenAiVoice, VoiceProvider},
@@ -155,15 +155,23 @@ impl AppState {
     }
 }
 
-#[derive(Serialize)]
-struct Health {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Health {
+    #[schema(example = "ok")]
     status: &'static str,
 }
+
+/// 就緒檢查等資料庫回應的時間上限。資料庫卡住（連線被占滿、網路黑洞）時探針不能跟著卡住：
+/// 它比 pool 預設的取連線逾時（30 秒）與全域請求逾時（10 秒）都短。
+/// 探針端的逾時設定必須大於這個值，才收得到結構化的 503 而不是探針自己逾時。
+/// 規格（S-09.3）沒有指定秒數，3 秒是保守的假設。
+const READY_DB_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Builds the application router.
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/api/openapi.json", get(openapi_json))
         .merge(auth::routes(
             state.config.trusted_proxies.clone(),
@@ -233,6 +241,51 @@ async fn openapi_json() -> impl IntoResponse {
 /// 健康檢查會被外部探測器頻繁呼叫，不進 request log ring（stdout 仍輸出）。
 async fn health() -> Response {
     request_logs::not_in_ring(Json(Health { status: "ok" }))
+}
+
+/// 就緒檢查（S-09.3）：以 `SELECT 1` 確認資料庫連得上，失敗或逾時回 503。
+/// 與 `/health`（只表示程序存活）不同；探針不需登入。日誌與回應只帶固定的錯誤種類，
+/// 不含連線字串、主機或資料庫的錯誤訊息。任何回應（成功、失敗）都不進 request log ring，與 `/health` 一致；
+/// 失敗的紀錄看 stdout 的 tracing 輸出。
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "ops",
+    summary = "就緒檢查",
+    description = "檢查資料庫連線（`SELECT 1`，最多等 3 秒）。公開，供探針與告警使用；`/health` 則只表示程序存活。",
+    security(()),
+    responses(
+        (status = 200, description = "資料庫可連線", body = Health),
+        (status = 503, description = "資料庫無法連線或逾時（`database_unavailable`）", body = ErrorBody)
+    )
+)]
+pub(crate) async fn ready(State(state): State<AppState>) -> Response {
+    let check = tokio::time::timeout(
+        READY_DB_TIMEOUT,
+        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.pool),
+    )
+    .await;
+    match check {
+        Ok(Ok(_)) => request_logs::not_in_ring(Json(Health { status: "ok" })),
+        Ok(Err(e)) => {
+            tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
+            database_unavailable()
+        }
+        Err(_) => {
+            tracing::warn!(class = "timeout", "readiness check failed");
+            database_unavailable()
+        }
+    }
+}
+
+/// 失敗的回應同樣不進 request log ring：長時間故障時探針每隔幾秒一筆，會擠掉真正的請求。
+/// 失敗仍由上面的 `tracing::warn!` 輸出到 stdout。
+fn database_unavailable() -> Response {
+    request_logs::not_in_ring(ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "database_unavailable",
+        "資料庫暫時無法使用",
+    ))
 }
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，

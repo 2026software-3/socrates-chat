@@ -29,8 +29,8 @@ export type Activity = {
   id: string
   title: string
   description: string
-  /** 活動必須選題庫題目（建立與編輯都必填）。 */
-  topic_id: string
+  /** 活動的題目清單（1 到 5 個，依教師排定的順序；S-04.7）。 */
+  topic_ids: string[]
   opens_at: string | null
   closes_at: string | null
   classroom_id: string

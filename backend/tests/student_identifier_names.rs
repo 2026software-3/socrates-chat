@@ -107,8 +107,12 @@ async fn summary_list_and_transcript_name_the_user_uuid_student_user_id(pool: Pg
         let row = &items(&list)[0];
         assert_eq!(row["student_user_id"], uuid);
         assert!(row.get("student_id").is_none(), "{row}");
+        // 學號只在 `student_number`（F-30.2）；其餘欄位（含 UUID）都不能帶學號
+        assert_eq!(row["student_number"], STUDENT_NUMBER);
+        let mut others = row.clone();
+        others.as_object_mut().unwrap().remove("student_number");
         assert!(
-            !row.to_string().contains(STUDENT_NUMBER),
+            !others.to_string().contains(STUDENT_NUMBER),
             "the UUID field must not carry the student number"
         );
 

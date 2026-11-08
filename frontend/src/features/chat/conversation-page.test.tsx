@@ -86,6 +86,20 @@ describe('ConversationPage: loading', () => {
     expect(screen.getByText('教師可以看到你在活動中的對話內容與學習總結；個人練習不會被看到。')).toBeInTheDocument()
   })
 
+  it('counts a follow-up the server did not count as a turn only once, as the server does after a refresh', async () => {
+    // 被打斷、沒聽到回覆的接話是獨立一則學生訊息，但後端只算一回合
+    mockDetail(
+      makeDetail({ turn_count: 1 }, [
+        makeMessage({ id: 'm1', role: 'student', content: '甲' }),
+        makeMessage({ id: 'm2', role: 'student', content: '乙' }),
+        makeMessage({ id: 'm3', role: 'ai', content: '回覆', question_type: 'clarify' }),
+      ]),
+    )
+    renderPage()
+    expect(await screen.findByText('乙')).toBeInTheDocument()
+    expect(screen.getByText('回合：1')).toBeInTheDocument()
+  })
+
   it('never shows question_type or other metadata', async () => {
     mockDetail(makeDetail())
     renderPage()

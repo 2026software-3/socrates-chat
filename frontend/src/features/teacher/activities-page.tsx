@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { ArchiveViewToggle } from '@/components/archive-view-toggle'
 import { NameConfirmDialog } from '@/components/name-confirm-dialog'
 import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
+import { nativeSelectClass } from '@/components/native-select-class'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,9 +17,10 @@ import { LoadMore } from '@/components/load-more'
 import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
-import { api } from '@/lib/api'
+import { api, isApiError } from '@/lib/api'
 import type { Activity, ActivityStatus, Classroom, Topic } from '@/lib/types'
 import { useFetch, usePagedFetch } from '@/lib/use-fetch'
+import { TopicListField } from './topic-list-field'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
   draft: 'secondary',
@@ -26,7 +28,7 @@ const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'
   closed: 'outline',
 }
 
-type Values = { title: string; description: string; topicId: string; opensAt: string; closesAt: string }
+type Values = { title: string; description: string; topicIds: string[]; opensAt: string; closesAt: string }
 
 /** datetime-local uses the browser's time zone; schedules are minute-precision, so seconds and milliseconds are dropped. */
 function localTime(iso: string | null): string {
@@ -44,14 +46,11 @@ function utcTime(local: string): string | null {
   return local ? new Date(local).toISOString() : null
 }
 
-const selectClass =
-  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 outline-none disabled:opacity-50'
-
 /** 建立與編輯共用的表單。 */
 function ActivityForm({
   idPrefix,
   initial,
-  topics,
+  topicById,
   topicsFailed,
   submitLabel,
   publishLabel,
@@ -59,7 +58,7 @@ function ActivityForm({
 }: {
   idPrefix: string
   initial: Values
-  topics: Topic[]
+  topicById: ReadonlyMap<string, Topic>
   topicsFailed: boolean
   submitLabel: string
   /** 有值時多一顆「儲存並發布」按鈕（建立表單用）。 */
@@ -73,15 +72,16 @@ function ActivityForm({
   const [titleError, setTitleError] = useState(false)
   const [topicError, setTopicError] = useState(false)
   const [serverError, setServerError] = useState<string>()
+  // 後端回 409 activity_topic_locked 後，已儲存的題目固定在最前面，只能在其後新增
+  const [locked, setLocked] = useState(false)
   const busy = useRef(false)
-  const hasInitialTopic = initial.topicId !== ''
 
   async function submit(e: FormEvent | undefined, publish = false) {
     e?.preventDefault()
     if (busy.current) return
-    // 活動必須選題庫題目（S-04.7）；標題與題目都缺時一起提示
+    // 活動至少要有一個題庫題目（S-04.7）；標題與題目都缺時一起提示
     const titleMissing = !values.title.trim()
-    const topicMissing = !values.topicId
+    const topicMissing = values.topicIds.length === 0
     setTitleError(titleMissing)
     setTopicError(topicMissing)
     if (titleMissing || topicMissing) return
@@ -104,6 +104,11 @@ function ActivityForm({
     try {
       await onSubmit({ ...values, title: values.title.trim() }, publish)
     } catch (err) {
+      if (isApiError(err) && err.code === 'activity_topic_locked') {
+        // 已有學生開始對話：題目清單還原成已儲存的內容並鎖住它們，教師只能在後面新增
+        setValues((v) => ({ ...v, topicIds: initial.topicIds }))
+        setLocked(true)
+      }
       // 前端自己丟的一般 Error（例如尚無可用教室）直接顯示其訊息
       setServerError(err instanceof Error && err.name !== 'ApiError' ? err.message : errorText(t, err))
     } finally {
@@ -137,35 +142,18 @@ function ActivityForm({
           onChange={(e) => setValues({ ...values, description: e.target.value })}
         />
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor={`${idPrefix}-topic`}>{t('teacher.activities.topicLabel')}</Label>
-        <select
-          id={`${idPrefix}-topic`}
-          className={selectClass}
-          value={values.topicId}
-          aria-invalid={topicError}
-          aria-describedby={topicError ? `${idPrefix}-topic-error` : undefined}
-          onChange={(e) => setValues({ ...values, topicId: e.target.value })}
-        >
-          <option value="" disabled>
-            {t('teacher.activities.topicPlaceholder')}
-          </option>
-          {hasInitialTopic && !topics.some((tp) => tp.id === initial.topicId) ? (
-            <option value={initial.topicId}>{t('teacher.activities.topicUnavailable')}</option>
-          ) : null}
-          {topics.map((tp) => (
-            <option key={tp.id} value={tp.id}>
-              {tp.title}
-            </option>
-          ))}
-        </select>
-        {topicError ? (
-          <p id={`${idPrefix}-topic-error`} role="alert" className="text-destructive text-sm">
-            {t('teacher.activities.topicRequired')}
-          </p>
-        ) : null}
-        {topicsFailed ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicsFailed')}</p> : null}
-      </div>
+      <TopicListField
+        idPrefix={idPrefix}
+        topicIds={values.topicIds}
+        topicById={topicById}
+        lockedCount={locked ? initial.topicIds.length : 0}
+        invalid={topicError}
+        failed={topicsFailed}
+        onChange={(topicIds) => {
+          setValues({ ...values, topicIds })
+          setTopicError(false)
+        }}
+      />
       {(['opensAt', 'closesAt'] as const).map((field) => {
         // 已存在且未改動的過去時間要能顯示，所以 min 取「現在」與原值中較早者
         const floor = [nowLocal(), initial[field]].filter(Boolean).sort()[0]
@@ -200,7 +188,7 @@ function ActivityForm({
 
 function ActivityRow({
   activity,
-  topic,
+  topicById,
   busy,
   error,
   archived,
@@ -212,7 +200,7 @@ function ActivityRow({
 }: {
   href?: string
   activity: Activity
-  topic: Topic | undefined
+  topicById: ReadonlyMap<string, Topic>
   busy: boolean
   archived: boolean
   error: string | undefined
@@ -264,7 +252,15 @@ function ActivityRow({
         </div>
       </TableCell>
       <TableCell className="align-top whitespace-normal">
-        {topic ? topic.title : activity.topic_id ? t('teacher.activities.topicUnavailable') : '—'}
+        {activity.topic_ids.length > 0 ? (
+          <ol className="list-decimal space-y-0.5 pl-5">
+            {activity.topic_ids.map((id) => (
+              <li key={id}>{topicById.get(id)?.title ?? t('teacher.activities.topicUnavailable')}</li>
+            ))}
+          </ol>
+        ) : (
+          '—'
+        )}
       </TableCell>
       <TableCell className="align-top">{formatDate(activity.created_at, lang)}</TableCell>
       <TableCell className="align-top">
@@ -346,7 +342,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
     const created = await api.post<Activity>('/api/activities', {
       title: v.title,
       ...(v.description.trim() ? { description: v.description.trim() } : {}),
-      topic_id: v.topicId,
+      topic_ids: v.topicIds,
       classroom_id: selectedRoom,
       ...(v.opensAt ? { opens_at: utcTime(v.opensAt) } : {}),
       ...(v.closesAt ? { closes_at: utcTime(v.closesAt) } : {}),
@@ -369,12 +365,12 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
   }
 
   async function update(a: Activity, v: Values) {
-    // 只在題目有變動時才送 topic_id：已有學生開始的活動不能換題目（409 activity_topic_locked），沒換就不該碰到它
-    const topicChanged = v.topicId !== a.topic_id
+    // 只在題目清單有變動時才送 topic_ids：已有學生開始的活動不能動既有題目（409 activity_topic_locked），沒改就不該碰到它
+    const topicChanged = v.topicIds.length !== a.topic_ids.length || v.topicIds.some((id, i) => id !== a.topic_ids[i])
     await api.patch<Activity>(`/api/activities/${a.id}`, {
       title: v.title,
       description: v.description.trim(),
-      ...(topicChanged ? { topic_id: v.topicId } : {}),
+      ...(topicChanged ? { topic_ids: v.topicIds } : {}),
       ...(v.opensAt !== localTime(a.opens_at) ? { opens_at: utcTime(v.opensAt) } : {}),
       ...(v.closesAt !== localTime(a.closes_at) ? { closes_at: utcTime(v.closesAt) } : {}),
     })
@@ -456,7 +452,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
               key={a.id}
               activity={a}
               href={detailBase ? `${detailBase}/${a.id}` : undefined}
-              topic={topicById.get(a.topic_id)}
+              topicById={topicById}
               archived={!writableRoomIds.has(a.classroom_id)}
               busy={busyIds.has(a.id) || !writableRoomIds.has(a.classroom_id)}
               error={rowError?.id === a.id ? rowError.message : undefined}
@@ -524,7 +520,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
           {classroomId ? null : (
             <div className="space-y-1.5">
               <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
-              <select id="activity-classroom" className={selectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+              <select id="activity-classroom" className={nativeSelectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
                 {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
               </select>
             </div>
@@ -532,8 +528,8 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
           {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
           <ActivityForm
             idPrefix="create"
-            initial={{ title: '', description: '', topicId: '', opensAt: '', closesAt: '' }}
-            topics={topics}
+            initial={{ title: '', description: '', topicIds: [], opensAt: '', closesAt: '' }}
+            topicById={topicById}
             topicsFailed={!!available.error}
             submitLabel={t('teacher.activities.saveDraft')}
             publishLabel={t('teacher.activities.publishNow')}
@@ -554,11 +550,11 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
               initial={{
                 title: editing.title,
                 description: editing.description,
-                topicId: editing.topic_id,
+                topicIds: editing.topic_ids,
                 opensAt: localTime(editing.opens_at),
                 closesAt: localTime(editing.closes_at),
               }}
-              topics={topics}
+              topicById={topicById}
               topicsFailed={!!available.error}
               submitLabel={t('common.save')}
               onSubmit={(v) => update(editing, v)}

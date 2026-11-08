@@ -66,10 +66,14 @@ pub struct StudentRow {
 }
 
 /// 依帳號 UUID 排序的名單；UUID 不會因補上電子郵件而改變。
+/// 學號只給該教室的教師與管理者（呼叫端已驗證教室可見性；S-01.4）。
 #[derive(Serialize, FromRow, utoipa::ToSchema)]
 pub struct RosterEntry {
     pub id: Uuid,
     pub email: Option<String>,
+    /// 學號（大寫）
+    pub student_number: String,
+    pub display_name: Option<String>,
 }
 
 pub async fn list_roster(
@@ -79,7 +83,8 @@ pub async fn list_roster(
     limit: i64,
 ) -> Result<Vec<RosterEntry>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT u.id, u.email FROM enrollments e JOIN users u ON u.id = e.user_id
+        "SELECT u.id, u.email, e.student_id AS student_number, u.display_name
+         FROM enrollments e JOIN users u ON u.id = e.user_id
          WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
          ORDER BY u.id LIMIT $3",
     )
