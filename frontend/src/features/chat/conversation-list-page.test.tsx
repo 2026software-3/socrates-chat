@@ -7,8 +7,8 @@ import type { Conversation } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
-function setup(list: Conversation[] | 'error') {
-  mockMe(makeMe({ student: true }))
+function setup(list: Conversation[] | 'error', language: 'zh-TW' | 'en' | 'es' = 'zh-TW') {
+  mockMe(makeMe({ student: true }, { language }))
   server.use(
     http.get('/api/conversations', () => (list === 'error' ? apiError(500, 'internal') : HttpResponse.json({ items: list, next_cursor: null }))),
   )
@@ -23,18 +23,18 @@ describe('ConversationListPage', () => {
     renderApp(null, { route: '/conversations' })
     const link = await screen.findByRole('link', { name: '開啟對話：合成題目：電車難題' })
     expect(link).toHaveAttribute('href', '/conversations/c1')
-    const first = link.closest('li') as HTMLElement
+    const first = link.closest('tr') as HTMLElement
     expect(within(first).getByText('進行中')).toBeInTheDocument()
-    expect(within(first).getByText('3 回合')).toBeInTheDocument()
-    expect(within(first).getByText(/建立於 2026/)).toBeInTheDocument()
-    const second = screen.getByRole('link', { name: '開啟對話：合成題目：功利主義' }).closest('li') as HTMLElement
+    expect(within(first).getByText('3')).toBeInTheDocument()
+    expect(within(first).getByText(/2026/)).toBeInTheDocument()
+    const second = screen.getByRole('link', { name: '開啟對話：合成題目：功利主義' }).closest('tr') as HTMLElement
     expect(within(second).getByText('已結束')).toBeInTheDocument()
   })
 
   it('formats the date with the active language', async () => {
-    setup([makeConversation()])
+    setup([makeConversation()], 'en')
     renderApp(null, { route: '/conversations', lang: 'en' })
-    expect(await screen.findByText(/Created Mar 5, 2026/)).toBeInTheDocument()
+    expect(await screen.findByText(/Mar 5, 2026/)).toBeInTheDocument()
   })
 
   it('shows an empty state that links to the topic chooser', async () => {
@@ -51,6 +51,46 @@ describe('ConversationListPage', () => {
     server.use(http.get('/api/conversations', () => HttpResponse.json({items: [makeConversation()], next_cursor: null})))
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
     expect(await screen.findByRole('link', { name: /開啟對話/ })).toBeInTheDocument()
+  })
+
+  it('archives a conversation out of the list and restores it from the archived view', async () => {
+    setup([makeConversation()])
+    const calls: string[] = []
+    server.use(
+      http.post('/api/conversations/:id/:action', ({ params }) => {
+        calls.push(`${String(params.action)}:${String(params.id)}`)
+        return new HttpResponse(null, { status: 204 })
+      }),
+      http.get('/api/conversations', ({ request }) =>
+        HttpResponse.json({
+          items: new URL(request.url).searchParams.get('archived') === 'true'
+            ? [makeConversation({ id: 'c9', title: '合成題目：舊對話', is_archived: true })]
+            : [makeConversation()],
+          next_cursor: null,
+        }),
+      ),
+    )
+    renderApp(null, { route: '/conversations' })
+    await userEvent.click(await screen.findByRole('button', { name: '封存 合成題目：電車難題' }))
+    await waitFor(() => expect(screen.queryByRole('link', { name: /電車難題/ })).not.toBeInTheDocument())
+    expect(calls).toEqual(['archive:c1'])
+    await userEvent.click(screen.getByRole('button', { name: '已封存' }))
+    await userEvent.click(await screen.findByRole('button', { name: '復原 合成題目：舊對話' }))
+    await waitFor(() => expect(calls).toEqual(['archive:c1', 'unarchive:c9']))
+  })
+
+  it('opens on the archived view when asked by the URL', async () => {
+    mockMe(makeMe({ student: true }))
+    const queries: string[] = []
+    server.use(
+      http.get('/api/conversations', ({ request }) => {
+        queries.push(new URL(request.url).search)
+        return HttpResponse.json({ items: [makeConversation({ id: 'c9', title: '合成題目：舊對話', is_archived: true })], next_cursor: null })
+      }),
+    )
+    renderApp(null, { route: '/conversations?archived=true' })
+    expect(await screen.findByRole('button', { name: '復原 合成題目：舊對話' })).toBeInTheDocument()
+    expect(queries[0]).toContain('archived=true')
   })
 
   it('deletes only after confirmation and removes the row', async () => {
@@ -109,7 +149,7 @@ describe('ConversationListPage', () => {
     setup([makeConversation({ created_at: 'not-a-date' })])
     renderApp(null, { route: '/conversations' })
     await screen.findByRole('link', { name: /開啟對話/ })
-    expect(screen.queryByText(/建立於/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/2026/)).not.toBeInTheDocument()
   })
   it('navigates next and previous pages using the opaque cursor', async () => {
     mockMe(makeMe({ student: true }))
@@ -131,4 +171,22 @@ describe('ConversationListPage', () => {
     expect(cursors).toEqual([null, 'opaque+/=', null])
   })
 
+  it('retries an invalid cursor from the first page instead of the same cursor', async () => {
+    mockMe(makeMe({ student: true }))
+    const cursors: (string | null)[] = []
+    server.use(http.get('/api/conversations', ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      cursors.push(cursor)
+      return cursor
+        ? apiError(400, 'invalid_cursor')
+        : HttpResponse.json({ items: [makeConversation({ title: 'First page' })], next_cursor: 'stale' })
+    }))
+    renderApp(null, { route: '/conversations' })
+    await userEvent.click(await screen.findByRole('button', { name: '下一頁' }))
+    expect(await screen.findByText('分頁連結已失效，請重新開啟列表。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重試' }))
+    await screen.findByRole('link', { name: '開啟對話：First page' })
+    expect(screen.queryByRole('button', { name: '上一頁' })).not.toBeInTheDocument()
+    expect(cursors).toEqual([null, 'stale', null])
+  })
 })

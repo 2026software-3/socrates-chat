@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -28,10 +28,12 @@ describe('teacher topic bank', () => {
         return HttpResponse.json(created, { status: 201 })
       }),
     )
-    renderTeacherPage(<TopicsPage base="/api/topics" />)
+    renderTeacherPage(<TopicsPage />)
     expect(await screen.findByText('電車難題')).toBeInTheDocument()
-    await userEvent.type(screen.getByLabelText('標題'), '說謊可以嗎')
-    await userEvent.click(screen.getByRole('button', { name: '新增題目' }))
+    await userEvent.click(screen.getByRole('button', { name: '+ 新增題目' }))
+    const dialog = await screen.findByRole('dialog', { name: '新增題目' })
+    await userEvent.type(within(dialog).getByLabelText('題目名稱'), '說謊可以嗎')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('說謊可以嗎')).toBeInTheDocument()
     expect(body).toEqual({ title: '說謊可以嗎' })
   })
@@ -45,8 +47,9 @@ describe('teacher topic bank', () => {
         return HttpResponse.json({ ...trolley, ...((await request.json()) as object) })
       }),
     )
-    renderTeacherPage(<TopicsPage base="/api/topics" />)
-    await userEvent.click(await screen.findByRole('switch', { name: '啟用「電車難題」' }))
+    renderTeacherPage(<TopicsPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '停用「電車難題」' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '停用題目' }))
     await screen.findByText('已停用')
     expect(url).toBe('/api/topics/t1')
   })

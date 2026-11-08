@@ -1,11 +1,14 @@
 /** 後端 API 的資料型別。對照 docs/api/api-reference.md。 */
 
+import type { Lang } from '@/i18n/define'
+
 export type Roles = { admin: boolean; teacher: boolean; student: boolean }
 
 export type Me = {
   id: string
-  email: string
+  email: string | null
   display_name: string | null
+  language: Lang
   is_admin: boolean
   /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
   must_change_password: boolean
@@ -26,9 +29,14 @@ export type Activity = {
   id: string
   title: string
   description: string
-  /** 活動必須選題庫題目（建立與編輯都必填）。 */
-  topic_id: string
+  /** 活動的題目清單（1 到 5 個，依教師排定的順序；S-04.7）。 */
+  topic_ids: string[]
+  opens_at: string | null
+  closes_at: string | null
+  classroom_id: string
   status: ActivityStatus
+  /** 已封存：學生看不到、不能開新對話，可復原 */
+  is_archived: boolean
   created_at: string
 }
 
@@ -50,10 +58,12 @@ export type Conversation = {
   converge_ready: boolean
   created_at: string
   ended_at: string | null
+  /** 學生已封存：只從自己的清單隱藏，可復原 */
+  is_archived: boolean
 }
 
 export type MessageRole = 'student' | 'ai'
-export type MessageSource = 'text' | 'speech-browser' | 'speech-openai'
+export type MessageSource = 'text' | 'speech-browser' | 'speech-openai' | 'speech-cascade'
 
 export type Message = {
   id: string
@@ -64,7 +74,13 @@ export type Message = {
   created_at: string
 }
 
-export type ConversationDetail = Conversation & { messages: Message[] }
+/** 對話詳情；`generating` 表示 AI 回覆正在產生，可用 `GET …/stream` 接上。 */
+export type ConversationDetail = Conversation & {
+  messages: Message[]
+  generating: boolean
+  /** 伺服器端語音對話已啟用（`GET /api/conversations/{id}/voice`） */
+  voice_realtime: boolean
+}
 
 /** 送出訊息的回應；`auto_ended` 表示達回合上限，對話已自動結束、總結產生中。 */
 export type SentMessage = Message & { auto_ended: boolean }
@@ -83,20 +99,47 @@ export type SummaryView = {
 /** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
 export type TeacherSummary = {
   conversation_id: string
+  /** 對話所屬的教室 */
+  classroom_id: string
   title: string
   ended_at: string
-  student_id: string
+  /** 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號 */
+  student_user_id: string
   student_name: string | null
   student_email: string
+  /** 對話建立時快照的原文語言。 */
+  language: Lang
   stance: string | null
   reasons: string | null
   claim?: string | null
 }
 
+/** 教師唯讀檢視的一場已結束活動對話（GET /api/summaries/{id}/messages）；管理者的 content 一律是 `message`。 */
+export type Transcript = {
+  conversation_id: string
+  classroom_id: string
+  title: string
+  language: Lang
+  ended_at: string
+  /** 學生的使用者 UUID，不是學號 */
+  student_user_id: string
+  student_name: string | null
+  messages: Message[]
+}
+
+/** 教師明確觸發、僅保留在目前頁面的總結翻譯。 */
+export type SummaryTranslation = {
+  language: Lang
+  stance: string
+  reasons: string
+}
+
 /** 教室修課名單上的學生與帳號狀態（GET /api/classrooms/{id}/students）。 */
 export type StudentRow = {
   id: string | null
-  email: string
+  email: string | null
+  /** 學號（大寫）；學生的帳號 UUID 是 `id` */
+  student_number: string
   display_name: string | null
   /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */
   has_account: boolean
@@ -152,6 +195,7 @@ export type ClassDashboard = {
 export type EmailList = { emails: string[] }
 
 export type Classroom = {
+  is_archived: boolean
   id: string
   name: string
   year_label: string | null
@@ -160,12 +204,14 @@ export type Classroom = {
   updated_at: string
 }
 
+export type ImportErrorReason = 'missing_fields' | 'invalid_format'
+
 export type RosterImportResult = {
   added: number
   existing: number
-  invalid: { line: number; value: string }[]
+  invalid: { line: number; reason: ImportErrorReason }[]
   /** 這次新建立的內建帳號與臨時密碼（只出現一次；教師匯入時為空或沒有這個欄位） */
-  credentials?: { email: string; temporary_password: string }[]
+  credentials?: { student_number: string; temporary_password: string }[]
 }
 
 /** SSE `done` 事件的內容。 */
@@ -174,6 +220,8 @@ export type StreamDone = {
   question_type: string | null
   stage: 1 | 2 | 3
   suggest_end: boolean
+  /** AI 這則是結束語：討論已結束、總結產生中。 */
+  ended?: boolean
 }
 
 /** Keyset 分頁列表。 */
@@ -181,3 +229,12 @@ export type Page<T> = { items: T[]; next_cursor: string | null }
 
 /** 學生列表的一頁；`total` 是符合搜尋條件的學生總數，每一頁都帶。 */
 export type StudentPage = Page<StudentRow> & { total: number }
+
+/** `GET /api/me/usage`：滑動時間窗內自己的 AI 用量。 */
+export type AiUsage = {
+  used: number
+  limit: number
+  window_secs: number
+  /** 最早那一次呼叫還要幾秒滑出時間窗（多久後會空出一個額度）；尚未使用時為 null。 */
+  resets_in_secs: number | null
+}

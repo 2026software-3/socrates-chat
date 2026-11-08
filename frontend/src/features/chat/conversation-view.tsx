@@ -1,16 +1,19 @@
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
 import { useMessageSource } from '@/features/chat/use-message-source'
+import type { RealtimeHost } from '@/features/chat/voice/realtime/use-realtime-voice'
+import { createVoiceTurns } from '@/features/chat/voice/realtime/voice-turn'
 import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { ChatThread } from '@/features/chat/chat-thread'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
 import { SummaryPanel } from '@/features/chat/summary-panel'
 import { useT } from '@/i18n'
+import { markAiUsageStale } from '@/lib/ai-usage-events'
 import { api } from '@/lib/api'
 import type { ConversationDetail, ConversationStatus } from '@/lib/types'
 
@@ -35,15 +38,22 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   const [suggestEnd, setSuggestEnd] = useState(detail.converge_ready)
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState<unknown>()
+  // 後端沒算回合的學生訊息（被打斷、沒聽到回覆的接話）：標題列的回合數要扣掉它們
+  const [uncounted, setUncounted] = useState(() =>
+    Math.max(0, detail.messages.filter((m) => m.role === 'student').length - detail.turn_count),
+  )
 
   // 下一則學生訊息的輸入來源：語音輸入後送出時記錄為語音（S-05.4），送出後回到文字
   const messageSource = useMessageSource()
+
+  const voiceTurns = useMemo(() => createVoiceTurns(), [])
 
   const adapter = useMemo(
     () =>
       createChatAdapter({
         conversationId: detail.id,
         takeSource: messageSource.take,
+        takeVoiceTurn: voiceTurns.take,
         persistedIds: detail.messages.filter((m) => m.role === 'student').map((m) => m.id),
         // 達回合上限：對話已自動結束、總結產生中，不會有串流
         onSent: (sent) => {
@@ -53,12 +63,51 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
         onDone: (done) => {
           setStage(done.stage)
           setSuggestEnd(done.suggest_end)
+          // AI 的結束語：討論已結束、總結產生中
+          if (done.ended) setStatus('ended')
         },
       }),
-    [detail, messageSource],
+    [detail, messageSource, voiceTurns],
   )
   const initialMessages = useMemo(() => toInitialMessages(detail), [detail])
   const runtime = useLocalRuntime(adapter, { initialMessages })
+
+  // 離開對話頁時回覆還在產生：回來後直接接上（只重開串流），不必按重試
+  const resumed = useRef(false)
+  useEffect(() => {
+    const last = detail.messages.at(-1)
+    if (resumed.current || !detail.generating || last?.role !== 'student') return
+    resumed.current = true
+    runtime.thread.startRun({ parentId: last.id })
+  }, [detail, runtime])
+
+  // 伺服器端語音的辨識與聲音目前只有中文（見 docs/specs/cascade-voice-spike.md）
+  const realtime = useMemo<RealtimeHost | undefined>(() => {
+    if (!detail.voice_realtime || detail.language !== 'zh-TW') return undefined
+    return {
+      conversationId: detail.id,
+      turns: voiceTurns,
+      appendStudent(text, { followUp }) {
+        if (followUp) setUncounted((n) => n + 1)
+        runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] })
+      },
+      onSettled() {
+        markAiUsageStale()
+        // 語音回合沒有 SSE 的 done 事件；達回合上限而結束時也靠這裡切成唯讀
+        api
+          .get<ConversationDetail>(`/api/conversations/${detail.id}`)
+          .then((d) => {
+            setStage(d.stage)
+            setSuggestEnd(d.converge_ready)
+            setStatus(d.status)
+            // 回合數以後端為準：多出來的學生訊息是後端沒算回合的接話
+            const students = runtime.thread.getState().messages.filter((m) => m.role === 'user').length
+            setUncounted(Math.max(0, students - d.turn_count))
+          })
+          .catch((e: unknown) => console.warn('[voice] could not refresh the conversation:', e))
+      },
+    }
+  }, [detail, runtime, voiceTurns])
 
   const ended = status === 'ended'
 
@@ -79,36 +128,52 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="space-y-4">
-        <header className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight break-words">{detail.title}</h1>
-            <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="flex flex-wrap items-end justify-between gap-4 border-b px-4 pt-6 pb-4 md:px-8">
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl leading-8 font-medium break-words">{detail.title}</h1>
+              <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
+            </div>
+            {detail.description ? <p className="text-muted-foreground text-xs break-words">{detail.description}</p> : null}
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <RoundCount uncounted={uncounted} />
+              <StageIndicator stage={stage} />
+            </div>
           </div>
-          {detail.description ? <p className="text-muted-foreground text-sm break-words">{detail.description}</p> : null}
-          <StageIndicator stage={stage} />
+          <EndDiscussion
+            ended={ended}
+            suggestEnd={suggestEnd}
+            pending={ending}
+            error={endError}
+            onClearError={() => setEndError(undefined)}
+            onConfirm={endDiscussion}
+          />
         </header>
-
-        <EndDiscussion
-          ended={ended}
-          suggestEnd={suggestEnd}
-          pending={ending}
-          error={endError}
-          onClearError={() => setEndError(undefined)}
-          onConfirm={endDiscussion}
-        />
 
         <ChatThread
           showComposer={!ended}
           composerDisabled={ending}
           language={detail.language}
           onVoiceSource={(s: RecognitionSource) => messageSource.set(s)}
+          realtime={realtime}
         />
-        {ended ? <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p> : null}
-        {ended ? <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} /> : null}
+        {ended ? (
+          <div className="space-y-4 px-4 pb-6 md:px-8">
+            <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p>
+            <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} />
+          </div>
+        ) : null}
       </div>
     </AssistantRuntimeProvider>
   )
+}
+
+/** 回合數：學生送出幾則訊息就是第幾回合（扣掉後端不算回合的接話）；跟著對話串即時更新。 */
+function RoundCount({ uncounted }: { uncounted: number }) {
+  const t = useT()
+  const count = useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length) - uncounted
+  return <span className="text-xs font-medium">{t('chat.round', { count })}</span>
 }
 
 type EndProps = {
@@ -131,7 +196,6 @@ function EndDiscussion({ ended, suggestEnd, pending, error, onClearError, onConf
   const endButton = (
     <Button
       variant={suggestEnd ? 'default' : 'outline'}
-      size="sm"
       disabled={running || pending}
       onClick={() => {
         onClearError()
@@ -145,7 +209,7 @@ function EndDiscussion({ ended, suggestEnd, pending, error, onClearError, onConf
   return (
     <>
       {suggestEnd ? (
-        <Alert role="status" data-testid="suggest-end">
+        <Alert role="status" data-testid="suggest-end" className="w-full md:w-auto md:max-w-sm">
           <AlertTitle>{t('chat.suggestEnd.title')}</AlertTitle>
           <AlertDescription>
             <p>{t('chat.suggestEnd.body')}</p>
@@ -153,7 +217,7 @@ function EndDiscussion({ ended, suggestEnd, pending, error, onClearError, onConf
           </AlertDescription>
         </Alert>
       ) : (
-        <div className="flex justify-end">{endButton}</div>
+        endButton
       )}
       <ConfirmDialog
         open={open}

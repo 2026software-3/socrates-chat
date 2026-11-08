@@ -82,13 +82,13 @@ docker compose --profile app up --build    # http://localhost:3000
 
 ### 匯入示範資料（選用）
 
-服務啟動後，用管理者登入一次並更改初始密碼，再執行（全部是合成資料，只給本機使用）：
+以 `DEMO_MODE=true` 啟動後端一次（會建立示範教師與 10 位學生，帳號與公開的固定密碼見 [`backend/src/demo_accounts.json`](backend/src/demo_accounts.json)，登入頁也會列出來、點一下填入），再執行（全部是合成資料，不需要管理者密碼）：
 
 ```bash
-ADMIN_PASSWORD='<管理者目前的密碼>' ./scripts/seed-demo.sh
+./scripts/seed-demo.sh
 ```
 
-會建立教師 `teacher@example.com`（密碼 `Teacher-Demo-2026`）、學生 `student1`～`student8@example.com`（密碼 `Student-Demo-2026`），以及：2 間教室加 1 間已封存的舊教室（student3、student4 同時在兩個班）、4 個題目、7 個活動（草稿、已發布、已停止開放都有）、24 場對話（已完成的含逐則訊息、AI 總結與主張分組；另有進行中、總結產生中與總結失敗的）。用教師登入可看各教室的論點分布，用學生登入可看個人儀表板。可重複執行，會先清掉上次的示範資料。內建題目「電車難題」在服務啟動時自動建立。
+會建立 3 間教室（含 1 間已封存）、5 個題目、9 個活動（草稿、已發布、已停止開放、預定開放，另有 1 個尚無對話、留給現場示範的活動）、約 26 場對話（已完成的含逐則訊息、AI 總結與主張分組；另有進行中、總結產生中與總結失敗的；也有英文與西班牙文的學生對話）。可重複執行，會先清掉上次的示範資料。**示範模式的密碼是公開的，只用在展示環境**，且示範帳號不含管理者。發表流程與講稿見 [`docs/demo-script.md`](docs/demo-script.md)。
 
 ### 錄製操作演示（選用）
 
@@ -100,7 +100,7 @@ npm install && npx playwright install chromium
 npm run record
 ```
 
-每次錄製都會替 `student1@example.com` 多留一場對話，班上分布的數字會跟著變動。
+每次錄製都會替學號 `11500001A` 多留一場對話，班上分布的數字會跟著變動。
 
 ### 正式環境
 

@@ -3,7 +3,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,6 @@ use crate::{
     AppState,
     accounts::audit,
     auth::{RequireAdmin, RequireTeacher, hash_blocking},
-    auth_store,
     classrooms::visible_classroom,
     error::ApiError,
     pagination::{self, Page, Pagination},
@@ -151,17 +150,11 @@ async fn delete_email(
 
 // ---- 教室的修課名單（教室的建立者或管理者操作；他人的教室與不存在的教室一律 404）----
 
-/// 名單上的一筆；以物件包裝，之後要加欄位不必再改契約。
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct RosterEntry {
-    email: String,
-}
-
 /// 名單分頁；只給 OpenAPI 描述（泛型的 `Page<T>` 會把項目欄位展開，無法 `$ref`）。
 #[derive(utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct RosterPage {
-    items: Vec<RosterEntry>,
+    items: Vec<roster_store::RosterEntry>,
     next_cursor: Option<String>,
 }
 
@@ -175,31 +168,20 @@ pub(crate) struct RosterPage {
         ("limit" = Option<u16>, Query, description = "1–200，預設 50"),
         ("cursor" = Option<String>, Query, description = "前頁 next_cursor"),
     ),
-    responses((status = 200, description = "名單分頁，依 email 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "名單分頁，依帳號 UUID 排序", body = RosterPage), (status = 400, description = "invalid_limit / invalid_cursor", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_roster(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
     Query(query): Query<Pagination>,
-) -> Result<Json<Page<RosterEntry>>, ApiError> {
+) -> Result<Json<Page<roster_store::RosterEntry>>, ApiError> {
     let limit = query.limit()?;
-    let after: Option<String> = query.cursor("roster")?;
+    let after: Option<uuid::Uuid> = query.cursor("roster")?;
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    let rows = roster_store::list_emails(
-        &state.pool,
-        classroom.id,
-        after.as_deref(),
-        (limit + 1) as i64,
-    )
-    .await?;
-    let rows = rows
-        .into_iter()
-        .map(|email| RosterEntry { email })
-        .collect();
-    Ok(Json(pagination::page(rows, limit, "roster", |row| {
-        row.email.clone()
-    })?))
+    let rows =
+        roster_store::list_roster(&state.pool, classroom.id, after, (limit + 1) as i64).await?;
+    Ok(Json(pagination::page(rows, limit, "roster", |row| row.id)?))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -207,61 +189,134 @@ pub(crate) struct ImportBody {
     text: String,
 }
 
-#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
-pub struct InvalidLine {
+#[derive(Debug, PartialEq)]
+pub struct StudentImportRow {
     pub line: usize,
-    pub value: String,
+    pub name: String,
+    pub student_number: String,
 }
 
-#[derive(Serialize, Debug, Default, PartialEq)]
-pub struct ParsedRoster {
-    pub emails: Vec<String>,
-    pub invalid: Vec<InvalidLine>,
+#[derive(Debug, Serialize, PartialEq, utoipa::ToSchema)]
+pub struct StudentImportError {
+    pub line: usize,
+    pub reason: String,
 }
 
-/// 解析貼上或上傳的名單：每行一個電子郵件，可有 `email` 標題列；CSV 取第一欄。
-pub fn parse_roster(text: &str) -> ParsedRoster {
-    let mut out = ParsedRoster::default();
-    let mut seen_header_slot = true;
-    for (i, raw) in text.lines().enumerate() {
-        let first = raw.split(',').next().unwrap_or_default().trim();
-        if first.is_empty() {
-            continue;
-        }
-        if seen_header_slot && first.trim_matches('"').eq_ignore_ascii_case("email") {
-            seen_header_slot = false;
-            continue;
-        }
-        seen_header_slot = false;
-        match normalize_email(first) {
-            Some(e) if !out.emails.contains(&e) => out.emails.push(e),
-            Some(_) => {}
-            None => out.invalid.push(InvalidLine {
-                line: i + 1,
-                value: first.to_string(),
-            }),
+#[derive(Debug, Default)]
+pub struct ParsedStudentRoster {
+    pub students: Vec<StudentImportRow>,
+    pub invalid: Vec<StudentImportError>,
+}
+
+/// 解析單行 CSV，支援引號內逗號與雙引號跳脫；不接受跨行欄位。
+fn csv_fields(line: &str) -> Option<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut value = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    let mut closed = false;
+    while let Some(c) = chars.next() {
+        if quoted {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    value.push('"');
+                } else {
+                    quoted = false;
+                    closed = true;
+                }
+            } else {
+                value.push(c);
+            }
+        } else if c == ',' {
+            fields.push(value.trim().to_owned());
+            value.clear();
+            closed = false;
+        } else if c == '"' && !closed && value.trim().is_empty() {
+            value.clear();
+            quoted = true;
+        } else if c == '"' || (closed && !c.is_whitespace()) {
+            return None;
+        } else {
+            value.push(c);
         }
     }
-    out
+    if quoted {
+        return None;
+    }
+    fields.push(value.trim().to_owned());
+    Some(fields)
+}
+
+/// 學號為 8 位數字加 1 個英文字母（與資料庫 CHECK 一致，大小寫皆收）。
+pub fn is_valid_student_number(number: &str) -> bool {
+    number.len() == 9
+        && number.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        && number.as_bytes()[8].is_ascii_alphabetic()
+}
+
+/// 每行依序為姓名、學號兩欄；多出來的欄位（含舊格式的電子郵件）整行拒絕，錯誤不回顯個資。
+pub fn parse_student_roster(text: &str) -> ParsedStudentRoster {
+    let mut result = ParsedStudentRoster::default();
+    for (index, line) in text.lines().enumerate() {
+        let Some(fields) = csv_fields(line) else {
+            result.invalid.push(StudentImportError {
+                line: index + 1,
+                reason: "invalid_format".to_string(),
+            });
+            continue;
+        };
+        if fields.len() > 2 {
+            result.invalid.push(StudentImportError {
+                line: index + 1,
+                reason: "invalid_format".to_string(),
+            });
+            continue;
+        }
+        if fields.len() < 2 || fields[0].is_empty() || fields[1].is_empty() {
+            result.invalid.push(StudentImportError {
+                line: index + 1,
+                reason: "missing_fields".to_string(),
+            });
+            continue;
+        }
+        let valid = fields[0].chars().count() <= 30
+            && !fields[0].contains('\0')
+            && is_valid_student_number(&fields[1]);
+        if !valid {
+            result.invalid.push(StudentImportError {
+                line: index + 1,
+                reason: "invalid_format".to_string(),
+            });
+            continue;
+        }
+        result.students.push(StudentImportRow {
+            line: index + 1,
+            name: fields[0].to_owned(),
+            student_number: fields[1].to_ascii_uppercase(),
+        });
+    }
+    result
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ImportResult {
     added: usize,
     existing: usize,
-    invalid: Vec<InvalidLine>,
+    errors: usize,
+    invalid: Vec<StudentImportError>,
     /// 這次新建立的內建帳號與臨時密碼（只在這次回應出現）；信箱已有帳號的不在其中。
     credentials: Vec<Credential>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Credential {
-    email: String,
+    student_number: String,
     temporary_password: String,
 }
 
 /// 信箱是否屬於教師或管理者（教師清單、`ADMIN_EMAILS` 或已是管理者的使用者）。
-async fn is_staff_email(
+pub(crate) async fn is_staff_email(
     state: &AppState,
     conn: &mut sqlx::PgConnection,
     email: &str,
@@ -279,6 +334,9 @@ async fn is_staff_email(
     Ok(staff)
 }
 
+/// 匯入交易共用的 advisory lock 鍵。
+const IMPORT_LOCK_KEY: i64 = 393;
+
 #[utoipa::path(
     post,
     path = "/api/classrooms/{id}/roster/import",
@@ -286,49 +344,73 @@ async fn is_staff_email(
     summary = "匯入教室的修課名單（只新增）",
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ImportBody,
-    responses((status = 200, description = "匯入結果", body = ImportResult), crate::error::CommonErrors)
+    responses((status = 200, description = "匯入結果", body = ImportResult), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn import_roster(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
     Json(body): Json<ImportBody>,
-) -> Result<Json<ImportResult>, ApiError> {
+) -> Result<([(header::HeaderName, &'static str); 1], Json<ImportResult>), ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
-    let parsed = parse_roster(&body.text);
+    let parsed = parse_student_roster(&body.text);
     let mut added = 0;
+    let mut existing = 0;
+    let invalid = parsed.invalid;
     let mut credentials = Vec::new();
     let mut tx = state.pool.begin().await?;
+    // 封存檢查與寫入同一個交易：教室列的共享鎖持續到提交，封存不會插在中間
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     // 整批名單、帳號與稽核一起提交，避免失敗時遺失一次性的臨時密碼。
     // 匯入只新增，不移除名單上原有的人
-    for email in &parsed.emails {
-        if !roster_store::add(&mut tx, classroom.id, email).await? {
-            continue;
-        }
-        added += 1;
-        audit(&mut *tx, cu.user.id, "roster_added", email, None).await?;
-        // 只有管理者匯入時才建立內建帳號並取得臨時密碼：知道臨時密碼等於能用該學生的身分登入，
-        // 教師不能看到對話原文（S-02.1），所以教師匯入只加名單，學生用 Google 登入或請管理者重設密碼。
-        // 教師與管理者的信箱也不在這裡建帳號，避免有人搶先替他們建好帳號。
-        if !cu.roles.admin || is_staff_email(&state, &mut tx, email).await? {
-            continue;
-        }
-        let temporary_password = password::generate_temporary();
-        let hash = hash_blocking(temporary_password.clone()).await?;
-        if auth_store::create_account_if_absent(&mut *tx, email, &hash).await? {
+    // 匯入交易序列化，避免兩個教室同時替相同學號或信箱建立帳號。
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(IMPORT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+    for row in &parsed.students {
+        // 電子郵件不經匯入：Google 登入靠電子郵件比對帳號，匯入若能設定信箱，
+        // 知道學號的人就能接管別人的帳號，所以信箱只由學生自己填寫。
+        let user_id = if let Some(id) =
+            roster_store::find_import_account(&mut tx, &row.student_number).await?
+        {
+            id
+        } else {
+            let temporary_password = password::generate_temporary();
+            let hash = hash_blocking(temporary_password.clone()).await?;
+            let id = roster_store::create_student(&mut tx, &row.student_number, &row.name, &hash)
+                .await?;
             credentials.push(Credential {
-                email: email.clone(),
+                student_number: row.student_number.clone(),
                 temporary_password,
             });
+            id
+        };
+        if roster_store::add_user(&mut tx, classroom.id, user_id).await? {
+            added += 1;
+            audit(
+                &mut *tx,
+                cu.user.id,
+                "roster_added",
+                &user_id.to_string(),
+                None,
+            )
+            .await?;
+        } else {
+            existing += 1;
         }
     }
     tx.commit().await?;
-    Ok(Json(ImportResult {
-        added,
-        existing: parsed.emails.len() - added,
-        invalid: parsed.invalid,
-        credentials,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(ImportResult {
+            added,
+            existing,
+            errors: invalid.len(),
+            invalid,
+            credentials,
+        }),
+    ))
 }
 
 #[utoipa::path(
@@ -340,7 +422,7 @@ pub(crate) async fn import_roster(
         ("id" = Uuid, Path, description = "教室 ID"),
         ("email" = String, Path, description = "電子郵件")
     ),
-    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 204, description = "已移出"), (status = 404, description = "not_found：教室不存在或不屬於你，或此人不在這間教室的名單內", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn remove_from_roster(
     RequireTeacher(cu): RequireTeacher,
@@ -349,17 +431,16 @@ pub(crate) async fn remove_from_roster(
 ) -> Result<StatusCode, ApiError> {
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
     let mut tx = state.pool.begin().await?;
-    if !roster_store::remove(&mut tx, classroom.id, &email).await? {
-        return Err(ApiError::not_found());
-    }
-    audit(
-        &mut *tx,
-        cu.user.id,
-        "roster_removed",
-        &email.to_lowercase(),
-        None,
-    )
-    .await?;
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
+    let user_id = roster_store::remove_user(&mut tx, classroom.id, &email)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let target = if email.contains('@') {
+        email.to_lowercase()
+    } else {
+        user_id.to_string()
+    };
+    audit(&mut *tx, cu.user.id, "roster_removed", &target, None).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

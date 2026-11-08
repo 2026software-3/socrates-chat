@@ -1,20 +1,26 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { toast } from 'sonner'
-import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
+import { ArchiveViewToggle } from '@/components/archive-view-toggle'
+import { NameConfirmDialog } from '@/components/name-confirm-dialog'
+import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
+import { nativeSelectClass } from '@/components/native-select-class'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadMore } from '@/components/load-more'
-import { formatDate } from '@/features/teacher/format'
+import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
+import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
-import { api } from '@/lib/api'
-import type { Activity, ActivityStatus, Topic } from '@/lib/types'
+import { api, isApiError } from '@/lib/api'
+import type { Activity, ActivityStatus, Classroom, Topic } from '@/lib/types'
 import { useFetch, usePagedFetch } from '@/lib/use-fetch'
+import { TopicListField } from './topic-list-field'
 
 const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'> = {
   draft: 'secondary',
@@ -22,30 +28,43 @@ const STATUS_VARIANT: Record<ActivityStatus, 'secondary' | 'default' | 'outline'
   closed: 'outline',
 }
 
-type Values = { title: string; description: string; topicId: string }
+type Values = { title: string; description: string; topicIds: string[]; opensAt: string; closesAt: string }
 
-const selectClass =
-  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 outline-none disabled:opacity-50'
+/** datetime-local uses the browser's time zone; schedules are minute-precision, so seconds and milliseconds are dropped. */
+function localTime(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+
+/** 目前時間（到分鐘）；新選的開放時間不可早於它，沿用 datetime-local 的格式當 min。 */
+function nowLocal(): string {
+  return localTime(new Date().toISOString())
+}
+
+function utcTime(local: string): string | null {
+  return local ? new Date(local).toISOString() : null
+}
 
 /** 建立與編輯共用的表單。 */
 function ActivityForm({
   idPrefix,
   initial,
-  topics,
+  topicById,
   topicsFailed,
   submitLabel,
-  resetOnSuccess = false,
+  publishLabel,
   onSubmit,
 }: {
   idPrefix: string
   initial: Values
-  topics: Topic[]
+  topicById: ReadonlyMap<string, Topic>
   topicsFailed: boolean
   submitLabel: string
-  /** 成功後是否清空表單（建立表單用）。 */
-  resetOnSuccess?: boolean
+  /** 有值時多一顆「儲存並發布」按鈕（建立表單用）。 */
+  publishLabel?: string
   /** 失敗時 throw。 */
-  onSubmit: (v: Values) => Promise<void>
+  onSubmit: (v: Values, publish: boolean) => Promise<void>
 }) {
   const t = useT()
   const [values, setValues] = useState<Values>(initial)
@@ -53,26 +72,45 @@ function ActivityForm({
   const [titleError, setTitleError] = useState(false)
   const [topicError, setTopicError] = useState(false)
   const [serverError, setServerError] = useState<string>()
+  // 後端回 409 activity_topic_locked 後，已儲存的題目固定在最前面，只能在其後新增
+  const [locked, setLocked] = useState(false)
   const busy = useRef(false)
-  const hasInitialTopic = initial.topicId !== ''
 
-  async function submit(e: FormEvent) {
-    e.preventDefault()
+  async function submit(e: FormEvent | undefined, publish = false) {
+    e?.preventDefault()
     if (busy.current) return
-    // 活動必須選題庫題目（S-04.7）；標題與題目都缺時一起提示
+    // 活動至少要有一個題庫題目（S-04.7）；標題與題目都缺時一起提示
     const titleMissing = !values.title.trim()
-    const topicMissing = !values.topicId
+    const topicMissing = values.topicIds.length === 0
     setTitleError(titleMissing)
     setTopicError(topicMissing)
     if (titleMissing || topicMissing) return
+    // 只擋「這次改動」的欄位：既有的過去時間（例如已結束的活動）不改就仍可儲存
+    const now = nowLocal()
+    if ((values.opensAt !== initial.opensAt && values.opensAt && values.opensAt < now) ||
+        (values.closesAt !== initial.closesAt && values.closesAt && values.closesAt < now)) {
+      setServerError(t('teacher.activities.schedulePast'))
+      return
+    }
+    if ((values.opensAt && !Number.isFinite(new Date(values.opensAt).getTime())) ||
+        (values.closesAt && !Number.isFinite(new Date(values.closesAt).getTime())) ||
+        (values.opensAt && values.closesAt && new Date(values.closesAt) <= new Date(values.opensAt))) {
+      setServerError(t('error.invalid_schedule'))
+      return
+    }
     setServerError(undefined)
     busy.current = true
     setPending(true)
     try {
-      await onSubmit({ ...values, title: values.title.trim() })
-      if (resetOnSuccess) setValues(initial)
+      await onSubmit({ ...values, title: values.title.trim() }, publish)
     } catch (err) {
-      setServerError(errorText(t, err))
+      if (isApiError(err) && err.code === 'activity_topic_locked') {
+        // 已有學生開始對話：題目清單還原成已儲存的內容並鎖住它們，教師只能在後面新增
+        setValues((v) => ({ ...v, topicIds: initial.topicIds }))
+        setLocked(true)
+      }
+      // 前端自己丟的一般 Error（例如尚無可用教室）直接顯示其訊息
+      setServerError(err instanceof Error && err.name !== 'ApiError' ? err.message : errorText(t, err))
     } finally {
       busy.current = false
       setPending(false)
@@ -104,147 +142,237 @@ function ActivityForm({
           onChange={(e) => setValues({ ...values, description: e.target.value })}
         />
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor={`${idPrefix}-topic`}>{t('teacher.activities.topicLabel')}</Label>
-        <select
-          id={`${idPrefix}-topic`}
-          className={selectClass}
-          value={values.topicId}
-          aria-invalid={topicError}
-          aria-describedby={topicError ? `${idPrefix}-topic-error` : undefined}
-          onChange={(e) => setValues({ ...values, topicId: e.target.value })}
-        >
-          <option value="" disabled>
-            {t('teacher.activities.topicPlaceholder')}
-          </option>
-          {hasInitialTopic && !topics.some((tp) => tp.id === initial.topicId) ? (
-            <option value={initial.topicId}>{t('teacher.activities.topicUnavailable')}</option>
-          ) : null}
-          {topics.map((tp) => (
-            <option key={tp.id} value={tp.id}>
-              {tp.title}
-            </option>
-          ))}
-        </select>
-        {topicError ? (
-          <p id={`${idPrefix}-topic-error`} role="alert" className="text-destructive text-sm">
-            {t('teacher.activities.topicRequired')}
-          </p>
-        ) : null}
-        {topicsFailed ? <p className="text-muted-foreground text-sm">{t('teacher.activities.topicsFailed')}</p> : null}
-      </div>
+      <TopicListField
+        idPrefix={idPrefix}
+        topicIds={values.topicIds}
+        topicById={topicById}
+        lockedCount={locked ? initial.topicIds.length : 0}
+        invalid={topicError}
+        failed={topicsFailed}
+        onChange={(topicIds) => {
+          setValues({ ...values, topicIds })
+          setTopicError(false)
+        }}
+      />
+      {(['opensAt', 'closesAt'] as const).map((field) => {
+        // 已存在且未改動的過去時間要能顯示，所以 min 取「現在」與原值中較早者
+        const floor = [nowLocal(), initial[field]].filter(Boolean).sort()[0]
+        const min = field === 'closesAt' && values.opensAt > floor ? values.opensAt : floor
+        return (
+        <div key={field} className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-${field}`}>{t(field === 'opensAt' ? 'teacher.activities.opensAt' : 'teacher.activities.closesAt')}</Label>
+          <Input id={`${idPrefix}-${field}`} type="datetime-local" step="60" min={min} value={values[field]}
+            onChange={(e) => setValues({ ...values, [field]: e.target.value })} />
+        </div>
+        )
+      })}
       {serverError ? (
         <Alert variant="destructive" role="alert">
           <AlertDescription>{serverError}</AlertDescription>
         </Alert>
       ) : null}
-      <Button type="submit" disabled={pending}>
-        {pending ? t('teacher.working') : submitLabel}
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" variant={publishLabel ? 'outline' : 'default'} disabled={pending}>
+          {pending ? t('teacher.working') : submitLabel}
+        </Button>
+        {publishLabel ? (
+          <Button type="button" disabled={pending} onClick={() => void submit(undefined, true)}>
+            {publishLabel}
+          </Button>
+        ) : null}
+      </div>
+      {publishLabel ? <p className="text-muted-foreground text-xs">{t('teacher.activities.publishHint')}</p> : null}
     </form>
   )
 }
 
 function ActivityRow({
   activity,
-  topic,
+  topicById,
   busy,
   error,
+  archived,
   onEdit,
   onToggle,
+  onArchive,
+  onDelete,
+  href,
 }: {
+  href?: string
   activity: Activity
-  topic: Topic | undefined
+  topicById: ReadonlyMap<string, Topic>
   busy: boolean
+  archived: boolean
   error: string | undefined
   onEdit: () => void
   onToggle: () => void
+  onArchive: () => void
+  onDelete: () => void
 }) {
   const t = useT()
   const { lang } = useI18n()
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    // Refresh on the exact next boundary, then schedule the following one.
+    const next = [activity.opens_at, activity.closes_at].filter((v): v is string => !!v)
+      .map((v) => new Date(v).getTime()).filter((v) => v > now).sort((a, b) => a - b)[0]
+    if (next === undefined) return
+    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(next - now, 2147483647))
+    return () => window.clearTimeout(timer)
+  }, [activity.opens_at, activity.closes_at, now])
+  const isOpen = !archived && !activity.is_archived && activity.status === 'published' &&
+    (!activity.opens_at || now >= new Date(activity.opens_at).getTime()) &&
+    (!activity.closes_at || now < new Date(activity.closes_at).getTime())
+  const dateTime = (iso: string) => new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso))
   const toggleKey = {
     draft: 'teacher.activities.publish',
     published: 'teacher.activities.close',
     closed: 'teacher.activities.reopen',
   } as const
   return (
-    <li>
-      <Card>
-        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-medium break-words">{activity.title}</h3>
-              <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
-            </div>
-            {activity.description ? (
-              <p className="text-muted-foreground text-sm break-words whitespace-pre-line">{activity.description}</p>
-            ) : null}
-            <p className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
-              {topic ? <span>{t('teacher.activities.topicOf', { title: topic.title })}</span> : null}
-              {!topic && activity.topic_id ? (
-                <span>
-                  {t('teacher.activities.topicOf', {
-                    title: t('teacher.activities.topicUnavailable'),
-                  })}
-                </span>
-              ) : null}
-              <span>
-                {t('teacher.activities.createdAt', {
-                  date: formatDate(activity.created_at, lang),
-                })}
-              </span>
-            </p>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button variant="outline" size="sm" onClick={onEdit} disabled={busy}>
-              {t('teacher.activities.edit')}
+    <TableRow>
+      <TableCell className="max-w-72 align-top whitespace-normal">
+        <div className="space-y-1">
+          <p className="font-medium break-words">
+            {href ? (
+              <Link to={href} className="underline underline-offset-2">
+                {activity.title}
+              </Link>
+            ) : (
+              activity.title
+            )}
+          </p>
+          <p className="text-muted-foreground text-xs">
+            {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
+            {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
+          </p>
+          {activity.description ? (
+            <p className="text-muted-foreground text-xs break-words whitespace-pre-line">{activity.description}</p>
+          ) : null}
+        </div>
+      </TableCell>
+      <TableCell className="align-top whitespace-normal">
+        {activity.topic_ids.length > 0 ? (
+          <ol className="list-decimal space-y-0.5 pl-5">
+            {activity.topic_ids.map((id) => (
+              <li key={id}>{topicById.get(id)?.title ?? t('teacher.activities.topicUnavailable')}</li>
+            ))}
+          </ol>
+        ) : (
+          '—'
+        )}
+      </TableCell>
+      <TableCell className="align-top">{formatDate(activity.created_at, lang)}</TableCell>
+      <TableCell className="align-top">
+        <div className="flex flex-col items-start gap-1">
+          <Badge variant={STATUS_VARIANT[activity.status]}>{t(`teacher.activities.status.${activity.status}`)}</Badge>
+          <span className="text-muted-foreground text-xs">{t(isOpen ? 'teacher.activities.openNow' : 'teacher.activities.notOpen')}</span>
+        </div>
+      </TableCell>
+      <TableCell className="align-top whitespace-normal">
+        <div className="flex flex-wrap gap-1">
+          {href ? (
+            <Button asChild variant="ghost" size="sm">
+              <Link to={href}>{t('teacher.activities.viewResults')}</Link>
             </Button>
-            <Button size="sm" onClick={onToggle} disabled={busy}>
+          ) : null}
+          <Button variant="ghost" size="sm" onClick={onEdit} disabled={busy}>
+            {t('teacher.activities.edit')}
+          </Button>
+          {activity.is_archived ? null : (
+            <Button variant="ghost" size="sm" onClick={onToggle} disabled={busy}>
               {t(toggleKey[activity.status])}
             </Button>
-          </div>
-          {error ? (
-            <Alert variant="destructive" role="alert" className="sm:basis-full">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
-        </CardContent>
-      </Card>
-    </li>
+          )}
+          <Button variant="ghost" size="sm" onClick={onArchive} disabled={busy}>
+            {t(activity.is_archived ? 'teacher.activities.restore' : 'teacher.activities.archive')}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onDelete}>
+            {t('teacher.activities.delete')}
+          </Button>
+        </div>
+        {error ? (
+          <Alert variant="destructive" role="alert" className="mt-2">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+      </TableCell>
+    </TableRow>
   )
 }
 
-/** 教師／管理者：建立、編輯、發布、停止開放討論活動。 */
-export function ActivitiesPage() {
+/**
+ * 教師／管理者：建立、編輯、發布、停止開放討論活動。
+ * 帶 `classroomId` 時只管理該教室（教室頁內嵌），活動標題連到 `${detailBase}/${活動 id}` 的論點分布。
+ */
+export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: string; detailBase?: string }) {
   const t = useT()
-  const list = usePagedFetch<Activity>('/api/activities')
+  const classrooms = useFetch<Classroom[]>('/api/classrooms')
+  const [roomId, setRoomId] = useState(classroomId ?? '')
+  const writableRooms = useMemo(() => (classrooms.data ?? []).filter((r) => !r.is_archived), [classrooms.data])
+  // 只有確定載入且未封存的教室才可編輯；載入中或失敗時視為不可用
+  const writableRoomIds = useMemo(() => new Set(writableRooms.map((r) => r.id)), [writableRooms])
+  const selectedRoom = classroomId
+    ? writableRoomIds.has(classroomId)
+      ? classroomId
+      : undefined
+    : writableRooms.some((r) => r.id === roomId)
+      ? roomId
+      : writableRooms[0]?.id
+  const [showArchived, setShowArchived] = useState(false)
+  const [deleting, setDeleting] = useState<Activity>()
+  const [creating, setCreating] = useState(false)
+  const [confirming, setConfirming] = useState<{ activity: Activity; kind: 'publish' | 'close' | 'reopen' | 'archive' }>()
+  const listParams = new URLSearchParams()
+  if (classroomId) listParams.set('classroom_id', classroomId)
+  if (showArchived) listParams.set('archived', 'true')
+  const list = usePagedFetch<Activity>(`/api/activities${listParams.size ? `?${listParams}` : ''}`)
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
-  const topics = (available.data ?? []).filter((tp) => tp.is_active)
+  const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
+  const topicById = useMemo(() => new Map(topics.map((tp) => [tp.id, tp])), [topics])
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const busyRef = useRef(new Set<string>())
   // 以活動 id 記錄列內錯誤，顯示在失敗的那一列
   const [rowError, setRowError] = useState<{ id: string; message: string }>()
 
-  async function create(v: Values) {
-    await api.post<Activity>('/api/activities', {
+  async function create(v: Values, publish: boolean) {
+    if (!selectedRoom) throw new Error(t('teacher.activities.roomRequired'))
+    const created = await api.post<Activity>('/api/activities', {
       title: v.title,
       ...(v.description.trim() ? { description: v.description.trim() } : {}),
-      topic_id: v.topicId,
+      topic_ids: v.topicIds,
+      classroom_id: selectedRoom,
+      ...(v.opensAt ? { opens_at: utcTime(v.opensAt) } : {}),
+      ...(v.closesAt ? { closes_at: utcTime(v.closesAt) } : {}),
     })
-    toast.success(t('teacher.activities.created'))
+    if (publish) {
+      try {
+        await api.post<Activity>(`/api/activities/${created.id}/publish`)
+      } catch (err) {
+        // 草稿已建立，只是沒發布成功：關掉表單，讓教師從列表重試發布
+        setCreating(false)
+        list.reload()
+        setRowError({ id: created.id, message: errorText(t, err) })
+        return
+      }
+    }
+    toast.success(t(publish ? 'teacher.activities.published' : 'teacher.activities.created'))
+    setCreating(false)
     setRowError(undefined)
     list.reload()
   }
 
   async function update(a: Activity, v: Values) {
-    // 只在題目有變動時才送 topic_id：已有學生開始的活動不能換題目（409 activity_topic_locked），沒換就不該碰到它
-    const topicChanged = v.topicId !== a.topic_id
+    // 只在題目清單有變動時才送 topic_ids：已有學生開始的活動不能動既有題目（409 activity_topic_locked），沒改就不該碰到它
+    const topicChanged = v.topicIds.length !== a.topic_ids.length || v.topicIds.some((id, i) => id !== a.topic_ids[i])
     await api.patch<Activity>(`/api/activities/${a.id}`, {
       title: v.title,
       description: v.description.trim(),
-      ...(topicChanged ? { topic_id: v.topicId } : {}),
+      ...(topicChanged ? { topic_ids: v.topicIds } : {}),
+      ...(v.opensAt !== localTime(a.opens_at) ? { opens_at: utcTime(v.opensAt) } : {}),
+      ...(v.closesAt !== localTime(a.closes_at) ? { closes_at: utcTime(v.closesAt) } : {}),
     })
     toast.success(t('teacher.activities.updated'))
     setEditing(null)
@@ -270,43 +398,145 @@ export function ActivitiesPage() {
     }
   }
 
-  return (
-    <Page title={t('teacher.activities.title')}>
-      <Card>
-        <CardContent className="space-y-3">
-          <h2 className="text-lg font-medium">{t('teacher.activities.createHeading')}</h2>
-          <ActivityForm
-            idPrefix="create"
-            initial={{ title: '', description: '', topicId: '' }}
-            topics={topics}
-            topicsFailed={!!available.error}
-            submitLabel={t('teacher.activities.createButton')}
-            resetOnSuccess
-            onSubmit={create}
-          />
-        </CardContent>
-      </Card>
+  async function archive(a: Activity) {
+    if (busyRef.current.has(a.id)) return
+    busyRef.current.add(a.id)
+    setBusyIds(new Set(busyRef.current))
+    setRowError(undefined)
+    try {
+      await api.post<Activity>(`/api/activities/${a.id}/${a.is_archived ? 'unarchive' : 'archive'}`)
+      toast.success(t(a.is_archived ? 'teacher.activities.restoredToast' : 'teacher.activities.archivedToast'))
+      list.reload()
+    } catch (err) {
+      setRowError({ id: a.id, message: errorText(t, err) })
+    } finally {
+      busyRef.current.delete(a.id)
+      setBusyIds(new Set(busyRef.current))
+    }
+  }
 
-      <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+  async function remove(a: Activity) {
+    await api.delete(`/api/activities/${a.id}`, { confirm_title: a.title })
+    setDeleting(undefined)
+    toast.success(t('teacher.activities.deleted'))
+    list.reload()
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-medium">{t('teacher.activities.listHeading')}</h2>
+        <Button type="button" onClick={() => setCreating(true)}>
+          {t('teacher.activities.new')}
+        </Button>
+      </div>
+      <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {list.loading && !list.items ? <LoadingBlock /> : null}
       {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
-      {list.items && list.items.length === 0 ? <EmptyBlock>{t('teacher.activities.empty')}</EmptyBlock> : null}
+      {list.items && list.items.length === 0 ? <EmptyBlock>{t(showArchived ? 'teacher.activities.emptyArchived' : 'teacher.activities.empty')}</EmptyBlock> : null}
       {list.items && list.items.length > 0 ? (
-        <ul className="space-y-3">
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('teacher.activities.col.title')}</TableHead>
+                <TableHead>{t('teacher.activities.col.topic')}</TableHead>
+                <TableHead>{t('teacher.activities.col.created')}</TableHead>
+                <TableHead>{t('teacher.activities.col.status')}</TableHead>
+                <TableHead>{t('teacher.activities.col.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
           {list.items.map((a) => (
             <ActivityRow
               key={a.id}
               activity={a}
-              topic={topics.find((tp) => tp.id === a.topic_id)}
-              busy={busyIds.has(a.id)}
+              href={detailBase ? `${detailBase}/${a.id}` : undefined}
+              topicById={topicById}
+              archived={!writableRoomIds.has(a.classroom_id)}
+              busy={busyIds.has(a.id) || !writableRoomIds.has(a.classroom_id)}
               error={rowError?.id === a.id ? rowError.message : undefined}
               onEdit={() => setEditing(a)}
-              onToggle={() => void toggle(a)}
+              onToggle={() => setConfirming({ activity: a, kind: a.status === 'draft' ? 'publish' : a.status === 'published' ? 'close' : 'reopen' })}
+              onArchive={() => (a.is_archived ? void archive(a) : setConfirming({ activity: a, kind: 'archive' }))}
+              onDelete={() => setDeleting(a)}
             />
           ))}
-        </ul>
+            </TableBody>
+          </Table>
+        </div>
       ) : null}
       <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
+
+      {confirming ? (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => !o && setConfirming(undefined)}
+          title={
+            confirming.kind === 'archive'
+              ? t('teacher.activities.confirm.archive.title', { title: confirming.activity.title })
+              : t(`teacher.activities.confirm.${confirming.kind}.title`)
+          }
+          description={t(`teacher.activities.confirm.${confirming.kind}.body`)}
+          confirmLabel={t(`teacher.activities.confirm.${confirming.kind}.action`)}
+          destructive={confirming.kind === 'archive'}
+          onConfirm={() => {
+            const { activity, kind } = confirming
+            setConfirming(undefined)
+            void (kind === 'archive' ? archive(activity) : toggle(activity))
+          }}
+        >
+          {confirming.kind === 'publish' ? (
+            <>
+              <ConfirmFact label={t('teacher.activities.fact.title')}>{confirming.activity.title}</ConfirmFact>
+              <ConfirmFact label={t('teacher.activities.fact.classroom')}>
+                {classrooms.data?.find((r) => r.id === confirming.activity.classroom_id)?.name ?? '—'}
+              </ConfirmFact>
+            </>
+          ) : confirming.kind === 'archive' ? null : (
+            <ConfirmFact label={t('teacher.activities.fact.state')}>
+              {t(confirming.kind === 'close' ? 'teacher.activities.fact.open' : 'teacher.activities.fact.stopped', { title: confirming.activity.title })}
+            </ConfirmFact>
+          )}
+        </ConfirmDialog>
+      ) : null}
+
+      {deleting ? (
+        <NameConfirmDialog
+          title={t('teacher.activities.deleteTitle')}
+          description={t('teacher.activities.deleteBody')}
+          name={deleting.title}
+          onConfirm={() => remove(deleting)}
+          onCancel={() => setDeleting(undefined)}
+        />
+      ) : null}
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('teacher.activities.createHeading')}</DialogTitle>
+            <DialogDescription>{t('teacher.activities.createDescription')}</DialogDescription>
+          </DialogHeader>
+          {classroomId ? null : (
+            <div className="space-y-1.5">
+              <Label htmlFor="activity-classroom">{t('teacher.activities.classroom')}</Label>
+              <select id="activity-classroom" className={nativeSelectClass} value={selectedRoom ?? ''} onChange={(e) => setRoomId(e.target.value)}>
+                {writableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+              </select>
+            </div>
+          )}
+          {classrooms.error ? <ErrorBlock error={classrooms.error} onRetry={classrooms.reload} /> : null}
+          <ActivityForm
+            idPrefix="create"
+            initial={{ title: '', description: '', topicIds: [], opensAt: '', closesAt: '' }}
+            topicById={topicById}
+            topicsFailed={!!available.error}
+            submitLabel={t('teacher.activities.saveDraft')}
+            publishLabel={t('teacher.activities.publishNow')}
+            onSubmit={create}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
@@ -320,9 +550,11 @@ export function ActivitiesPage() {
               initial={{
                 title: editing.title,
                 description: editing.description,
-                topicId: editing.topic_id,
+                topicIds: editing.topic_ids,
+                opensAt: localTime(editing.opens_at),
+                closesAt: localTime(editing.closes_at),
               }}
-              topics={topics}
+              topicById={topicById}
               topicsFailed={!!available.error}
               submitLabel={t('common.save')}
               onSubmit={(v) => update(editing, v)}
@@ -330,6 +562,6 @@ export function ActivitiesPage() {
           ) : null}
         </DialogContent>
       </Dialog>
-    </Page>
+    </div>
   )
 }

@@ -28,18 +28,39 @@ pub struct Config {
     /// 受信任的反向代理網段（`TRUSTED_PROXIES`，逗號分隔的 CIDR）。只有 TCP 對端落在這些網段時，
     /// 才採用 `X-Forwarded-For` 作為來源 IP；預設為空，一律用 TCP 對端（S-08.2 登入限流）。
     pub trusted_proxies: Vec<crate::client_ip::Cidr>,
+    /// 登入請求頻率限制（`LOGIN_RATE_BURST`、`LOGIN_RATE_REPLENISH_SECS`）：每個來源 IP 一次最多連續幾個，
+    /// 之後每隔多久回補一個。預設值見 `login_rate_limit`（暫定，待需求方確認）。
+    pub login_rate_burst: u32,
+    pub login_rate_replenish: Duration,
+    /// 每位使用者在一個滑動時間窗內最多可觸發幾次 AI 呼叫（`AI_USAGE_MAX`、`AI_USAGE_WINDOW_SECS`）。
+    /// 計入使用者按下去才發生的呼叫：對話回覆、語音辨識與合成、教師翻譯總結與重新分組。
+    /// 預設值見 `ai_usage`（暫定，待需求方確認）。
+    pub ai_usage_max: usize,
+    pub ai_usage_window: Duration,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
     /// AI 服務的 API key 池（`OPENAI_API_KEYS`、`.apikeylist`）；對話與語音共用，冷卻狀態也共用。
     pub openai_keys: Arc<KeyPool>,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
+    /// 主模型被限流（429）時依序改用的模型；空表示不啟用備援
+    pub openai_fallback_models: Vec<String>,
+    /// 推理強度（`OPENAI_REASONING_EFFORT`，例如 `high`）；沒設定就不送
+    pub openai_reasoning_effort: Option<String>,
     pub openai_base_url: String,
+    /// 語音辨識專用的 base URL（例如自架的 Whisper）；沒設定就用 `openai_base_url`
+    pub openai_stt_base_url: Option<String>,
+    /// 語音合成專用的自架服務 base URL；有設定時不送 OpenAI 金鑰、不扣 AI 用量（S-05.5）。
+    pub openai_tts_base_url: Option<String>,
     /// 語音備援用的 OpenAI 模型（S-05.3）。具體模型尚未決定，沒設定就不啟用語音備援。
     pub openai_stt_model: Option<String>,
     pub openai_tts_model: Option<String>,
     /// 語音合成的聲音名稱。
     pub openai_tts_voice: String,
+    /// 語音對話實驗：cascade 的 `/v1/realtime` 位址；沒設定就不開放（見 `cascade`）。
+    pub cascade_realtime_url: Option<String>,
+    /// cascade 呼叫內部 LLM 端點用的共用密鑰。
+    pub cascade_llm_token: Option<String>,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -48,6 +69,11 @@ pub struct Config {
     pub ai_first_token_timeout: Duration,
     /// AI 完整回覆上限（S-03.5）。
     pub ai_total_timeout: Duration,
+    /// 一般 API 請求的逾時（#325）：從收到請求到送出回應標頭為止，含讀取 request body。
+    pub request_timeout: Duration,
+    /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
+    /// 讓登入頁一鍵填入。密碼公開，只能用在展示環境；示範帳號不含管理者。
+    pub demo_mode: bool,
 }
 
 #[derive(Debug)]
@@ -99,6 +125,15 @@ pub fn parse_admin_emails(raw: &str) -> Vec<String> {
 
 /// 金鑰清單檔的預設位置：後端通常在 `backend/` 執行，所以也找上一層（專案根目錄）。
 const DEFAULT_KEY_FILES: [&str; 2] = [".apikeylist", "../.apikeylist"];
+
+/// 逗號分隔的模型清單：去掉空白與空項；順序就是備援的先後（重複的由 `with_fallbacks` 略過）。
+fn parse_model_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+        .collect()
+}
 
 /// 讀取所有 API key：`OPENAI_API_KEYS`（逗號分隔）加上金鑰清單檔（一行一把），合併去重。
 /// 清單檔由 `OPENAI_API_KEYS_FILE` 指定（指定了就必須讀得到），否則找預設位置，找不到也沒關係。
@@ -169,11 +204,53 @@ impl Config {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
     }
 
+    /// 較長的請求逾時（#325），給同步等待 AI／語音服務或處理較久的端點：AI 完整回覆上限再加 60 秒，
+    /// 容納上傳 10 MB 音訊、語音服務本身的 30 秒上限與資料庫操作；不會比一般請求逾時短。
+    pub fn long_request_timeout(&self) -> Duration {
+        (self.ai_total_timeout + Duration::from_secs(60)).max(self.request_timeout)
+    }
+
+    /// 伺服器端語音對話的 cascade 位址：網址與共用密鑰要同時設定才有值。
+    /// 只有網址時 cascade 呼叫內部 LLM 端點會被拒絕，學生按得到即時語音卻等不到回覆。
+    pub fn cascade_voice_url(&self) -> Option<&str> {
+        match (&self.cascade_realtime_url, &self.cascade_llm_token) {
+            (Some(url), Some(_)) => Some(url),
+            _ => None,
+        }
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
         validate_turns(wrap_up_turn, max_turns)?;
+        let request_timeout_secs: u64 = parse_or("REQUEST_TIMEOUT_SECS", 10)?;
+        if request_timeout_secs == 0 {
+            return Err(ConfigError(
+                "REQUEST_TIMEOUT_SECS must be at least 1".into(),
+            ));
+        }
+        let login_rate_burst: u32 =
+            parse_or("LOGIN_RATE_BURST", crate::login_rate_limit::DEFAULT_BURST)?;
+        let login_rate_replenish_secs: u64 = parse_or(
+            "LOGIN_RATE_REPLENISH_SECS",
+            crate::login_rate_limit::DEFAULT_REPLENISH.as_secs(),
+        )?;
+        if login_rate_burst == 0 || login_rate_replenish_secs == 0 {
+            return Err(ConfigError(
+                "LOGIN_RATE_BURST and LOGIN_RATE_REPLENISH_SECS must be at least 1".into(),
+            ));
+        }
+        let ai_usage_max: usize = parse_or("AI_USAGE_MAX", crate::ai_usage::DEFAULT_MAX)?;
+        let ai_usage_window_secs: u64 = parse_or(
+            "AI_USAGE_WINDOW_SECS",
+            crate::ai_usage::DEFAULT_WINDOW.as_secs(),
+        )?;
+        if ai_usage_max == 0 || ai_usage_window_secs == 0 {
+            return Err(ConfigError(
+                "AI_USAGE_MAX and AI_USAGE_WINDOW_SECS must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
@@ -192,6 +269,10 @@ impl Config {
                 &env::var("TRUSTED_PROXIES").unwrap_or_default(),
             )
             .map_err(|e| ConfigError(format!("invalid TRUSTED_PROXIES: {e}")))?,
+            login_rate_burst,
+            login_rate_replenish: Duration::from_secs(login_rate_replenish_secs),
+            ai_usage_max,
+            ai_usage_window: Duration::from_secs(ai_usage_window_secs),
             frontend_dir: env::var("FRONTEND_DIR")
                 .ok()
                 .filter(|v| !v.is_empty())
@@ -200,8 +281,25 @@ impl Config {
                 no_key_error(env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty()))
             })?),
             openai_model: required("OPENAI_MODEL")?,
+            openai_fallback_models: parse_model_list(
+                &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
+            ),
+            openai_reasoning_effort: env::var("OPENAI_REASONING_EFFORT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             openai_base_url: env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+            openai_stt_base_url: env::var("OPENAI_STT_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            openai_tts_base_url: env::var("OPENAI_TTS_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_realtime_url: env::var("CASCADE_REALTIME_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            cascade_llm_token: env::var("CASCADE_LLM_TOKEN").ok().filter(|v| !v.is_empty()),
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")
@@ -215,6 +313,8 @@ impl Config {
                 15,
             )?),
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
+            request_timeout: Duration::from_secs(request_timeout_secs),
+            demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             app_base_url,
         })
     }
@@ -286,5 +386,16 @@ mod tests {
         for (wrap, max) in [(0, 20), (21, 20), (15, 0), (5, 1001), (5, u32::MAX)] {
             assert!(validate_turns(wrap, max).is_err(), "{wrap}/{max}");
         }
+    }
+
+    #[test]
+    fn model_list_is_split_on_commas_trimmed_and_cleaned() {
+        assert_eq!(parse_model_list(""), Vec::<String>::new());
+        assert_eq!(parse_model_list("  , ,"), Vec::<String>::new());
+        assert_eq!(parse_model_list("a"), ["a"]);
+        assert_eq!(
+            parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
+            ["google/gemma:free", "nvidia/x:free", "a"]
+        );
     }
 }

@@ -43,7 +43,7 @@ export function TeachersPage() {
   )
   const q = query.trim().toLowerCase()
   const shown = q ? emails.filter((e) => e.toLowerCase().includes(q)) : emails
-  const num = new Intl.NumberFormat(lang)
+  const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
 
   async function onAdd(e: FormEvent) {
     e.preventDefault()
@@ -207,7 +207,10 @@ export function TeachersPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <ResetPasswordDialog email={toReset} onClose={() => setToReset(undefined)} />
+      <ResetPasswordDialog
+        target={toReset === undefined ? undefined : { kind: 'email', email: toReset }}
+        onClose={() => setToReset(undefined)}
+      />
     </Page>
   )
 }

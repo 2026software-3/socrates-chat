@@ -9,7 +9,12 @@ use sqlx::PgPool;
 
 #[sqlx::test]
 async fn every_documented_operation_is_routed_and_protected(pool: PgPool) {
-    let app = test_app(pool);
+    // 示範帳號端點只在 DEMO_MODE 下存在（否則 404），所以用示範模式檢查路由
+    let config = socrates_chat_backend::config::Config {
+        demo_mode: true,
+        ..test_config()
+    };
+    let app = test_app_with_config(pool, FakeAi::with(vec![]), config);
     let res = send(&app, get("/api/openapi.json", None)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let doc = json_body(res).await;
@@ -86,7 +91,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
         (
             "/api/conversations",
             "ConversationPage",
-            vec!["limit", "cursor"],
+            vec!["limit", "cursor", "archived", "activity_id"],
         ),
         (
             "/api/classrooms/{id}/students",
@@ -101,7 +106,7 @@ async fn paginated_lists_document_limit_cursor_and_page_schema(pool: PgPool) {
         (
             "/api/activities",
             "ActivityPage",
-            vec!["limit", "cursor", "classroom_id"],
+            vec!["limit", "cursor", "classroom_id", "archived"],
         ),
     ] {
         let op = &doc["paths"][path]["get"];
@@ -145,4 +150,39 @@ async fn student_page_documents_total_and_invalid_filter(pool: PgPool) {
             .unwrap()
             .contains("invalid_filter")
     );
+}
+
+/// 文件列出的 409 錯誤碼必須是端點實際可能回的：新建教室不可能已封存；
+/// 開始對話遇到封存的活動或教室回 400 `invalid_conversation_source`，不是 409。
+#[sqlx::test]
+async fn documented_conflicts_are_ones_the_endpoint_can_return(pool: PgPool) {
+    let app = test_app(pool);
+    let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
+    let conflict = |path: &str, method: &str| -> String {
+        doc["paths"][path][method]["responses"]["409"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(conflict("/api/classrooms", "post"), "classroom_name_taken");
+    assert_eq!(
+        conflict("/api/conversations", "post"),
+        "activity_already_started"
+    );
+    let start = doc["paths"]["/api/conversations"]["post"]["responses"]["400"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(start.contains("invalid_conversation_source") && start.contains("已封存"));
+    // 真正會被封存擋下的寫入端點仍要標示 classroom_archived
+    for (path, method) in [
+        ("/api/activities", "post"),
+        ("/api/classrooms/{id}", "patch"),
+        ("/api/classrooms/{id}/roster/import", "post"),
+        ("/api/conversations/{id}/end", "post"),
+    ] {
+        assert!(
+            conflict(path, method).contains("classroom_archived"),
+            "{method} {path}"
+        );
+    }
 }

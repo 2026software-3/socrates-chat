@@ -7,8 +7,9 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, auth, catalog, chat, claims, classroom_store, classrooms, dashboard,
-    error::ErrorBody, reply, roster, roster_store, summary, voice,
+    accounts, achievement_admin, ai_usage, auth, cascade, catalog, chat, claims, classroom_store,
+    classrooms, dashboard, demo, error::ErrorBody, points, purchase, reply, request_logs, roster,
+    roster_store, summary, tasks, voice,
 };
 
 struct SessionCookie;
@@ -111,10 +112,10 @@ impl Modify for SessionCookie {
                        錯誤格式為 { error: { code, request_id } }。"
     ),
     paths(
-        auth::login, auth::callback, auth::password_login, auth::change_password, auth::logout,
-        auth::me, auth::update_me, auth::reset_password,
+        auth::login, auth::link_start, auth::unlink_google, auth::callback, auth::password_login, auth::change_password, auth::logout,
+        auth::me, auth::update_me, auth::reset_password, ai_usage::usage,
         classrooms::list_classrooms, classrooms::create_classroom,
-        classrooms::get_classroom, classrooms::update_classroom,
+        classrooms::get_classroom, classrooms::update_classroom, classrooms::delete_classroom,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
@@ -123,12 +124,18 @@ impl Modify for SessionCookie {
         catalog::create_topic_for_teacher,
         catalog::update_topic_for_teacher, catalog::list_activities, catalog::create_activity,
         catalog::get_activity, catalog::update_activity, catalog::publish_activity,
-        catalog::close_activity, catalog::available,
-        chat::create, chat::list, chat::detail, chat::remove, chat::send_message,
+        catalog::close_activity, catalog::archive_activity, catalog::unarchive_activity,
+        catalog::delete_activity, catalog::available,
+        chat::create, chat::list, chat::detail, chat::remove, chat::archive, chat::unarchive, chat::send_message,
         reply::stream,
-        summary::end, summary::get_summary, summary::retry, summary::list,
+        request_logs::list,
+        summary::end, summary::get_summary, summary::retry, summary::list, summary::transcript, summary::translate,
         dashboard::personal, dashboard::class, claims::regroup,
-        voice::transcribe, voice::speech,
+        voice::transcribe, voice::speech, cascade::socket,
+        points::mine, demo::accounts, crate::ready,
+        tasks::list, tasks::claim, tasks::admin_list, tasks::update,
+        purchase::list, purchase::buy, purchase::admin_list, purchase::update,
+        achievement_admin::list, achievement_admin::create, achievement_admin::update,
     ),
     components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
     modifiers(&SessionCookie, &CommonErrorResponses),

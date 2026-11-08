@@ -2,6 +2,8 @@ import type { ChatModelRunOptions, ChatModelRunResult } from '@assistant-ui/reac
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
+import { makeDetail, makeMessage } from '@/features/chat/test-data'
+import { createVoiceTurns } from '@/features/chat/voice/realtime/voice-turn'
 import type { SentMessage, StreamDone } from '@/lib/types'
 import { apiError } from '@/test/render'
 import { server } from '@/test/server'
@@ -58,6 +60,98 @@ function mockSend(calls: unknown[], frames: string[] = [], result: SentMessage =
     }),
   )
 }
+
+describe('voice turns', () => {
+  it('shows the reply from the voice connection and never posts', async () => {
+    const calls: unknown[] = []
+    mockSend(calls)
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    const turn = turns.begin()
+    turn.push('你')
+    turn.push('好')
+    turn.end()
+    const out = await drain(adapter.run(runOptions([userMsg('u1')])))
+    expect(out.at(-1)).toEqual({ content: [{ type: 'text', text: '你好' }] })
+    expect(calls).toEqual([])
+  })
+
+  it('stops following the reply when the run is cancelled', async () => {
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    const turn = turns.begin()
+    const ctrl = new AbortController()
+    turn.push('你')
+    const running = drain(adapter.run(runOptions([userMsg('u1')], ctrl.signal)))
+    await Promise.resolve()
+    ctrl.abort()
+    turn.push('好')
+    turn.end()
+    expect((await running).length).toBeLessThanOrEqual(1)
+  })
+
+  it('treats the saved voice message as persisted on a later run', async () => {
+    const calls: unknown[] = []
+    mockSend(calls)
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    turns.begin().end()
+    await drain(adapter.run(runOptions([userMsg('u1')])))
+    server.use(http.get('/api/conversations/c1/stream', () => sse(delta('接上'), doneFrame)))
+    await drain(adapter.run(runOptions([userMsg('u1')])))
+    expect(calls).toEqual([])
+  })
+})
+
+describe('retrying a failed voice turn', () => {
+  it('posts the utterance again when the server never received it', async () => {
+    const posts: unknown[] = []
+    let streams = 0
+    mockSend(posts, [delta('補上的回覆'), doneFrame])
+    server.use(
+      http.get('/api/conversations/c1', () =>
+        HttpResponse.json(
+          makeDetail({}, [
+            makeMessage({ id: 'm1', role: 'student', content: '先前的發言' }),
+            makeMessage({ id: 'm2', role: 'ai', content: '先前的回覆' }),
+          ]),
+        ),
+      ),
+      http.get('/api/conversations/c1/stream', () => {
+        streams += 1
+        return sse(delta('不該顯示的舊回覆'), doneFrame)
+      }),
+    )
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    turns.begin().fail()
+    await drain(adapter.run(runOptions([userMsg('u1', '沒有送到後端的發言')])))
+    const retried = await drain(adapter.run(runOptions([userMsg('u1', '沒有送到後端的發言')])))
+    expect(posts).toEqual([{ content: '沒有送到後端的發言', source: 'text' }])
+    expect(streams).toBe(0)
+    expect(retried.at(-1)).toEqual({ content: [{ type: 'text', text: '補上的回覆' }] })
+  })
+
+  it('only re-opens the stream when the server already saved the utterance, even merged into a longer message', async () => {
+    const posts: unknown[] = []
+    mockSend(posts)
+    server.use(
+      http.get('/api/conversations/c1', () =>
+        HttpResponse.json(
+          makeDetail({}, [makeMessage({ id: 'm1', role: 'student', content: '合成的前半句 合成的後半句' })]),
+        ),
+      ),
+      http.get('/api/conversations/c1/stream', () => sse(delta('接上的回覆'), doneFrame)),
+    )
+    const turns = createVoiceTurns()
+    const adapter = createChatAdapter({ conversationId: 'c1', takeVoiceTurn: turns.take })
+    turns.begin().fail()
+    await drain(adapter.run(runOptions([userMsg('u1', '合成的後半句')])))
+    const retried = await drain(adapter.run(runOptions([userMsg('u1', '合成的後半句')])))
+    expect(posts).toEqual([])
+    expect(retried.at(-1)).toEqual({ content: [{ type: 'text', text: '接上的回覆' }] })
+  })
+})
 
 describe('createChatAdapter', () => {
   it('POSTs the new student message and streams the accumulated reply from the same response', async () => {

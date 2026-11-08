@@ -54,7 +54,7 @@ function mockSummaries(...list: SummaryView[]) {
 }
 
 function renderPage(opts: { lang?: Lang } = {}) {
-  mockMe(makeMe({ student: true }))
+  mockMe(makeMe({ student: true }, { language: opts.lang ?? 'zh-TW' }))
   return renderApp(
     <Routes>
       <Route path="/conversations/:id" element={<ConversationPage pollMs={5} maxPollMs={400} />} />
@@ -82,6 +82,22 @@ describe('ConversationPage: loading', () => {
     expect(screen.getByText('我認為應該扳動拉桿。')).toBeInTheDocument()
     expect(screen.getByText('你說的「應該」是依據什麼原則呢？')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '訊息輸入' })).toBeInTheDocument()
+    expect(screen.getByText('回合：1')).toBeInTheDocument()
+    expect(screen.getByText('教師可以看到你在活動中的對話內容與學習總結；個人練習不會被看到。')).toBeInTheDocument()
+  })
+
+  it('counts a follow-up the server did not count as a turn only once, as the server does after a refresh', async () => {
+    // 被打斷、沒聽到回覆的接話是獨立一則學生訊息，但後端只算一回合
+    mockDetail(
+      makeDetail({ turn_count: 1 }, [
+        makeMessage({ id: 'm1', role: 'student', content: '甲' }),
+        makeMessage({ id: 'm2', role: 'student', content: '乙' }),
+        makeMessage({ id: 'm3', role: 'ai', content: '回覆', question_type: 'clarify' }),
+      ]),
+    )
+    renderPage()
+    expect(await screen.findByText('乙')).toBeInTheDocument()
+    expect(screen.getByText('回合：1')).toBeInTheDocument()
   })
 
   it('never shows question_type or other metadata', async () => {
@@ -209,6 +225,21 @@ describe('ConversationPage: sending', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: '訊息輸入' })).toBeEnabled())
   })
 
+  it('switches to the read-only ended view when the AI closes the discussion', async () => {
+    mockDetail(makeDetail())
+    server.use(
+      http.post('/api/conversations/c1/messages', () =>
+        postSse(delta('謝謝你的討論。'), doneFrame({ ended: true })),
+      ),
+    )
+    mockSummaries(makeSummary())
+    renderPage()
+    await send('我的想法')
+    expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
+    expect(screen.getByText('這場對話已結束，只能閱讀。')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: '訊息輸入' })).not.toBeInTheDocument()
+  })
+
   it('switches to the read-only ended view when sending hits conversation_ended', async () => {
     mockDetail(makeDetail())
     server.use(http.post('/api/conversations/c1/messages', () => apiError(409, 'conversation_ended')))
@@ -302,6 +333,14 @@ describe('ConversationPage: sending', () => {
     expect(screen.getAllByText('新的想法')).toHaveLength(1)
   })
 
+  it('ai_usage_exceeded says the AI usage limit was reached', async () => {
+    mockDetail(makeDetail())
+    server.use(http.post('/api/conversations/c1/messages', () => postSse(errorFrame('ai_usage_exceeded'))))
+    renderPage()
+    await send('新的想法')
+    expect(await screen.findByText('AI 用量已達上限，請稍後再試。')).toBeInTheDocument()
+  })
+
   it('shows the network error text when the connection drops mid-stream', async () => {
     mockDetail(makeDetail())
     server.use(
@@ -340,6 +379,62 @@ describe('ConversationPage: sending', () => {
     expect(await screen.findByText('補上的回覆')).toBeInTheDocument()
     expect(streams).toBe(1)
     await waitFor(() => expect(screen.queryByText('AI 還沒有回覆你的最後一則訊息。')).not.toBeInTheDocument())
+  })
+})
+
+describe('ConversationPage: coming back mid-reply', () => {
+  const unanswered = [makeMessage({ id: 'm1', content: '還沒被回覆的想法' })]
+
+  it('re-attaches to a reply that is still generating, without asking to retry', async () => {
+    mockDetail(makeDetail({ generating: true }, unanswered))
+    let streams = 0
+    server.use(
+      http.get('/api/conversations/c1/stream', () => {
+        streams += 1
+        // 第一個 delta 是離開前已產生的全部文字
+        return sse(delta('已產生的部分，'), delta('接著的部分'), doneFrame({ stage: 2 }))
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('已產生的部分，接著的部分')).toBeInTheDocument()
+    expect(streams).toBe(1)
+    expect(screen.queryByText('AI 還沒有回覆你的最後一則訊息。')).not.toBeInTheDocument()
+    const stage = screen.getByTestId('stage-indicator')
+    await waitFor(() => expect(within(stage).getByText('論證').closest('li')).toHaveAttribute('aria-current', 'step'))
+  })
+
+  it('shows the saved reply when it finished just before re-attaching', async () => {
+    let details = 0
+    server.use(
+      http.get('/api/conversations/c1', () => {
+        details += 1
+        return HttpResponse.json(
+          details === 1
+            ? makeDetail({ generating: true }, unanswered)
+            : makeDetail({ stage: 2 }, [...unanswered, makeMessage({ id: 'm2', role: 'ai', content: '剛存好的回覆' })]),
+        )
+      }),
+      http.get('/api/conversations/c1/stream', () => apiError(409, 'nothing_to_reply')),
+    )
+    renderPage()
+    expect(await screen.findByText('剛存好的回覆')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    const stage = screen.getByTestId('stage-indicator')
+    await waitFor(() => expect(within(stage).getByText('論證').closest('li')).toHaveAttribute('aria-current', 'step'))
+  })
+
+  it('does not open a stream by itself when no reply is generating', async () => {
+    mockDetail(makeDetail({}, unanswered))
+    let streams = 0
+    server.use(
+      http.get('/api/conversations/c1/stream', () => {
+        streams += 1
+        return sse(doneFrame())
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('AI 還沒有回覆你的最後一則訊息。')).toBeInTheDocument()
+    expect(streams).toBe(0)
   })
 })
 

@@ -6,9 +6,11 @@ import { classroomsMessages } from '@/features/classrooms/messages'
 import { voiceMessages } from '@/features/chat/voice/messages'
 import { dashboardMessages } from '@/features/dashboard/messages'
 import { studentMessages } from '@/features/student/messages'
+import { taskMessages } from '@/features/tasks/messages'
+import { purchaseMessages } from '@/features/purchase/messages'
 import { teacherMessages } from '@/features/teacher/messages'
 import { common } from '@/i18n/common.messages'
-import { DEFAULT_LANG, LANGS, pickLang, type Lang } from '@/i18n/define'
+import { DEFAULT_LANG, isLang, pickLang, type Lang } from '@/i18n/define'
 import { isApiError } from '@/lib/api'
 
 // 新增功能時：在該功能目錄建立 messages.ts，再加進這裡。
@@ -16,6 +18,8 @@ const bundles = [
   common,
   authMessages,
   studentMessages,
+  taskMessages,
+  purchaseMessages,
   chatMessages,
   classroomsMessages,
   voiceMessages,
@@ -56,7 +60,7 @@ const STORAGE_KEY = 'lang'
 function initialLang(): Lang {
   try {
     const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved && (LANGS as readonly string[]).includes(saved)) return saved as Lang
+    if (isLang(saved)) return saved
   } catch {
     // localStorage 不可用（隱私模式等）
   }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, isApiError, type ApiError } from '@/lib/api'
+import { api, isAbortError, isApiError, type ApiError } from '@/lib/api'
 import type { SummaryView } from '@/lib/types'
 
 /** 輪詢間隔與上限（毫秒）；頁面可用 props 覆寫，測試因此不必等真實時間。 */
@@ -43,7 +43,7 @@ export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, m
           timer = setTimeout(poll, pollMs)
         }
       } catch (e) {
-        if (ctrl.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return
+        if (ctrl.signal.aborted || isAbortError(e)) return
         setState({ kind: 'error', error: isApiError(e) ? e : undefined })
       }
     }
