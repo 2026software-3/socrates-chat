@@ -101,6 +101,12 @@ export type TeacherSummary = {
   conversation_id: string
   /** 對話所屬的教室 */
   classroom_id: string
+  /** 對話所屬的活動 ID（個人練習為空） */
+  activity_id?: string | null
+  /** 對話所屬的題目 ID */
+  topic_id?: string | null
+  /** 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3） */
+  activity_completed: boolean
   title: string
   ended_at: string
   /** 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號 */
