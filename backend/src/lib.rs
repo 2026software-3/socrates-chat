@@ -72,6 +72,7 @@ pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
+pub mod tasks;
 pub(crate) mod user_limit;
 pub mod voice;
 
@@ -196,6 +197,7 @@ pub fn app(state: AppState) -> Router {
         .merge(voice::routes())
         .merge(cascade::routes())
         .merge(points::routes())
+        .merge(tasks::routes())
         .merge(purchase::routes())
         .merge(achievement_admin::routes())
         .merge(demo::routes())
