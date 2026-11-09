@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -23,6 +23,14 @@ use crate::{
 const MAX_CLASSROOM_NAME_CHARS: usize = 255;
 const MAX_CLASSROOM_YEAR_LABEL_CHARS: usize = 100;
 const MAX_CLASSROOM_DESCRIPTION_CHARS: usize = 2_000;
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ClassroomDetail {
+    #[serde(flatten)]
+    classroom: Classroom,
+    student_count: i64,
+    joined_count: i64,
+    never_logged_in_count: i64,
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -205,14 +213,29 @@ pub(crate) async fn create_classroom(
     tag = "classrooms",
     summary = "查看教室",
     params(("id" = Uuid, Path, description = "教室 ID")),
-    responses((status = 200, description = "教室", body = Classroom), crate::error::CommonErrors)
+    responses((status = 200, description = "教室", body = ClassroomDetail), crate::error::CommonErrors)
 )]
 pub(crate) async fn get_classroom(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
-) -> Result<Json<Classroom>, ApiError> {
-    visible_classroom(&state, &cu, &raw_id).await.map(Json)
+) -> Result<Json<ClassroomDetail>, ApiError> {
+    // 先確認使用者有權限查看這間教室
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+
+    // 查詢學生人數與曾經登入的人數
+    let (student_count, joined_count) =
+        classroom_store::student_statistics(&state.pool, classroom.id).await?;
+
+    // 計算尚未登入的人數
+    let never_logged_in_count = student_count - joined_count;
+
+    Ok(Json(ClassroomDetail {
+        classroom,
+        student_count,
+        joined_count,
+        never_logged_in_count,
+    }))
 }
 
 /// 編輯教室；管理者可編輯任一教室，教師只能編輯自己建立的教室。

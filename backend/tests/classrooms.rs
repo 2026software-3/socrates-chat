@@ -433,3 +433,255 @@ async fn only_teachers_and_admins_can_access_classroom_management(pool: PgPool) 
         }
     }
 }
+
+#[sqlx::test]
+async fn empty_classroom_has_zero_student_statistics(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    // 建立一間沒有學生的教室
+    let classroom = create_classroom(&app, &teacher, "Empty classroom").await;
+    let id = classroom["id"].as_str().unwrap();
+
+    // 查詢教室詳細資料
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    // 三項統計都應該是 0
+    assert_eq!(body["student_count"], 0);
+    assert_eq!(body["joined_count"], 0);
+    assert_eq!(body["never_logged_in_count"], 0);
+}
+#[sqlx::test]
+async fn imported_students_are_counted_as_never_logged_in(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    let classroom = create_classroom(&app, &teacher, "Student statistics").await;
+    let id = classroom["id"].as_str().unwrap();
+
+    // 匯入 5 位尚未登入的學生
+    let response = import_roster(
+        &app,
+        &teacher,
+        id,
+        "student1@example.com\n\
+         student2@example.com\n\
+         student3@example.com\n\
+         student4@example.com\n\
+         student5@example.com",
+    )
+    .await;
+
+    assert!(response.status().is_success());
+
+    // 查詢教室詳細資料
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    assert_eq!(body["student_count"], 5);
+    assert_eq!(body["joined_count"], 0);
+    assert_eq!(body["never_logged_in_count"], 5);
+}
+#[sqlx::test]
+async fn logged_in_students_are_counted_as_joined(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    let classroom = create_classroom(&app, &teacher, "Login statistics").await;
+    let id = classroom["id"].as_str().unwrap();
+
+    // 匯入 5 位學生
+    let response = import_roster(
+        &app,
+        &teacher,
+        id,
+        "student1@example.com\n\
+         student2@example.com\n\
+         student3@example.com\n\
+         student4@example.com\n\
+         student5@example.com",
+    )
+    .await;
+
+    assert!(response.status().is_success());
+
+    // 讓其中 2 位學生登入
+    login_as(&app, "student-login-1", "student1@example.com").await;
+    login_as(&app, "student-login-2", "student2@example.com").await;
+
+    // 查詢教室詳細資料
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    assert_eq!(body["student_count"], 5);
+    assert_eq!(body["joined_count"], 2);
+    assert_eq!(body["never_logged_in_count"], 3);
+}
+#[sqlx::test]
+async fn disabled_students_are_excluded_from_statistics(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    let classroom = create_classroom(&app, &teacher, "Disabled student statistics").await;
+    let id = classroom["id"].as_str().unwrap();
+
+    // 匯入 5 位學生
+    let response = import_roster(
+        &app,
+        &teacher,
+        id,
+        "student1@example.com\n\
+         student2@example.com\n\
+         student3@example.com\n\
+         student4@example.com\n\
+         student5@example.com",
+    )
+    .await;
+
+    assert!(response.status().is_success());
+
+    // 讓其中 2 位學生登入
+    login_as(&app, "student-login-1", "student1@example.com").await;
+    login_as(&app, "student-login-2", "student2@example.com").await;
+
+    // 停用其中 1 位已登入學生
+    let result = sqlx::query("UPDATE users SET disabled_at = now() WHERE email = $1")
+        .bind("student1@example.com")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(result.rows_affected(), 1);
+
+    // 查詢教室詳細資料
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    assert_eq!(body["student_count"], 4);
+    assert_eq!(body["joined_count"], 1);
+    assert_eq!(body["never_logged_in_count"], 3);
+}
+#[sqlx::test]
+async fn removed_students_are_excluded_from_statistics(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    let classroom = create_classroom(&app, &teacher, "Removed student statistics").await;
+    let id = classroom["id"].as_str().unwrap();
+
+    // 匯入 3 位學生
+    let response = import_roster(
+        &app,
+        &teacher,
+        id,
+        "student1@example.com\n\
+         student2@example.com\n\
+         student3@example.com",
+    )
+    .await;
+
+    assert!(response.status().is_success());
+
+    // 讓其中 2 位學生登入
+    login_as(&app, "student-login-1", "student1@example.com").await;
+    login_as(&app, "student-login-2", "student2@example.com").await;
+
+    // 確認移除前的統計
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    assert_eq!(body["student_count"], 3);
+    assert_eq!(body["joined_count"], 2);
+    assert_eq!(body["never_logged_in_count"], 1);
+
+    // 將其中 1 位已登入學生移出教室
+    let response = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/classrooms/{id}/roster/student1@example.com"),
+            Some(&teacher),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // 確認移除後的統計
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    assert_eq!(body["student_count"], 2);
+    assert_eq!(body["joined_count"], 1);
+    assert_eq!(body["never_logged_in_count"], 1);
+}
+#[sqlx::test]
+async fn archived_classroom_keeps_student_statistics(pool: PgPool) {
+    let app = test_app(pool);
+    let (teacher, _) = teacher_and_admin(&app).await;
+
+    let classroom = create_classroom(&app, &teacher, "Archived statistics").await;
+    let id = classroom["id"].as_str().unwrap();
+
+    // 匯入 3 位學生
+    let response = import_roster(
+        &app,
+        &teacher,
+        id,
+        "student1@example.com\n\
+         student2@example.com\n\
+         student3@example.com",
+    )
+    .await;
+
+    assert!(response.status().is_success());
+
+    // 讓其中 1 位學生登入
+    login_as(&app, "student-login-1", "student1@example.com").await;
+
+    // 封存教室
+    let response = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{id}"),
+            Some(&teacher),
+            Some(json!({"is_archived": true})),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // 查詢封存後的教室詳細資料
+    let response = send(&app, get(&format!("/api/classrooms/{id}"), Some(&teacher))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = json_body(response).await;
+
+    assert_eq!(body["is_archived"], true);
+    assert_eq!(body["student_count"], 3);
+    assert_eq!(body["joined_count"], 1);
+    assert_eq!(body["never_logged_in_count"], 2);
+}
