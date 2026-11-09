@@ -80,6 +80,19 @@ const QUESTION_TYPES: [&str; 6] = [
 ];
 
 /// 離線結構化檢查（格式、欄位、advance 旗標與 question_type）
+/// 給學生看的回覆有幾句（以句末標點計，沒有標點的非空文字算一句）；只用來記錄回覆長度。
+fn count_sentences(text: &str) -> usize {
+    let ends = text
+        .chars()
+        .filter(|c| matches!(c, '。' | '！' | '？' | '!' | '?' | '.'))
+        .count();
+    if ends == 0 && !text.trim().is_empty() {
+        1
+    } else {
+        ends
+    }
+}
+
 fn grade(
     raw: &str,
     expected_advance: bool,
@@ -150,6 +163,8 @@ fn grade(
         "format_valid": format_valid,
         "format_errors": errors,
         "student_response": response,
+        "student_response_chars": response.chars().count(),
+        "student_response_sentences": count_sentences(response),
         "advance": advance,
         "advance_expected": expected_advance,
         "advance_match": advance_match,
@@ -167,9 +182,9 @@ const LANGUAGE: &str = "zh-TW";
 /// 受測提示詞使用的引導收尾回合（與正式系統預設相同）。
 const WRAP_UP_TURN: u32 = 15;
 /// 修改評估邏輯（評分、重試、通過條件）時更新。
-const EVALUATOR_VERSION: &str = "f08-eval-v1";
+const EVALUATOR_VERSION: &str = "f08-eval-v2";
 /// 修改 `JUDGE_PROMPT` 評審準則時更新；後綴是評審準則的語言。
-const JUDGE_VERSION: &str = "f08-rubric-v1/zh-TW";
+const JUDGE_VERSION: &str = "f08-rubric-v2/zh-TW";
 const JUDGE_PROMPT_LANGUAGE: &str = "zh-TW";
 /// 結果欄位有不相容變更時更新。
 const SCHEMA_VERSION: u32 = 1;
@@ -214,6 +229,16 @@ fn case_record(
     record
 }
 
+/// 每題一列的某個數值欄位平均；沒有任何列帶這個欄位時為 `null`。
+fn average(rows: &[Value], field: &str) -> Option<f64> {
+    let values: Vec<f64> = rows.iter().filter_map(|r| r[field].as_f64()).collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
 /// 整輪的摘要。`rows` 只含有拿到受測回覆、評分過的題目；沒有回覆（API 失敗）的題目算在 `no_result_cases`。
 /// 通過條件是評審的 advance 與 convergence 兩項都是 PASS；這不是團隊約定的驗收門檻。
 fn summary(metadata: &Value, run_id: u64, total_cases: usize, rows: &[Value]) -> Value {
@@ -234,6 +259,8 @@ fn summary(metadata: &Value, run_id: u64, total_cases: usize, rows: &[Value]) ->
         } else {
             None
         },
+        "avg_reply_chars": average(rows, "reply_chars"),
+        "avg_reply_sentences": average(rows, "reply_sentences"),
         "acceptance_note": "評審結果不是團隊約定的驗收門檻；仍需人工抽查與團隊審閱。",
         "cases": rows,
     });
@@ -250,7 +277,7 @@ const JUDGE_PROMPT: &str = r#"你是哲學討論對話的客觀評審。依據�
 題目：{title}
 題目說明：{desc}
 目前階段：第 {stage} 階段，第 {turn} 回合
-預期是否收斂：{expected_advance}（true 代表學生已妥善回應反例或達到回合上限，應提議收尾；false 代表學生逃避反例或未完成反思，應繼續追問）
+預期是否收斂：{expected_advance}（true 代表學生已對至少兩個角度不同的反例都實質回應、或達到回合上限，AI 應直接說結束語並結束討論；false 代表學生逃避反例、未完成反思，或只實質回應了一個反例，AI 應繼續：沒回應就追問，只回應一個就提出第二個角度不同的反例）
 
 【完整對話記錄】
 {conversation}
@@ -266,17 +293,17 @@ reason: {reason}
 
 【評分準則】
 1. advance_appropriateness（評估「AI 的 advance 判斷是否正確」，合理為 PASS，不合理為 FAIL）：
-   - PASS：AI 的 advance 判斷正確！例如學生逃避反例或未完成思考時，AI 正確給予 false（判定 PASS）；當學生實質回應反例或達到 15 回合時，AI 正確給予 true（判定 PASS）。
-   - FAIL：AI 的 advance 判斷錯誤！例如學生逃避反例但 AI 卻誤給 true（過早收斂）；或學生已充分回應反例但 AI 依然給 false（無限追問）。
+   - PASS：AI 的 advance 判斷正確！例如學生逃避反例、未完成思考，或只實質回應了一個反例時，AI 正確給予 false（判定 PASS）；當學生已對兩個角度不同的反例都實質回應，或達到 15 回合時，AI 正確給予 true（判定 PASS）。
+   - FAIL：AI 的 advance 判斷錯誤！例如學生逃避反例、或只回應了一個反例，AI 卻誤給 true（過早收斂）；或學生已對兩個不同角度的反例充分回應，AI 依然給 false（無限追問）。
    ※ 特別注意：advance_verdict 是在評分「AI 是否判斷得當」。若學生逃避反例而 AI 正確判斷 advance=false，此時 advance_verdict 必須為 PASS！
 
 2. convergence_action（評估「AI 在正文中的引導行動」）：
    - PASS：
-     - 若達到收斂條件（expected true）：AI 提議收尾、整理總結或引導回顧結論，沒有再引入全新的反例難題。
-     - 若未達收斂條件（expected false）：AI 指出學生逃避之處或繼續追問面對反例，沒有放棄引導。
+     - 若達到收斂條件（expected true）：AI 直接說結束語並結束討論，回顧學生的立場、理由與面對不同反例時的轉折，不提問、不請學生確認或補充，也沒有再引入第三個反例。
+     - 若未達收斂條件（expected false）：AI 指出學生逃避之處、繼續追問，或在學生已回應第一個反例時，具體回應他的判斷後提出第二個角度不同（不是同一情境換個說法）的反例或對立觀點；沒有說結束語，也沒有放棄引導。
    - FAIL：
-     - 達到收斂條件時，AI 卻完全無視收斂時機，繼續拋出新的無關挑戰。
-     - 未達收斂條件時，AI 卻直接提議總結收工。
+     - 達到收斂條件時，AI 卻完全無視收斂時機，繼續拋出新的挑戰，或結束語仍向學生提問。
+     - 未達收斂條件時，AI 卻直接說結束語、提議總結收工，或對已回應第一個反例的學生只換個說法重問同一個情境。
    - UNCERTAIN：情境模糊難以斷定。
 
 請只輸出一個合法 JSON 物件，不要有額外文字或 Markdown 區塊：
@@ -330,8 +357,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
             .ok_or("no AI API key found")?
             .with_default_cooldown(Duration::from_secs(3)),
     );
-    let provider = OpenAiProvider::new(&base_url, keys.clone(), &model);
-    let judge_provider = OpenAiProvider::new(&base_url, keys.clone(), &judge_model);
+    // 與正式環境一致：有設 OPENAI_REASONING_EFFORT 才送（受測與評審共用）
+    let effort = env::var("OPENAI_REASONING_EFFORT")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let provider =
+        OpenAiProvider::new(&base_url, keys.clone(), &model).with_reasoning_effort(effort.clone());
+    let judge_provider =
+        OpenAiProvider::new(&base_url, keys.clone(), &judge_model).with_reasoning_effort(effort);
 
     println!(
         "Loaded {} test cases. Target model: {model}, Judge model: {judge_model}",
@@ -541,6 +574,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "offline_status": offline_status,
             "advance_verdict": judgment["advance_verdict"],
             "convergence_verdict": judgment["convergence_verdict"],
+            "reply_chars": parsed["student_response_chars"],
+            "reply_sentences": parsed["student_response_sentences"],
             "file": format!("{}.json", case.id),
         }));
 
@@ -574,7 +609,61 @@ mod tests {
     fn parses_all_f08_test_cases() {
         let raw = include_str!("../eval/f08_2_cases.json");
         let cases: Vec<Case> = serde_json::from_str(raw).expect("valid test cases JSON");
-        assert_eq!(cases.len(), 8);
+        assert_eq!(cases.len(), 12);
+    }
+
+    #[test]
+    fn stage_three_cases_separate_one_counterexample_from_two() {
+        // S-03.3：第 3 階段要至少兩個角度不同的反例都得到實質回應才收斂。
+        // ONE_xx 只回應了第一個反例（不得收斂、不得收尾）；CONV_xx 是同一段對話再多一輪第二個反例並得到回應。
+        let raw = include_str!("../eval/f08_2_cases.json");
+        let cases: Vec<Case> = serde_json::from_str(raw).expect("valid test cases JSON");
+        let user_turns = |c: &Case| c.conversation.iter().filter(|t| t.role == "user").count();
+        let ones: Vec<&Case> = cases.iter().filter(|c| c.id.starts_with("ONE_")).collect();
+        let convs: Vec<&Case> = cases.iter().filter(|c| c.id.starts_with("CONV_")).collect();
+        assert_eq!(ones.len(), 4);
+        assert_eq!(convs.len(), 4);
+        for c in &ones {
+            assert_eq!(c.stage, 3, "{}", c.id);
+            assert!(!c.expected_advance, "{} 只回應一個反例不得收斂", c.id);
+            assert!(
+                c.expected_type != "wrap_up" && !c.acceptable_types.iter().any(|t| t == "wrap_up"),
+                "{} 不得接受 wrap_up",
+                c.id
+            );
+            assert_eq!(c.conversation.last().map(|t| t.role.as_str()), Some("user"));
+            assert_eq!(user_turns(c), 3, "{} 應停在學生回應第一個反例", c.id);
+        }
+        for c in &convs {
+            assert_eq!(c.stage, 3, "{}", c.id);
+            assert!(c.expected_advance, "{} 兩個反例都回應後應收斂", c.id);
+            assert_eq!(c.expected_type, "wrap_up", "{}", c.id);
+            assert_eq!(c.conversation.last().map(|t| t.role.as_str()), Some("user"));
+            assert_eq!(user_turns(c), 4, "{} 應多一輪第二個反例的回應", c.id);
+        }
+        // 成對：CONV_0n 的前 6 則訊息就是 ONE_0n（確保差別只在第二個反例）
+        for (one, conv) in ones.iter().zip(convs.iter()) {
+            assert_eq!(one.title, conv.title);
+            for (a, b) in one.conversation.iter().zip(conv.conversation.iter()) {
+                assert_eq!(
+                    a.content, b.content,
+                    "{} 與 {} 的前文應相同",
+                    one.id, conv.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grade_records_how_long_the_student_facing_reply_is() {
+        // v1.24 要讓回覆更像對話：每題記錄回覆字數與句數，之後才能比較改前改後（不影響通過與否）
+        let raw = "你把「不讓醫療變成人情交易」放在親人之前，這個理由很清楚。不過換個角度試試：如果依病情輕重決定，年長但病況較輕的人永遠排在後面，你覺得公平嗎？\n<<<META>>>\n{\"advance\": false, \"question_type\": \"counterexample\", \"reason\": \"只回應一個反例\"}";
+        let (_, val) = grade(raw, false, "counterexample", &[]);
+        assert_eq!(val["student_response_sentences"], 2);
+        assert!(val["student_response_chars"].as_u64().unwrap() > 40);
+        assert_eq!(count_sentences("一句。兩句！三句？"), 3);
+        assert_eq!(count_sentences("沒有句號"), 1);
+        assert_eq!(count_sentences(""), 0);
     }
 
     #[test]
