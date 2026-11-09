@@ -205,6 +205,76 @@ pub async fn list_published_for_student(
     .await
 }
 
+/// 學生在活動中某一題的進度（F-29.6）。
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
+pub struct TopicProgress {
+    pub topic_id: Uuid,
+    pub title: String,
+    /// 這位學生在此題的對話；還沒開始為 null
+    pub conversation_id: Option<Uuid>,
+    /// `active` 或 `ended`；還沒開始為 null
+    pub conversation_status: Option<String>,
+    /// 此題的總結已產生（S-04.7：完成一題的條件）
+    pub summary_ready: bool,
+}
+
+/// 學生看到的活動：活動本身加上每題進度與整體完成度。
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct StudentActivity {
+    #[serde(flatten)]
+    pub activity: Activity,
+    /// 依教師排定的順序，每題一筆
+    pub topics: Vec<TopicProgress>,
+    /// 每一題都有已產生總結的對話才算完成（S-04.7）
+    pub completed: bool,
+}
+
+/// 學生可選的活動，附上該學生在每題的對話狀態。
+pub async fn list_published_with_progress(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<StudentActivity>, sqlx::Error> {
+    let activities = list_published_for_student(pool, user_id).await?;
+    let ids: Vec<Uuid> = activities.iter().map(|a| a.id).collect();
+    let rows: Vec<(Uuid, TopicProgress)> = sqlx::query(
+        "SELECT at.activity_id, at.topic_id, t.title,
+                conv.id AS conversation_id, conv.status AS conversation_status,
+                COALESCE(sm.status = 'ready', false) AS summary_ready
+         FROM activity_topics at
+         JOIN topics t ON t.id = at.topic_id
+         LEFT JOIN conversations conv
+                ON conv.activity_id = at.activity_id AND conv.topic_id = at.topic_id
+               AND conv.user_id = $1
+         LEFT JOIN summaries sm ON sm.conversation_id = conv.id
+         WHERE at.activity_id = ANY($2)
+         ORDER BY at.activity_id, at.position",
+    )
+    .bind(user_id)
+    .bind(&ids)
+    .try_map(|row: sqlx::postgres::PgRow| {
+        use sqlx::Row;
+        Ok((row.try_get("activity_id")?, TopicProgress::from_row(&row)?))
+    })
+    .fetch_all(pool)
+    .await?;
+    let mut by_activity: std::collections::HashMap<Uuid, Vec<TopicProgress>> = Default::default();
+    for (activity_id, progress) in rows {
+        by_activity.entry(activity_id).or_default().push(progress);
+    }
+    Ok(activities
+        .into_iter()
+        .map(|activity| {
+            let topics = by_activity.remove(&activity.id).unwrap_or_default();
+            let completed = !topics.is_empty() && topics.iter().all(|t| t.summary_ready);
+            StudentActivity {
+                activity,
+                topics,
+                completed,
+            }
+        })
+        .collect())
+}
+
 /// 學生可以開始對話的活動。
 #[derive(Debug, FromRow)]
 pub struct Startable {
