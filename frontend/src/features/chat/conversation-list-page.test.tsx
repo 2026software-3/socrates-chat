@@ -31,7 +31,7 @@ describe('ConversationListPage', () => {
     expect(within(second).getByText('已結束')).toBeInTheDocument()
   })
 
-  it('shows the activity name and the topic in the source column for activity conversations', async () => {
+  it('shows only the activity name in the source column for activity conversations', async () => {
     setup([
       makeConversation({ id: 'c1', activity_id: 'a1', activity_title: '倫理學第一週', title: '合成題目：電車難題' }),
       makeConversation({ id: 'c2', activity_id: null, activity_title: null, title: '合成題目：自由意志' }),
@@ -39,7 +39,7 @@ describe('ConversationListPage', () => {
     renderApp(null, { route: '/conversations' })
     const activityRow = (await screen.findByRole('link', { name: '開啟對話：合成題目：電車難題' })).closest('tr') as HTMLElement
     expect(within(activityRow).getByText('教室活動・倫理學第一週')).toBeInTheDocument()
-    expect(within(activityRow).getByText('題目：合成題目：電車難題')).toBeInTheDocument()
+    expect(within(activityRow).queryByText(/^題目：/)).not.toBeInTheDocument()
     const personalRow = screen.getByRole('link', { name: '開啟對話：合成題目：自由意志' }).closest('tr') as HTMLElement
     expect(within(personalRow).getByText('個人練習')).toBeInTheDocument()
     expect(within(personalRow).queryByText(/教室活動/)).not.toBeInTheDocument()
@@ -57,7 +57,7 @@ describe('ConversationListPage', () => {
     setup([makeConversation({ activity_id: 'a1', activity_title: 'Ethics week 1', title: 'Trolley problem' })], 'en')
     renderApp(null, { route: '/conversations', lang: 'en' })
     expect(await screen.findByText('Classroom activity・Ethics week 1')).toBeInTheDocument()
-    expect(screen.getByText('Topic: Trolley problem')).toBeInTheDocument()
+    expect(screen.queryByText(/^Topic:/)).not.toBeInTheDocument()
   })
 
   it('formats the date with the active language', async () => {
