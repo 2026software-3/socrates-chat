@@ -74,9 +74,23 @@ export function AvailablePage() {
   const needle = query.trim().toLowerCase()
   const matches = (i: Item) =>
     !needle || [i.title, i.description, i.category ?? ''].some((v) => v.toLowerCase().includes(needle))
-  const activities: Item[] = (data?.activities ?? [])
-    .map((a) => ({ key: `a:${a.id}`, title: a.title, description: a.description, source: { activity_id: a.id } }))
+  const activities: (Item & { classroomId: string; classroomName: string })[] = (data?.activities ?? [])
+    .map((a) => ({
+      key: `a:${a.id}`,
+      title: a.title,
+      description: a.description,
+      source: { activity_id: a.id },
+      classroomId: a.classroom_id,
+      classroomName: a.classroom_name,
+    }))
     .filter(matches)
+  // 依教室分組，每組以教室名稱為標題；組的順序依該教室最先出現的活動（S-14）
+  const groups: { id: string; name: string; items: Item[] }[] = []
+  for (const a of activities) {
+    let group = groups.find((g) => g.id === a.classroomId)
+    if (!group) groups.push((group = { id: a.classroomId, name: a.classroomName, items: [] }))
+    group.items.push(a)
+  }
   const topics: Item[] = (data?.topics ?? [])
     .map((x) => ({ key: `t:${x.id}`, title: x.title, description: x.description, category: x.category, source: { topic_id: x.id } }))
     .filter(matches)
@@ -90,13 +104,12 @@ export function AvailablePage() {
     body = (
       <div className="flex flex-col gap-6">
         {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
-        <Section
+        <ActivityGroups
           title={t('student.available.activities')}
           emptyText={needle ? t('student.available.noMatch') : t('student.available.noActivities')}
-          items={activities}
+          groups={groups}
           startingKey={startingKey}
           onStart={start}
-          layout="grid"
         />
         <Section
           title={t('student.available.topics')}
@@ -140,7 +153,36 @@ export function AvailablePage() {
   )
 }
 
+type ActivityGroupsProps = {
+  title: string
+  emptyText: string
+  groups: { id: string; name: string; items: Item[] }[]
+  startingKey: string | undefined
+  onStart: (item: Item) => void
+}
+
+/** 教室活動區：每間教室一組，組標題為教室名稱。 */
+function ActivityGroups({ title, emptyText, groups, startingKey, onStart }: ActivityGroupsProps) {
+  const headingId = useId()
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
+      <h2 id={headingId} className="text-lg leading-7 font-medium">
+        {title}
+      </h2>
+      {groups.length === 0 ? (
+        <EmptyBlock>{emptyText}</EmptyBlock>
+      ) : (
+        groups.map((g) => (
+          <Section key={g.id} title={g.name} level={3} emptyText={emptyText} items={g.items} startingKey={startingKey} onStart={onStart} layout="grid" />
+        ))
+      )}
+    </section>
+  )
+}
+
 type SectionProps = {
+  /** 標題層級：獨立區塊為 h2，教室分組為 h3 */
+  level?: 2 | 3
   title: string
   emptyText: string
   items: Item[]
@@ -150,15 +192,16 @@ type SectionProps = {
 }
 
 /** 教室活動用兩欄卡片（標題、狀態、說明、主按鈕）；個人練習是單欄卡片（標題、題庫與分類、次按鈕）。 */
-function Section({ title, emptyText, items, startingKey, onStart, layout }: SectionProps) {
+function Section({ title, level = 2, emptyText, items, startingKey, onStart, layout }: SectionProps) {
   const t = useT()
   const headingId = useId()
   const activity = layout === 'grid'
+  const Heading = level === 3 ? 'h3' : 'h2'
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-3">
-      <h2 id={headingId} className="text-lg leading-7 font-medium">
+      <Heading id={headingId} className={level === 3 ? 'text-muted-foreground text-sm font-medium' : 'text-lg leading-7 font-medium'}>
         {title}
-      </h2>
+      </Heading>
       {items.length === 0 ? (
         <EmptyBlock>{emptyText}</EmptyBlock>
       ) : (

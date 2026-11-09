@@ -129,6 +129,14 @@ function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious, 
   )
 }
 
+/** 來源欄：教室名稱（封存加註）；個人練習；舊資料沒有教室名稱時退回「教室活動」（S-14）。 */
+function sourceLabel(t: ReturnType<typeof useT>, c: Conversation): string {
+  if (c.classroom_name) {
+    return c.classroom_archived ? t('chat.list.source.archived', { name: c.classroom_name }) : c.classroom_name
+  }
+  return t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')
+}
+
 function ConversationRow({ conversation: c, onArchive, onDelete }: { conversation: Conversation; onArchive: () => void; onDelete: () => void }) {
   const t = useT()
   const { lang } = useI18n()
@@ -136,7 +144,7 @@ function ConversationRow({ conversation: c, onArchive, onDelete }: { conversatio
   return (
     <TableRow>
       <TableCell className="max-w-72 font-medium break-words whitespace-normal">{c.title}</TableCell>
-      <TableCell>{t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')}</TableCell>
+      <TableCell className="break-words whitespace-normal">{sourceLabel(t, c)}</TableCell>
       <TableCell className="tabular-nums">{c.turn_count}</TableCell>
       <TableCell>{formatDate(c.created_at, lang)}</TableCell>
       <TableCell>{t(`chat.status.${c.status}`)}</TableCell>

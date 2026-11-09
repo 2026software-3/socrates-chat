@@ -40,7 +40,10 @@ export type Activity = {
   created_at: string
 }
 
-export type Available = { activities: Activity[]; topics: Topic[] }
+/** 學生目錄中的活動：多帶所屬教室名稱，供依教室分組（S-14；學生只看得到教室名稱）。 */
+export type StudentActivity = Activity & { classroom_name: string }
+
+export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
 export type ConversationStatus = 'active' | 'ended'
 
@@ -60,6 +63,10 @@ export type Conversation = {
   ended_at: string | null
   /** 學生已封存：只從自己的清單隱藏，可復原 */
   is_archived: boolean
+  /** 來源教室名稱；個人練習為 null（S-14） */
+  classroom_name: string | null
+  /** 來源教室已封存，來源欄加註「已封存」 */
+  classroom_archived: boolean
 }
 
 export type MessageRole = 'student' | 'ai'
