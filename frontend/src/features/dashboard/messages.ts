@@ -4,7 +4,7 @@ export const dashboardMessages = defineMessages({
   'zh-TW': {
     'profile.title': '個人設定',
     'profile.name': '顯示名稱',
-    'profile.hint': '最多 {max} 個字元；留空則顯示你的電子郵件。其他同學可能會看到這個名稱。',
+    'profile.hint': '最多 {max} 個字元。留空會顯示匯入名單時的姓名。其他同學可能會看到這個名稱。',
     'profile.save': '儲存',
     'profile.saved': '已儲存',
     'profile.tooLong': '顯示名稱最多 {max} 個字元，請縮短後再儲存。',
@@ -56,7 +56,7 @@ export const dashboardMessages = defineMessages({
   en: {
     'profile.title': 'Profile settings',
     'profile.name': 'Display name',
-    'profile.hint': 'Up to {max} characters; leave empty to show your email. Other students may see this name.',
+    'profile.hint': 'Up to {max} characters. Leave blank to show the name from the imported roster. Other students may see this name.',
     'profile.save': 'Save',
     'profile.saved': 'Saved',
     'profile.tooLong': 'The display name can have at most {max} characters. Shorten it to save.',
@@ -108,7 +108,7 @@ export const dashboardMessages = defineMessages({
   es: {
     'profile.title': 'Configuración personal',
     'profile.name': 'Nombre visible',
-    'profile.hint': 'Hasta {max} caracteres; déjalo vacío para mostrar tu correo. Otros estudiantes podrían ver este nombre.',
+    'profile.hint': 'Hasta {max} caracteres. Deja el campo vacío para mostrar el nombre de la lista importada. Otros estudiantes podrían ver este nombre.',
     'profile.save': 'Guardar',
     'profile.saved': 'Guardado',
     'profile.tooLong': 'El nombre visible puede tener como máximo {max} caracteres. Acórtalo para guardar.',
