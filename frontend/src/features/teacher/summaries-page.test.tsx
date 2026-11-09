@@ -12,6 +12,9 @@ function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
   return {
     conversation_id: 'c1',
     classroom_id: 'room-1',
+    activity_id: null,
+    topic_id: null,
+    activity_completed: false,
     title: '電車難題',
     ended_at: '2026-03-05T10:00:00Z',
     student_user_id: 's1',
