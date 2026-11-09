@@ -7,6 +7,13 @@ use common::*;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
+/// deploy 分支沒有 main 的分頁 helper（#418）；這裡每個測試只有一筆對話，讀第一頁即可。
+async fn all_items(app: &axum::Router, base: &str, cookie: &str) -> Value {
+    let res = send(app, get(base, Some(cookie))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    json_body(res).await["items"].clone()
+}
+
 async fn start(app: &axum::Router, cookie: &str, body: Value) -> Value {
     let res = send(
         app,
