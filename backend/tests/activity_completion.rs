@@ -14,6 +14,7 @@ use common::Script::*;
 use common::*;
 use serde_json::json;
 use sqlx::PgPool;
+use std::collections::HashMap;
 
 const GOOD: &str = r#"{"stance":"主張","reasons":"核心理由"}"#;
 
@@ -46,13 +47,14 @@ async fn end_conv(app: &Router, cookie: &str, conv: &str) {
     assert_eq!(res.status(), StatusCode::ACCEPTED);
 }
 
-async fn complete_topic_dialogue(
+/// 學生開始並結束活動內某題的對話，等總結產生完；回傳對話 id 與總結狀態（ready／failed）。
+async fn finish_topic_dialogue(
     app: &Router,
     pool: &PgPool,
     student_cookie: &str,
     activity_id: &str,
     topic_id: &str,
-) -> String {
+) -> (String, String) {
     let res = send(
         app,
         json_req(
@@ -72,8 +74,50 @@ async fn complete_topic_dialogue(
     seed_student_message(pool, &conv, "這是學生的哲學論點與回答").await;
     end_conv(app, student_cookie, &conv).await;
     let s = settled_summary(app, student_cookie, &conv).await;
-    assert_eq!(s["status"], "ready");
+    let status = s["status"].as_str().unwrap().to_owned();
+    (conv, status)
+}
+
+async fn complete_topic_dialogue(
+    app: &Router,
+    pool: &PgPool,
+    student_cookie: &str,
+    activity_id: &str,
+    topic_id: &str,
+) -> String {
+    let (conv, status) =
+        finish_topic_dialogue(app, pool, student_cookie, activity_id, topic_id).await;
+    assert_eq!(status, "ready");
     conv
+}
+
+/// 教師查活動的總結列，回傳「對話 id -> activity_completed」。
+async fn completed_by_conversation(
+    app: &Router,
+    teacher: &str,
+    classroom: &str,
+    activity: &str,
+) -> HashMap<String, bool> {
+    let res = send(
+        app,
+        get(
+            &format!("/api/summaries?classroom_id={classroom}&activity={activity}"),
+            Some(teacher),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    json_body(res).await["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .map(|i| {
+            (
+                i["conversation_id"].as_str().unwrap().to_owned(),
+                i["activity_completed"].as_bool().unwrap(),
+            )
+        })
+        .collect()
 }
 
 #[sqlx::test]
@@ -252,6 +296,98 @@ async fn activity_completion_lifecycle_and_summary_rows(pool: PgPool) {
     for item in items {
         assert_eq!(item["activity_completed"], false);
     }
+}
+
+/// 完成條件只看「這位學生自己」「已完成（ready）」的總結：
+/// 總結失敗的題目不算，其他學生完成同一題也不能替他補上；重新產生成功後才算。
+#[sqlx::test]
+async fn activity_completion_counts_only_own_ready_summaries(pool: PgPool) {
+    // 呼叫順序：A 第 1 題 ready、A 第 2 題 failed（自動重試 1 次，所以要兩個 Fail，S-03.5）、
+    // B 第 1 題 ready、B 第 2 題 ready、A 重新產生 ready
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Fail,
+        Fail,
+        Reply(vec![GOOD]),
+        Reply(vec![GOOD]),
+        Reply(vec![GOOD]),
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let student_b = add_student(&app, &a, "sub-student-b", "student-b@example.com").await;
+
+    let t1 = create_topic(&app, &a, "第一題：電車問題").await;
+    let t2 = create_topic(&app, &a, "第二題：無知之幕").await;
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&a.teacher),
+            Some(json!({
+                "title": "兩題活動",
+                "classroom_id": a.classroom,
+                "topic_ids": [&t1, &t2]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let activity = json_body(res).await["id"].as_str().unwrap().to_owned();
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/activities/{activity}/publish"),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // A：第 1 題 ready、第 2 題總結失敗 -> A 沒完成；失敗的那場不會出現在總結列
+    let (a1, st) = finish_topic_dialogue(&app, &pool, &a.student, &activity, &t1).await;
+    assert_eq!(st, "ready");
+    let (a2, st) = finish_topic_dialogue(&app, &pool, &a.student, &activity, &t2).await;
+    assert_eq!(st, "failed");
+
+    let rows = completed_by_conversation(&app, &a.teacher, &a.classroom, &activity).await;
+    assert_eq!(rows.len(), 1, "failed summary is not listed");
+    assert!(
+        !rows[&a1],
+        "a failed summary must not count as a completed topic"
+    );
+
+    // B 完成兩題 -> B 完成；A 不會因為 B 完成了同一個活動而跟著完成
+    let b1 = complete_topic_dialogue(&app, &pool, &student_b, &activity, &t1).await;
+    let b2 = complete_topic_dialogue(&app, &pool, &student_b, &activity, &t2).await;
+
+    let rows = completed_by_conversation(&app, &a.teacher, &a.classroom, &activity).await;
+    assert_eq!(rows.len(), 3);
+    assert!(rows[&b1]);
+    assert!(rows[&b2]);
+    assert!(
+        !rows[&a1],
+        "another student's completed topics must not complete mine"
+    );
+
+    // A 重新產生失敗的總結並成功 -> A 完成
+    assert_eq!(
+        retry_summary(&app, &a.student, &a2).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        settled_summary(&app, &a.student, &a2).await["status"],
+        "ready"
+    );
+
+    let rows = completed_by_conversation(&app, &a.teacher, &a.classroom, &activity).await;
+    assert_eq!(rows.len(), 4);
+    assert!(rows[&a1]);
+    assert!(rows[&a2]);
+    assert!(rows[&b1]);
+    assert!(rows[&b2]);
 }
 
 #[sqlx::test]

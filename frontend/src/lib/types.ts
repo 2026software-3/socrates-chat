@@ -101,10 +101,10 @@ export type TeacherSummary = {
   conversation_id: string
   /** 對話所屬的教室 */
   classroom_id: string
-  /** 對話所屬的活動 ID（個人練習為空） */
-  activity_id?: string | null
-  /** 對話所屬的題目 ID */
-  topic_id?: string | null
+  /** 對話所屬的活動 ID；個人練習為 null */
+  activity_id: string | null
+  /** 對話所屬的題目 ID；個人練習為 null，題目被刪除後也會變成 null */
+  topic_id: string | null
   /** 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3） */
   activity_completed: boolean
   title: string
