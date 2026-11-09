@@ -11,14 +11,15 @@ import { useFetch } from '@/lib/use-fetch'
 
 type Source = { activity_id: string; topic_id: string } | { topic_id: string }
 
-type Item = {
-  key: string
-  title: string
-  description: string
-  category?: string | null
-  source?: Source
-  /** 教室活動才有：每題進度與完成度 */
-  activity?: StudentActivity
+type Item =
+  | { kind: 'activity'; key: string; activity: StudentActivity }
+  | { kind: 'topic'; key: string; title: string; description: string; category: string | null; source: Source }
+
+/** 搜尋比對的文字：活動含每題標題。 */
+function searchTexts(i: Item): string[] {
+  return i.kind === 'activity'
+    ? [i.activity.title, i.activity.description, ...i.activity.topics.map((x) => x.title)]
+    : [i.title, i.description, i.category ?? '']
 }
 
 /** 自己是否有封存的對話屬於這個活動；查不到（含請求失敗）就當作沒有。 */
@@ -74,16 +75,21 @@ export function AvailablePage() {
   }
 
   const needle = query.trim().toLowerCase()
-  const matches = (i: Item) =>
-    !needle ||
-    [i.title, i.description, i.category ?? '', ...(i.activity?.topics.map((x) => x.title) ?? [])].some((v) =>
-      v.toLowerCase().includes(needle),
-    )
-  const activities: Item[] = (data?.activities ?? [])
-    .map((a) => ({ key: `a:${a.id}`, title: a.title, description: a.description, activity: a }))
+  const matches = (i: Item) => !needle || searchTexts(i).some((v) => v.toLowerCase().includes(needle))
+  const activities = (data?.activities ?? [])
+    .map((a): Item => ({ kind: 'activity', key: `a:${a.id}`, activity: a }))
     .filter(matches)
-  const topics: Item[] = (data?.topics ?? [])
-    .map((x) => ({ key: `t:${x.id}`, title: x.title, description: x.description, category: x.category, source: { topic_id: x.id } }))
+  const topics = (data?.topics ?? [])
+    .map(
+      (x): Item => ({
+        kind: 'topic',
+        key: `t:${x.id}`,
+        title: x.title,
+        description: x.description,
+        category: x.category,
+        source: { topic_id: x.id },
+      }),
+    )
     .filter(matches)
 
   let body
@@ -101,7 +107,6 @@ export function AvailablePage() {
           items={activities}
           startingKey={startingKey}
           onStart={start}
-          onOpen={(id) => navigate(`/conversations/${id}`)}
           layout="grid"
         />
         <Section
@@ -110,7 +115,6 @@ export function AvailablePage() {
           items={topics}
           startingKey={startingKey}
           onStart={start}
-          onOpen={(id) => navigate(`/conversations/${id}`)}
           layout="list"
         />
       </div>
@@ -153,12 +157,11 @@ type SectionProps = {
   items: Item[]
   startingKey: string | undefined
   onStart: (key: string, source: Source) => void
-  onOpen: (conversationId: string) => void
   layout: 'grid' | 'list'
 }
 
 /** 教室活動用兩欄卡片（標題、狀態、說明、主按鈕）；個人練習是單欄卡片（標題、題庫與分類、次按鈕）。 */
-function Section({ title, emptyText, items, startingKey, onStart, onOpen, layout }: SectionProps) {
+function Section({ title, emptyText, items, startingKey, onStart, layout }: SectionProps) {
   const t = useT()
   const headingId = useId()
   return (
@@ -172,8 +175,8 @@ function Section({ title, emptyText, items, startingKey, onStart, onOpen, layout
         <ul className={layout === 'grid' ? 'grid gap-4 md:grid-cols-2' : 'flex flex-col gap-4'}>
           {items.map((item) => (
             <li key={item.key} className="min-w-0">
-              {item.activity ? (
-                <ActivityCard activity={item.activity} startingKey={startingKey} onStart={onStart} onOpen={onOpen} />
+              {item.kind === 'activity' ? (
+                <ActivityCard activity={item.activity} startingKey={startingKey} onStart={onStart} />
               ) : (
                 <article className="bg-background flex h-full flex-col justify-between gap-3 rounded-xl border p-5 break-words">
                   <div className="flex min-w-0 flex-col gap-1">
@@ -185,7 +188,7 @@ function Section({ title, emptyText, items, startingKey, onStart, onOpen, layout
                   <div className="flex justify-end">
                     <Button
                       variant="outline"
-                      onClick={() => onStart(item.key, item.source!)}
+                      onClick={() => onStart(item.key, item.source)}
                       disabled={startingKey !== undefined}
                       aria-label={t('student.available.startNamed', { title: item.title })}
                     >
@@ -206,12 +209,12 @@ type ActivityCardProps = {
   activity: StudentActivity
   startingKey: string | undefined
   onStart: (key: string, source: Source) => void
-  onOpen: (conversationId: string) => void
 }
 
 /** 教室活動卡片：標題、整體進度與完成狀態，下面每題一列，各自開始、繼續或查看總結（F-29.6、S-04.7）。 */
-function ActivityCard({ activity, startingKey, onStart, onOpen }: ActivityCardProps) {
+function ActivityCard({ activity, startingKey, onStart }: ActivityCardProps) {
   const t = useT()
+  const navigate = useNavigate()
   const done = activity.topics.filter((x) => x.summary_ready).length
   return (
     <article className="bg-background flex h-full flex-col gap-3 rounded-xl border p-5 break-words">
@@ -228,21 +231,24 @@ function ActivityCard({ activity, startingKey, onStart, onOpen }: ActivityCardPr
       </div>
       <p className="text-xs font-medium">{t('student.available.progress', { done, total: activity.topics.length })}</p>
       <ul className="flex flex-col gap-2">
-        {activity.topics.map((topic) => (
-          <li key={topic.topic_id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <span className="text-sm">{topic.title}</span>
-              <span className="text-muted-foreground text-xs">{t(topicStatusKey(topic))}</span>
-            </div>
-            <TopicAction
-              topic={topic}
-              starting={startingKey === `a:${activity.id}:${topic.topic_id}`}
-              disabled={startingKey !== undefined}
-              onStart={() => onStart(`a:${activity.id}:${topic.topic_id}`, { activity_id: activity.id, topic_id: topic.topic_id })}
-              onOpen={onOpen}
-            />
-          </li>
-        ))}
+        {activity.topics.map((topic) => {
+          const key = `a:${activity.id}:${topic.topic_id}`
+          return (
+            <li key={topic.topic_id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm">{topic.title}</span>
+                <span className="text-muted-foreground text-xs">{t(topicStatusKey(topic))}</span>
+              </div>
+              <TopicAction
+                topic={topic}
+                starting={startingKey === key}
+                disabled={startingKey !== undefined}
+                onStart={() => onStart(key, { activity_id: activity.id, topic_id: topic.topic_id })}
+                onOpen={(id) => navigate(`/conversations/${id}`)}
+              />
+            </li>
+          )
+        })}
       </ul>
     </article>
   )
@@ -251,7 +257,7 @@ function ActivityCard({ activity, startingKey, onStart, onOpen }: ActivityCardPr
 function topicStatusKey(topic: TopicProgress) {
   if (topic.summary_ready) return 'student.available.topicDone'
   if (topic.conversation_status === 'ended') return 'student.available.topicEnded'
-  if (topic.conversation_id) return 'student.available.topicActive'
+  if (topic.conversation_id) return 'chat.status.active'
   return 'student.available.topicNotStarted'
 }
 
@@ -286,7 +292,7 @@ function TopicAction({
       onClick={() => onOpen(conversationId)}
       aria-label={t(ended ? 'student.available.viewSummaryNamed' : 'student.available.continueNamed', { title: topic.title })}
     >
-      {t(ended ? 'student.available.viewSummary' : 'student.available.continue')}
+      {t(ended ? 'chat.list.viewSummary' : 'student.available.continue')}
     </Button>
   )
 }
