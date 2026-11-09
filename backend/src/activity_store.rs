@@ -235,7 +235,7 @@ pub async fn find_startable_topic(
 ) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
         "SELECT a.id, ft.topic_id, a.classroom_id,
-                CASE WHEN $3::uuid IS NULL THEN a.title ELSE t.title END,
+                t.title,
                 CASE WHEN $3::uuid IS NULL THEN a.description ELSE t.description END
          FROM activities a
          JOIN LATERAL (SELECT topic_id FROM activity_topics
