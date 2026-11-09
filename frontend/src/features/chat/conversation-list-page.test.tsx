@@ -31,6 +31,20 @@ describe('ConversationListPage', () => {
     expect(within(second).getByText('已結束')).toBeInTheDocument()
   })
 
+  it('shows the source classroom name, personal practice, and an archived classroom note', async () => {
+    setup([
+      makeConversation({ id: 'c1', title: '合成題目：甲', activity_id: 'a1', classroom_name: '合成 A 班' }),
+      makeConversation({ id: 'c2', title: '合成題目：乙', activity_id: 'a2', classroom_name: '合成 B 班', classroom_archived: true }),
+      makeConversation({ id: 'c3', title: '合成題目：丙' }),
+    ])
+    renderApp(null, { route: '/conversations' })
+    const row = async (title: string) =>
+      (await screen.findByRole('link', { name: `開啟對話：${title}` })).closest('tr') as HTMLElement
+    expect(within(await row('合成題目：甲')).getByText('合成 A 班')).toBeInTheDocument()
+    expect(within(await row('合成題目：乙')).getByText('合成 B 班（已封存）')).toBeInTheDocument()
+    expect(within(await row('合成題目：丙')).getByText('個人練習')).toBeInTheDocument()
+  })
+
   it('formats the date with the active language', async () => {
     setup([makeConversation()], 'en')
     renderApp(null, { route: '/conversations', lang: 'en' })
