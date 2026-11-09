@@ -15,7 +15,7 @@
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
 - **學生識別欄位命名**（#446）：`student_number` 一律是學號（8 位數字加 1 個大寫英文字母，個資，可見範圍見 S-01.4）；學生的使用者 UUID 在學生列表是 `id`，在總結列表與對話原文是 `student_user_id`。API 不使用 `student_id` 這個名稱（包含重設密碼請求）。資料庫欄位 `users.student_id`、`enrollments.student_id` 仍存學號，不對外。
-- **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
+- **權限分層**：管理者專用的在 `/api/admin`；其他端點依教師、管理者或修課名單內學生的權限區分。學生的對話端點僅擁有者可讀，其他人回 `404`；教師可透過教師檢視端點唯讀查看自己教室已結束的活動對話原文，管理者不可見原文（S-02.1）。
 
 ## 登入
 
