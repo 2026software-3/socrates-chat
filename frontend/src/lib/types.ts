@@ -47,6 +47,8 @@ export type ConversationStatus = 'active' | 'ended'
 export type Conversation = {
   id: string
   activity_id: string | null
+  /** 活動對話所屬活動目前的名稱；個人練習為 null */
+  activity_title: string | null
   topic_id: string | null
   title: string
   description: string
