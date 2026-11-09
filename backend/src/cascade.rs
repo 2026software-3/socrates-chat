@@ -642,7 +642,7 @@ async fn spoken_turn(
             first,
         } => {
             let (text, abandoned) =
-                begin_text_stream(state.clone(), user, conversation, first).await?;
+                begin_text_stream(state.clone(), user, *conversation, first).await?;
             Ok(streamed_reply(
                 text,
                 abandoned,

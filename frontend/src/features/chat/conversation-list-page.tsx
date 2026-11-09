@@ -136,7 +136,16 @@ function ConversationRow({ conversation: c, onArchive, onDelete }: { conversatio
   return (
     <TableRow>
       <TableCell className="max-w-72 font-medium break-words whitespace-normal">{c.title}</TableCell>
-      <TableCell>{t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')}</TableCell>
+      <TableCell className="whitespace-normal break-words">
+        {c.activity_id && c.activity_title ? (
+          <div className="flex flex-col gap-0.5">
+            <span>{t('chat.list.source.activityNamed', { activity: c.activity_title })}</span>
+            <span className="text-muted-foreground text-xs">{t('chat.list.source.topic', { topic: c.title })}</span>
+          </div>
+        ) : (
+          t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')
+        )}
+      </TableCell>
       <TableCell className="tabular-nums">{c.turn_count}</TableCell>
       <TableCell>{formatDate(c.created_at, lang)}</TableCell>
       <TableCell>{t(`chat.status.${c.status}`)}</TableCell>
