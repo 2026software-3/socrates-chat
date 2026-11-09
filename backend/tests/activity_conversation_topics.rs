@@ -156,6 +156,33 @@ async fn student_can_start_the_selected_topic_in_a_multiple_topic_activity(pool:
     assert_eq!(conversation["title"], "第二題");
 }
 
+/// 只傳 `activity_id` 的舊客戶端：對話保存的標題是第一題的題目名稱，不是活動名稱；
+/// 教師的 `topic` 篩選與主張分組都以這個標題區分題目。
+#[sqlx::test]
+async fn starting_with_only_the_activity_titles_the_conversation_with_the_first_topic(
+    pool: PgPool,
+) {
+    let app = test_app(pool);
+    let actors = seed_actors(&app).await;
+    let (activity, first, _second) = multi_topic_activity(&app, &actors).await;
+
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/conversations",
+            Some(&actors.student),
+            Some(json!({"activity_id": activity})),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let conversation = json_body(response).await;
+    assert_eq!(conversation["topic_id"], first);
+    assert_eq!(conversation["title"], "第一題");
+    assert_ne!(conversation["title"], "討論活動");
+}
+
 #[sqlx::test]
 async fn different_topics_can_each_have_one_conversation(pool: PgPool) {
     let app = test_app(pool);

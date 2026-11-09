@@ -84,9 +84,9 @@
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
 - `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
-- 開始活動對話時在 `POST /api/conversations` 同時傳 `activity_id` 與 `topic_id`；題目必須屬於該活動，對話保存所選題目的標題和說明。只傳 `topic_id` 建立個人練習。為相容現有前端，只傳 `activity_id` 時暫時使用活動的第一個題目，並沿用活動標題與說明。活動必須已發布、在開放期間、未封存且屬於未封存教室，學生也須在該教室名單內；個人練習題目須啟用。來源不可用（包含題目不屬於活動）一律回 `400 invalid_conversation_source`，不外露原因。
+- 開始活動對話時在 `POST /api/conversations` 同時傳 `activity_id` 與 `topic_id`；題目必須屬於該活動，對話保存所選題目的標題和說明。只傳 `topic_id` 建立個人練習。為相容現有前端，只傳 `activity_id` 時暫時使用活動的第一個題目，對話標題一樣是該題目的標題（不是活動名稱），說明則沿用活動說明。活動必須已發布、在開放期間、未封存且屬於未封存教室，學生也須在該教室名單內；個人練習題目須啟用。來源不可用（包含題目不屬於活動）一律回 `400 invalid_conversation_source`，不外露原因。
 - 新對話會把帳號目前的 `language` 複製到對話；之後切換帳號語言不會改變既有對話。AI 回覆、總結、主張分組與語音都依對話語言執行，提示／規則版本以 `vN/<language>` 保存。
-- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。
+- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。對話回應（建立、單場、列表）帶 `activity_title`：活動對話所屬活動**目前**的名稱（教師改名後跟著變），個人練習為 `null`；題目名稱仍是 `title`。「我的對話」來源欄用這兩個欄位顯示活動名稱與題目。
 - 每位學生在每個活動的每個題目至多一場對話，進行中或已結束都算（S-04.7）：該題已有對話時回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個；同一活動的其他題目仍可各自開始。刪除該場對話後該題可重新開始；個人練習不受限。
 - 對話封存（S-14）：`POST /api/conversations/{id}/archive`、`/unarchive` 只改變本人清單的顯示（回 `204`，他人的對話回 `404`），不受教室封存限制，不影響教師端總結、彙整、點數，也不解除「一人一活動每題一場」；封存的活動對話要重開必須先刪除。`DELETE /api/conversations/{id}` 不受教室封存限制。教室或活動被刪除時其中的對話一併刪除。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。

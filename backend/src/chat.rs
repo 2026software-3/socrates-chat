@@ -43,6 +43,8 @@ pub struct Conversation {
     pub topic_id: Option<Uuid>,
     /// 活動對話所屬的教室（取自活動，建立後不變）；從題目庫開始的個人練習為 null
     pub classroom_id: Option<Uuid>,
+    /// 活動對話所屬活動目前的名稱；個人練習為 null
+    pub activity_title: Option<String>,
     pub title: String,
     pub description: String,
     pub language: String,
@@ -72,7 +74,9 @@ macro_rules! classroom_columns {
 macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
-            "SELECT id, activity_id, topic_id, classroom_id, title, description, language, status, stage,
+            "SELECT id, activity_id, topic_id, classroom_id,
+                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
+                    title, description, language, status, stage,
                     turn_count, converge_ready, created_at, ended_at,
                     archived_at IS NOT NULL AS is_archived, ",
             classroom_columns!(),
@@ -188,7 +192,9 @@ pub(crate) async fn create(
     let created = sqlx::query_as(concat!(
         "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, activity_id, topic_id, classroom_id, title, description, language, status,
+         RETURNING id, activity_id, topic_id, classroom_id,
+                   (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
+                   title, description, language, status,
                    stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived, ",
         classroom_columns!()
     ))
