@@ -54,6 +54,19 @@ pub struct Conversation {
     pub ended_at: Option<DateTime<Utc>>,
     /// 學生已封存：只從自己的清單隱藏（S-14）
     pub is_archived: bool,
+    /// 來源教室名稱；個人練習為 null。學生看得到的教室資訊只有名稱（S-14）
+    pub classroom_name: Option<String>,
+    /// 來源教室已封存（顯示「已封存」）；個人練習為 false（S-14）
+    pub classroom_archived: bool,
+}
+
+/// 來源教室名稱與封存旗標兩個輸出欄位，取自 `conversations` 列本身的 `classroom_id`。
+macro_rules! classroom_columns {
+    () => {
+        "(SELECT cl.name FROM classrooms cl WHERE cl.id = conversations.classroom_id) AS classroom_name,
+         COALESCE((SELECT cl.is_archived FROM classrooms cl WHERE cl.id = conversations.classroom_id), false)
+           AS classroom_archived"
+    };
 }
 
 macro_rules! conversation_select {
@@ -61,7 +74,9 @@ macro_rules! conversation_select {
         concat!(
             "SELECT id, activity_id, topic_id, classroom_id, title, description, language, status, stage,
                     turn_count, converge_ready, created_at, ended_at,
-                    archived_at IS NOT NULL AS is_archived FROM conversations ",
+                    archived_at IS NOT NULL AS is_archived, ",
+            classroom_columns!(),
+            " FROM conversations ",
             $tail
         )
     };
@@ -170,12 +185,13 @@ pub(crate) async fn create(
         ));
     };
     // 每位學生在每個活動的每個題目至多一場對話；唯一索引也涵蓋並行請求。
-    let created = sqlx::query_as(
+    let created = sqlx::query_as(concat!(
         "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, activity_id, topic_id, classroom_id, title, description, language, status,
-                   stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived",
-    )
+                   stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived, ",
+        classroom_columns!()
+    ))
     .bind(cu.user.id)
     .bind(activity_id)
     .bind(topic_id)
@@ -366,7 +382,7 @@ pub(crate) async fn send_message(
         Submitted::Reply {
             conversation,
             first,
-        } => reply::begin_stream(state, cu.user.id, conversation, first).await,
+        } => reply::begin_stream(state, cu.user.id, *conversation, first).await,
     }
 }
 
@@ -376,7 +392,7 @@ pub(crate) enum Submitted {
     Ended(Event),
     /// 已保存並取得產生回覆的權利；`first` 是保存好的學生訊息事件。
     Reply {
-        conversation: Conversation,
+        conversation: Box<Conversation>,
         first: Event,
     },
 }
@@ -461,7 +477,7 @@ pub(crate) async fn submit_message(
     conversation.turn_count = turn;
     conversation.stage = stage;
     Ok(Submitted::Reply {
-        conversation,
+        conversation: Box::new(conversation),
         first,
     })
 }
@@ -526,7 +542,7 @@ pub(crate) async fn rejoin_message(
     conversation.turn_count = turn;
     conversation.stage = stage;
     Ok(Some(Submitted::Reply {
-        conversation,
+        conversation: Box::new(conversation),
         first,
     }))
 }
