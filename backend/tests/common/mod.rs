@@ -167,6 +167,15 @@ impl AiProvider for FakeAi {
     }
 }
 
+/// 直接寫入一個只有電子郵件的合成帳號，回傳使用者 ID。
+pub async fn seed_user(pool: &PgPool, email: &str) -> uuid::Uuid {
+    sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 pub fn test_app(pool: PgPool) -> Router {
     test_app_with_ai(pool, FakeAi::with(vec![]))
 }
@@ -443,7 +452,7 @@ pub async fn create_activity(app: &Router, a: &Actors, title: &str, topic_id: &s
             Some(serde_json::json!({
                 "title": title,
                 "description": "你會拉桿嗎？",
-                "topic_id": topic_id,
+                "topic_ids": [topic_id],
                 "classroom_id": a.classroom,
             })),
         ),
@@ -546,6 +555,49 @@ pub async fn student_says_events(
     } else {
         (status, Err(json_body(res).await))
     }
+}
+
+/// 輪詢到總結不再是 pending 為止（背景產生），回傳當時的總結。
+pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
+    for _ in 0..100 {
+        let res = send(
+            app,
+            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
+        )
+        .await;
+        let v = json_body(res).await;
+        if v["status"] != "pending" {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("summary stayed pending");
+}
+
+/// 等假 AI 至少被呼叫 `n` 次；逾時就讓測試失敗，而不是卡住。
+pub async fn wait_until_ai_called(ai: &FakeAi, n: usize) {
+    for _ in 0..500 {
+        if ai.request_count() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("AI was not called {n} times");
+}
+
+/// 學生對自己的對話要求重新產生總結，回傳狀態碼。
+pub async fn retry_summary(app: &Router, cookie: &str, conv: &str) -> StatusCode {
+    send(
+        app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/summary/retry"),
+            Some(cookie),
+            None,
+        ),
+    )
+    .await
+    .status()
 }
 
 /// 直接寫入一則學生訊息當作測試前置條件：不經過 API、不呼叫 AI、不佔用假 AI 的腳本。

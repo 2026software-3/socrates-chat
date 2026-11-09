@@ -25,6 +25,9 @@ pub struct User {
     /// 尚未用 Google 登入過的內建帳號為 `None`。
     pub google_sub: Option<String>,
     pub email: Option<String>,
+    /// 學號（S-01.4，大寫），只有學生帳號有；資料庫欄位是 `users.student_id`。
+    /// 每個回傳 `User` 的查詢都要選出 `student_id AS student_number`。
+    pub student_number: Option<String>,
     pub display_name: Option<String>,
     pub language: String,
     pub is_admin: bool,
@@ -87,7 +90,7 @@ pub async fn upsert_user(
         "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, $3),
                 updated_at = now()
          WHERE google_sub = $1
-         RETURNING id, google_sub, email, display_name, language, is_admin, must_change_password, created_at,
+         RETURNING id, google_sub, email, student_id AS student_number, display_name, language, is_admin, must_change_password, created_at,
                    disabled_at IS NOT NULL AS disabled",
     )
     .bind(google_sub)
@@ -107,7 +110,7 @@ pub async fn upsert_user(
                         must_change_password = false,
                         updated_at = now()
                  WHERE email = lower($2) AND google_sub IS NULL
-                 RETURNING id, google_sub, email, display_name, language, is_admin,
+                 RETURNING id, google_sub, email, student_id AS student_number, display_name, language, is_admin,
                            must_change_password, created_at, disabled_at IS NOT NULL AS disabled",
             )
             .bind(google_sub)
@@ -122,7 +125,7 @@ pub async fn upsert_user(
                     sqlx::query_as(
                         "INSERT INTO users (google_sub, email, display_name, is_admin)
                          VALUES ($1, lower($2), $3, $4)
-                         RETURNING id, google_sub, email, display_name, language, is_admin,
+                         RETURNING id, google_sub, email, student_id AS student_number, display_name, language, is_admin,
                                    must_change_password, created_at,
                                    disabled_at IS NOT NULL AS disabled",
                     )
@@ -223,7 +226,8 @@ pub async fn find_active_session(
          )
          SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
                 s.must_change_password AS session_must_change_password,
-                u.id, u.google_sub, u.email, u.display_name, u.language, u.is_admin, u.must_change_password,
+                u.id, u.google_sub, u.email, u.student_id AS student_number, u.display_name, u.language, u.is_admin,
+                u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
                 EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id = u.id) AS student
@@ -444,7 +448,7 @@ pub async fn find_password_account(
         .bind(normalized)
         .fetch_optional(pool)
         .await
-    } else if crate::roster::is_valid_student_id(&normalized) {
+    } else if crate::roster::is_valid_student_number(&normalized) {
         sqlx::query_as(
             "SELECT id, email, password_hash, disabled_at IS NOT NULL AS disabled
              FROM users WHERE student_id = $1",
@@ -644,9 +648,40 @@ pub async fn reset_password(
     .bind(password_hash)
     .fetch_one(&mut *conn)
     .await?;
-    delete_sessions_except(&mut *conn, id, None).await?;
-    clear_login_failures_of_user(&mut *conn, id).await?;
+    invalidate_credentials(&mut *conn, id).await?;
     Ok(id)
+}
+
+/// 重設密碼後讓舊憑證失效：清除所有 session 與登入鎖定（管理者重設的兩種方式共用）。
+async fn invalidate_credentials(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    delete_sessions_except(&mut *conn, user_id, None).await?;
+    clear_login_failures_of_user(&mut *conn, user_id).await
+}
+
+/// 管理者以學號重設密碼（#413）：只針對已有帳號的學生，不建立帳號。找不到學號回 `None`。
+/// 找到時的處理與 `reset_password` 相同；回傳使用者 id 與電子郵件（沒有則為 `None`）。
+/// 學號須已是大寫（呼叫端正規化）。呼叫端須與稽核紀錄一起提交。
+pub async fn reset_password_by_student_number(
+    conn: &mut sqlx::PgConnection,
+    student_number: &str,
+    password_hash: &str,
+) -> Result<Option<(Uuid, Option<String>)>, sqlx::Error> {
+    let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
+        "UPDATE users SET password_hash = $2, must_change_password = true, updated_at = now()
+         WHERE student_id = $1
+         RETURNING id, email",
+    )
+    .bind(student_number)
+    .bind(password_hash)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((id, _)) = &row {
+        invalidate_credentials(&mut *conn, *id).await?;
+    }
+    Ok(row)
 }
 
 /// 部署時依 `ADMIN_EMAILS` 建立首位管理者的內建帳號（初始密碼來自環境變數，首次登入須更改）。

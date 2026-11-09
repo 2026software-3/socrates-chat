@@ -61,7 +61,7 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
             <div className="min-w-0">
               <p className="font-medium break-words">
                 {linkStudent ? (
-                  <Link to={`${base}/${row.classroom_id}/students/${row.student_id}`} className="underline-offset-4 hover:underline">
+                  <Link to={`${base}/${row.classroom_id}/students/${row.student_user_id}`} className="underline-offset-4 hover:underline">
                     {row.student_name ?? t('teacher.summaries.unnamed')}
                   </Link>
                 ) : (

@@ -32,7 +32,7 @@ export function AdminHome() {
   const t = useT()
   const teachers = useFetch<EmailList>('/api/admin/teachers')
   const students = useFetch<ClassDashboard>('/api/dashboard/class')
-  const topics = useFetch<Topic[]>('/api/admin/topics')
+  const topics = useFetch<Topic[]>('/api/topics')
   const n = (v: number | undefined) => (v === undefined ? '–' : String(v))
 
   return (

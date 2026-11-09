@@ -105,7 +105,7 @@ async fn students_items_only_carry_allowed_fields(pool: PgPool) {
             "email",
             "has_account",
             "id",
-            "student_id"
+            "student_number"
         ]
     );
     let mut top: Vec<&str> = page
@@ -415,14 +415,24 @@ async fn roster_empty_page_and_authorization(pool: PgPool) {
 
 async fn seed_activities(pool: &PgPool, classroom: &str, topic: &str, specs: &[(u128, &str)]) {
     for (n, created) in specs {
+        let id = Uuid::from_u128(*n);
         sqlx::query(
-            "INSERT INTO activities (id, title, topic_id, classroom_id, status, created_at)
-             VALUES ($1, 'Synthetic', $2::uuid, $3::uuid, 'draft', $4::timestamptz)",
+            "INSERT INTO activities (id, title, classroom_id, status, created_at)
+             VALUES ($1, 'Synthetic', $2::uuid, 'draft', $3::timestamptz)",
         )
-        .bind(Uuid::from_u128(*n))
-        .bind(topic)
+        .bind(id)
         .bind(classroom)
         .bind(created)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO activity_topics (activity_id, topic_id, position)
+             VALUES ($1, $2::uuid, 0)",
+        )
+        .bind(id)
+        .bind(topic)
         .execute(pool)
         .await
         .unwrap();
@@ -536,9 +546,14 @@ async fn activities_validate_input_default_and_authorization(pool: PgPool) {
     let empty = json_body(send(&app, get("/api/activities", Some(&a.teacher))).await).await;
     assert_eq!(empty, json!({"items": [], "next_cursor": null}));
     sqlx::query(
-        "INSERT INTO activities (title, topic_id, classroom_id, created_at)
-         SELECT 'Synthetic', $1::uuid, $2::uuid, now() - make_interval(secs => g)
-         FROM generate_series(1, 201) g",
+        "WITH ins_a AS (
+             INSERT INTO activities (title, classroom_id, created_at)
+             SELECT 'Synthetic', $2::uuid, now() - make_interval(secs => g)
+             FROM generate_series(1, 201) g
+             RETURNING id
+         )
+         INSERT INTO activity_topics (activity_id, topic_id, position)
+         SELECT id, $1::uuid, 0 FROM ins_a",
     )
     .bind(&topic)
     .bind(&a.classroom)

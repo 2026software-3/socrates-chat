@@ -29,8 +29,8 @@ export type Activity = {
   id: string
   title: string
   description: string
-  /** 活動必須選題庫題目（建立與編輯都必填）。 */
-  topic_id: string
+  /** 活動的題目清單（1 到 5 個，依教師排定的順序；S-04.7）。 */
+  topic_ids: string[]
   opens_at: string | null
   closes_at: string | null
   classroom_id: string
@@ -40,7 +40,21 @@ export type Activity = {
   created_at: string
 }
 
-export type Available = { activities: Activity[]; topics: Topic[] }
+/** 學生在活動中某一題的進度（F-29.6）。 */
+export type TopicProgress = {
+  topic_id: string
+  title: string
+  /** 這位學生在此題的對話；還沒開始為 null */
+  conversation_id: string | null
+  conversation_status: ConversationStatus | null
+  /** 此題總結已產生（S-04.7：完成一題的條件） */
+  summary_ready: boolean
+}
+
+/** 學生看到的活動：每題進度與整體完成度（每題都有總結才算完成）。 */
+export type StudentActivity = Activity & { topics: TopicProgress[]; completed: boolean }
+
+export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
 export type ConversationStatus = 'active' | 'ended'
 
@@ -101,9 +115,16 @@ export type TeacherSummary = {
   conversation_id: string
   /** 對話所屬的教室 */
   classroom_id: string
+  /** 對話所屬的活動 ID；個人練習為 null */
+  activity_id: string | null
+  /** 對話所屬的題目 ID；個人練習為 null，題目被刪除後也會變成 null */
+  topic_id: string | null
+  /** 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3） */
+  activity_completed: boolean
   title: string
   ended_at: string
-  student_id: string
+  /** 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號 */
+  student_user_id: string
   student_name: string | null
   student_email: string
   /** 對話建立時快照的原文語言。 */
@@ -120,7 +141,8 @@ export type Transcript = {
   title: string
   language: Lang
   ended_at: string
-  student_id: string
+  /** 學生的使用者 UUID，不是學號 */
+  student_user_id: string
   student_name: string | null
   messages: Message[]
 }
@@ -136,7 +158,8 @@ export type SummaryTranslation = {
 export type StudentRow = {
   id: string | null
   email: string | null
-  student_id: string
+  /** 學號（大寫）；學生的帳號 UUID 是 `id` */
+  student_number: string
   display_name: string | null
   /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */
   has_account: boolean
@@ -208,7 +231,7 @@ export type RosterImportResult = {
   existing: number
   invalid: { line: number; reason: ImportErrorReason }[]
   /** 這次新建立的內建帳號與臨時密碼（只出現一次；教師匯入時為空或沒有這個欄位） */
-  credentials?: { student_id: string; temporary_password: string }[]
+  credentials?: { student_number: string; temporary_password: string }[]
 }
 
 /** SSE `done` 事件的內容。 */

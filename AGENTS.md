@@ -36,7 +36,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - AI：OpenAI，後端以單一介面包裝 AI 呼叫，保留更換彈性（S-03.1）。
   - 對話 API：HTTP + SSE 串流（S-08.4），送出訊息的 POST 直接串流 AI 回覆；前端與 API 同網域部署（S-08.1）。
   - 登入驗證與 session 規格見 `docs/specs/S-08.2-auth-verification.md`；維運流程見 `docs/specs/S-09.3-ops-procedures.md`。
-  - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。正式上線前不需考慮資料庫轉移，不寫 `ALTER`，直接改原本的 `CREATE`（見 [CONTRIBUTING.md](CONTRIBUTING.md#資料庫-migration)）。
+  - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。NTNU 自 2026-11-07 起視為正式環境，migration 只往前：已合併的 migration 不修改也不刪除，schema 變更一律新增 migration（含既有資料的搬移，可以寫 `ALTER`）（見 [CONTRIBUTING.md](CONTRIBUTING.md#資料庫-migration)、S-09.3）。
   - 開發／CI 資料庫：Docker Compose 的 PostgreSQL（S-09.1）。
   - 前端：React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui、react-router、Vitest + Testing Library + MSW、oxlint；圖表用純 SVG、i18n 自行實作（S-11）。不得擴充或更換主要框架，新增主要依賴需先經規格討論。
 - **未定案，不得自行決定**：

@@ -89,6 +89,23 @@ mod classroom_scope {
     }
 
     #[test]
+    fn activities_contract_supports_multiple_topics() {
+        let doc = document();
+        let new = &doc["components"]["schemas"]["NewActivity"]["properties"];
+        assert!(new.get("topic_ids").is_some(), "NewActivity.topic_ids");
+        let patch = &doc["components"]["schemas"]["ActivityPatch"]["properties"];
+        assert!(patch.get("topic_ids").is_some(), "ActivityPatch.topic_ids");
+        let activity = &doc["components"]["schemas"]["Activity"]["properties"];
+        assert!(activity.get("topic_ids").is_some(), "Activity.topic_ids");
+
+        let patch_op = &doc["paths"]["/api/activities/{id}"]["patch"];
+        let conflicts = patch_op["responses"]["409"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(conflicts.contains("activity_topic_locked"));
+    }
+
+    #[test]
     fn conversations_expose_a_nullable_classroom() {
         let doc = document();
         let conversation = &doc["components"]["schemas"]["Conversation"]["properties"];
@@ -113,6 +130,32 @@ mod classroom_scope {
     }
 
     #[test]
+    fn conversation_creation_documents_activity_topic_selection() {
+        let doc = document();
+        let schema = &doc["components"]["schemas"]["NewConversation"]["properties"];
+        assert!(schema["activity_id"].is_object());
+        assert!(
+            schema["topic_id"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("活動")
+        );
+        let operation = &doc["paths"]["/api/conversations"]["post"];
+        assert!(
+            operation["responses"]["400"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("題目不屬於活動")
+        );
+        assert!(
+            operation["responses"]["409"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("activity_already_started")
+        );
+    }
+
+    #[test]
     fn teacher_side_lists_take_an_explicit_classroom() {
         let doc = document();
         for (path, method) in [
@@ -132,6 +175,19 @@ mod classroom_scope {
         }
         let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
         assert!(row.get("classroom_id").is_some(), "SummaryRow.classroom_id");
+    }
+
+    /// F-29.3：總結列帶有活動完成狀態與題目、活動 ID。
+    #[test]
+    fn summary_rows_contract_supports_activity_completion() {
+        let doc = document();
+        let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
+        assert!(
+            row.get("activity_completed").is_some(),
+            "SummaryRow.activity_completed"
+        );
+        assert!(row.get("activity_id").is_some(), "SummaryRow.activity_id");
+        assert!(row.get("topic_id").is_some(), "SummaryRow.topic_id");
     }
 }
 
@@ -188,7 +244,7 @@ mod roster {
             assert!(result.get(field).is_some(), "ImportResult.{field}");
         }
         let credential = &document["components"]["schemas"]["Credential"]["properties"];
-        assert!(credential.get("student_id").is_some());
+        assert!(credential.get("student_number").is_some());
         assert!(credential.get("temporary_password").is_some());
         let error = &document["components"]["schemas"]["StudentImportError"]["properties"];
         assert!(error.get("line").is_some());
@@ -224,13 +280,56 @@ mod roster {
         for field in [
             "id",
             "email",
-            "student_id",
+            "student_number",
             "display_name",
             "has_account",
             "disabled",
             "completed_conversations",
         ] {
             assert!(row.get(field).is_some(), "StudentRow.{field}");
+        }
+    }
+
+    /// #446：學號叫 `student_number`，學生的使用者 UUID 叫 `student_user_id`，API 不再有 `student_id`。
+    #[test]
+    fn student_identifiers_are_named_apart() {
+        let document = serde_json::to_value(openapi::document()).unwrap();
+        let schemas = &document["components"]["schemas"];
+        for (schema, field) in [
+            ("StudentRow", "student_number"),
+            ("Credential", "student_number"),
+            ("DeleteBody", "confirm_student_number"),
+            ("SummaryRow", "student_user_id"),
+            ("ConversationTranscript", "student_user_id"),
+        ] {
+            assert!(
+                schemas[schema]["properties"].get(field).is_some(),
+                "{schema}.{field}"
+            );
+        }
+        let text = document.to_string();
+        assert!(
+            !text.contains("\"student_id\""),
+            "student_id left in OpenAPI"
+        );
+        assert!(!text.contains("confirm_student_id"));
+    }
+
+    /// F-30.2：名單、教師總結列表與 `/api/me` 都帶學號。
+    #[test]
+    fn roster_summaries_and_me_carry_the_student_number() {
+        let document = serde_json::to_value(openapi::document()).unwrap();
+        let schemas = &document["components"]["schemas"];
+        for (schema, field) in [
+            ("RosterEntry", "student_number"),
+            ("RosterEntry", "display_name"),
+            ("SummaryRow", "student_number"),
+            ("MeResponse", "student_number"),
+        ] {
+            assert!(
+                schemas[schema]["properties"].get(field).is_some(),
+                "{schema}.{field}"
+            );
         }
     }
 }

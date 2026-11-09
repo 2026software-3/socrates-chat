@@ -5,7 +5,9 @@ import importlib.metadata
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import patch_dialog  # noqa: E402
@@ -102,6 +104,27 @@ class PatchDialog(unittest.TestCase):
     def test_refuses_source_it_does_not_recognise(self):
         with self.assertRaises(RuntimeError):
             patch_dialog.patch_source("class Dialog:\n    pass\n")
+
+    def test_startup_script_fails_when_the_installed_source_is_not_the_expected_one(self):
+        # 升版後對不上原始碼：patch_dialog.py 以例外結束（非 0），entrypoint 的 set -e 擋住 exec，cascade 不會帶著沒補丁的 Dialog 啟動
+        with tempfile.TemporaryDirectory() as tmp:
+            other = pathlib.Path(tmp, "dialog.py")
+            other.write_text("class Dialog:\n    pass\n", encoding="utf-8")
+            with mock.patch.object(patch_dialog, "installed_dialog_path", return_value=str(other)):
+                with self.assertRaises(RuntimeError):
+                    patch_dialog.main()
+            self.assertEqual(other.read_text(encoding="utf-8"), "class Dialog:\n    pass\n")
+
+
+class Entrypoint(unittest.TestCase):
+    script = pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text(encoding="utf-8")
+
+    def test_stops_on_any_failing_command(self):
+        self.assertIn("\nset -eu\n", self.script)
+
+    def test_applies_the_patch_before_the_cascade_server_starts(self):
+        cascade = self.script[self.script.index("  cascade)") :]
+        self.assertLess(cascade.index("python3 /app/patch_dialog.py"), cascade.index("exec sgl-omni serve --config"))
 
 
 if __name__ == "__main__":

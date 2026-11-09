@@ -22,7 +22,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
-import { ResetPasswordDialog } from '@/features/admin/reset-password-dialog'
+import { ResetPasswordDialog, type ResetTarget } from '@/features/admin/reset-password-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { LoadMore } from '@/components/load-more'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -152,14 +152,14 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>{t('teacher.roster.credsStudentId')}</TableHead>
+                        <TableHead>{t('teacher.roster.credsStudentNumber')}</TableHead>
                         <TableHead>{t('teacher.roster.credsPassword')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {result.credentials.map((c) => (
-                        <TableRow key={c.student_id}>
-                          <TableCell className="break-all">{c.student_id}</TableCell>
+                        <TableRow key={c.student_number}>
+                          <TableCell className="break-all">{c.student_number}</TableCell>
                           <TableCell className="font-mono">{c.temporary_password}</TableCell>
                         </TableRow>
                       ))}
@@ -169,7 +169,7 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.student_id},${c.temporary_password}`).join('\n'))}
+                    onClick={() => copyToClipboard((result.credentials ?? []).map((c) => `${c.student_number},${c.temporary_password}`).join('\n'))}
                   >
                     {isCopied ? t('teacher.roster.credsCopied') : t('teacher.roster.credsCopyAll')}
                   </Button>
@@ -183,10 +183,17 @@ function ImportPanel({ classroomId, onImported }: { classroomId: string; onImpor
   )
 }
 
-type AccountAction = { kind: 'remove'; email: string; id: string } | { kind: 'disable'; email: string; id: string } | { kind: 'delete'; email: string; id: string; studentId: string }
+type AccountAction = { kind: 'remove'; email: string; id: string } | { kind: 'disable'; email: string; id: string } | { kind: 'delete'; email: string; id: string; studentNumber: string }
 
 function statusOf(s: StudentRow): 'disabled' | 'pending' | 'active' {
   return s.disabled ? 'disabled' : s.has_account ? 'active' : 'pending'
+}
+
+/** 重設密碼的對象：有信箱用信箱；沒有信箱的學生以學號（#413，對話框顯示姓名與教室供核對）；還沒有帳號則不能重設。 */
+function resetTargetOf(s: StudentRow, classroomName: string): ResetTarget | undefined {
+  if (s.email) return { kind: 'email', email: s.email }
+  if (s.has_account) return { kind: 'student', studentNumber: s.student_number, name: s.display_name, classroom: classroomName }
+  return undefined
 }
 
 function StatusBadge({ status }: { status: 'disabled' | 'pending' | 'active' }) {
@@ -257,7 +264,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   )
   const auth = useAuth()
   const isAdmin = auth.status === 'authed' && auth.me.roles.admin
-  const [toReset, setToReset] = useState<string>()
+  const [toReset, setToReset] = useState<ResetTarget>()
   const [action, setAction] = useState<AccountAction | null>(null)
   const [reason, setReason] = useState('')
   const [confirmText, setConfirmText] = useState('')
@@ -301,26 +308,37 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
     await run(() => api.put(`/api/admin/users/${encodeURIComponent(id)}/status`, { disabled: false }), 'teacher.roster.enabledToast')
   }
 
+  /** 管理者的重設密碼按鈕；對象由 `resetTargetOf` 決定，沒有可重設的對象就不顯示。 */
+  const resetButton = (s: StudentRow) => {
+    const target = isAdmin ? resetTargetOf(s, classroom.name) : undefined
+    if (!target) return null
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        aria-label={
+          target.kind === 'email'
+            ? t('admin.reset.resetPassword', { email: target.email })
+            : t('admin.reset.resetStudent', { studentNumber: target.studentNumber })
+        }
+        onClick={() => setToReset(target)}
+      >
+        {t('admin.reset.resetConfirm')}
+      </Button>
+    )
+  }
+
   /** 每位學生可做的操作：管理者另有重設密碼、停用與復原。 */
   const rowActions = (s: StudentRow) => (
     <>
-      {isAdmin && s.email ? (
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={t('admin.reset.resetPassword', { email: s.email })}
-          onClick={() => setToReset(s.email ?? undefined)}
-        >
-          {t('admin.reset.resetConfirm')}
-        </Button>
-      ) : null}
+      {resetButton(s)}
       {isAdmin && s.id ? (
         s.disabled ? (
           <Button
             variant="outline"
             size="sm"
             disabled={pending}
-            aria-label={t('teacher.roster.enableLabel', { email: s.email ?? s.student_id })}
+            aria-label={t('teacher.roster.enableLabel', { email: s.email ?? s.student_number })}
             onClick={() => void enable(s.id!)}
           >
             {t('teacher.roster.enable')}
@@ -329,8 +347,8 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
           <Button
             variant="outline"
             size="sm"
-            aria-label={t('teacher.roster.disableLabel', { email: s.email ?? s.student_id })}
-            onClick={() => open({ kind: 'disable', email: s.email ?? s.student_id, id: s.id! })}
+            aria-label={t('teacher.roster.disableLabel', { email: s.email ?? s.student_number })}
+            onClick={() => open({ kind: 'disable', email: s.email ?? s.student_number, id: s.id! })}
           >
             {t('teacher.roster.disable')}
           </Button>
@@ -339,16 +357,16 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
       <Button
         variant="outline"
         size="sm"
-        aria-label={t('teacher.roster.removeLabel', { email: s.email ?? s.student_id })}
-        onClick={() => open({ kind: 'remove', email: s.email ?? s.student_id, id: s.id ?? '' })}
+        aria-label={t('teacher.roster.removeLabel', { email: s.email ?? s.student_number })}
+        onClick={() => open({ kind: 'remove', email: s.email ?? s.student_number, id: s.id ?? '' })}
       >
         {t('teacher.roster.remove')}
       </Button>
       <Button
         variant="destructive"
         size="sm"
-        aria-label={t('teacher.roster.deleteLabel', { email: s.email ?? s.student_id })}
-        onClick={() => open({ kind: 'delete', email: s.email ?? s.student_id, id: s.id ?? '', studentId: s.student_id })}
+        aria-label={t('teacher.roster.deleteLabel', { email: s.email ?? s.student_number })}
+        onClick={() => open({ kind: 'delete', email: s.email ?? s.student_number, id: s.id ?? '', studentNumber: s.student_number })}
       >
         {t('teacher.roster.deleteAccount')}
       </Button>
@@ -359,10 +377,10 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const studentLink = (s: StudentRow) =>
     s.id ? (
       <Link to={`${base}/${classroom.id}/students/${s.id}`} className="underline-offset-4 hover:underline">
-        {s.email ?? s.student_id}
+        {s.email ?? s.student_number}
       </Link>
     ) : (
-      s.email ?? s.student_id
+      s.email ?? s.student_number
     )
 
   const target = action?.email ?? ''
@@ -412,7 +430,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                   {students.map((s) => {
                     const status = statusOf(s)
                     return (
-                      <li key={s.email ?? s.id ?? s.student_id} className="space-y-3 rounded-lg border p-3">
+                      <li key={s.email ?? s.id ?? s.student_number} className="space-y-3 rounded-lg border p-3">
                         <div className="space-y-1">
                           <p className="font-medium break-all">{studentLink(s)}</p>
                           {s.display_name ? <p className="text-muted-foreground text-sm">{s.display_name}</p> : null}
@@ -441,7 +459,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                     </TableHeader>
                     <TableBody>
                       {students.map((s) => (
-                        <TableRow key={s.email ?? s.id ?? s.student_id}>
+                        <TableRow key={s.email ?? s.id ?? s.student_number}>
                           <TableCell className="break-all">
                             {studentLink(s)}
                             {s.display_name ? <span className="text-muted-foreground block text-xs">{s.display_name}</span> : null}
@@ -473,7 +491,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         }}
       />
 
-      <ResetPasswordDialog email={toReset} onClose={() => setToReset(undefined)} />
+      <ResetPasswordDialog target={toReset} onClose={() => setToReset(undefined)} />
 
       <AccountDialog
         open={action?.kind === 'remove'}
@@ -514,17 +532,17 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         description={t('teacher.roster.deleteBody', { email: target })}
         confirmLabel={t('teacher.roster.deleteConfirm')}
         pending={pending}
-        confirmDisabled={action?.kind !== 'delete' || confirmText.trim().toUpperCase() !== action.studentId}
+        confirmDisabled={action?.kind !== 'delete' || confirmText.trim().toUpperCase() !== action.studentNumber}
         error={action?.kind === 'delete' ? actionError : undefined}
         onConfirm={() =>
           void run(
-            () => api.delete(`/api/students/${encodeURIComponent(action?.kind === 'delete' ? action.id : '')}`, { confirm_student_id: confirmText.trim() }),
+            () => api.delete(`/api/students/${encodeURIComponent(action?.kind === 'delete' ? action.id : '')}`, { confirm_student_number: confirmText.trim() }),
             'teacher.roster.deletedToast',
           )
         }
       >
         <div className="space-y-1.5">
-          <Label htmlFor="delete-confirm">{t('teacher.roster.deleteConfirmLabel', { email: action?.kind === 'delete' ? action.studentId : '' })}</Label>
+          <Label htmlFor="delete-confirm">{t('teacher.roster.deleteConfirmLabel', { email: action?.kind === 'delete' ? action.studentNumber : '' })}</Label>
           <Input id="delete-confirm" value={confirmText} autoComplete="off" onChange={(e) => setConfirmText(e.target.value)} />
         </div>
       </AccountDialog>
