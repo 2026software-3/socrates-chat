@@ -18,14 +18,14 @@ Given 固定情境達到收斂條件，When AI 回應，Then 適時收斂，而�
 | 項目 | 位置／目前版本 |
 | --- | --- |
 | 受測提示詞 | `backend/src/ai.rs` 的 `build_system_prompt` |
-| 提示詞版本 | `rules_version("zh-TW")`，目前為 `v1.23/zh-TW`；runner 直接呼叫 `rules_version`，結果記錄的就是產品當下使用的版本，不是另外抄一份 |
+| 提示詞版本 | `rules_version("zh-TW")`，目前為 `v1.24/zh-TW`；runner 直接呼叫 `rules_version`，結果記錄的就是產品當下使用的版本，不是另外抄一份 |
 | 評估 runner | `backend/examples/try_f08.rs` |
-| 評估程式版本 | `EVALUATOR_VERSION`：`f08-eval-v1` |
+| 評估程式版本 | `EVALUATOR_VERSION`：`f08-eval-v2`（v2 起每題記錄回覆字數與句數） |
 | 評審提示與準則 | runner 的 `JUDGE_PROMPT`（只有繁體中文版） |
-| 評審準則版本 | `JUDGE_VERSION`：`f08-rubric-v1/zh-TW` |
+| 評審準則版本 | `JUDGE_VERSION`：`f08-rubric-v2/zh-TW`（v2 起對齊「至少兩個反例才收斂」與「AI 直接說結束語、不提問」） |
 | 結果格式版本 | `SCHEMA_VERSION`：`1` |
 | 評估語言 | `zh-TW`（`LANGUAGE`）；情境與評審準則目前只有繁體中文版 |
-| 固定情境 | `backend/eval/f08_2_cases.json`（8 題，全為合成資料） |
+| 固定情境 | `backend/eval/f08_2_cases.json`（12 題，全為合成資料） |
 
 修改受測提示詞時更新 `ai.rs` 的 `RULES_VERSION`（及 `rules_version`）；修改評審準則 `JUDGE_PROMPT` 時更新 `JUDGE_VERSION`；修改評估邏輯（評分、重試、通過條件）時更新 `EVALUATOR_VERSION`；結果欄位有不相容變更時更新 `SCHEMA_VERSION`。這四個版本各自獨立：只改其中一個，就只有那個版本號變。
 
@@ -36,7 +36,7 @@ API key 放在專案根目錄的 `.apikeylist`（一行一把，見 `.apikeylist
 ```bash
 cd backend
 cargo test --example try_f08   # 離線測試，不呼叫 API
-cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯誤時每題最多嘗試 3 次）＋每題評審（輸出異常時最多嘗試 3 次），會使用 API 額度
+cargo run --example try_f08    # 真實模型評估：受測 12 題（格式錯誤時每題最多嘗試 3 次）＋每題評審（輸出異常時最多嘗試 3 次），會使用 API 額度
 ```
 
 可用環境變數調整：
@@ -47,6 +47,7 @@ cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯�
 | `EVAL_TOTAL_SECS` | 90 | 完整回覆逾時（受測與評審共用） |
 | `EVAL_DELAY_SECS` | 2 | 題與題之間暫停的秒數，用來避開限流 |
 | `CASE` | 未設定 | 只跑指定題號，例如 `CASE=CONV_01` |
+| `OPENAI_REASONING_EFFORT` | 未設定 | 與正式環境一致時才設（例如 `high`）；受測與評審共用，沒設就不送 |
 
 結果寫在 `backend/eval/results/f08_<run-id>/`（`<run-id>` 是執行時的 Unix 秒數）。該目錄被 `.gitignore` 排除，不會進版本控制；要保留的紀錄請整理後發到 Discussions，並登記在本文件的「評估紀錄」。
 
@@ -56,7 +57,8 @@ cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯�
 
 | 類別 | 題號 | 預期 | 設計重點 |
 | --- | --- | --- | --- |
-| 已達收斂條件 | `CONV_01`–`CONV_04` | `advance=true`、`wrap_up` | 學生已針對具體反例做出有理由的區分或調適（電車難題、校園手機管理、說謊與誠實、資源分配） |
+| 已達收斂條件 | `CONV_01`–`CONV_04` | `advance=true`、`wrap_up` | 學生已先後針對**兩個角度不同**的反例都做出有理由的區分或調適（電車難題、校園手機管理、說謊與誠實、資源分配） |
+| 只回應一個反例 | `ONE_01`–`ONE_04` | `advance=false`，且**不得**收尾（接受 `counterexample`／`perspective`） | 與 `CONV_xx` 同一段對話，但停在學生回應第一個反例；AI 應具體回應後提出第二個不同角度的反例。`ONE_02` 的第一個反例本身含兩個情境，用來測「同一則訊息的多個情境只算一個」 |
 | 尚未達收斂條件 | `NOT_CONV_01`–`NOT_CONV_03` | `advance=false`，且**不得**收尾（可接受 `perspective`／`counterexample`／`clarify`／`assumption`） | 學生逃避反例或沒有完成反思（志工服務、隱私與校園安全、死刑存廢） |
 | 回合上限 | `TURN_LIMIT_01` | `advance=true`、`wrap_up` | 第 15 回合、僅在第 2 階段，學生條件未全達成，仍須收尾（安樂死合法化） |
 
@@ -96,6 +98,8 @@ cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯�
 
 | Run ID | `rules_version` | 結果 | 紀錄 |
 | --- | --- | --- | --- |
+| `1794215016`（2026-11-09，基線） | `v1.23/zh-TW`＋12 題新情境集 | 12 題通過 7 題；`ONE_01`–`ONE_04` 全部在只回應一個反例時就收尾 | 本機結果（未發 Discussion） |
+| `1794215228`、`1794215496`、`1794215688`、`1794215920`（2026-11-09） | `v1.24/zh-TW` | 各 10、11、10、11／12 題；失敗為 `CONV_01`／`CONV_03`（少算反例、未收斂）與 `NOT_CONV_01`／`NOT_CONV_03`（評審判未把學生拉回原反例），每輪失敗題不同；平均回覆約 96–107 字、2.2–2.4 句（基線尚未量長度） | 本機結果（未發 Discussion） |
 | `1794149101`（2026-11-08） | `v1.23/zh-TW` | 8 題通過 7 題；失敗：`NOT_CONV_01`（過早收斂） | [Discussion #485](https://github.com/2026software-3/socrates-chat/discussions/485) |
 
 ## 已知限制
@@ -103,9 +107,9 @@ cargo run --example try_f08    # 真實模型評估：受測 8 題（格式錯�
 以下是撰寫本文件時對照現行程式與規格發現的落差；**未在本 Issue 修改**（會改變評估結果的可比性，需要團隊決定並升版 `EVALUATOR_VERSION`／`JUDGE_VERSION`）：
 
 - **runner 沒有套用「收尾回合指令接在最後一則學生訊息後」。** 依 S-03.3，正式系統在第 `wrap_up_turn` 回合起，會把 `closing_instruction` 接在送給模型的最後一則學生訊息後面（`reply.rs` 的 `generate`）。`try_f08.rs` 只用 `build_system_prompt` 組請求，沒有這一步，所以 `TURN_LIMIT_01`（第 15 回合）測到的條件與正式系統不同，可能比正式系統更容易失敗。
-- **評審準則與 v1.23 的收尾行為不完全對齊。** S-03.3 現行規格是 AI 以一兩句結束語直接結束討論、不提問；`JUDGE_PROMPT` 的措辭仍是「提議收尾、整理總結或引導回顧結論」，部分情境註解也寫「AI 應提議收尾」。「引導回顧結論」若被模型寫成提問，在現行規格下其實不符，但評審準則不會判它失敗。
+- **評審準則已在 `f08-rubric-v2` 對齊 v1.23／v1.24 的規格**（AI 直接說結束語、不提問；至少兩個角度不同的反例才收斂）；`TURN_LIMIT_01` 與 `NOT_CONV_xx` 的情境註解（`learning_goal`、`annotation_reason`）仍保留舊措辭「提議收尾」，不影響判定。
 - **runner 直接呼叫 `collect`，不經過後端的回覆流程。** 「後端確認條件成立才結束，模型過早標記 `wrap_up` 不會結束」這條保護不在評估範圍內；本評估只看模型本身的 `advance` 與正文。
 - **評審與受測可能是同一個模型**（共用設定，預設可相同），自評有偏差風險；建議第一輪人工抽查所有 `PASS` 與 `ERROR` 的題目。
-- **只有 8 題、只有 `zh-TW`**；沒有英文與西班牙文情境，也沒有第 1、2 階段的收斂（晉級）情境，只有一題回合上限。
+- **只有 12 題、只有 `zh-TW`**；沒有英文與西班牙文情境，也沒有第 1、2 階段的收斂（晉級）情境，只有一題回合上限。
 - **每題只跑一次**；模型輸出有隨機性，單次通過不代表穩定。
 - 自動評分不代表 Issue 已通過團隊驗收。
