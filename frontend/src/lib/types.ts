@@ -40,7 +40,21 @@ export type Activity = {
   created_at: string
 }
 
-export type Available = { activities: Activity[]; topics: Topic[] }
+/** 學生在活動中某一題的進度（F-29.6）。 */
+export type TopicProgress = {
+  topic_id: string
+  title: string
+  /** 這位學生在此題的對話；還沒開始為 null */
+  conversation_id: string | null
+  conversation_status: ConversationStatus | null
+  /** 此題總結已產生（S-04.7：完成一題的條件） */
+  summary_ready: boolean
+}
+
+/** 學生看到的活動：每題進度與整體完成度（每題都有總結才算完成）。 */
+export type StudentActivity = Activity & { topics: TopicProgress[]; completed: boolean }
+
+export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
 export type ConversationStatus = 'active' | 'ended'
 

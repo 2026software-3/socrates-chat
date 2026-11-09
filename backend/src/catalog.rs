@@ -769,7 +769,7 @@ pub(crate) async fn delete_activity(
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Available {
     /// 教師指定的活動：已發布，且在學生所屬教室的名單內
-    activities: Vec<Activity>,
+    activities: Vec<activity_store::StudentActivity>,
     /// 題目庫中已啟用的題目
     topics: Vec<Topic>,
 }
@@ -786,7 +786,7 @@ pub(crate) async fn available(
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {
     let (activities, topics) = tokio::try_join!(
-        activity_store::list_published_for_student(&state.pool, cu.user.id),
+        activity_store::list_published_with_progress(&state.pool, cu.user.id),
         sqlx::query_as(
             "SELECT id, title, description, category, is_active FROM topics
              WHERE is_active ORDER BY created_at, id",
