@@ -201,7 +201,7 @@ DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compo
 
 帳號現況（2026-11-10 唯讀查詢）：免費方案；沒有網域、Worker、Tunnel、Hyperdrive；Containers 需要 Workers Paid 方案，目前被拒絕。
 
-- **把後端改寫成 Worker（Rust 編成 Wasm）：不建議。** 後端用 Axum、Tokio、SQLx、reqwest；`workers-rs` 文件列出的資料庫 crate 是 `tokio-postgres`（要改用 Workers 的 Socket），SQLx 不在清單內，等於重寫資料層與串流。`AGENTS.md` 也規定不得擅自更換主要框架。
+- **把後端改寫成 Worker（Rust 編成 Wasm）：不建議。** 後端用 Axum、Tokio、SQLx、reqwest；`workers-rs` 文件列出的資料庫 crate 是 `tokio-postgres`（要改用 Workers 的 Socket），SQLx 不在清單內，等於重寫資料層與串流。`AGENTS.md` 也規定不得擅自更換主要框架。逐項評估見下方「後端改寫成 Worker（Workers Paid）」。
 - **Cloudflare Containers（跑現有 Docker image）：** 技術上可行，需要 Workers Paid（每月 5 美元起）。但仍沒有 PostgreSQL：D1 是 SQLite，規格要求 PostgreSQL，`AGENTS.md` 禁止引入 Supabase 等未列出的基礎設施。DB 只能留在本機，經 Cloudflare Tunnel 連回，這需要網域、Access 服務金鑰與容器內的 `cloudflared`。
 - **Cloudflare Tunnel 接現有本機部署：** 免費，支援 WebSocket 與 SSE，可取代 Tailscale Funnel。前提是要有一個放在 Cloudflare 的網域（`workers.dev` 不能當 Tunnel 主機名；沒網域只能用沒有穩定性保證的 quick tunnel）；換網址後 `APP_BASE_URL` 與 Google OAuth 的重新導向 URI 都要更新。
 
@@ -225,6 +225,49 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - lite 只有 1/16 vCPU，登入時的 Argon2id 密碼雜湊會明顯變慢，若採用要實測登入耗時。
 - 容器會被放在哪個區域、到台灣 DB 的延遲多少，文件沒有說，要實測。SQLx 從容器經 Hyperdrive 連資料庫是否可行，也沒有查到。
 
+#### 後端改寫成 Worker（Workers Paid）
+
+評估把整個後端改寫成 Worker（Rust 編成 Wasm，用 `workers-rs`），搭配 Workers Paid（每月 5 美元起）。**結論：費用最低，但這是重寫而不是搬家，而且資料庫仍在這台電腦，可用性沒有改善；不採用。**
+
+後端規模（2026-11-10 量測）：Rust 約 15,440 行、74 個端點（`#[utoipa::path]`）、180 處 SQLx 查詢、14 筆 migration、4 處 `tokio::spawn`（`auth_store.rs`、`reply.rs`、`ai.rs`、`summary.rs`）。主要相依：Axum（含 `ws`）、Tokio 多執行緒、SQLx、reqwest（`rustls-tls`）、tokio-tungstenite、tower_governor、tower-http（`fs`）、argon2、openidconnect、utoipa-redoc。
+
+各元件在 Workers 上的狀況：
+
+| 元件 | 狀況 |
+| --- | --- |
+| SQLx（180 處查詢） | 不在 `workers-rs` 文件列出的支援清單。要改成 `tokio-postgres` 加 Workers 的 Socket，查詢與資料列對應都要重寫；`sqlx::migrate!` 不能在 Worker 內執行，migration 要移到別處跑。 |
+| Tokio 多執行緒、`tokio::spawn`、interval／sleep | Worker 沒有常駐行程。回應結束後的背景工作（對話回覆、摘要生成）要改用 `waitUntil`、Queues 或 Durable Objects，各自的限制未逐一確認。 |
+| tokio-tungstenite（連 cascade 的 WebSocket） | 要改用 Workers 自己的 WebSocket API；cascade 在本機，要經 Tunnel，需要網域。 |
+| tower_governor（記憶體內的 IP 限流） | Worker 是多個彼此隔離的實例，記憶體不共享，限流會失效，要改成存資料庫或 Durable Object。 |
+| tower-http 靜態檔 | 改用 Workers Static Assets。 |
+| reqwest（`rustls-tls`） | 要換成 Wasm 版（底層用 fetch），功能（串流、multipart）要逐項確認。 |
+| argon2 | 純 Rust，可以編成 Wasm；但免費方案 CPU 只有 10 ms，必須用 Workers Paid。 |
+| 資料庫 | 沒有託管 PostgreSQL。D1 是 SQLite，與規格（PostgreSQL）不符，14 筆 migration 與 SQL 語法都要改，不採用。只能讓 Worker 經 Hyperdrive 連回本機的 D 槽資料庫。 |
+
+平台限制（查自 Cloudflare 文件，Workers Paid）：
+
+| 項目 | 免費 | 付費 |
+| --- | --- | --- |
+| CPU 時間 | 10 ms | 預設 30 秒，上限 5 分鐘 |
+| subrequest | 每個請求 50 次 | 每個請求 10,000 次 |
+| 記憶體 | 每個實例 128 MB | 每個實例 128 MB（含 Wasm 配置） |
+| Worker 大小 | 64 MiB（未壓縮） | 64 MiB（未壓縮），沒有壓縮後上限 |
+| 啟動時間 | 1 秒 | 1 秒 |
+| 同時對外連線 | 每個請求 6 條 | 每個請求 6 條 |
+| Hyperdrive 查詢 | 每天 10 萬次 | 不限 |
+
+資料庫連回本機：Hyperdrive 的設定支援 Access 服務金鑰（`--access-client-id`、`--access-client-secret`）與 Workers VPC 服務（`--service-id`）兩種方式連私網資料庫。Tunnel 的公開主機名需要放在 Cloudflare 的網域；Workers VPC 方式是否需要網域，沒有查證。
+
+費用：Workers Paid 基本費 5 美元。目前一天約 570 個請求（約每月 1.7 萬個），遠低於任何方案的額度，所以月費就是 5 美元；若走 Tunnel 連資料庫，再加網域約 10 美元／年。平台包含的請求與 CPU 額度數字這次沒有查文件，不列入。真正的成本在重寫：沒有逐檔評估，粗估資料層與執行環境的黏合程式碼要重寫大半，等於另寫一套後端，需要數週，且要同時維護原生版（`cargo test` 與本機部署）與 Wasm 版。
+
+為什麼不採用：
+
+- 資料庫仍在這台電腦，電腦關機或斷線，Worker 讀不到資料，整站照樣掛掉，可用性沒有改善。
+- 規格已確定 Rust、Axum、Tokio、SQLx（`docs/specs/decisions.md`），`AGENTS.md` 規定不得擅自更換主要框架；要走這條路必須先以 PR 更新 `docs/specs/`，並決定 S-09 的正式環境方式。
+- 未驗證：Worker 到本機資料庫的實際延遲、SSE 串流與 WebSocket 轉送在 Worker 上的行為、`waitUntil` 能否撐住摘要生成。
+
+只有同時決定「資料庫也搬到雲端託管 PostgreSQL，並要求不依賴這台電腦」時才值得評估，組合是 Workers 加 Hyperdrive 加託管 PostgreSQL，費用為 5 美元加資料庫費用。
+
 ### 各方案取捨
 
 | 方案 | 費用 | 到 DB 的延遲 | 是否依賴這台電腦 | 結論 |
@@ -233,6 +276,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 本機部署加 Cloudflare Tunnel | 免費，加網域約 10 美元／年 | 低（同機；入口走最近的 Cloudflare 機房，未實測） | 是 | 想要穩定網址或 WAF 時採用；Funnel 與 Tunnel 可並行，確認新網址正常再關 Funnel |
 | Docker cloud sandbox 當正式環境 | 按秒計費（單價文件未載明） | 高，170–200 ms | 是 | 不採用 |
 | Cloudflare Containers，DB 經 Tunnel 回本機 | 約 9.6–21 美元／月 | 未知，要實測 | 是 | 暫不採用 |
+| 後端改寫成 Worker 加 Workers Paid，資料庫經 Hyperdrive 回本機 | 約 5 美元／月（加網域約 10 美元／年），另加數週的重寫成本 | 未知，要實測 | 是 | 不採用；要先走規格決策 |
 | 全搬雲端（app 與託管 PostgreSQL） | 另計 | 低 | 否 | 要等 S-09 決定 DB 方案，再評估 |
 
 重新評估的條件：S-09 決定正式環境的 DB 方案，或需要不依賴這台電腦的可用性。
@@ -251,6 +295,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 2026-11-08 | 以手機行動網路經 Funnel 故意登入失敗，`login_failures` 記到手機的真實 IPv6 `/64` 網段，確認 `TRUSTED_PROXIES` 在新入口下正常；測試紀錄已刪除。 |
 | 2026-11-10 | 資料庫由 volume `socrates-ntnu_pgdata` 搬到 D 槽 `D:\socrates-ntnu\pgdata`（bind mount，來源用 `/run/desktop/mnt/host/d/...`）。搬前 `pg_dump` 備份；搬後 `users` 40、`conversations` 66、`_sqlx_migrations` 14 筆與搬前一致，`/health`、`/ready` 回 200，公開網址 `/ready` 回 200。中斷約 1 分鐘。舊 volume 保留當退路。 |
 | 2026-11-10 | 評估 app 放雲端（DB 留 D 槽、cascade 留本機）：Docker cloud sandbox 的 UDP 不通、位在美西、24 小時過期，經 Tailscale 只能走 DERP，往返 170–200 ms；Cloudflare Containers 約 9.6–21 美元／月且仍需把 DB 接回本機。結論：NTNU 維持本機部署，見「雲端部署評估」。 |
+| 2026-11-10 | 補充評估「後端改寫成 Worker 加 Workers Paid」：約 5 美元／月，但後端約 15,440 行、74 個端點、180 處 SQLx 查詢要重寫，資料庫仍在本機、可用性沒改善，且需先改規格。結論：不採用。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |
