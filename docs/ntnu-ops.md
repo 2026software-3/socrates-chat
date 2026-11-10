@@ -7,9 +7,38 @@
 ## 基本資訊
 
 - Compose 專案名稱：`socrates-ntnu`（與開發用的 `socrates-chat` 分開）。
+- 資料庫資料放在 **D 槽**：`D:\socrates-ntnu\pgdata`（WSL 內是 `/mnt/d/socrates-ntnu/pgdata`），由 `docker-compose.ntnu.yml` 的 `db.volumes` 以 bind mount 掛入，不再使用 volume `socrates-ntnu_pgdata`（見下一節）。
 - 設定檔：`docker-compose.yml` + `docker-compose.ntnu.yml`，所有 compose 指令都要帶上 `-f` 與 `-p socrates-ntnu`。
 - 公開網址：`https://ray-nb.tail5fc9fe.ts.net`（Windows 端 Tailscale Funnel，見下一節）。這個值由 `docker-compose.ntnu.yml` 設定在容器的 `APP_BASE_URL`。
 - `.env` 的 `APP_BASE_URL` 是 `http://localhost:3000`，但容器實際使用的是覆寫後的公開網址。CSRF 檢查要求 `Origin` 標頭等於容器的 `APP_BASE_URL`，所以用 curl 或腳本呼叫 API 時，`Origin` 要填公開網址，不能填 `.env` 的值。
+
+## 資料庫位置（D 槽）
+
+2026-11-10 起，`db` 的資料目錄是 D 槽的 `D:\socrates-ntnu\pgdata`。`docker-compose.ntnu.yml`（不進版控）的 `db` 以 `!override` 覆寫掉 `docker-compose.yml` 的 `pgdata` volume：
+
+```yaml
+    volumes: !override
+      - /run/desktop/mnt/host/d/socrates-ntnu/pgdata:/var/lib/postgresql/data
+```
+
+- **來源要寫 `/run/desktop/mnt/host/d/...`，不要寫 `/mnt/d/...`。** 後者是 WSL 路徑，Docker Desktop 要等 `docker-desktop-bind-mounts` 的掛載點建好才掛得上；WSL 重開機後 engine 先自動重啟容器，掛載點還沒好就失敗，容器不會重試（`app` 的 `.apikeylist` 曾因此 `Exited (127)`）。`/run/desktop/mnt/host/d` 是 Docker Desktop 自己的 D 槽掛載點，不受這個時序影響。
+- 目錄擁有者必須是 `999:999`、權限 `700`（Postgres 的要求）；Docker Desktop 的 D 槽掛載會保留這兩項。不要在 Windows 檔案總管或 WSL 裡直接改 `pgdata` 內的檔案。
+- 備份、`pg_dump`、`docker exec ... psql` 的指令不變。`D:\socrates-ntnu\pgdata` 是 Postgres 的原始資料目錄，**不是備份**：D 槽壞掉或誤刪就沒了，備份仍要另外做。
+- 舊的 volume `socrates-ntnu_pgdata` 保留了搬移當時（2026-11-10 13:53）的完整資料，目前沒有容器使用，只當退路。確認 D 槽版本穩定運作一段時間後，經試用負責人同意再刪（`docker volume rm socrates-ntnu_pgdata`）。退回舊 volume 的做法：把 `docker-compose.ntnu.yml` 的 `db.volumes` 覆寫拿掉，重建 `db`；但搬移之後寫入的資料只在 D 槽，退回就會遺失，所以退回前要先 `pg_dump`。
+
+### 把資料庫搬到別的位置（2026-11-10 的做法，可重複）
+
+1. 依「部署前檢查」做 `pg_dump` 備份。
+2. `docker stop socrates-ntnu-app-1`，再 `docker stop -t 60 socrates-ntnu-db-1`（讓 Postgres 乾淨關閉）。
+3. 複製資料，保留擁有者與權限，並核對檔案數量一致：
+
+   ```bash
+   docker run --rm -v socrates-ntnu_pgdata:/from:ro -v /run/desktop/mnt/host/d/socrates-ntnu:/to alpine \
+     sh -c 'mkdir -p /to/pgdata && cp -a /from/. /to/pgdata/ && echo copied'
+   ```
+
+4. 改 `docker-compose.ntnu.yml` 的 `db.volumes`，`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml --profile app --profile cascade up -d --no-deps --no-build --force-recreate db`，等 `db` healthy，比對 `users`、`conversations`、`_sqlx_migrations` 的筆數。
+5. `docker start socrates-ntnu-app-1`，確認 `/health` 與 `/ready` 回 200。全程約 1 分鐘的中斷。
 
 ## 對外入口（Windows 端 Tailscale Funnel）
 
@@ -96,7 +125,7 @@ SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
 
 ## 刪除資料庫的限制
 
-- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料。它會刪掉 `socrates-ntnu_pgdata`。
+- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料。資料庫現在在 D 槽的 bind mount，`down -v` 不會刪它，但會刪掉保留當退路的舊 volume `socrates-ntnu_pgdata`。要刪資料庫本身得刪 `D:\socrates-ntnu\pgdata`，同樣要先取得試用負責人同意。
 - 刪除前要先告知試用負責人，並留下 `_sqlx_migrations` 與 `users` 的摘要以便核對。
 
 ## 管理者帳號與密碼
@@ -147,6 +176,7 @@ DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compo
 | 2026-11-08 | WSL 內的 Tailscale 節點 `raynb` 消失，對外入口改為 Windows 端 Tailscale Funnel，網址改為 `https://ray-nb.tail5fc9fe.ts.net`（機器名稱曾短暫為 `ray-nb-win`）。`APP_BASE_URL` 已改並重建 `app`，用 `serve reset` 清掉舊網域後重設 funnel，Google OAuth 的重新導向 URI 已更新。 |
 | 2026-11-08 | WSL 重開機後 `app`（`Exited (127)`）與 `cascade-1`（找不到 `/refs/reference.wav`）都因 bind mount 失效起不來，重建兩者後恢復（`/ready` 回 200，cascade 與 cascade-tts 皆 healthy）。 |
 | 2026-11-08 | 以手機行動網路經 Funnel 故意登入失敗，`login_failures` 記到手機的真實 IPv6 `/64` 網段，確認 `TRUSTED_PROXIES` 在新入口下正常；測試紀錄已刪除。 |
+| 2026-11-10 | 資料庫由 volume `socrates-ntnu_pgdata` 搬到 D 槽 `D:\socrates-ntnu\pgdata`（bind mount，來源用 `/run/desktop/mnt/host/d/...`）。搬前 `pg_dump` 備份；搬後 `users` 40、`conversations` 66、`_sqlx_migrations` 14 筆與搬前一致，`/health`、`/ready` 回 200，公開網址 `/ready` 回 200。中斷約 1 分鐘。舊 volume 保留當退路。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |
