@@ -164,6 +164,79 @@ NTNU 目前可以開 `DEMO_MODE=true`（寫在未納入版控的 `docker-compose
 DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compose.ntnu.yml exec -T db psql -U socrates -d socrates' ./scripts/seed-demo.sh
 ```
 
+## 雲端部署評估（2026-11-10）
+
+評估「app 放雲端、資料庫留在這台電腦的 D 槽、語音 cascade（要 GPU）也留在本機」是否可行。**結論：NTNU 維持本機部署。** 這不是 S-09 的決定，正式環境的部署方式仍待決定。
+
+理由：DB 與 cascade 都在這台電腦，雲端的 app 沒有消除對它的依賴（電腦關機或斷線，雲端 app 讀不到資料，照樣整站掛掉），只多了一段網路路徑和費用。要真正脫離這台電腦，DB 也得搬到雲端，那是另一筆費用（託管 PostgreSQL）和待決的規格（S-09）。
+
+### Docker cloud sandbox（`sbx --cloud`）
+
+不適合當正式環境。它是給 AI agent 用的暫時性環境，文件標示為 experimental（Docker Agentic Platform；cloud volumes 另標 experimental）。
+
+| 項目 | 結果 | 依據 |
+| --- | --- | --- |
+| 連回本機 | 不行：「沒有路徑回到執行 sbx 的機器」；也沒有 GPU、host bind mount | Docker 文件 |
+| **UDP 不通** | `tailscale netcheck` 回 `UDP: false`、沒有對外 IPv4。對外網路政策只能放行「網域:埠」，不支援 `--protocol`，所以 Tailscale 打不了洞，**只能走 DERP 中繼** | 實測 |
+| **位在美西** | 最近的 DERP 是 Seattle（13 ms）；本機到 Seattle 是 172 ms，這是跨太平洋的距離，就算直連往返也在 130–170 ms 左右。`sbx create` 沒有選區域的旗標 | 實測 |
+| **24 小時過期** | 預設 1 小時；延長最多到建立後 24 小時；`--ttl 0` 是錯誤。到期動作 `stop`／`restart`／`delete`（`restart` 的 `--ttl` 至少 1 小時） | Docker 文件 |
+| 規格 | 只有 micro（1 vCPU／2 GiB）、small、medium、large、xl；磁碟大小文件未載明（實測根目錄約 9.9 GB） | 文件、實測 |
+| volume | 實驗性；只在 sandbox 結束時存快照，不是持續寫入；有 volume 的 sandbox 不能 stop，且要 `--on-timeout delete` | Docker 文件 |
+| compose | sandbox 內 `docker exec` 可能落在 VM 的檔案系統而非容器內，`docker compose exec` 與 healthcheck 都受影響，`service_healthy` 可能卡住 | Docker 文件 |
+
+實測結果（拋棄式 micro sandbox，已刪除）：
+
+- sandbox 內可 `sudo`、有 `/dev/net/tun`；用 Tailscale 靜態安裝包加 `tailscaled --tun=tailscale0` 可以加入 tailnet。
+- 從 sandbox 連本機 `db:5432`：Postgres 回 SCRAM 認證要求，連的是真的資料庫（只測到握手，沒有登入或查詢資料）。連 cascade 的 `/v1/realtime`：WebSocket 握手回 101。
+- 但只走 DERP（香港），**往返約 170–200 ms**，TCP 連線建立的中位數約 197 ms。app 每個資料庫查詢都要付一次，一個有十幾個循序查詢的頁面會慢數秒；cascade 的語音串流延遲也會變差。實際頁面的耗時沒有量。
+
+適合與不適合放上去的東西：
+
+- 適合（不含真實資料、不用 GPU）：叫 agent 做 Issue 並開 PR；用 `seed-demo.sh` 合成資料起預覽環境給人看（網址是公開的，示範帳號密碼也是公開的）；AI 行為評測（要放行 `api.openai.com`）；吃 CPU 的建置（micro 的 2 GiB 編 Rust 會吃緊，用 medium 以上）。
+- 不適合：**真實資料**（正式 DB、備份、學生對話原文都不要上去，測試資料一律合成）；cascade 語音；正式的 app 與 DB。
+
+重做這個驗證的做法：建 micro sandbox，只放行 `pkgs.tailscale.com:443` 與 `*.tailscale.com:443`；本機用拋棄式 socat 容器把 `db:5432`、`cascade:8110` 轉出，**埠只綁在這台機器的 Tailscale IP**（不要綁 `0.0.0.0`）；金鑰用一次性、會過期的 auth key，經 stdin 傳入，不要放進指令列或版控。用完 `tailscale logout`、`sbx --cloud rm`、刪掉轉送容器，並到 Tailscale admin console 移除殘留的節點。
+
+### Cloudflare
+
+帳號現況（2026-11-10 唯讀查詢）：免費方案；沒有網域、Worker、Tunnel、Hyperdrive；Containers 需要 Workers Paid 方案，目前被拒絕。
+
+- **把後端改寫成 Worker（Rust 編成 Wasm）：不建議。** 後端用 Axum、Tokio、SQLx、reqwest；`workers-rs` 文件列出的資料庫 crate 是 `tokio-postgres`（要改用 Workers 的 Socket），SQLx 不在清單內，等於重寫資料層與串流。`AGENTS.md` 也規定不得擅自更換主要框架。
+- **Cloudflare Containers（跑現有 Docker image）：** 技術上可行，需要 Workers Paid（每月 5 美元起）。但仍沒有 PostgreSQL：D1 是 SQLite，規格要求 PostgreSQL，`AGENTS.md` 禁止引入 Supabase 等未列出的基礎設施。DB 只能留在本機，經 Cloudflare Tunnel 連回，這需要網域、Access 服務金鑰與容器內的 `cloudflared`。
+- **Cloudflare Tunnel 接現有本機部署：** 免費，支援 WebSocket 與 SSE，可取代 Tailscale Funnel。前提是要有一個放在 Cloudflare 的網域（`workers.dev` 不能當 Tunnel 主機名；沒網域只能用沒有穩定性保證的 quick tunnel）；換網址後 `APP_BASE_URL` 與 Google OAuth 的重新導向 URI 都要更新。
+
+#### Containers 費用估算
+
+目前的實際用量很小：app 記憶體約 26 MiB、CPU 約 0%、最近 24 小時 572 個請求（351 則對話訊息）、資料庫 10 MB、40 位使用者。流量遠低於任何方案的額度，費用取決於「容器開著的時間」。
+
+Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時磁碟，超出的單價是每 GiB-秒 0.0000025 美元、每 vCPU-秒 0.000020 美元、每 GB-秒 0.00000007 美元。
+
+| 容器規格（24 小時常駐，730 小時） | 超出額度的費用 | 加基本費 5 美元 |
+| --- | --- | --- |
+| lite：1/16 vCPU、256 MiB、2 GB 磁碟（預設） | 約 4.6 美元 | 約 9.6 美元 |
+| 1/4 vCPU、512 MiB、2 GB 磁碟 | 約 16.1 美元 | 約 21 美元 |
+
+為什麼會超出：額度是固定的，換算成 lite 規格，記憶體、CPU、磁碟三項都只夠開約 100 小時（25 ÷ 0.25、6.25 vCPU-小時 ÷ 0.0625、200 ÷ 2）；常駐 730 小時就有約 630 小時要照單價付費。規格越大，額度撐得越短，費用隨規格線性增加。
+
+估算的假設與未驗證之處：
+
+- CPU 以「配置量」計算（最壞情況）。文件只寫「依實際執行的每 10 毫秒計費」，沒有明說 CPU 是依配置量或實際使用量；若依實際使用量，CPU 那項會小很多。
+- 容器設 `sleepAfter` 讓閒置時睡眠可以降費用，代價是第一個請求要等冷啟動。
+- lite 只有 1/16 vCPU，登入時的 Argon2id 密碼雜湊會明顯變慢，若採用要實測登入耗時。
+- 容器會被放在哪個區域、到台灣 DB 的延遲多少，文件沒有說，要實測。SQLx 從容器經 Hyperdrive 連資料庫是否可行，也沒有查到。
+
+### 各方案取捨
+
+| 方案 | 費用 | 到 DB 的延遲 | 是否依賴這台電腦 | 結論 |
+| --- | --- | --- | --- | --- |
+| 現況：本機部署加 Tailscale Funnel | 免費 | 低（同機） | 是 | **維持** |
+| 本機部署加 Cloudflare Tunnel | 免費，加網域約 10 美元／年 | 低（同機；入口走最近的 Cloudflare 機房，未實測） | 是 | 想要穩定網址或 WAF 時採用；Funnel 與 Tunnel 可並行，確認新網址正常再關 Funnel |
+| Docker cloud sandbox 當正式環境 | 按秒計費（單價文件未載明） | 高，170–200 ms | 是 | 不採用 |
+| Cloudflare Containers，DB 經 Tunnel 回本機 | 約 9.6–21 美元／月 | 未知，要實測 | 是 | 暫不採用 |
+| 全搬雲端（app 與託管 PostgreSQL） | 另計 | 低 | 否 | 要等 S-09 決定 DB 方案，再評估 |
+
+重新評估的條件：S-09 決定正式環境的 DB 方案，或需要不依賴這台電腦的可用性。
+
 ## 狀態紀錄
 
 | 日期 | 事件 |
@@ -177,6 +250,7 @@ DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compo
 | 2026-11-08 | WSL 重開機後 `app`（`Exited (127)`）與 `cascade-1`（找不到 `/refs/reference.wav`）都因 bind mount 失效起不來，重建兩者後恢復（`/ready` 回 200，cascade 與 cascade-tts 皆 healthy）。 |
 | 2026-11-08 | 以手機行動網路經 Funnel 故意登入失敗，`login_failures` 記到手機的真實 IPv6 `/64` 網段，確認 `TRUSTED_PROXIES` 在新入口下正常；測試紀錄已刪除。 |
 | 2026-11-10 | 資料庫由 volume `socrates-ntnu_pgdata` 搬到 D 槽 `D:\socrates-ntnu\pgdata`（bind mount，來源用 `/run/desktop/mnt/host/d/...`）。搬前 `pg_dump` 備份；搬後 `users` 40、`conversations` 66、`_sqlx_migrations` 14 筆與搬前一致，`/health`、`/ready` 回 200，公開網址 `/ready` 回 200。中斷約 1 分鐘。舊 volume 保留當退路。 |
+| 2026-11-10 | 評估 app 放雲端（DB 留 D 槽、cascade 留本機）：Docker cloud sandbox 的 UDP 不通、位在美西、24 小時過期，經 Tailscale 只能走 DERP，往返 170–200 ms；Cloudflare Containers 約 9.6–21 美元／月且仍需把 DB 接回本機。結論：NTNU 維持本機部署，見「雲端部署評估」。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |
