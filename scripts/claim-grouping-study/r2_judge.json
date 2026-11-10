@@ -1,0 +1,237 @@
+{
+ "trolley/emb": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1704,
+   "out": 2047,
+   "secs": 20.9
+  },
+  "misfits": [
+   3,
+   5,
+   6,
+   10
+  ],
+  "merge": []
+ },
+ "trolley/llm_summary": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1724,
+   "out": 1964,
+   "secs": 21.3
+  },
+  "misfits": [
+   20,
+   22,
+   25
+  ],
+  "merge": []
+ },
+ "trolley/llm_claim": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1699,
+   "out": 1131,
+   "secs": 11.7
+  },
+  "misfits": [
+   4,
+   5,
+   6,
+   9,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18,
+   20,
+   22,
+   26,
+   28
+  ],
+  "merge": []
+ },
+ "euthanasia/emb": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1576,
+   "out": 1757,
+   "secs": 16.6
+  },
+  "misfits": [
+   1,
+   2,
+   3,
+   7,
+   8,
+   9,
+   10,
+   14,
+   15,
+   16,
+   17,
+   18,
+   19,
+   20,
+   24,
+   25,
+   26,
+   27,
+   28
+  ],
+  "merge": []
+ },
+ "euthanasia/llm_summary": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1621,
+   "out": 631,
+   "secs": 8.0
+  },
+  "misfits": [
+   8,
+   19,
+   28
+  ],
+  "merge": []
+ },
+ "euthanasia/llm_claim": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1586,
+   "out": 562,
+   "secs": 5.3
+  },
+  "misfits": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   14,
+   15,
+   16,
+   17,
+   18,
+   27,
+   28
+  ],
+  "merge": []
+ },
+ "goodlife/emb": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1601,
+   "out": 1118,
+   "secs": 7.1
+  },
+  "misfits": [
+   6,
+   11,
+   20,
+   22,
+   24,
+   25,
+   26,
+   27,
+   28
+  ],
+  "merge": []
+ },
+ "goodlife/llm_summary": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1616,
+   "out": 651,
+   "secs": 7.2
+  },
+  "misfits": [
+   11
+  ],
+  "merge": []
+ },
+ "goodlife/llm_claim": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1581,
+   "out": 1734,
+   "secs": 17.6
+  },
+  "misfits": [
+   12,
+   13,
+   25
+  ],
+  "merge": []
+ },
+ "trolley/emb_agglo": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1714,
+   "out": 1665,
+   "secs": 17.0
+  },
+  "misfits": [
+   3,
+   4,
+   10,
+   11,
+   16,
+   18,
+   21,
+   22,
+   25,
+   28
+  ],
+  "merge": []
+ },
+ "euthanasia/emb_agglo": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1606,
+   "out": 1080,
+   "secs": 12.7
+  },
+  "misfits": [
+   6,
+   7,
+   8,
+   14,
+   15,
+   16,
+   18,
+   19,
+   24,
+   27,
+   28
+  ],
+  "merge": []
+ },
+ "goodlife/emb_agglo": {
+  "usage": {
+   "model": "gpt-5.6-luna",
+   "in": 1596,
+   "out": 893,
+   "secs": 10.1
+  },
+  "misfits": [
+   9,
+   22,
+   24,
+   25,
+   26,
+   27,
+   28
+  ],
+  "merge": [
+   [
+    6,
+    7
+   ]
+  ]
+ }
+}
