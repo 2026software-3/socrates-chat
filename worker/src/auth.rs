@@ -76,6 +76,48 @@ fn session_cookie(state: &AppState, token: &str, max_age_secs: i64) -> String {
     format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{secure}")
 }
 
+/// Google 登入的 state 綁定到發起登入的瀏覽器（防 login CSRF：攻擊者把自己的回呼網址丟給受害者，
+/// 受害者會登入攻擊者的帳號）。只在 `/api/auth/google` 底下送出，10 分鐘後失效（與 state 相同）。
+const OAUTH_STATE_COOKIE: &str = "oauth_state";
+
+fn oauth_state_cookie(state: &AppState, value: &str, max_age_secs: i64) -> String {
+    let secure = if state.config.cookie_secure {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!(
+        "{OAUTH_STATE_COOKIE}={value}; Path=/api/auth/google; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{secure}"
+    )
+}
+
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v)
+}
+
+/// 回呼帶的 state 必須與發起登入時寫入這個瀏覽器的 cookie 相同。
+fn state_matches_browser(headers: &HeaderMap, state: Option<&str>) -> bool {
+    match (cookie_value(headers, OAUTH_STATE_COOKIE), state) {
+        (Some(cookie), Some(state)) => {
+            !state.is_empty()
+                && cookie.len() == state.len()
+                && cookie
+                    .bytes()
+                    .zip(state.bytes())
+                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                    == 0
+        }
+        _ => false,
+    }
+}
+
 fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::COOKIE)?
@@ -279,10 +321,17 @@ impl FromRequestParts<AppState> for RequireStudent {
     security(()),
     responses((status = 303, description = "重新導向到 Google"))
 )]
-pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, ApiError> {
+pub(crate) async fn login(State(state): State<AppState>) -> Result<Response, ApiError> {
     let req = state.identity.start();
     auth_store::save_login_state(&state.pool, &req.state, &req.nonce, &req.pkce_verifier).await?;
-    Ok(Redirect::to(&req.url))
+    Ok((
+        [(
+            header::SET_COOKIE,
+            oauth_state_cookie(&state, &req.state, 600),
+        )],
+        Redirect::to(&req.url),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -321,16 +370,25 @@ pub(crate) async fn callback(
     if link.is_some() {
         return finish_link(&state, &headers, p).await;
     }
-    match finish_login(&state, p, preferred_language(&headers)).await {
-        Ok(token) => (
-            [(
-                header::SET_COOKIE,
-                session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
-            )],
-            Redirect::to(&state.config.app_base_url),
-        )
-            .into_response(),
-        Err(code) => login_error(&state, code),
+    // 不論成功與否都清掉 state cookie
+    let clear = (header::SET_COOKIE, oauth_state_cookie(&state, "", 0));
+    let from_this_browser = state_matches_browser(&headers, p.state.as_deref());
+    match finish_login(&state, p, preferred_language(&headers), from_this_browser).await {
+        Ok(token) => {
+            let mut res = (
+                [(
+                    header::SET_COOKIE,
+                    session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
+                )],
+                Redirect::to(&state.config.app_base_url),
+            )
+                .into_response();
+            if let Ok(v) = clear.1.parse() {
+                res.headers_mut().append(clear.0, v);
+            }
+            res
+        }
+        Err(code) => ([clear], login_error(&state, code)).into_response(),
     }
 }
 
@@ -476,6 +534,7 @@ async fn finish_login(
     state: &AppState,
     p: CallbackParams,
     preferred_language: &str,
+    from_this_browser: bool,
 ) -> Result<String, &'static str> {
     // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
     let stored = match p.state.as_deref() {
@@ -494,6 +553,9 @@ async fn finish_login(
     let (Some(stored), Some(code)) = (stored, p.code) else {
         return Err("invalid_state");
     };
+    if !from_this_browser {
+        return Err("invalid_state");
+    }
     let identity = state
         .identity
         .finish(&code, &stored.nonce, &stored.pkce_verifier)
@@ -922,6 +984,17 @@ pub(crate) async fn reset_password(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_state_must_match_the_browser_cookie() {
+        let mut h = HeaderMap::new();
+        assert!(!state_matches_browser(&h, Some("abc")));
+        h.insert(header::COOKIE, "sid=x; oauth_state=abc".parse().unwrap());
+        assert!(state_matches_browser(&h, Some("abc")));
+        assert!(!state_matches_browser(&h, Some("abd")));
+        assert!(!state_matches_browser(&h, Some("ab")));
+        assert!(!state_matches_browser(&h, None));
+    }
 
     fn pick(value: &str) -> &'static str {
         let mut headers = HeaderMap::new();

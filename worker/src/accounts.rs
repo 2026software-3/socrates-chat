@@ -235,7 +235,8 @@ pub(crate) async fn set_status(
     let mut tx = state.pool.begin().await?;
     // PostgreSQL 版在這裡以 FOR UPDATE 鎖住所有管理者；D1 沒有列鎖（寫入本來就逐一執行），
     // 並行停用最後兩位管理者的競態在試驗版不處理。
-    let target: Option<(String, bool, bool)> =
+    // 只有學號、沒有信箱的帳號 email 是 NULL：稽核對象改用帳號 ID（與重設密碼相同）
+    let target: Option<(Option<String>, bool, bool)> =
         sqlx::query_as("SELECT email, is_admin, disabled_at IS NOT NULL FROM users WHERE id = $1")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -243,6 +244,7 @@ pub(crate) async fn set_status(
     let Some((email, is_admin, disabled)) = target else {
         return Err(ApiError::not_found());
     };
+    let email = email.unwrap_or_else(|| id.to_string());
     if disabled == body.disabled {
         return Ok(StatusCode::NO_CONTENT);
     }
