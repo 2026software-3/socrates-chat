@@ -1312,11 +1312,18 @@ pub fn parse_summary_translation(raw: &str) -> Option<TranslatedSummary> {
         reasons: String,
     }
     let r: Raw = extract_json(raw)?;
+    validated_summary_translation(r.stance, r.reasons)
+}
+
+pub(crate) fn validated_summary_translation(
+    stance: String,
+    reasons: String,
+) -> Option<TranslatedSummary> {
     let fits =
         |s: &str| !s.trim().is_empty() && s.trim().chars().count() <= MAX_TRANSLATED_FIELD_CHARS;
-    (fits(&r.stance) && fits(&r.reasons)).then(|| TranslatedSummary {
-        stance: r.stance.trim().to_string(),
-        reasons: r.reasons.trim().to_string(),
+    (fits(&stance) && fits(&reasons)).then(|| TranslatedSummary {
+        stance: stance.trim().to_string(),
+        reasons: reasons.trim().to_string(),
     })
 }
 

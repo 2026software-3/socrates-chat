@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useAccountLanguage } from '@/auth/auth-context'
 import { api, isAbortError, isApiError, type ApiError } from '@/lib/api'
 import type { SummaryView } from '@/lib/types'
 
@@ -21,12 +22,14 @@ type Options = { pollMs?: number; maxPollMs?: number }
  * ready／failed 停止；超過 `maxPollMs` 顯示 timeout。離開頁面（unmount）時中止請求與計時器。
  */
 export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, maxPollMs = SUMMARY_MAX_POLL_MS }: Options = {}) {
+  const accountLanguage = useAccountLanguage()
   const [state, setState] = useState<SummaryState>({ kind: 'pending' })
   const [round, setRound] = useState(0)
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<unknown>()
 
   useEffect(() => {
+    if (!accountLanguage) return
     const ctrl = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const startedAt = Date.now()
@@ -53,7 +56,7 @@ export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, m
       ctrl.abort()
       clearTimeout(timer)
     }
-  }, [conversationId, round, pollMs, maxPollMs])
+  }, [conversationId, round, pollMs, maxPollMs, accountLanguage])
 
   /** 重新開始輪詢（逾時或查詢失敗後的「再檢查一次」）。 */
   const check = useCallback(() => {

@@ -56,6 +56,7 @@ pub mod config;
 pub mod dashboard;
 pub mod demo;
 pub mod error;
+mod google_translation;
 pub mod identity;
 pub mod key_pool;
 pub mod logging;
@@ -72,6 +73,7 @@ pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
+pub mod summary_translation;
 pub mod tasks;
 pub(crate) mod user_limit;
 pub mod voice;
@@ -115,8 +117,10 @@ pub struct AppState {
     pub live: Arc<reply::LiveReplies>,
     /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
     pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
-    /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
+    /// 教師按需翻譯總結的每人頻率限制。
     pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
+    pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
+    pub(crate) summary_translation_wake: Arc<tokio::sync::Notify>,
     /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
 }
@@ -145,12 +149,19 @@ impl AppState {
             live: Arc::default(),
             request_logs: Arc::default(),
             translation_limit: Arc::default(),
+            google_translation: None,
+            summary_translation_wake: Arc::default(),
             ai_usage,
         }
     }
 
     pub fn with_voice(mut self, voice: Arc<dyn VoiceProvider>) -> Self {
         self.voice = voice;
+        self
+    }
+
+    pub fn with_google_translation(mut self, key: &str) -> Self {
+        self.google_translation = google_translation::GoogleTranslation::new(key);
         self
     }
 
