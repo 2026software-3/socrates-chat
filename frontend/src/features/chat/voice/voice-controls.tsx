@@ -174,7 +174,17 @@ export function VoiceControls({
   }
 
   return (
-    <div className="w-full min-w-0 space-y-2" data-testid="voice-controls">
+    <div
+      className="w-full min-w-0 space-y-2"
+      data-testid="voice-controls"
+      onInputCapture={(event) => {
+        // 確認事件來自文字輸入框
+        const target = event.target
+        if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+          v.stopDictationForEdit()
+        }
+      }}
+    >
       {/* 膠囊輸入列：輸入框在左，語音（即時對話、語音輸入）與送出在右 */}
       <div className="bg-surface focus-within:ring-ring/50 flex items-end gap-1 rounded-3xl border py-1.5 pr-1.5 pl-5 focus-within:ring-2">
         <fieldset disabled={live} className="contents">
