@@ -546,6 +546,13 @@ pub(crate) async fn update_activity(
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
+            // PostgreSQL 版以活動列的鎖讓開始對話等到題目更換完成；D1 沒有列鎖，改記下檢查當下的對話數，
+            // 更換題目的每個語句都要求對話數沒變（見下方 batch），中間有人開始對話就整批不寫入。
+            let conversations_seen: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM conversations WHERE activity_id = $1")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             let locked: Vec<Uuid> = if conv_topics.contains(&None) {
                 current_topics.clone()
             } else {
@@ -558,20 +565,36 @@ pub(crate) async fn update_activity(
                 ));
             }
 
-            // 更新題目關聯：刪除與重新插入在同一個 D1 batch（原子）
-            let mut writes =
-                vec![sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1").bind(id)];
+            // 更新題目關聯：刪除與重新插入在同一個 D1 batch（原子），每個語句都帶相同的對話數條件
+            let mut writes = vec![
+                sqlx::query(
+                    "DELETE FROM activity_topics WHERE activity_id = $1
+                       AND (SELECT count(*) FROM conversations WHERE activity_id = $1) = $2",
+                )
+                .bind(id)
+                .bind(conversations_seen),
+            ];
             for (position, topic_id) in new_ids.iter().enumerate() {
                 writes.push(
                     sqlx::query(
-                        "INSERT INTO activity_topics (activity_id, topic_id, position) VALUES ($1, $2, $3)",
+                        "INSERT INTO activity_topics (activity_id, topic_id, position)
+                         SELECT $1, $2, $3
+                         WHERE (SELECT count(*) FROM conversations WHERE activity_id = $1) = $4",
                     )
                     .bind(id)
                     .bind(topic_id)
-                    .bind(position as i64),
+                    .bind(position as i64)
+                    .bind(conversations_seen),
                 );
             }
-            state.pool.batch(writes).await?;
+            let results = state.pool.batch(writes).await?;
+            // 活動至少有一個題目，條件成立時刪除一定有列；沒有表示剛好有學生開始了對話
+            if results.first().is_some_and(|r| r.rows_affected() == 0) {
+                return Err(ApiError::conflict(
+                    "activity_topic_locked",
+                    "已有學生開始對話，不能更換題目",
+                ));
+            }
         }
     }
 
@@ -673,8 +696,19 @@ async fn set_archived(
     if classroom_archived {
         return Err(ApiError::conflict("classroom_archived", "教室已封存"));
     }
-    let updated = activity_store::set_archived(&mut *tx, id, archived).await?;
-    if was_archived != archived {
+    // 狀態有沒有改變以條件式 UPDATE 的結果為準（D1 沒有列鎖，兩個請求同時封存時只記一次稽核）
+    let _ = was_archived;
+    let changed = sqlx::query(
+        "UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1 AND is_archived <> $2",
+    )
+    .bind(id)
+    .bind(archived)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+    let updated = activity_store::find_by_id(&mut *tx, id).await?;
+    if changed {
         let action = if archived {
             "activity_archived"
         } else {

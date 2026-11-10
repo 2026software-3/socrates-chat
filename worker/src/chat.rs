@@ -174,9 +174,20 @@ pub(crate) async fn create(
         ));
     };
     // 每位學生在每個活動的每個題目至多一場對話；唯一索引也涵蓋並行請求。
+    // 寫入當下再確認一次來源仍可用（D1 沒有列鎖）：上面讀到之後，教師可能剛換掉活動的題目、
+    // 停止開放或封存活動與教室。PostgreSQL 版以 FOR SHARE 鎖住活動與教室列達到同樣效果。
     let created = sqlx::query_as(
         "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         SELECT $1, $2, $3, $4, $5, $6, $7
+         WHERE CASE WHEN $2 IS NULL
+                    THEN EXISTS (SELECT 1 FROM topics WHERE id = $3 AND is_active)
+                    ELSE EXISTS (SELECT 1 FROM activity_topics at
+                                 JOIN activities a ON a.id = at.activity_id
+                                 JOIN classrooms cl ON cl.id = a.classroom_id
+                                 WHERE at.activity_id = $2 AND at.topic_id = $3
+                                   AND a.status = 'published' AND NOT a.is_archived
+                                   AND NOT cl.is_archived)
+               END
          RETURNING id, activity_id, topic_id, classroom_id,
                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                    title, description, language, status,
@@ -189,10 +200,16 @@ pub(crate) async fn create(
     .bind(title)
     .bind(description)
     .bind(&cu.user.language)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await;
     let c: Conversation = match created {
-        Ok(c) => c,
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return Err(ApiError::bad_request(
+                "invalid_conversation_source",
+                "活動或題目不可用",
+            ));
+        }
         Err(sqlx::Error::Database(e))
             if e.constraint() == Some("conversations_user_activity_uniq") =>
         {

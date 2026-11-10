@@ -131,9 +131,56 @@ fn to_delta(points: u32) -> i32 {
 /// 同一事件已入帳時不寫入、也不回錯誤（冪等），並行送出時同樣只有一筆成功。
 /// 不檢查餘額：扣點的餘額檢查與鎖定由購買流程負責（S-07.2 2.3）。
 pub async fn record(conn: &mut PgConnection, entry: &Entry<'_>) -> Result<bool, sqlx::Error> {
-    let r = sqlx::query(
+    let r = record_query(entry).execute(conn).await?;
+    Ok(r.rows_affected() == 1)
+}
+
+/// 與 [`record`] 相同的寫入，但只建立語句，讓呼叫端放進 D1 batch 與其他寫入一起原子提交。
+pub fn record_query(entry: &Entry<'_>) -> sqlx::Query {
+    sqlx::query(
         "INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id, unit_price)
          VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, source_type, source_id) DO NOTHING",
+    )
+    .bind(entry.user_id)
+    .bind(entry.delta)
+    .bind(entry.reason)
+    .bind(entry.source.as_str())
+    .bind(entry.source_id)
+    .bind(entry.unit_price)
+}
+
+/// 條件成立時才入帳的語句（放進 D1 batch，條件通常是同一批前面語句的結果）。
+/// `condition` 是 SQL 條件，使用 `$7` 起的參數，由呼叫端接著 `.bind`。
+pub fn record_query_when(entry: &Entry<'_>, condition: &'static str) -> sqlx::Query {
+    let sql = format!(
+        "INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id, unit_price)
+         SELECT $1, $2, $3, $4, $5, $6 WHERE {condition}
+         ON CONFLICT (user_id, source_type, source_id) DO NOTHING"
+    );
+    sqlx::query(&sql)
+        .bind(entry.user_id)
+        .bind(entry.delta)
+        .bind(entry.reason)
+        .bind(entry.source.as_str())
+        .bind(entry.source_id)
+        .bind(entry.unit_price)
+}
+
+/// 扣點購買：餘額足夠、部件仍啟用且價格未變時才寫入，三個條件與寫入在同一個語句內。
+///
+/// PostgreSQL 版以 `FOR NO KEY UPDATE` 鎖住學生再查餘額；D1 沒有列鎖，查餘額與寫入若分成兩個語句，
+/// 同時購買兩個不同部件會都看到足夠的餘額而透支。SQLite 的單一語句是原子的，所以把檢查放進
+/// `INSERT … SELECT … WHERE`。回傳是否真的寫入（未寫入時由呼叫端判斷原因）。
+pub async fn record_purchase_if_affordable(
+    conn: &mut PgConnection,
+    entry: &Entry<'_>,
+) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query(
+        "INSERT INTO point_ledger (user_id, delta, reason, source_type, source_id, unit_price)
+         SELECT $1, $2, $3, $4, $5, $6
+         WHERE (SELECT COALESCE(sum(delta), 0) FROM point_ledger WHERE user_id = $1) >= $6
+           AND EXISTS (SELECT 1 FROM store_parts WHERE id = $5 AND enabled AND price = $6)
          ON CONFLICT (user_id, source_type, source_id) DO NOTHING",
     )
     .bind(entry.user_id)

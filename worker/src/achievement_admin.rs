@@ -490,10 +490,12 @@ pub(crate) async fn create(
             "已有相同識別碼的成就",
         ));
     }
+    // 各級在同一個 D1 batch 內寫入（原子），不會只建立部分等級
+    let mut writes = Vec::new();
     for (index, (threshold, points)) in levels.into_iter().enumerate() {
         let level = i32::try_from(index + 1)
             .map_err(|_| ApiError::bad_request("invalid_request", "等級數量過多"))?;
-        let inserted = sqlx::query(
+        writes.push(sqlx::query(
             "INSERT INTO achievements
                 (id, level, condition_type, threshold, points, name_zh_tw, name_en, name_es,
                  description_zh_tw, description_en, description_es, sort_order, pending_languages, source_language)
@@ -513,16 +515,15 @@ pub(crate) async fn create(
         .bind(&desc_es)
         .bind(sort_order)
         .bind(&pending_languages)
-        .bind(&b.source_language)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if inserted == 0 {
-            return Err(ApiError::conflict(
-                "achievement_exists",
-                "已有相同識別碼的成就",
-            ));
-        }
+        .bind(&b.source_language));
+    }
+    let results = state.pool.batch(writes).await?;
+    // 上面的檢查之後才被別人建立：整批都撞到 ON CONFLICT
+    if results.iter().any(|r| r.rows_affected() == 0) {
+        return Err(ApiError::conflict(
+            "achievement_exists",
+            "已有相同識別碼的成就",
+        ));
     }
     let unlocked = achievements::backfill_in_tx(&mut tx, &b.id).await?.len() as i64;
     let view = load(&mut tx, &b.id, false)
@@ -713,6 +714,7 @@ pub(crate) async fn update(
     }
     let mut lowered = false;
     let mut seen = Vec::new();
+    let mut writes = Vec::new();
     for l in b.levels.iter().flatten() {
         let current = before
             .levels
@@ -729,18 +731,18 @@ pub(crate) async fn update(
             .transpose()?;
         let points = l.points.map(checked_points).transpose()?;
         lowered |= threshold.is_some_and(|t| t < current.threshold);
-        sqlx::query(
-            "UPDATE achievements SET threshold = COALESCE($3, threshold), points = COALESCE($4, points)
-             WHERE id = $1 AND level = $2",
-        )
-        .bind(&id)
-        .bind(l.level)
-        .bind(threshold)
-        .bind(points)
-        .execute(&mut *tx)
-        .await?;
+        writes.push(
+            sqlx::query(
+                "UPDATE achievements SET threshold = COALESCE($3, threshold), points = COALESCE($4, points)
+                 WHERE id = $1 AND level = $2",
+            )
+            .bind(&id)
+            .bind(l.level)
+            .bind(threshold)
+            .bind(points),
+        );
     }
-    sqlx::query(
+    writes.push(sqlx::query(
         "UPDATE achievements SET
             name_zh_tw = COALESCE($2, name_zh_tw), name_en = COALESCE($3, name_en),
             name_es = COALESCE($4, name_es), description_zh_tw = COALESCE($5, description_zh_tw),
@@ -759,9 +761,9 @@ pub(crate) async fn update(
     .bind(desc_es)
     .bind(b.enabled)
     .bind(b.sort_order)
-    .bind(&completed_languages)
-    .execute(&mut *tx)
-    .await?;
+    .bind(&completed_languages));
+    // 各級與共用欄位在同一個 D1 batch 內更新（原子）
+    state.pool.batch(writes).await?;
 
     let after = load(&mut tx, &id, false)
         .await?

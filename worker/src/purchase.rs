@@ -67,11 +67,7 @@ pub(crate) async fn buy(
     Path(id): Path<String>,
 ) -> Result<Json<PartView>, ApiError> {
     let mut tx = state.pool.begin().await?;
-    // 鎖定學生，讓並行購買無法花費同一筆餘額；鎖定商品，確保價格與啟用狀態一致。
-    sqlx::query("SELECT id FROM users WHERE id=$1")
-        .bind(cu.user.id)
-        .execute(&mut *tx)
-        .await?;
+    // PostgreSQL 版在這裡鎖住學生與商品；D1 版改由下方的條件式寫入保證不透支、價格一致。
     let part: Part = sqlx::query_as(
         "SELECT id, name_zh_tw, name_en, name_es, price, enabled FROM store_parts WHERE id=$1",
     )
@@ -91,8 +87,16 @@ pub(crate) async fn buy(
         return Err(ApiError::conflict("insufficient_points", "點數不足"));
     }
     let entry = Entry::purchase(cu.user.id, "part_purchase", &part.id, part.price as u32);
-    if !points::record(&mut tx, &entry).await? {
-        return Err(ApiError::conflict("part_owned", "已擁有此部件"));
+    // 上面的檢查只為了回應正確的錯誤碼；真正的保證在條件式寫入（D1 沒有列鎖）
+    if !points::record_purchase_if_affordable(&mut tx, &entry).await? {
+        let owned: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM point_ledger WHERE user_id=$1 AND source_type='purchase' AND source_id=$2)")
+            .bind(cu.user.id).bind(&id).fetch_one(&mut *tx).await?;
+        return Err(if owned {
+            ApiError::conflict("part_owned", "已擁有此部件")
+        } else {
+            // 並行的另一筆購買先花掉了餘額，或部件剛被停用／改價
+            ApiError::conflict("insufficient_points", "點數不足")
+        });
     }
     achievements::record_first_character_part_in_tx(&mut tx, cu.user.id).await?;
     tx.commit().await?;

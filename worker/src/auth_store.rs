@@ -383,12 +383,27 @@ pub async fn link_google(
     if taken {
         return Ok(LinkOutcome::InUse);
     }
-    sqlx::query("UPDATE users SET email = $2, google_sub = $3, updated_at = now() WHERE id = $1")
-        .bind(user_id)
-        .bind(&email)
-        .bind(google_sub)
-        .execute(&mut *tx)
-        .await?;
+    // 上面的檢查只為了回應正確的結果；D1 沒有列鎖，檢查與寫入之間可能有人把這個信箱加進教師名單，
+    // 所以同樣的條件再放進 UPDATE（單一語句是原子的）。信箱與 Google 帳號另有唯一約束。
+    let changed = sqlx::query(
+        "UPDATE users SET email = $2, google_sub = $3, updated_at = now()
+         WHERE id = $1 AND student_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM teachers WHERE email = $2)
+           AND NOT EXISTS (SELECT 1 FROM users o WHERE o.id <> $1 AND (o.email = $2 OR o.google_sub = $3))",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(google_sub)
+    .execute(&mut *tx)
+    .await;
+    match changed {
+        Ok(r) if r.rows_affected() == 1 => {}
+        Ok(_) => return Ok(LinkOutcome::InUse),
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
+            return Ok(LinkOutcome::InUse);
+        }
+        Err(e) => return Err(e),
+    }
     tx.commit().await?;
     Ok(LinkOutcome::Linked)
 }

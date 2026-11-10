@@ -53,7 +53,15 @@ pub async fn record_completed_conversation_in_tx(
     if !inserted {
         return Ok(vec![]);
     }
+    evaluate_completions_in_tx(tx, user_id).await
+}
 
+/// 依目前的完成紀錄判定完成數與連續天數成就（完成紀錄已由呼叫端寫入）。
+/// 重複執行無害：已解鎖的等級會被跳過，門檻比較的是累計值，漏掉的等級下次會補上。
+pub async fn evaluate_completions_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<Vec<Unlock>, sqlx::Error> {
     let count = completion_count(tx, user_id).await?;
     let streak = longest_streak(tx, user_id).await?;
     let mut unlocked = Vec::new();
@@ -198,26 +206,29 @@ async fn unlock_matching(
     .bind(only)
     .fetch_all(&mut **tx)
     .await?;
+    // 解鎖與點數在同一個 D1 batch（原子）：D1 沒有交易回滾，分開寫時點數寫入失敗會留下
+    // 「已解鎖、沒拿到點數」，之後 NOT EXISTS 會跳過這一級，點數永遠補不回來。
+    // 兩句都是冪等寫入（主鍵／唯一約束 + DO NOTHING），並行重複送出也只入帳一次。
+    let pool = sqlx::Executor::into_pool(&mut **tx);
     let mut new_unlocks = Vec::new();
     for item in eligible {
-        let inserted = sqlx::query(
-            "INSERT INTO achievement_unlocks (user_id, achievement_id, level)
-             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-        )
-        .bind(user_id)
-        .bind(&item.achievement_id)
-        .bind(item.level)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected()
-            == 1;
-        if inserted {
-            if let Some(points) = NonZeroU32::new(item.points as u32) {
-                let reason = format!("Achievement {} level {}", item.achievement_id, item.level);
-                let source_id = format!("{}:{}", item.achievement_id, item.level);
-                let entry = Entry::award(user_id, points, &reason, Source::Achievement, &source_id);
-                points::record(tx, &entry).await?;
-            }
+        let mut writes = vec![
+            sqlx::query(
+                "INSERT INTO achievement_unlocks (user_id, achievement_id, level)
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            )
+            .bind(user_id)
+            .bind(&item.achievement_id)
+            .bind(item.level),
+        ];
+        if let Some(points) = NonZeroU32::new(item.points as u32) {
+            let reason = format!("Achievement {} level {}", item.achievement_id, item.level);
+            let source_id = format!("{}:{}", item.achievement_id, item.level);
+            let entry = Entry::award(user_id, points, &reason, Source::Achievement, &source_id);
+            writes.push(points::record_query(&entry));
+        }
+        let results = pool.batch(writes).await?;
+        if results.first().is_some_and(|r| r.rows_affected() == 1) {
             new_unlocks.push(item);
         }
     }
