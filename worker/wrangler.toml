@@ -1,0 +1,39 @@
+# 試行版：Cloudflare Workers（Free）＋ D1。規格仍是 Rust/Axum/PostgreSQL（AGENTS.md），
+# 這個部署只用於評估，只放合成資料。說明見 worker/README.md。
+name = "socrates-chat-trial"
+main = "build/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
+
+[build]
+command = "worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "socrates-chat-trial"
+database_id = "ed759fef-100b-48f3-8b99-90514a187db7"
+migrations_dir = "migrations"
+
+# 前端（frontend/dist）由 Workers Assets 提供；API 與健康檢查先交給 Worker。
+# SPA 路由找不到檔案時回 index.html。
+[assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/health", "/ready"]
+
+# 回收卡住的總結（PostgreSQL 版在啟動與背景工作中執行）。
+[triggers]
+crons = ["*/10 * * * *"]
+
+[observability]
+enabled = true
+
+# 非機密設定；機密（OPENAI_API_KEYS、GOOGLE_CLIENT_SECRET、ADMIN_INITIAL_PASSWORD）用 `wrangler secret put`。
+[vars]
+APP_BASE_URL = "https://socrates-chat-trial.example.workers.dev"
+COOKIE_SECURE = "true"
+DEMO_MODE = "true"
+OPENAI_MODEL = "gpt-4.1-mini" # 沿用 .env.example 的暫定值；正式模型待 S-03.4 決定
+GOOGLE_CLIENT_ID = "unset"

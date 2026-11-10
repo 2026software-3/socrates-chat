@@ -1,0 +1,20 @@
+[package]
+name = "sqlx-d1"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Minimal sqlx-shaped API over Cloudflare D1, used by the Workers port"
+
+[lib]
+name = "sqlx"
+
+[dependencies]
+worker = { version = "0.8.7", features = ["d1"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde-wasm-bindgen = "0.6"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "wasmbind"] }
+uuid = { version = "1.26.1", features = ["serde"] }

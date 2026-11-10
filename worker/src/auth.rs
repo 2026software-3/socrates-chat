@@ -1,0 +1,951 @@
+//! 登入、登出與 session 驗證（F-01.1，規格見 S-08.2）。
+
+use axum::{
+    Json, Router,
+    extract::{FromRequestParts, Query, State},
+    http::{HeaderMap, StatusCode, header, request::Parts},
+    response::{IntoResponse, Redirect, Response},
+    routing::{delete, get, post},
+};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::Utc;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::{
+    AppState,
+    accounts::audit,
+    auth_store,
+    auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
+    catalog::nullable,
+    client_ip,
+    error::ApiError,
+    login_rate_limit, password,
+};
+
+const COOKIE_NAME: &str = "sid";
+
+/// 帳號已被管理者停用（S-01.3）：登入後看到「帳號已停用」。
+const ACCOUNT_DISABLED: ApiError = ApiError::forbidden("account_disabled", "帳號已停用");
+
+pub fn routes(
+    trusted_proxies: Vec<client_ip::Cidr>,
+    login_burst: u32,
+    login_replenish: std::time::Duration,
+) -> Router<AppState> {
+    Router::new()
+        .route("/api/auth/google/login", get(login))
+        .route("/api/auth/google/link", get(link_start))
+        .route("/api/auth/google/callback", get(callback))
+        .route(
+            "/api/auth/login",
+            login_rate_limit::apply(
+                post(password_login),
+                trusted_proxies,
+                login_burst,
+                login_replenish,
+            ),
+        )
+        .route("/api/auth/change-password", post(change_password))
+        .route("/api/admin/users/reset-password", post(reset_password))
+        .route("/api/auth/logout", post(logout))
+        .route("/api/me", get(me).patch(update_me))
+        .route("/api/me/google-link", delete(unlink_google))
+}
+
+/// 256 位元隨機 token（base64url）。
+fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// 資料庫只存 token 的 SHA-256 雜湊。
+pub fn hash_token(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+fn session_cookie(state: &AppState, token: &str, max_age_secs: i64) -> String {
+    let secure = if state.config.cookie_secure {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{secure}")
+}
+
+fn token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|kv| kv.trim().split_once('='))
+        .find(|(k, _)| *k == COOKIE_NAME)
+        .map(|(_, v)| v)
+        .filter(|v| !v.is_empty())
+}
+
+/// `Accept-Language` 中權重（q）最高的支援語言，同分取先出現的；`q=0` 代表瀏覽器不接受，
+/// 一律略過。沒有可接受的支援語言時使用繁體中文。
+fn preferred_language(headers: &HeaderMap) -> &'static str {
+    let mut best: Option<(&'static str, f32)> = None;
+    let value = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    for part in value.split(',') {
+        let mut fields = part.split(';');
+        let tag = fields
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let language = if tag.starts_with("zh") {
+            "zh-TW"
+        } else if tag.starts_with("en") {
+            "en"
+        } else if tag.starts_with("es") {
+            "es"
+        } else {
+            continue;
+        };
+        // 沒有 q（或 q 無法解析）視為 1
+        let q = fields
+            .find_map(|f| {
+                let (name, v) = f.split_once('=')?;
+                name.trim().eq_ignore_ascii_case("q").then(|| v.trim())
+            })
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        if q > 0.0 && best.is_none_or(|(_, b)| q > b) {
+            best = Some((language, q));
+        }
+    }
+    best.map_or("zh-TW", |(language, _)| language)
+}
+
+/// 使用者的角色；每次請求由資料庫載入，不存在 cookie 裡（S-08.2）。
+#[derive(Debug, Clone, Copy, Serialize, utoipa::ToSchema)]
+pub struct Roles {
+    pub admin: bool,
+    pub teacher: bool,
+    pub student: bool,
+}
+
+impl Roles {
+    /// 教師或管理者。
+    pub fn can_teach(&self) -> bool {
+        self.admin || self.teacher
+    }
+
+    /// 能使用學生功能（選題、對話、語音、個人儀表板）：只有修課名單內的學生。
+    /// 教師與管理者不參與討論，即使有教師或管理者身分也不行。
+    pub fn is_participant(&self) -> bool {
+        self.student
+    }
+}
+
+/// 目前登入的使用者；沒有有效 session 時回 401，
+/// 用臨時密碼登入、尚未更改密碼時回 403 `password_change_required`。
+pub struct CurrentUser {
+    pub user: auth_store::User,
+    pub roles: Roles,
+    /// 這個 session 是用臨時密碼登入、尚未更改密碼。
+    pub must_change_password: bool,
+}
+
+/// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
+pub struct AnyCurrentUser(pub CurrentUser);
+
+impl FromRequestParts<AppState> for CurrentUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let AnyCurrentUser(cu) = AnyCurrentUser::from_request_parts(parts, state).await?;
+        if cu.must_change_password {
+            return Err(ApiError::forbidden(
+                "password_change_required",
+                "請先更改密碼",
+            ));
+        }
+        Ok(cu)
+    }
+}
+
+impl FromRequestParts<AppState> for AnyCurrentUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
+        // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
+        let SessionUser {
+            user,
+            session,
+            teacher,
+            student,
+        } = auth_store::find_active_session(&state.pool, &hash_token(token), Utc::now())
+            .await?
+            .ok_or_else(ApiError::unauthorized)?;
+        // 停用的帳號即使還有 session 也不能使用（停用時雖已清除 session，這裡再擋一次）
+        if user.disabled {
+            return Err(ACCOUNT_DISABLED);
+        }
+        let roles = Roles {
+            admin: user.is_admin,
+            teacher,
+            student,
+        };
+        Ok(AnyCurrentUser(CurrentUser {
+            user,
+            roles,
+            must_change_password: session.must_change_password,
+        }))
+    }
+}
+
+/// 只有管理者可通過，否則 403。
+pub struct RequireAdmin(pub CurrentUser);
+
+impl FromRequestParts<AppState> for RequireAdmin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let cu = CurrentUser::from_request_parts(parts, state).await?;
+        if !cu.roles.admin {
+            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        }
+        Ok(RequireAdmin(cu))
+    }
+}
+
+/// 教師或管理者可通過，否則 403。
+pub struct RequireTeacher(pub CurrentUser);
+
+impl FromRequestParts<AppState> for RequireTeacher {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let cu = CurrentUser::from_request_parts(parts, state).await?;
+        if !cu.roles.can_teach() {
+            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        }
+        Ok(RequireTeacher(cu))
+    }
+}
+
+/// 學生功能的守門：只有修課名單內的學生可通過。
+/// 教師與管理者（不在名單內）回 403 `forbidden`，名單外帳號回 403 `not_enrolled`。
+pub struct RequireStudent(pub CurrentUser);
+
+impl FromRequestParts<AppState> for RequireStudent {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let cu = CurrentUser::from_request_parts(parts, state).await?;
+        if !cu.roles.is_participant() {
+            return Err(if cu.roles.can_teach() {
+                ApiError::forbidden("forbidden", "教師與管理者不參與討論")
+            } else {
+                ApiError::forbidden("not_enrolled", "尚未開通")
+            });
+        }
+        Ok(RequireStudent(cu))
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/login",
+    tag = "auth",
+    summary = "導向 Google 授權頁",
+    security(()),
+    responses((status = 303, description = "重新導向到 Google"))
+)]
+pub(crate) async fn login(State(state): State<AppState>) -> Result<Redirect, ApiError> {
+    let req = state.identity.start();
+    auth_store::save_login_state(&state.pool, &req.state, &req.nonce, &req.pkce_verifier).await?;
+    Ok(Redirect::to(&req.url))
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct CallbackParams {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+fn login_error(state: &AppState, code: &str) -> Response {
+    Redirect::to(&format!("{}/login?error={code}", state.config.app_base_url)).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/callback",
+    tag = "auth",
+    summary = "Google 回呼（成功設定 sid cookie 並導回；失敗導回 /login?error=code）",
+    params(CallbackParams),
+    security(()),
+    responses((status = 303, description = "重新導向"))
+)]
+pub(crate) async fn callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(p): Query<CallbackParams>,
+) -> Response {
+    // 連結流程的 state 帶著發起者；先取出判斷，避免走一般登入建立新 session
+    let link = match p.state.as_deref() {
+        Some(s) => auth_store::peek_link_user(&state.pool, s)
+            .await
+            .unwrap_or(None),
+        None => None,
+    };
+    if link.is_some() {
+        return finish_link(&state, &headers, p).await;
+    }
+    match finish_login(&state, p, preferred_language(&headers)).await {
+        Ok(token) => (
+            [(
+                header::SET_COOKIE,
+                session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
+            )],
+            Redirect::to(&state.config.app_base_url),
+        )
+            .into_response(),
+        Err(code) => login_error(&state, code),
+    }
+}
+
+fn link_redirect(state: &AppState, query: &str) -> Response {
+    Redirect::to(&format!("{}/dashboard?{query}", state.config.app_base_url)).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/link",
+    tag = "auth",
+    summary = "學生連結 Google 帳號：導向 Google 授權頁（回呼後導回 /dashboard?link=ok 或 ?link_error=code）",
+    responses(
+        (status = 303, description = "重新導向到 Google"),
+        (status = 403, description = "沒有學號的帳號不能連結")
+    )
+)]
+pub(crate) async fn link_start(
+    State(state): State<AppState>,
+    CurrentUser { user, .. }: CurrentUser,
+) -> Result<Redirect, ApiError> {
+    let is_student: bool =
+        sqlx::query_scalar("SELECT student_id IS NOT NULL FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&state.pool)
+            .await?;
+    if !is_student {
+        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    let req = state.identity.start();
+    auth_store::save_link_state(
+        &state.pool,
+        &req.state,
+        &req.nonce,
+        &req.pkce_verifier,
+        user.id,
+    )
+    .await?;
+    Ok(Redirect::to(&req.url))
+}
+
+/// 連結流程的回呼：必須仍是發起連結的那位學生（同一個 session），信箱必須由 Google 驗證過。
+async fn finish_link(state: &AppState, headers: &HeaderMap, p: CallbackParams) -> Response {
+    let fail = |code: &str| link_redirect(state, &format!("link_error={code}"));
+    // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
+    let stored = match p.state.as_deref() {
+        Some(s) => auth_store::take_login_state(&state.pool, s, Utc::now())
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let current = match token_from_headers(headers) {
+        Some(t) => auth_store::find_active_session(&state.pool, &hash_token(t), Utc::now())
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let (Some(stored), Some(current)) = (stored, current) else {
+        return fail("invalid_state");
+    };
+    if stored.link_user_id != Some(current.user.id) {
+        return fail("invalid_state");
+    }
+    if let Some(err) = p.error {
+        return fail(if err == "access_denied" {
+            "access_denied"
+        } else {
+            "link_failed"
+        });
+    }
+    let Some(code) = p.code else {
+        return fail("invalid_state");
+    };
+    let Ok(identity) = state
+        .identity
+        .finish(&code, &stored.nonce, &stored.pkce_verifier)
+        .await
+    else {
+        return fail("link_failed");
+    };
+    if !identity.email_verified {
+        return fail("email_not_verified");
+    }
+    match auth_store::link_google(
+        &state.pool,
+        current.user.id,
+        &identity.sub,
+        &identity.email,
+        &state.config.admin_emails,
+    )
+    .await
+    {
+        Ok(auth_store::LinkOutcome::Linked) => {
+            // 稽核只記帳號 ID，不記信箱
+            let _ = audit(
+                &state.pool,
+                current.user.id,
+                "link_google",
+                &current.user.id.to_string(),
+                None,
+            )
+            .await;
+            link_redirect(state, "link=ok")
+        }
+        Ok(auth_store::LinkOutcome::InUse) => fail("email_in_use"),
+        Ok(auth_store::LinkOutcome::NotStudent) => fail("link_failed"),
+        Err(_) => fail("link_failed"),
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/me/google-link",
+    tag = "auth",
+    summary = "取消連結 Google 帳號（清除信箱；學號與密碼照舊可登入）",
+    responses(
+        (status = 204, description = "已取消"),
+        (status = 403, description = "沒有學號的帳號不能操作")
+    )
+)]
+pub(crate) async fn unlink_google(
+    State(state): State<AppState>,
+    CurrentUser { user, .. }: CurrentUser,
+) -> Result<StatusCode, ApiError> {
+    if !auth_store::unlink_google(&state.pool, user.id).await? {
+        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+    }
+    let _ = audit(
+        &state.pool,
+        user.id,
+        "unlink_google",
+        &user.id.to_string(),
+        None,
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 成功時回傳新 session 的 token；失敗時回傳導回前端的錯誤代碼。
+async fn finish_login(
+    state: &AppState,
+    p: CallbackParams,
+    preferred_language: &str,
+) -> Result<String, &'static str> {
+    // state 一律取出並刪除（單次使用），即使 Google 回報了錯誤
+    let stored = match p.state.as_deref() {
+        Some(s) => auth_store::take_login_state(&state.pool, s, Utc::now())
+            .await
+            .map_err(|_| "login_failed")?,
+        None => None,
+    };
+    if let Some(err) = p.error {
+        return Err(if err == "access_denied" {
+            "access_denied"
+        } else {
+            "login_failed"
+        });
+    }
+    let (Some(stored), Some(code)) = (stored, p.code) else {
+        return Err("invalid_state");
+    };
+    let identity = state
+        .identity
+        .finish(&code, &stored.nonce, &stored.pkce_verifier)
+        .await
+        .map_err(|_| "login_failed")?;
+    if !identity.email_verified {
+        return Err("email_not_verified");
+    }
+    let is_admin = state
+        .config
+        .admin_emails
+        .contains(&identity.email.to_lowercase());
+    let mut user = auth_store::upsert_user(
+        &state.pool,
+        &identity.sub,
+        &identity.email,
+        identity.name.as_deref(),
+        is_admin,
+    )
+    .await
+    .map_err(|_| "login_failed")?;
+    if user.disabled {
+        return Err("account_disabled");
+    }
+    user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
+        .await
+        .map_err(|_| "login_failed")?;
+    // 登入一律建立新 session（防止 session fixation）
+    let token = new_token();
+    auth_store::create_session(&state.pool, user.id, &hash_token(&token))
+        .await
+        .map_err(|_| "login_failed")?;
+    audit(
+        &state.pool,
+        user.id,
+        "login",
+        user.email.as_deref().unwrap_or(""),
+        None,
+    )
+    .await
+    .map_err(|_| "login_failed")?;
+    Ok(token)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    tag = "auth",
+    summary = "登出",
+    security(()),
+    responses((status = 204, description = "已登出"))
+)]
+pub(crate) async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if let Some(token) = token_from_headers(&headers) {
+        auth_store::delete_session(&state.pool, &hash_token(token)).await?;
+    }
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(header::SET_COOKIE, session_cookie(&state, "", 0))],
+    )
+        .into_response())
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct MeResponse {
+    id: Uuid,
+    email: Option<String>,
+    /// 自己的學號（大寫）。帳號本身有學號就回傳，與角色無關（同時具備教師身分的學生也看得到自己的）；
+    /// 沒有學號的帳號（教師、管理者等）為 `null`（S-01.4）
+    student_number: Option<String>,
+    display_name: Option<String>,
+    language: String,
+    is_admin: bool,
+    must_change_password: bool,
+    roles: Roles,
+}
+
+impl From<CurrentUser> for MeResponse {
+    fn from(cu: CurrentUser) -> Self {
+        let u = cu.user;
+        Self {
+            id: u.id,
+            email: u.email,
+            student_number: u.student_number,
+            display_name: u.display_name,
+            language: u.language,
+            is_admin: u.is_admin,
+            must_change_password: cu.must_change_password,
+            roles: cu.roles,
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/me",
+    tag = "auth",
+    summary = "目前登入者與角色",
+    responses((status = 200, description = "目前使用者", body = MeResponse))
+)]
+pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
+    Json(cu.into())
+}
+
+/// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
+const DISPLAY_NAME_MAX_CHARS: usize = 30;
+
+/// 去頭尾空白後的名稱是否可用：不超過上限，且不含控制字元（換行、tab、NUL 等）。
+/// U+2028／U+2029（行／段落分隔，類別 Zl／Zp）不屬於 `is_control`，但同樣會破壞清單排版，一併拒絕。
+fn valid_display_name(name: &str) -> bool {
+    let breaks_layout = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    name.chars().count() <= DISPLAY_NAME_MAX_CHARS && !name.chars().any(breaks_layout)
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct MePatch {
+    /// 沒帶＝保留；`null` 或空白字串＝恢復匯入姓名；上限 30 個字元，不可含控制字元。
+    #[serde(default, deserialize_with = "nullable")]
+    display_name: Option<Option<String>>,
+    /// 介面與之後建立之對話的語言；僅接受 `zh-TW`、`en`、`es`。
+    language: Option<String>,
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/me",
+    tag = "auth",
+    summary = "修改自己的語言與顯示名稱",
+    request_body = MePatch,
+    responses(
+        (status = 200, description = "更新後的使用者", body = MeResponse),
+        (status = 400, description = "顯示名稱無效（invalid_display_name）或語言不受支援（invalid_language）"),
+        (status = 403, description = "非學生嘗試修改顯示名稱（所有登入者皆可修改語言）"),
+    )
+)]
+pub(crate) async fn update_me(
+    AnyCurrentUser(mut cu): AnyCurrentUser,
+    State(state): State<AppState>,
+    Json(p): Json<MePatch>,
+) -> Result<Json<MeResponse>, ApiError> {
+    if p.display_name.is_some() && !cu.roles.student {
+        return Err(ApiError::forbidden("forbidden", "只有學生能修改顯示名稱"));
+    }
+    if p.language
+        .as_deref()
+        .is_some_and(|language| !matches!(language, "zh-TW" | "en" | "es"))
+    {
+        return Err(ApiError::bad_request("invalid_language", "不支援的語言"));
+    }
+    let name = p
+        .display_name
+        .map(|n| n.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()));
+    if name.iter().flatten().any(|n| !valid_display_name(n)) {
+        return Err(ApiError::bad_request(
+            "invalid_display_name",
+            "顯示名稱最多 30 個字元，且不可包含控制字元",
+        ));
+    }
+    if name.is_none() && p.language.is_none() {
+        return Ok(Json(cu.into()));
+    }
+    // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
+    let (display_name, language): (Option<String>, String) = sqlx::query_as(
+        "UPDATE users SET
+             display_name = CASE WHEN $2 THEN COALESCE($3, imported_name) ELSE display_name END,
+             language = COALESCE($4, language),
+             language_initialized = language_initialized OR $4 IS NOT NULL,
+             updated_at = now()
+         WHERE id = $1 RETURNING display_name, language",
+    )
+    .bind(cu.user.id)
+    .bind(name.is_some())
+    .bind(name.flatten())
+    .bind(p.language)
+    .fetch_one(&state.pool)
+    .await?;
+    cu.user.display_name = display_name;
+    cu.user.language = language;
+    Ok(Json(cu.into()))
+}
+
+// ---- 內建帳號密碼登入（S-08.2 第 1 節）----
+
+/// 帳號不存在時也做一次雜湊比對，讓回應時間不洩漏帳號是否存在。
+/// 固定字串、與真實雜湊同樣的輪數；鹽與值不重要（比對一定失敗）。
+const DUMMY_HASH: &str =
+    "$pbkdf2-sha256$i=100000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+/// `hash` 為 `None` 時改比對 `DUMMY_HASH`。（名稱沿用 PostgreSQL 版；Workers 版的雜湊由 WebCrypto 非同步計算。）
+async fn verify_blocking(password: String, hash: Option<String>) -> bool {
+    password::verify(&password, hash.as_deref().unwrap_or(DUMMY_HASH)).await
+}
+
+pub async fn hash_blocking(password: String) -> Result<String, ApiError> {
+    password::hash(&password)
+        .await
+        .map_err(|_| ApiError::internal())
+}
+
+/// 系統產生的臨時密碼：輪數較少（見 `password` 模組）。
+pub async fn hash_temporary(password: String) -> Result<String, ApiError> {
+    password::hash_temporary(&password)
+        .await
+        .map_err(|_| ApiError::internal())
+}
+
+const INVALID_CREDENTIALS: ApiError = ApiError::new(
+    StatusCode::UNAUTHORIZED,
+    "invalid_credentials",
+    "電子郵件或密碼不正確",
+);
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct LoginBody {
+    /// 學號或電子郵件（含 `@` 以電子郵件比對，否則以學號比對）；舊欄位名稱 `email` 仍可使用。
+    #[serde(alias = "email")]
+    account: String,
+    password: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct LoginResponse {
+    must_change_password: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    tag = "auth",
+    summary = "內建帳號登入（學號或電子郵件加密碼）",
+    request_body = LoginBody,
+    security(()),
+    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody))
+)]
+pub(crate) async fn password_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<LoginBody>,
+) -> Result<Response, ApiError> {
+    let login_account = body.account;
+    let now = Utc::now();
+    // 來源 IP 取自 CF-Connecting-IP；沒有時 ip_key 為空字串，退回只以登入帳號輸入計
+    let ip_key = client_ip::key_from_headers(&headers);
+    if auth_store::is_locked(&state.pool, &login_account, &ip_key, now).await? {
+        return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
+    }
+    let account = auth_store::find_password_account(&state.pool, &login_account).await?;
+    let real_hash = account.as_ref().and_then(|a| a.password_hash.clone());
+    let has_password = real_hash.is_some();
+    let ok = verify_blocking(body.password, real_hash).await && has_password;
+    let (Some(account), true) = (account, ok) else {
+        auth_store::record_login_failure(&state.pool, &login_account, &ip_key, now).await?;
+        return Err(INVALID_CREDENTIALS);
+    };
+    auth_store::clear_login_failures_for(&state.pool, &login_account, &ip_key).await?;
+    // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
+    if account.disabled {
+        return Err(ACCOUNT_DISABLED);
+    }
+    auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
+    // 登入一律建立新 session（防止 session fixation）
+    let token = new_token();
+    let session =
+        auth_store::create_password_session(&state.pool, account.id, &hash_token(&token)).await?;
+    // 稽核對象沒有電子郵件時（只用學號的學生）以帳號 UUID 識別，不記學號
+    let target = account
+        .email
+        .clone()
+        .unwrap_or_else(|| account.id.to_string());
+    audit(&state.pool, account.id, "login", &target, None).await?;
+    Ok((
+        [(
+            header::SET_COOKIE,
+            session_cookie(&state, &token, SESSION_ABSOLUTE_TTL.num_seconds()),
+        )],
+        Json(LoginResponse {
+            must_change_password: session.must_change_password,
+        }),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/change-password",
+    tag = "auth",
+    summary = "更改自己的密碼",
+    request_body = ChangePasswordBody,
+    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody))
+)]
+pub(crate) async fn change_password(
+    AnyCurrentUser(cu): AnyCurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ChangePasswordBody>,
+) -> Result<StatusCode, ApiError> {
+    if !password::is_acceptable(&body.new_password) {
+        return Err(ApiError::bad_request(
+            "invalid_new_password",
+            "新密碼長度需為 8 到 128 個字元",
+        ));
+    }
+    if body.new_password == body.current_password {
+        return Err(ApiError::bad_request(
+            "password_unchanged",
+            "新密碼不能與目前密碼相同",
+        ));
+    }
+    let wrong_current = ApiError::bad_request("invalid_current_password", "目前密碼不正確");
+    let Some(current_hash) = auth_store::password_hash_of(&state.pool, cu.user.id).await? else {
+        return Err(wrong_current);
+    };
+    if !verify_blocking(body.current_password, Some(current_hash)).await {
+        return Err(wrong_current);
+    }
+    let new_hash = hash_blocking(body.new_password).await?;
+    auth_store::set_password(&state.pool, cu.user.id, &new_hash, false).await?;
+    // 保留目前登入，其他裝置的 session 全部失效
+    let keep = token_from_headers(&headers).map(hash_token);
+    auth_store::delete_sessions_except(&state.pool, cu.user.id, keep.as_ref().map(|h| &h[..]))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 重設密碼的目標：`email`（沒有帳號就建立）與 `student_number`（只針對已有帳號的學生）二選一。
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ResetBody {
+    /// 電子郵件；與 `student_number` 擇一。
+    email: Option<String>,
+    /// 學號（不分大小寫）；與 `email` 擇一，學號必須屬於已有帳號的學生。
+    student_number: Option<String>,
+}
+
+/// 驗證並正規化後的重設目標。
+enum ResetTarget {
+    Email(String),
+    StudentNumber(String),
+}
+
+impl ResetBody {
+    /// `email` 與 `student_number` 必須恰好一個；格式錯誤在這裡就擋下，不碰資料庫。
+    fn into_target(self) -> Result<ResetTarget, ApiError> {
+        match (self.email, self.student_number) {
+            (Some(email), None) => crate::roster::normalize_email(&email)
+                .map(ResetTarget::Email)
+                .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確")),
+            (None, Some(student_number)) => {
+                Some(auth_store::normalize_login_input(&student_number))
+                    .filter(|id| crate::roster::is_valid_student_number(id))
+                    .map(ResetTarget::StudentNumber)
+                    .ok_or(ApiError::bad_request(
+                        "invalid_student_number",
+                        "學號格式不正確",
+                    ))
+            }
+            _ => Err(ApiError::bad_request(
+                "invalid_target",
+                "請只提供電子郵件或學號其中一個",
+            )),
+        }
+    }
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ResetResponse {
+    /// 帳號的電子郵件；沒有電子郵件的學生為 `null`。
+    email: Option<String>,
+    /// 只在這次回應出現，之後無法再查詢。
+    temporary_password: String,
+}
+
+/// 管理者重設密碼（產生臨時密碼）。以 `email` 指定時信箱沒有帳號就建立；以 `student_number` 指定時只能是已有帳號的學生，找不到回 404。
+#[utoipa::path(
+    post,
+    path = "/api/admin/users/reset-password",
+    tag = "admin",
+    summary = "重設密碼（僅管理者；以信箱沒有帳號就建立，以學號只重設既有學生）",
+    request_body = ResetBody,
+    responses(
+        (status = 200, description = "臨時密碼只出現這一次", body = ResetResponse),
+        (status = 400, description = "invalid_target（email 與 student_number 必須恰好一個）、invalid_email、invalid_student_number", body = crate::error::ErrorBody),
+        (status = 404, description = "學號不屬於任何已有帳號的學生", body = crate::error::ErrorBody)
+    )
+)]
+pub(crate) async fn reset_password(
+    RequireAdmin(cu): RequireAdmin,
+    State(state): State<AppState>,
+    Json(body): Json<ResetBody>,
+) -> Result<Json<ResetResponse>, ApiError> {
+    let target = body.into_target()?;
+    let temporary_password = password::generate_temporary();
+    let hash = hash_temporary(temporary_password.clone()).await?;
+    let mut tx = state.pool.begin().await?;
+    // 稽核對象：有電子郵件用信箱，沒有則用內部識別碼（不記學號，S-01.4）
+    let (email, audit_target) = match target {
+        ResetTarget::Email(email) => {
+            auth_store::reset_password(&mut tx, &email, &hash).await?;
+            (Some(email.clone()), email)
+        }
+        ResetTarget::StudentNumber(student_number) => {
+            let (user_id, email) =
+                auth_store::reset_password_by_student_number(&mut tx, &student_number, &hash)
+                    .await?
+                    .ok_or(ApiError::not_found())?;
+            let audit_target = email.clone().unwrap_or_else(|| user_id.to_string());
+            (email, audit_target)
+        }
+    };
+    audit(&mut *tx, cu.user.id, "password_reset", &audit_target, None).await?;
+    tx.commit().await?;
+    Ok(Json(ResetResponse {
+        email,
+        temporary_password,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pick(value: &str) -> &'static str {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_LANGUAGE, value.parse().unwrap());
+        preferred_language(&headers)
+    }
+
+    #[test]
+    fn accept_language_picks_the_highest_q_supported_language() {
+        // 沒有 q 視為 1，同分取先出現的
+        assert_eq!(pick("en, es"), "en");
+        assert_eq!(pick("fr-FR, es-MX;q=0.9, en;q=0.8"), "es");
+        assert_eq!(pick("en;q=0.1, es;q=0.9"), "es");
+        assert_eq!(pick("en; q=0.2, zh-TW; q=0.7"), "zh-TW");
+        assert_eq!(pick("zh-TW"), "zh-TW");
+    }
+
+    #[test]
+    fn accept_language_ignores_languages_the_browser_refuses() {
+        // q=0 代表「不接受」，即使排在前面也不能選
+        assert_eq!(pick("es;q=0, en"), "en");
+        assert_eq!(pick("en;q=0.000, es;q=0.1"), "es");
+        // 沒有可接受的支援語言時回到繁體中文
+        assert_eq!(pick("es;q=0"), "zh-TW");
+        assert_eq!(pick("fr, *;q=0.5"), "zh-TW");
+    }
+}

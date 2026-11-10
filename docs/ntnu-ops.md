@@ -268,6 +268,15 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 只有同時決定「資料庫也搬到雲端託管 PostgreSQL，並要求不依賴這台電腦」時才值得評估，組合是 Workers 加 Hyperdrive 加託管 PostgreSQL，費用為 5 美元加資料庫費用。
 
+#### 試行：Workers Free 加 D1（2026-11-10，分支 `feat/workers-d1`）
+
+實際把後端改寫成 Worker 試跑，程式在 `worker/`，細節見 `worker/README.md`。部署到 workers.dev 的獨立 Worker 與新的 D1 資料庫，只放合成資料，與 NTNU 無關。
+
+- 做法：保留 Axum router 與幾乎所有業務程式，另寫一個 crate 名稱同為 `sqlx` 的 D1 shim，把 SQL 譯成 SQLite；schema 重寫成一個 SQLite migration。
+- 結果：免費方案放得下（gzip 後 1.46 MB，上限 3 MB）；端對端煙霧測試在本機以假 AI 端點 42/42 通過，部署後 40/43（失敗的 3 項需要真的 AI key）。CPU 中位數 7 ms，但登入 7–27 ms，常超過免費方案的 10 ms。
+- 代價：D1 沒有交易回滾與列鎖，要靠 batch 與「先檢查再寫入」補；密碼改 PBKDF2，舊的 Argon2 雜湊不能沿用；cascade 即時語音拿掉；限流與用量上限變成每個 isolate 各自計算。
+- 結論不變：資料庫改 SQLite 與規格（PostgreSQL）不符，要採用必須先走規格決策。這次只證明技術上可行，也量到免費方案的 CPU 風險。
+
 ### 各方案取捨
 
 | 方案 | 費用 | 到 DB 的延遲 | 是否依賴這台電腦 | 結論 |
@@ -296,6 +305,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 2026-11-10 | 資料庫由 volume `socrates-ntnu_pgdata` 搬到 D 槽 `D:\socrates-ntnu\pgdata`（bind mount，來源用 `/run/desktop/mnt/host/d/...`）。搬前 `pg_dump` 備份；搬後 `users` 40、`conversations` 66、`_sqlx_migrations` 14 筆與搬前一致，`/health`、`/ready` 回 200，公開網址 `/ready` 回 200。中斷約 1 分鐘。舊 volume 保留當退路。 |
 | 2026-11-10 | 評估 app 放雲端（DB 留 D 槽、cascade 留本機）：Docker cloud sandbox 的 UDP 不通、位在美西、24 小時過期，經 Tailscale 只能走 DERP，往返 170–200 ms；Cloudflare Containers 約 9.6–21 美元／月且仍需把 DB 接回本機。結論：NTNU 維持本機部署，見「雲端部署評估」。 |
 | 2026-11-10 | 補充評估「後端改寫成 Worker 加 Workers Paid」：約 5 美元／月，但後端約 15,440 行、74 個端點、180 處 SQLx 查詢要重寫，資料庫仍在本機、可用性沒改善，且需先改規格。結論：不採用。 |
+| 2026-11-10 | 試行「Workers Free 加 D1」（`worker/`，分支 `feat/workers-d1`）：部署到 workers.dev 的獨立 Worker 與新 D1，只放合成資料。煙霧測試部署後 40/43（缺 AI key 的 3 項失敗），登入 CPU 7–27 ms。NTNU 未受影響。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |

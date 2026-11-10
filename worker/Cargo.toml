@@ -1,0 +1,49 @@
+[workspace]
+members = [".", "sqlx-d1"]
+
+[package]
+name = "socrates-chat-worker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Cloudflare Workers + D1 trial port of socrates-chat-backend"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sqlx = { path = "sqlx-d1", package = "sqlx-d1" }
+worker = { version = "0.8.7", features = ["http", "axum", "d1"] }
+axum = { version = "0.8.9", default-features = false, features = ["json", "query", "form", "multipart", "matched-path", "original-uri"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-service = "0.3.3"
+http-body-util = "0.1.3"
+bytes = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Crypto", "SubtleCrypto", "CryptoKey", "console", "FormData", "Blob", "BlobPropertyBag"] }
+async-trait = "0.1.92"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "wasmbind"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_urlencoded = "0.7"
+sha2 = "0.11.0"
+rand = "0.10.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+uuid = { version = "1.26.1", features = ["v4", "serde", "js"] }
+futures-util = "0.3.34"
+futures-channel = "0.3"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry", "json"] }
+utoipa = { version = "6.0.0", features = ["uuid", "chrono"] }
+regex = "1.13.1"
+# 只用不需要 runtime 的部分：sync（mpsc、Notify）、macros（select!/join!）、rt（task_local!）
+tokio = { version = "1.53.1", default-features = false, features = ["sync", "macros", "rt"] }
+tokio-stream = { version = "0.1.19", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
