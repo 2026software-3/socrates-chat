@@ -76,6 +76,8 @@ D1 的保證只有兩個：**單一語句是原子的**，**一個 batch 是原�
 
 驗證：`scripts/check_sql.py` 檢查 175 條靜態 SQL 全數通過；本機以 `wrangler dev` 跑並行測試（同時購買、最後兩位管理者互相停用、兩個教室同時匯入同一學號、30 人匯入後重匯）7/7 通過，煙霧測試 42/42 通過。
 
+部署到 workers.dev 後（2026-11-11，commit `c52103d`）：並行測試 7/7 通過；煙霧測試 39/42，失敗的 3 項都需要真的 AI key。`wrangler tail` 只收到 12 筆事件，全部 `ok`、沒有超時中止，CPU 中位數 8 ms；30 人名單匯入 28 ms；更新 secret 後新 isolate 的第一次登入（冷啟動加建立管理者）110 ms。
+
 ## 部署
 
 需要 `worker-build`（`cargo install worker-build`）與 Node（`npx wrangler`）。憑證只用環境變數傳入，不寫進檔案：
