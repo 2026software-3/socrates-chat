@@ -87,6 +87,21 @@ describe('student available page', () => {
     expect(within(roomB).queryByText('Activity One')).not.toBeInTheDocument()
   })
 
+  it('orders classroom groups by name, not by the newest activity', async () => {
+    const [first] = AVAILABLE.activities
+    mockAvailable({
+      // 後端依建立時間新到舊：B 班的活動最新，但分組仍依教室名稱排序
+      activities: [{ ...first, id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }, first],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    const names = within(act)
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent)
+    expect(names).toEqual(['合成 A 班', '合成 B 班'])
+  })
+
   it('drops a classroom group when search filters out all of its activities', async () => {
     const [first] = AVAILABLE.activities
     mockAvailable({
