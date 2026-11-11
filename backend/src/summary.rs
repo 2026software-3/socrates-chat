@@ -17,7 +17,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, Postgres, Transaction};
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -114,9 +114,10 @@ const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
 
 /// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
 ///
-/// 目前只有發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）。
+/// 發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）；
+/// 接著記錄完成事件並判定成就（S-07.3）。
 async fn on_conversation_completed(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
     owner: Uuid,
 ) -> Result<(), sqlx::Error> {
@@ -128,7 +129,8 @@ async fn on_conversation_completed(
         points::Source::Conversation,
         &source_id,
     );
-    points::record(conn, &entry).await?;
+    points::record(tx, &entry).await?;
+    crate::achievements::record_completed_conversation_in_tx(tx, owner, id, Utc::now()).await?;
     Ok(())
 }
 
@@ -168,7 +170,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     }
     match summary {
         Some(s) => {
-            // 總結完成與發點在同一個交易內（S-07.2 2.2）：只有這一代真的把總結改成 ready 才發點
+            // 總結、對話點數與成就判定在同一個交易內。
             let mut tx = state.pool.begin().await?;
             let updated = sqlx::query(
                 "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
@@ -357,6 +359,9 @@ pub(crate) struct SummaryRow {
     classroom_id: Uuid,
     title: String,
     ended_at: DateTime<Utc>,
+    /// 排序與游標用，不輸出
+    #[serde(skip)]
+    completed_at: DateTime<Utc>,
     /// 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號
     student_user_id: Uuid,
     /// 學號（大寫）；管理者不遮蔽（S-01.4、S-02.2）
@@ -565,6 +570,9 @@ pub(crate) struct SummaryQuery {
     q: Option<String>,
 }
 
+/// 游標種類；排序鍵改為 completed_at 後換名，依 ended_at 產生的舊游標回 `invalid_cursor`。
+const CURSOR_KIND: &str = "summaries_by_completion";
+
 /// 搜尋字串長度上限（字元數）。
 const MAX_SEARCH_CHARS: usize = 100;
 
@@ -613,10 +621,12 @@ fn fingerprint(
 impl SummaryQuery {
     fn filters(&self, classroom: Option<Uuid>) -> Result<Filters<'_>, ApiError> {
         let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
-        let student = match self.student.as_deref() {
-            None => None,
-            Some(s) => Some(Uuid::parse_str(s).map_err(|_| invalid())?),
-        };
+        let student = self
+            .student
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+            .map_err(|_| invalid())?;
         let activity = match self.activity.as_deref() {
             None => None,
             Some(a) => Some(Uuid::parse_str(a).map_err(|_| invalid())?),
@@ -659,7 +669,7 @@ impl SummaryQuery {
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
         ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
     ),
-    responses((status = 200, description = "總結分頁，依 ended_at DESC, conversation_id ASC", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "總結分頁，依總結完成時間新到舊（completed_at DESC, conversation_id ASC）", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn list(
     RequireTeacher(cu): RequireTeacher,
@@ -675,15 +685,16 @@ pub(crate) async fn list(
         search,
         fingerprint,
     } = query.filters(classroom)?;
-    let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor("summaries")?;
+    let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor(CURSOR_KIND)?;
     // 游標只對產生它時的篩選條件有效；換條件要從第一頁開始
     if cursor.as_ref().is_some_and(|c| c.2 != fingerprint) {
         return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
     }
     let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
+    // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
-        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at,
+        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at, s.completed_at,
                 u.id AS student_user_id, u.student_id AS student_number,
                 u.display_name AS student_name, u.email AS student_email,
                 c.language,
@@ -701,9 +712,9 @@ pub(crate) async fn list(
                 OR u.email ILIKE $6 ESCAPE '\\'
                 OR c.title ILIKE $6 ESCAPE '\\')
            AND ($7::timestamptz IS NULL
-                OR c.ended_at < $7 OR (c.ended_at = $7 AND s.conversation_id > $8))
+                OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
            AND ($9::uuid IS NULL OR c.activity_id = $9)
-         ORDER BY c.ended_at DESC, s.conversation_id ASC
+         ORDER BY s.completed_at DESC, s.conversation_id ASC
          LIMIT $10",
     )
     .bind(cu.roles.admin)
@@ -730,7 +741,7 @@ pub(crate) async fn list(
     Ok(Json(pagination::page(
         rows,
         limit,
-        "summaries",
-        |row: &SummaryRow| (row.ended_at, row.conversation_id, fingerprint),
+        CURSOR_KIND,
+        |row: &SummaryRow| (row.completed_at, row.conversation_id, fingerprint),
     )?))
 }
