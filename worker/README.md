@@ -2,7 +2,7 @@
 
 > **這是試行，不是規格。** `AGENTS.md` 規定的技術是 Rust＋Axum＋SQLx＋PostgreSQL，並且**不引入 Supabase**；這個分支是需求方同意的試行例外，只用來評估「後端改跑在 Workers 免費方案、資料庫用 Supabase 託管的 PostgreSQL」是否可行。要採用必須先走規格決策（`docs/specs/decisions.md`），`docs/specs/` 沒有任何修改。部署只放合成資料，與 NTNU 正式環境完全無關。
 >
-> D1（SQLite）版在 `feat/workers-d1` 分支，兩版並存以便對照。
+> 2026-11-11 起以這一版取代 D1（SQLite）版：D1 版的 Worker 與資料庫已刪除，程式碼與 32 處交易的逐一檢查留在遠端分支 `feat/workers-d1` 供參考（不再部署、不再維護）。下文的「D1 版」數字是當時的量測，留作對照。
 
 ## 內容
 
