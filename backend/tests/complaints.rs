@@ -276,6 +276,9 @@ async fn description_and_category_are_validated(pool: PgPool) {
             "invalid_description",
         ),
         (complaint(&"字".repeat(2001)), "invalid_description"),
+        // Postgres 的 text 欄位不能存 NUL；要在驗證時就回 400，而不是寫入失敗變 500
+        (complaint("a\u{0}b"), "invalid_description"),
+        (complaint("\u{0}"), "invalid_description"),
         (
             json!({"category": "nope", "description": "x"}),
             "invalid_category",

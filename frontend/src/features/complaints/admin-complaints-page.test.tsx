@@ -117,7 +117,25 @@ describe('admin complaints', () => {
     expect(patches).toEqual([{ status: 'resolved' }, { status: 'open' }])
   })
 
-  it('offers to resend only mails that failed, and reloads afterwards', async () => {
+  it('offers to resend every mail that was not sent: failed, stuck pending, or skipped before SMTP was set up', async () => {
+    mockList([
+      row({ id: 'k1', description: '已寄出的', mail_status: 'sent' }),
+      row({ id: 'k2', description: '寄失敗的', mail_status: 'failed' }),
+      row({ id: 'k3', description: '卡在寄送中的', mail_status: 'pending' }),
+      row({ id: 'k4', description: '當時沒設定 SMTP 的', mail_status: 'skipped' }),
+    ])
+    renderApp(null, { route: '/admin/complaints' })
+    await screen.findByText('已寄出的')
+    expect(screen.getAllByRole('button', { name: '重寄通知信' })).toHaveLength(3)
+    for (const text of ['寄失敗的', '卡在寄送中的', '當時沒設定 SMTP 的']) {
+      const card = screen.getByText(text).closest('article')!
+      expect(within(card).getByRole('button', { name: '重寄通知信' })).toBeInTheDocument()
+    }
+    const sent = screen.getByText('已寄出的').closest('article')!
+    expect(within(sent).queryByRole('button', { name: '重寄通知信' })).not.toBeInTheDocument()
+  })
+
+  it('resends a failed mail and reloads afterwards', async () => {
     const rows = [row({ id: 'k1', mail_status: 'sent' }), row({ id: 'k2', description: '寄失敗的', mail_status: 'failed' })]
     mockList(rows)
     let resent = 0

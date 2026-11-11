@@ -87,10 +87,14 @@ pub(crate) async fn submit(
         return Err(ApiError::bad_request("invalid_category", "類別不正確"));
     }
     let description = body.description.trim();
-    if description.is_empty() || description.chars().count() > MAX_DESCRIPTION_CHARS {
+    // NUL 字元存不進 Postgres 的 text 欄位，寫入會失敗變成 500，所以在這裡就拒絕
+    if description.is_empty()
+        || description.chars().count() > MAX_DESCRIPTION_CHARS
+        || description.contains('\0')
+    {
         return Err(ApiError::bad_request(
             "invalid_description",
-            "描述不可為空，且最多 2000 字",
+            "描述不可為空、不可含控制字元 NUL，且最多 2000 字",
         ));
     }
     let role = if cu.roles.teacher {
