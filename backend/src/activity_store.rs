@@ -190,12 +190,18 @@ pub async fn set_status_writable(
 pub async fn list_published_for_student(
     pool: &PgPool,
     user_id: Uuid,
-) -> Result<Vec<Activity>, sqlx::Error> {
-    sqlx::query_as(activity_select!(
-        "WHERE a.status = 'published' AND NOT a.is_archived
+) -> Result<Vec<StudentActivity>, sqlx::Error> {
+    // 同一個查詢帶出教室名稱：活動都在學生名單內的教室，所以只會有學生自己所在教室的名稱（S-14）
+    sqlx::query_as(concat!(
+        "SELECT a.id, a.title, a.description, ",
+        topic_columns!(),
+        ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at,
+           cl.name AS classroom_name
+         FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id ",
+        topic_join!("a"),
+        "WHERE a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
            AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
            AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
-           AND NOT EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = a.classroom_id AND cl.is_archived)
            AND EXISTS (SELECT 1 FROM enrollments e
                        WHERE e.classroom_id = a.classroom_id AND e.user_id = $1)
          ORDER BY a.created_at DESC, a.id"
@@ -203,6 +209,16 @@ pub async fn list_published_for_student(
     .bind(user_id)
     .fetch_all(pool)
     .await
+}
+
+/// 學生看到的活動：多帶所屬教室名稱，讓前端依教室分組（S-14）。
+/// 學生看得到的教室資訊只有名稱，不含教師、教室說明或其他學生。
+#[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
+pub struct StudentActivity {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub activity: Activity,
+    pub classroom_name: String,
 }
 
 /// 學生可以開始對話的活動。

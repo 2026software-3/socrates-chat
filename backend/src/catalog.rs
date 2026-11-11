@@ -779,18 +779,9 @@ pub(crate) async fn delete_activity(
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Available {
     /// 教師指定的活動：已發布，且在學生所屬教室的名單內
-    activities: Vec<StudentActivity>,
+    activities: Vec<activity_store::StudentActivity>,
     /// 題目庫中已啟用的題目
     topics: Vec<Topic>,
-}
-
-/// 學生看到的活動：多帶所屬教室名稱，讓前端依教室分組（S-14）。
-/// 學生看得到的教室資訊只有名稱，不含教師、教室說明或其他學生。
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct StudentActivity {
-    #[serde(flatten)]
-    activity: Activity,
-    classroom_name: String,
 }
 
 #[utoipa::path(
@@ -812,27 +803,5 @@ pub(crate) async fn available(
         )
         .fetch_all(&state.pool),
     )?;
-    // 活動都來自學生在名單內的教室，所以只會查到學生自己所在教室的名稱
-    let ids: Vec<Uuid> = activities
-        .iter()
-        .map(|a: &Activity| a.classroom_id)
-        .collect();
-    let names: std::collections::HashMap<Uuid, String> =
-        sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM classrooms WHERE id = ANY($1)")
-            .bind(&ids)
-            .fetch_all(&state.pool)
-            .await?
-            .into_iter()
-            .collect();
-    let activities = activities
-        .into_iter()
-        .map(|activity| StudentActivity {
-            classroom_name: names
-                .get(&activity.classroom_id)
-                .cloned()
-                .unwrap_or_default(),
-            activity,
-        })
-        .collect();
     Ok(Json(Available { activities, topics }))
 }

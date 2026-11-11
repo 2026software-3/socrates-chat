@@ -236,3 +236,59 @@ async fn deleting_a_classroom_leaves_no_sourceless_conversations(pool: PgPool) {
     assert_eq!(items[0]["id"], personal);
     assert!(items[0]["classroom_name"].is_null());
 }
+
+#[sqlx::test]
+async fn renaming_a_classroom_updates_the_source_of_existing_conversations(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{}", a.classroom),
+            Some(&a.teacher),
+            Some(json!({"name": "改名後的教室"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // 名稱是讀取時取自教室，不是建立對話時複製的
+    let items = my_conversations(&app, &a.student, false).await;
+    assert_eq!(by_id(&items, &conv)["classroom_name"], "改名後的教室");
+}
+
+/// 待確認（PR #499）：學生被移出名單後，自己在那間教室的舊對話仍顯示教室名稱。
+/// S-14 只規定移出後失去該教室的學生權限、資料保留；這裡固定目前的行為，
+/// 之後若決定要隱藏，改這個測試，避免查詢調整時行為無聲改變。
+#[sqlx::test]
+async fn removed_students_still_see_the_source_of_their_own_conversations(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    // 學生還在另一間教室，移出後仍可使用
+    let second = classroom_with_description(&app, &a, "B 班", "教室說明").await;
+    enroll_student(&app, &a, &second).await;
+    let conv = start_conversation(&app, &a).await;
+    let res = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/classrooms/{}/roster/student@example.com", a.classroom),
+            Some(&a.teacher),
+            None,
+        ),
+    )
+    .await;
+    assert!(res.status().is_success());
+
+    let items = my_conversations(&app, &a.student, false).await;
+    assert_eq!(by_id(&items, &conv)["classroom_name"], "測試教室");
+    // 但移出的教室不再出現在目錄
+    assert!(
+        !catalog(&app, &a.student)
+            .await
+            .to_string()
+            .contains("測試教室")
+    );
+}
