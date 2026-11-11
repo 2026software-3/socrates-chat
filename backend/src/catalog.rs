@@ -212,7 +212,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
                 category = CASE WHEN $4 THEN $5::text ELSE category END,
                 is_active = COALESCE($6, is_active),
-                guiding_questions = COALESCE($7, guiding_questions),
+                guiding_questions = COALESCE($7::text[], guiding_questions),
                 updated_at = now()
          WHERE id = $1
          RETURNING id, title, description, category, is_active, guiding_questions",
