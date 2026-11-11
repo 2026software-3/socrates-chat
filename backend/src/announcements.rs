@@ -88,14 +88,21 @@ impl MaintenanceFlag {
             .unwrap_or_else(|e| e.into_inner())
             .is_none_or(|at| at.elapsed() >= MAINTENANCE_CACHE);
         if stale {
-            match sqlx::query_scalar::<_, bool>("SELECT enabled FROM maintenance_mode")
-                .fetch_one(pool)
-                .await
-            {
-                Ok(v) => self.set(v),
-                Err(e) => {
+            // 先記下檢查時間：資料庫讀不到時也只每 MAINTENANCE_CACHE 才再試一次，
+            // 而且最多等 1 秒，不讓資料庫故障拖慢每個請求；讀不到就沿用上一個值
+            *self.checked.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                sqlx::query_scalar::<_, bool>("SELECT enabled FROM maintenance_mode")
+                    .fetch_one(pool),
+            )
+            .await;
+            match read {
+                Ok(Ok(v)) => self.set(v),
+                Ok(Err(e)) => {
                     tracing::warn!(class = %crate::error::db_error_class(&e), "failed to read maintenance flag");
                 }
+                Err(_) => tracing::warn!("timed out reading maintenance flag"),
             }
         }
         self.on.load(Ordering::Relaxed)
