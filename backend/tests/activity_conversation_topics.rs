@@ -25,7 +25,47 @@ async fn existing_database_upgrades_without_losing_conversations(pool: PgPool) {
 
     let app = test_app(pool.clone());
     let actors = seed_actors(&app).await;
-    let (activity, first, second) = multi_topic_activity(&app, &actors).await;
+    // 升級前資料庫（< 20261107000100）尚未包含後續新增的欄位（如 guiding_questions），
+    // 依 migration 測試慣例（如 conversation_title_migration），升級前的題目以 raw SQL 插入。
+    let first: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO topics (title) VALUES ('第一題') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let second: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO topics (title) VALUES ('第二題') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let first = first.to_string();
+    let second = second.to_string();
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&actors.teacher),
+            Some(json!({
+                "title": "討論活動",
+                "classroom_id": actors.classroom,
+                "topic_ids": [&first, &second]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let activity = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/activities/{activity}/publish"),
+            Some(&actors.teacher),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
     let response = start_topic(&app, Some(&actors.student), &activity, &first).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let original = json_body(response).await["id"].as_str().unwrap().to_owned();
