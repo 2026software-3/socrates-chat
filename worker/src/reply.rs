@@ -28,7 +28,9 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{Notify, mpsc};
 
-use crate::rt::{Instant, timeout_at};
+use std::pin::pin;
+
+use crate::rt::{Instant, next_before, sleep_until, timeout_at};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -491,13 +493,16 @@ async fn attempt(
     let mut emitted = false;
     let mut splitter = MetaSplitter::default();
     let mut text = String::new();
+    // 每個期限一個計時器，整段串流共用（不是每個片段各建一個）
+    let mut first_timer = pin!(sleep_until(first_token_deadline.min(total_deadline)));
+    let mut total_timer = pin!(sleep_until(total_deadline));
     loop {
-        let limit = if got_chunk {
-            total_deadline
+        let next = if got_chunk {
+            next_before(&mut stream, total_timer.as_mut()).await
         } else {
-            first_token_deadline.min(total_deadline)
+            next_before(&mut stream, first_timer.as_mut()).await
         };
-        match timeout_at(limit, stream.next()).await {
+        match next {
             Err(_) | Ok(Some(Err(_))) => return Err(emitted),
             Ok(None) => break,
             Ok(Some(Ok(chunk))) => {

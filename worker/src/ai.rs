@@ -896,6 +896,39 @@ fn is_capacity_error(err: &serde_json::Map<String, serde_json::Value>) -> bool {
         })
 }
 
+/// 串流一行的信封：只取判斷需要的欄位。`error` 只記有沒有非 null 的值。
+#[derive(Deserialize)]
+struct ChunkLine<'a> {
+    #[serde(default, borrow)]
+    choices: Vec<ChunkChoice<'a>>,
+    #[serde(default, deserialize_with = "present_non_null")]
+    error: bool,
+}
+
+#[derive(Deserialize)]
+struct ChunkChoice<'a> {
+    #[serde(default, borrow)]
+    delta: Option<ChunkDelta<'a>>,
+    /// 只看是不是字串（null 或沒有都是 `None`）
+    #[serde(default, borrow)]
+    finish_reason: Option<std::borrow::Cow<'a, str>>,
+}
+
+#[derive(Deserialize, Default)]
+struct ChunkDelta<'a> {
+    #[serde(default, borrow)]
+    content: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    reasoning: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow)]
+    reasoning_content: Option<std::borrow::Cow<'a, str>>,
+}
+
+fn present_non_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let v: Option<serde::de::IgnoredAny> = Deserialize::deserialize(d)?;
+    Ok(v.is_some())
+}
+
 /// 解析 OpenAI 串流的一行（`data: {...}`）。格式錯誤回傳 `Err`，不會當作正常結束。
 pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
     let Some(data) = line.strip_prefix("data:") else {
@@ -904,6 +937,30 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
     let data = data.trim();
     if data == "[DONE]" {
         return Ok(SseItem::Done);
+    }
+    // 每個片段一行：先用只取需要欄位的型別解析（其餘欄位略過、字串盡量借用），
+    // 不為整個信封建 `serde_json::Value`。帶 `error`、或欄位型別不如預期（例如 `choices: null`）
+    // 的少見情況再走完整解析，結果與完整解析相同。
+    if let Ok(chunk) = serde_json::from_str::<ChunkLine>(data)
+        && !chunk.error
+    {
+        let Some(choice) = chunk.choices.into_iter().next() else {
+            return Ok(SseItem::Ignore);
+        };
+        let delta = choice.delta.unwrap_or_default();
+        if let Some(text) = delta.content.filter(|t| !t.is_empty()) {
+            return Ok(SseItem::Delta(text.into_owned()));
+        }
+        if [delta.reasoning, delta.reasoning_content]
+            .iter()
+            .any(|t| t.as_deref().is_some_and(|t| !t.is_empty()))
+        {
+            return Ok(SseItem::Reasoning);
+        }
+        if choice.finish_reason.is_some() {
+            return Ok(SseItem::Done);
+        }
+        return Ok(SseItem::Ignore);
     }
     let v: serde_json::Value = serde_json::from_str(data).map_err(|_| AiError)?;
     if let Some(text) = v["choices"][0]["delta"]["content"].as_str()
@@ -1081,12 +1138,48 @@ enum Pump {
     CapacityBeforeContent,
 }
 
+/// 片段的收集：同一次讀取解出的文字合併成一段再送出。
+#[derive(Default)]
+struct Batch {
+    text: String,
+    /// 推理已開始但還沒有正文：要送一個空片段讓呼叫端知道模型在回應
+    signal: bool,
+}
+
+impl Batch {
+    /// 送出累積的內容；呼叫端已經放棄時回傳 `false`。
+    async fn flush(&mut self, tx: &mpsc::Sender<Result<String, AiError>>) -> bool {
+        if self.text.is_empty() && !self.signal {
+            return true;
+        }
+        self.signal = false;
+        tx.send(Ok(std::mem::take(&mut self.text))).await.is_ok()
+    }
+}
+
+/// 開始收到內容後，每次取完 AI 串流至少隔這麼久才再取。
+///
+/// 模型大約每一兩個字送一個片段，一則回覆上百個；每個片段各自喚醒 Rust、各自變成一個送給學生的
+/// SSE 事件，是 Workers 免費方案（每次請求 10 ms CPU）的主要負擔。本文由 JS 持續讀進緩衝區
+/// （`http::BodyBuffer`），這裡隔一段時間取一次、合併成一段往下送。第一段不等（首字延遲不變），
+/// 之後畫面上的文字最多晚這麼久出現。
+const READ_PACE: std::time::Duration = std::time::Duration::from_millis(100);
+
 async fn pump(res: crate::http::Response, tx: &mpsc::Sender<Result<String, AiError>>) -> Pump {
-    let mut bytes = res.bytes_stream();
+    use crate::http::BodyChunk;
+    let Ok(body) = res.into_body_buffer() else {
+        return Pump::Failed;
+    };
     let mut decoder = SseDecoder::default();
     let mut started = false;
-    while let Some(chunk) = bytes.next().await {
-        let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+    let mut batch = Batch::default();
+    loop {
+        let bytes = match body.next().await {
+            BodyChunk::Bytes(b) => b,
+            BodyChunk::End => break,
+            BodyChunk::Failed => return Pump::Failed,
+        };
+        let items = match decoder.push(&bytes) {
             Ok(items) => items,
             Err(_) => return Pump::Failed,
         };
@@ -1094,25 +1187,39 @@ async fn pump(res: crate::http::Response, tx: &mpsc::Sender<Result<String, AiErr
             match item {
                 SseItem::Delta(t) => {
                     started = true;
-                    if tx.send(Ok(t)).await.is_err() {
-                        return Pump::Finished;
-                    }
+                    batch.signal = false;
+                    batch.text.push_str(&t);
                 }
                 // 推理模型可能推理數十秒才輸出正文：推理一開始就送一個空片段，
                 // 讓呼叫端知道模型已在回應，不套用首字逾時
                 SseItem::Reasoning if !started => {
                     started = true;
-                    if tx.send(Ok(String::new())).await.is_err() {
-                        return Pump::Finished;
-                    }
+                    batch.signal = true;
                 }
                 SseItem::Error { capacity: true } if !started => {
                     return Pump::CapacityBeforeContent;
                 }
-                SseItem::Error { .. } => return Pump::Failed,
+                // 先送出同一次讀到的內容，與逐段送出時一樣：已送出內容的回覆不自動重試
+                SseItem::Error { .. } => {
+                    batch.flush(tx).await;
+                    return Pump::Failed;
+                }
                 // 看到結束標記才算正常完成
-                SseItem::Done => return Pump::Finished,
+                SseItem::Done => {
+                    batch.flush(tx).await;
+                    return Pump::Finished;
+                }
                 SseItem::Reasoning | SseItem::Ignore => {}
+            }
+        }
+        if !batch.flush(tx).await {
+            return Pump::Finished;
+        }
+        if started {
+            crate::rt::sleep(READ_PACE).await;
+            // 呼叫端已經放棄：不必再讀（丟棄 `body` 時取消讀取）
+            if tx.is_closed() {
+                return Pump::Finished;
             }
         }
     }
@@ -1137,7 +1244,7 @@ pub async fn collect(
     first_token: std::time::Duration,
     total: std::time::Duration,
 ) -> Result<String, AiError> {
-    use crate::rt::{Instant, timeout_at};
+    use crate::rt::{Instant, next_before, sleep_until, timeout_at};
     let start = Instant::now();
     let first_deadline = start + first_token;
     let total_deadline = start + total;
@@ -1146,13 +1253,16 @@ pub async fn collect(
         .map_err(|_| AiError)??;
     let mut text = String::new();
     let mut got_chunk = false;
+    // 每個期限一個計時器，整段串流共用
+    let mut first_timer = std::pin::pin!(sleep_until(first_deadline.min(total_deadline)));
+    let mut total_timer = std::pin::pin!(sleep_until(total_deadline));
     loop {
-        let limit = if got_chunk {
-            total_deadline
+        let next = if got_chunk {
+            next_before(&mut stream, total_timer.as_mut()).await
         } else {
-            first_deadline.min(total_deadline)
+            next_before(&mut stream, first_timer.as_mut()).await
         };
-        match timeout_at(limit, stream.next()).await {
+        match next {
             Err(_) | Ok(Some(Err(_))) => return Err(AiError),
             Ok(None) => return Ok(text),
             Ok(Some(Ok(chunk))) => {
@@ -1786,6 +1896,51 @@ mod tests {
         assert_eq!(parse_sse_line(": keep-alive"), Ok(SseItem::Ignore));
         // 壞掉的 JSON 不能被當作正常內容或正常結束
         assert_eq!(parse_sse_line("data: {oops"), Err(AiError));
+    }
+
+    #[test]
+    fn sse_line_parsing_handles_full_openai_envelopes() {
+        let envelope = |choices: &str, extra: &str| {
+            format!(
+                "data: {{\"id\":\"chatcmpl-x\",\"object\":\"chat.completion.chunk\",\"created\":1,\
+                 \"model\":\"m\",\"system_fingerprint\":\"fp\",\"choices\":{choices}{extra},\
+                 \"obfuscation\":\"ab\"}}"
+            )
+        };
+        // 有跳脫字元的內容（不能借用原字串）也要還原
+        assert_eq!(
+            parse_sse_line(&envelope(
+                r#"[{"index":0,"delta":{"content":"「好」\n\"嗎\""},"logprobs":null,"finish_reason":null}]"#,
+                ",\"usage\":null"
+            )),
+            Ok(SseItem::Delta("「好」\n\"嗎\"".to_string()))
+        );
+        // 第一個片段只有角色、內容是空字串
+        assert_eq!(
+            parse_sse_line(&envelope(
+                r#"[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"finish_reason":null}]"#,
+                ""
+            )),
+            Ok(SseItem::Ignore)
+        );
+        // 最後的用量片段：choices 是空陣列
+        assert_eq!(
+            parse_sse_line(&envelope("[]", ",\"usage\":{\"total_tokens\":3}")),
+            Ok(SseItem::Ignore)
+        );
+        // 欄位型別不如預期時與完整解析的結果相同（不當作格式錯誤）
+        assert_eq!(parse_sse_line(&envelope("null", "")), Ok(SseItem::Ignore));
+        assert_eq!(
+            parse_sse_line(&envelope(r#"[{"delta":{"content":7}}]"#, "")),
+            Ok(SseItem::Ignore)
+        );
+        assert_eq!(
+            parse_sse_line(&envelope(
+                r#"[{"delta":{},"finish_reason":"length"}]"#,
+                ",\"error\":null"
+            )),
+            Ok(SseItem::Done)
+        );
     }
 
     #[test]

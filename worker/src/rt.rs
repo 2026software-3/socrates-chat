@@ -9,7 +9,7 @@
 use std::{
     future::Future,
     ops::{Add, Sub},
-    pin::pin,
+    pin::{Pin, pin},
     time::Duration,
 };
 
@@ -109,6 +109,30 @@ pub async fn timeout<F: Future>(d: Duration, fut: F) -> Result<F::Output, Elapse
 /// `tokio::time::timeout_at` 的替代。
 pub async fn timeout_at<F: Future>(deadline: Instant, fut: F) -> Result<F::Output, Elapsed> {
     timeout(deadline.saturating_duration_since(Instant::now()), fut).await
+}
+
+/// 等到 `deadline`。剩餘時間在第一次 poll 時才計算（計時器也在那時才建立），
+/// 先建好、晚一點才開始等也不會讓期限往後延。
+pub async fn sleep_until(deadline: Instant) {
+    sleep(deadline.saturating_duration_since(Instant::now())).await
+}
+
+/// 在 `timer` 到期前取串流的下一項。`timer` 由呼叫端持有、跨多次呼叫重複使用：
+/// 逐段讀取串流時不必每段各建一個計時器（每個都要跨 JS 呼叫 `setTimeout`／`clearTimeout`）。
+/// `timer` 必須一直在同一個工作裡被 poll（`Delay` 只記得第一次 poll 的 waker）。
+pub async fn next_before<S, T>(
+    stream: &mut S,
+    timer: Pin<&mut T>,
+) -> Result<Option<S::Item>, Elapsed>
+where
+    S: futures_util::Stream + Unpin,
+    T: Future<Output = ()>,
+{
+    use futures_util::StreamExt;
+    match select(stream.next(), timer).await {
+        Either::Left((item, _)) => Ok(item),
+        Either::Right(_) => Err(Elapsed),
+    }
 }
 
 /// 在目前的請求內執行一個背景工作（`tokio::spawn` 的替代）。回應送出後不保證繼續執行。

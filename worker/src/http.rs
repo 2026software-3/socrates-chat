@@ -3,6 +3,7 @@
 //! 所有 future 與串流都包成 `Send`（Workers 是單執行緒，見 `worker::send`），才能放進 axum handler 與 `async_trait`。
 
 use std::{
+    future::Future,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -286,6 +287,119 @@ impl Response {
             Err(e) => Box::pin(futures_util::stream::once(async move { Err(e) })),
         };
         SendStream(inner)
+    }
+}
+
+impl Response {
+    /// 由 JS 持續讀取回應本文、累積在 JS 端的緩衝區；Rust 每次取走目前累積的全部位元組（AI 串流）。
+    ///
+    /// 用 `bytes_stream` 時每個網路片段都是一次 JS→wasm 的 Promise／喚醒／複製，AI 串流一則回覆上百個片段，
+    /// 是 Workers 免費方案 CPU 用量的大宗。JS 自己讀不跨 wasm，便宜得多；Rust 可以隔一段時間才來取一次。
+    pub fn into_body_buffer(self) -> Result<BodyBuffer, Error> {
+        match self.inner.body() {
+            worker::ResponseBody::Stream(stream) => Ok(BodyBuffer(SendWrapper::new(
+                JsBodyBuffer::new(stream.as_ref()),
+            ))),
+            _ => Err(Error::failed()),
+        }
+    }
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export class BodyBuffer {
+  constructor(stream) {
+    this.reader = stream.getReader();
+    this.chunks = [];
+    this.state = 0; // 0 讀取中、1 正常結束、2 失敗
+    this.waiter = null;
+    this.pump();
+  }
+  async pump() {
+    try {
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) { this.state = 1; break; }
+        if (value && value.byteLength) { this.chunks.push(value); this.wake(); }
+      }
+    } catch (_) {
+      this.state = 2;
+    }
+    this.wake();
+  }
+  wake() {
+    const w = this.waiter;
+    if (w) { this.waiter = null; w(); }
+  }
+  ready() {
+    if (this.chunks.length || this.state) return Promise.resolve();
+    return new Promise((r) => { this.waiter = r; });
+  }
+  take() {
+    const c = this.chunks;
+    if (!c.length) return undefined;
+    this.chunks = [];
+    if (c.length === 1) return c[0];
+    let n = 0;
+    for (const x of c) n += x.byteLength;
+    const out = new Uint8Array(n);
+    let at = 0;
+    for (const x of c) { out.set(x, at); at += x.byteLength; }
+    return out;
+  }
+  get status() { return this.state; }
+  cancel() {
+    if (!this.state) { this.state = 2; this.reader.cancel().catch(() => {}); }
+  }
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = BodyBuffer)]
+    type JsBodyBuffer;
+    #[wasm_bindgen(constructor, js_class = BodyBuffer)]
+    fn new(stream: &wasm_bindgen::JsValue) -> JsBodyBuffer;
+    #[wasm_bindgen(method, js_class = BodyBuffer)]
+    fn ready(this: &JsBodyBuffer) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_class = BodyBuffer)]
+    fn take(this: &JsBodyBuffer) -> Option<js_sys::Uint8Array>;
+    #[wasm_bindgen(method, getter, js_class = BodyBuffer)]
+    fn status(this: &JsBodyBuffer) -> u32;
+    #[wasm_bindgen(method, js_class = BodyBuffer)]
+    fn cancel(this: &JsBodyBuffer);
+}
+
+/// `BodyBuffer::next` 的結果。
+pub enum BodyChunk {
+    /// 上次取走之後累積的全部位元組（至少一個位元組）
+    Bytes(Vec<u8>),
+    /// 本文已讀完
+    End,
+    /// 讀取失敗（連線中斷等）
+    Failed,
+}
+
+/// 見 `Response::into_body_buffer`。丟棄時取消讀取。
+pub struct BodyBuffer(SendWrapper<JsBodyBuffer>);
+
+impl BodyBuffer {
+    /// 等到有資料（或本文結束、失敗）為止，取走目前累積的全部位元組。
+    /// 失敗前已收到的資料會先交出，下一次才回報失敗。
+    pub fn next(&self) -> impl Future<Output = BodyChunk> + Send + '_ {
+        let ready = wasm_bindgen_futures::JsFuture::from(self.0.ready());
+        let js = &self.0;
+        SendFuture::new(async move {
+            let _ = ready.await;
+            match js.take() {
+                Some(bytes) => BodyChunk::Bytes(bytes.to_vec()),
+                None if js.status() == 1 => BodyChunk::End,
+                None => BodyChunk::Failed,
+            }
+        })
+    }
+}
+
+impl Drop for BodyBuffer {
+    fn drop(&mut self) {
+        self.0.cancel();
     }
 }
 

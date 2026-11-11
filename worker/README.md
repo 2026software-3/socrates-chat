@@ -101,6 +101,20 @@ npx wrangler deploy --var APP_BASE_URL:https://<worker>.<subdomain>.workers.dev
 - 端對端煙霧測試（登入、教室、名單匯入、活動、開始對話、重複開始回 409、SSE 回覆、結束、背景總結、儀表板、點數、任務、管理介面、權限）：本機以假 AI 端點 **42/42** 通過；部署到 workers.dev 後 **40/43**，失敗的 3 項都需要真的 AI key（部署只放了佔位 key，AI 失敗時正確送出 `error` 事件，總結標成 `failed`）。
 - CPU 時間（`wrangler tail`，29 個請求，全部 `ok`、沒有超時中止）：中位數 7 ms；冷啟動 56 ms；**登入 7–27 ms**，常超過免費方案的 10 ms。Cloudflare 容許偶爾超出，持續超出會回 1102 錯誤，是免費方案最大的風險。
 - **接上真實 AI 後（2026-11-11）**：沿用 NTNU 的 AI 設定（`gpt-5.4-mini`，備援 `gpt-5-mini,gpt-5.4-nano,gpt-5.4`，推理強度 high），key 以 `OPENAI_API_KEYS` secret 設定、不進版本控制。線上煙霧測試 **42/42**：一則 AI 回覆約 4.9 秒串流完成，結束對話後的背景總結約 2 秒產生（`waitUntil` 上限 30 秒）。
-- **CPU 風險比登入更大的是對話**：同一輪 tail 收到的 20 筆全部 `ok`，中位數 7 ms，但送出訊息（串流 AI 回覆）一次 **68 ms CPU**。目前推測花在逐段解析 AI 串流，未做 profiling。每則訊息都是這個量級，免費方案在多人同時使用時很可能開始回 1102。
+- **對話的 CPU（68 ms → 約 17 ms）**：接上真實 AI 時，送出訊息（串流 AI 回覆）一次 68 ms CPU。量測結果：
+  - 本機以 `/proc` 量 workerd 的 CPU。假的 OpenAI 照實際格式每 1–2 字送一個片段，一則 180 個。整段回覆一次送完時每則約 24 ms，逐段送時約 122 ms，所以大部分成本跟著片段數走。
+  - 每個片段都要經過一次 JS→wasm 的 Promise、喚醒工作與複製，再變成一個送給學生的 SSE 事件；每段各建一個逾時計時器（`setTimeout`／`clearTimeout`）；每行信封還要整個解析成 `serde_json::Value`。
+  - V8 profiler 在 workerd 本機會把等待時間算進最後的 JS／wasm 堆疊，只能看比例，不能看絕對值。
+  - 改法（`ai.rs` 的 `pump`、`http.rs` 的 `BodyBuffer`、`reply.rs` 的 `attempt`）：
+    - AI 回應本文改由一小段 JS（`inline_js`）持續讀進緩衝區。收到第一段後，Rust 每 100 ms 才取一次並合併成一段往下送，首字延遲不變，畫面上的文字最多晚 100 ms。
+    - 每個期限只建一個計時器。
+    - 信封只解析需要的欄位。帶 `error` 或欄位型別不如預期時，退回完整解析，結果相同。
+    - 首字逾時、總逾時與「已送出內容就不自動重試」都在本機以短逾時實測過，行為與修改前相同。
+  - 線上結果（version `fa04283f`，tail 5 則）：33、17、21、15、16 ms。33 是部署後新 isolate 的第一則，其餘 15–21 ms；煙霧測試 42/42。
+  - 每則訊息現在只剩 4–6 個 delta（推理強度 high 時，正文開始後很快送完）。剩下的大多是固定成本：
+    - 一個請求本身約 3 ms，加上約 9 次 D1 往返，每次約 1 ms：session、對話檢查、claim 回合、存學生訊息、載入歷史、`save_reply` 的兩個查詢與 batch、釋放 claim。
+    - 個資遮蔽加系統提示原生約 4 µs，可以忽略。
+  - 要再降到 10 ms 左右，得把這些往返併成更少的語句或 batch，這部分還沒做。
+  - 仍高於免費方案的 10 ms；Cloudflare 容許偶爾超出，多人同時使用時是否回 1102 還沒驗證。
 - 試行站與 NTNU 共用同一把 key，試行站的用量會算進同一個額度。
 - 未驗證：長回覆（接近 `AI_TOTAL_TIMEOUT_SECS`）的總結能否在 `waitUntil` 30 秒內寫完、Google 登入（需要 OAuth client）、語音 STT（NTNU 用本機的 whisper，Worker 連不到）與 TTS、多 isolate 下的限流行為。
