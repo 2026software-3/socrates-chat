@@ -544,7 +544,12 @@
   - 傳遞 `X-Forwarded-For`、`Host` 與原始協定。
 - **來源 IP**：後端的 `TRUSTED_PROXIES` 必須包含代理所在的網段，後端才會採用它轉來的 `X-Forwarded-For`；沒設定時所有請求的來源都會變成代理的位址，登入限流（S-01.4、S-09.2.1）會把所有人當成同一個來源。
 - **上線**：這是 NTNU 正式環境（S-09.3）的變更。上線前要在測試環境驗證 SSE 串流、語音 WebSocket、停機說明頁與真實來源 IP；切換與回退（funnel 改回直接指向後端）步驟寫入 `docs/ntnu-ops.md`。
-- **仍待決定**：採用 nginx 或 Caddy（兩者都能滿足上述要求，實作時選定並說明理由）。
+- **採用 nginx（F-35 實作時選定，映像 `nginx:1.27-alpine`，設定在 `docker/proxy/`）**。理由：
+  - 上述要求在 nginx 都是明確的設定項（`proxy_buffering off`、`Upgrade` 標頭、`proxy_read_timeout`、`error_page 502 504 =503`），行為可逐項驗證；
+  - 用變數指定上游並以 Docker DNS 在每次請求時解析，後端容器停掉或不存在時代理照常啟動、回停機頁，後端回來不必重啟代理；
+  - 不需要 Caddy 的主要優點（自動 HTTPS），因為 HTTPS 由 funnel 處理；
+  - 靜態頁與存取日誌格式（不記查詢字串、Cookie）都在設定檔裡，沒有額外元件。
+- 驗證：`scripts/verify-proxy.sh`（假後端，CI 的 `Proxy` 工作流程也會跑）。SSE 不緩衝除了行為檢查，另外斷言生效的 nginx 設定，因為小量事件在緩衝開著時也常常即時送出，單看行為分辨不出來。
 
 ## S-17 客訴與寄信（已決定，2026-11，#513）
 
