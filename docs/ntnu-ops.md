@@ -51,6 +51,55 @@ serve／funnel 設定是綁在舊網域上的，改名後不會跟著搬。依�
 3. `ip` 應該是手機的公網位址，不是 `172.x`（Docker 閘道）或 `100.x`（Tailscale）。IPv6 來源會合併成 `/64` 網段，所以只會看到前四段，例如 `2a09:bac3:5808:323::/64`。行動網路的位址會變動，查 IP 與登入要在同一分鐘內做。
 4. 測完刪掉測試紀錄（`login_key` 若是真實帳號輸入也要刪，避免殘留失敗次數）：`delete from login_failures where login_key like '<前 8 碼>%'`。
 
+## 反向代理與停機說明頁（S-16，選用）
+
+`docker-compose.yml` 有一個 `proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）。啟用後路徑變成：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3080` → `proxy` 容器 → `app:3000`。後端連不上（容器停掉、重建中、WSL 剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。這一層**預設沒有啟用**；是否上線由維護者決定。
+
+- `proxy` 只綁 `127.0.0.1:3080`（`PROXY_PORT` 可改）。`app` 仍然綁 `127.0.0.1:3000`，所以**切換與回退都只是改 funnel 指向哪個埠**，兩條路可以同時存在。
+- 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
+- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態與耗時；不記 Cookie、Referer、User-Agent。
+
+### 上線前驗證
+
+1. 在任何有 Docker 的機器上跑 `scripts/verify-proxy.sh`（用假後端，不碰 `socrates-ntnu`）：檢查轉發、`X-Forwarded-For`、後端自己的 503 原樣轉發、SSE、WebSocket 升級、大請求，以及後端停掉時的停機頁與回來後的自動恢復。
+2. 在 NTNU 機器上，**先不動 funnel**，只啟動代理，直接打代理的埠確認它轉得到真的後端：
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile app --profile proxy up -d --no-deps proxy
+   curl -s http://127.0.0.1:3080/proxy-health            # ok
+   curl -s http://127.0.0.1:3080/ready                   # {"status":"ok"}
+   ```
+
+3. 確認 `docker-compose.ntnu.yml` 的 `TRUSTED_PROXIES` 包含 compose 網路（目前 `172.16.0.0/12`）。代理的對端是 compose 網路內的位址，沒包含的話所有人在登入限流眼裡都是同一個來源。
+4. SSE 與語音要用真的後端確認：`verify-proxy.sh` 用的是假後端。切換後立刻開一場對話（回覆要逐段出現）並試一次語音；有問題就照下面〈回退〉。
+
+### 切換
+
+```bash
+TS="/mnt/c/Program Files/Tailscale/tailscale.exe"
+"$TS" funnel --bg 3080         # 公開 443 改轉到 127.0.0.1:3080（代理）
+"$TS" serve status             # 應該只有一條：https://ray-nb.tail5fc9fe.ts.net (Funnel on) → http://127.0.0.1:3080
+```
+
+切換後馬上重跑上面〈驗證 TRUSTED_PROXIES（來源 IP）〉的步驟：`login_failures.ip` 要是手機的公網位址，不是 `172.x`。再用 `docker stop socrates-ntnu-app-1` 短暫停掉 app（先告知使用者，會中斷服務）確認公開網址出現停機頁，之後 `docker start socrates-ntnu-app-1`。
+
+### 回退
+
+出任何問題（回覆不逐段、語音連不上、來源 IP 不對），直接把 funnel 改回後端，不需要改容器：
+
+```bash
+"$TS" funnel --bg 3000
+"$TS" serve status             # → http://127.0.0.1:3000
+```
+
+要完全移除代理：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy rm -sf proxy`。
+
+### 已知限制
+
+- 代理只在**後端連不上或逾時**（nginx 自己產生的 502、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
+- WSL 或 Docker Desktop 重啟後，`proxy` 與 `app` 都要回來；`app` 的 bind mount 失效時（見〈重啟後的恢復〉）代理仍會顯示停機頁，直到 `app` 重建。
+- 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）。
+
 ## 部署
 
 ```bash
