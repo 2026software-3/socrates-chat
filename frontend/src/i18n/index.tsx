@@ -4,6 +4,7 @@ import { announcementsMessages } from '@/features/announcements/messages'
 import { authMessages } from '@/features/auth/messages'
 import { chatMessages } from '@/features/chat/messages'
 import { classroomsMessages } from '@/features/classrooms/messages'
+import { complaintMessages } from '@/features/complaints/messages'
 import { voiceMessages } from '@/features/chat/voice/messages'
 import { dashboardMessages } from '@/features/dashboard/messages'
 import { studentMessages } from '@/features/student/messages'
@@ -28,6 +29,7 @@ const bundles = [
   teacherMessages,
   adminMessages,
   announcementsMessages,
+  complaintMessages,
 ] as const
 
 type KeysOf<B> = B extends { 'zh-TW': infer M } ? keyof M : never
