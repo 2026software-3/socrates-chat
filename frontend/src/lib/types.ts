@@ -21,6 +21,7 @@ export type Topic = {
   description: string
   category: string | null
   is_active: boolean
+  guiding_questions?: string[]
 }
 
 export type ActivityStatus = 'draft' | 'published' | 'closed'
