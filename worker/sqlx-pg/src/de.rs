@@ -1,48 +1,105 @@
-//! 把 D1 查回的列轉成 Rust 型別。
+//! 把 PostgreSQL 查回的列轉成 Rust 型別（以 serde 的 `Deserialize` 當作 `FromRow`）。
 //!
-//! SQLite 沒有布林、陣列與時間型別，所以轉換時比 serde_json 寬鬆：整數 0／1 可讀成 `bool`，
-//! JSON 文字可讀成 `Vec`、map 或 struct，時間是 ISO 8601 字串（chrono 直接解析）。
+//! 每個欄位依它的 PostgreSQL 型別先轉成 `Cell`，再交給 serde：struct 依欄位名稱對應，
+//! tuple 與純量依欄位順序對應。時間轉成 RFC 3339 字串、UUID 轉成字串，由 chrono／uuid 的
+//! `Deserialize` 解析；jsonb 交給 serde_json。
 
 use std::sync::Arc;
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
 use serde::de::{
     self, DeserializeOwned, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess,
     Visitor,
 };
-use wasm_bindgen::JsValue;
+use tokio_postgres::{Row, types::Type};
+use uuid::Uuid;
 
 use crate::Error;
 
 #[derive(Debug, Clone)]
 pub enum Cell {
     Null,
+    Bool(bool),
     Int(i64),
     Real(f64),
     Text(String),
+    Bytes(Vec<u8>),
+    Json(serde_json::Value),
+    Array(Vec<Cell>),
+}
+
+fn opt<T>(v: Option<T>, f: impl FnOnce(T) -> Cell) -> Cell {
+    v.map_or(Cell::Null, f)
+}
+
+fn list<T>(v: Option<Vec<Option<T>>>, f: impl Fn(T) -> Cell) -> Cell {
+    v.map_or(Cell::Null, |items| {
+        Cell::Array(items.into_iter().map(|x| opt(x, &f)).collect())
+    })
+}
+
+fn time(t: DateTime<Utc>) -> Cell {
+    Cell::Text(t.to_rfc3339_opts(SecondsFormat::AutoSi, true))
 }
 
 impl Cell {
-    pub(crate) fn from_js(v: JsValue) -> Cell {
-        if v.is_null() || v.is_undefined() {
-            return Cell::Null;
-        }
-        if let Some(n) = v.as_f64() {
-            if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
-                return Cell::Int(n as i64);
+    /// 依欄位的 PostgreSQL 型別取值。
+    pub(crate) fn from_row(row: &Row, i: usize) -> Result<Cell, Error> {
+        let ty = row.columns()[i].type_().clone();
+        let bad = |e: tokio_postgres::Error| {
+            Error::Decode(format!("column {} ({ty}): {e}", row.columns()[i].name()))
+        };
+        Ok(match ty {
+            Type::BOOL => opt(row.try_get(i).map_err(bad)?, Cell::Bool),
+            Type::INT2 => opt(row.try_get::<_, Option<i16>>(i).map_err(bad)?, |v| {
+                Cell::Int(v.into())
+            }),
+            Type::INT4 => opt(row.try_get::<_, Option<i32>>(i).map_err(bad)?, |v| {
+                Cell::Int(v.into())
+            }),
+            Type::INT8 => opt(row.try_get(i).map_err(bad)?, Cell::Int),
+            Type::OID => opt(row.try_get::<_, Option<u32>>(i).map_err(bad)?, |v| {
+                Cell::Int(v.into())
+            }),
+            Type::FLOAT4 => opt(row.try_get::<_, Option<f32>>(i).map_err(bad)?, |v| {
+                Cell::Real(v.into())
+            }),
+            Type::FLOAT8 => opt(row.try_get(i).map_err(bad)?, Cell::Real),
+            Type::UUID => opt(row.try_get::<_, Option<Uuid>>(i).map_err(bad)?, |v| {
+                Cell::Text(v.hyphenated().to_string())
+            }),
+            Type::TIMESTAMPTZ => opt(row.try_get(i).map_err(bad)?, time),
+            Type::TIMESTAMP => opt(
+                row.try_get::<_, Option<NaiveDateTime>>(i).map_err(bad)?,
+                |v| time(v.and_utc()),
+            ),
+            Type::DATE => opt(row.try_get::<_, Option<NaiveDate>>(i).map_err(bad)?, |v| {
+                Cell::Text(v.format("%Y-%m-%d").to_string())
+            }),
+            Type::JSON | Type::JSONB => opt(row.try_get(i).map_err(bad)?, Cell::Json),
+            Type::BYTEA => opt(row.try_get(i).map_err(bad)?, Cell::Bytes),
+            Type::TEXT_ARRAY | Type::VARCHAR_ARRAY | Type::NAME_ARRAY => {
+                list(row.try_get(i).map_err(bad)?, Cell::Text)
             }
-            return Cell::Real(n);
-        }
-        if let Some(s) = v.as_string() {
-            return Cell::Text(s);
-        }
-        if let Some(b) = v.as_bool() {
-            return Cell::Int(b as i64);
-        }
-        // BLOB 等其他型別：轉成 JSON 文字
-        match serde_wasm_bindgen::from_value::<serde_json::Value>(v) {
-            Ok(value) => Cell::Text(value.to_string()),
-            Err(_) => Cell::Null,
-        }
+            Type::UUID_ARRAY => list(
+                row.try_get::<_, Option<Vec<Option<Uuid>>>>(i)
+                    .map_err(bad)?,
+                |v| Cell::Text(v.hyphenated().to_string()),
+            ),
+            Type::INT4_ARRAY => list(
+                row.try_get::<_, Option<Vec<Option<i32>>>>(i).map_err(bad)?,
+                |v| Cell::Int(v.into()),
+            ),
+            Type::INT8_ARRAY => list(row.try_get(i).map_err(bad)?, Cell::Int),
+            Type::BOOL_ARRAY => list(row.try_get(i).map_err(bad)?, Cell::Bool),
+            Type::JSONB_ARRAY | Type::JSON_ARRAY => list(row.try_get(i).map_err(bad)?, Cell::Json),
+            Type::TIMESTAMPTZ_ARRAY => list(row.try_get(i).map_err(bad)?, time),
+            // TEXT、VARCHAR、BPCHAR、NAME，以及其他可讀成文字的型別
+            _ => opt(
+                row.try_get::<_, Option<String>>(i).map_err(bad)?,
+                Cell::Text,
+            ),
+        })
     }
 }
 
@@ -176,16 +233,20 @@ impl<'de> SeqAccess<'de> for CellSeq {
 
 struct CellDe(Cell);
 
+fn json_err(e: serde_json::Error) -> DeError {
+    DeError(e.to_string())
+}
+
 impl CellDe {
     /// 文字內容是 JSON 時（陣列、物件），交給 serde_json。
-    fn json<'de, V: Visitor<'de>>(
+    fn json_text<'de, V: Visitor<'de>>(
         text: &str,
         f: impl FnOnce(serde_json::Value, V) -> Result<V::Value, serde_json::Error>,
         v: V,
     ) -> Result<V::Value, DeError> {
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| DeError(format!("invalid JSON column: {e}")))?;
-        f(value, v).map_err(|e| DeError(e.to_string()))
+        f(value, v).map_err(json_err)
     }
 }
 
@@ -195,18 +256,21 @@ impl<'de> Deserializer<'de> for CellDe {
     fn deserialize_any<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
         match self.0 {
             Cell::Null => v.visit_unit(),
+            Cell::Bool(b) => v.visit_bool(b),
             Cell::Int(n) => v.visit_i64(n),
             Cell::Real(n) => v.visit_f64(n),
             Cell::Text(s) => v.visit_string(s),
+            Cell::Bytes(b) => v.visit_byte_buf(b),
+            Cell::Json(j) => j.deserialize_any(v).map_err(json_err),
+            Cell::Array(items) => v.visit_seq(CellSeq(items.into_iter())),
         }
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
         match self.0 {
+            Cell::Bool(b) => v.visit_bool(b),
             Cell::Int(n) => v.visit_bool(n != 0),
-            Cell::Real(n) => v.visit_bool(n != 0.0),
-            Cell::Text(s) if s == "true" || s == "1" => v.visit_bool(true),
-            Cell::Text(s) if s == "false" || s == "0" => v.visit_bool(false),
+            Cell::Json(j) => j.deserialize_bool(v).map_err(json_err),
             other => Err(DeError(format!("expected boolean, got {other:?}"))),
         }
     }
@@ -219,7 +283,8 @@ impl<'de> Deserializer<'de> for CellDe {
                 .parse::<f64>()
                 .map_err(|_| DeError("expected number".into()))
                 .and_then(|n| v.visit_f64(n)),
-            Cell::Null => Err(DeError("expected number, got NULL".into())),
+            Cell::Json(j) => j.deserialize_f64(v).map_err(json_err),
+            other => Err(DeError(format!("expected number, got {other:?}"))),
         }
     }
 
@@ -231,10 +296,7 @@ impl<'de> Deserializer<'de> for CellDe {
         match self.0 {
             Cell::Int(n) => v.visit_i64(n),
             Cell::Real(n) if n.fract() == 0.0 => v.visit_i64(n as i64),
-            Cell::Text(s) => s
-                .parse::<i64>()
-                .map_err(|_| DeError("expected integer".into()))
-                .and_then(|n| v.visit_i64(n)),
+            Cell::Json(j) => j.deserialize_i64(v).map_err(json_err),
             other => Err(DeError(format!("expected integer, got {other:?}"))),
         }
     }
@@ -270,28 +332,49 @@ impl<'de> Deserializer<'de> for CellDe {
             Cell::Text(s) => v.visit_string(s),
             Cell::Int(n) => v.visit_string(n.to_string()),
             Cell::Real(n) => v.visit_string(n.to_string()),
-            Cell::Null => Err(DeError("expected text, got NULL".into())),
+            Cell::Json(serde_json::Value::String(s)) => v.visit_string(s),
+            other => Err(DeError(format!("expected text, got {other:?}"))),
         }
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
         match self.0 {
-            Cell::Null => v.visit_none(),
+            Cell::Null | Cell::Json(serde_json::Value::Null) => v.visit_none(),
             other => v.visit_some(CellDe(other)),
         }
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
         match self.0 {
-            Cell::Text(s) => Self::json(&s, |value, v| value.deserialize_seq(v), v),
+            Cell::Array(items) => v.visit_seq(CellSeq(items.into_iter())),
+            Cell::Bytes(b) => v.visit_seq(CellSeq(
+                b.into_iter()
+                    .map(|x| Cell::Int(x.into()))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )),
+            Cell::Json(j) => j.deserialize_seq(v).map_err(json_err),
+            Cell::Text(s) => Self::json_text(&s, |value, v| value.deserialize_seq(v), v),
             Cell::Null => v.visit_seq(CellSeq(Vec::new().into_iter())),
-            other => Err(DeError(format!("expected JSON array, got {other:?}"))),
+            other => Err(DeError(format!("expected array, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_bytes<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
+        self.deserialize_byte_buf(v)
+    }
+
+    fn deserialize_byte_buf<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
+        match self.0 {
+            Cell::Bytes(b) => v.visit_byte_buf(b),
+            other => CellDe(other).deserialize_seq(v),
         }
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, v: V) -> Result<V::Value, DeError> {
         match self.0 {
-            Cell::Text(s) => Self::json(&s, |value, v| value.deserialize_map(v), v),
+            Cell::Json(j) => j.deserialize_map(v).map_err(json_err),
+            Cell::Text(s) => Self::json_text(&s, |value, v| value.deserialize_map(v), v),
             other => Err(DeError(format!("expected JSON object, got {other:?}"))),
         }
     }
@@ -303,8 +386,9 @@ impl<'de> Deserializer<'de> for CellDe {
         v: V,
     ) -> Result<V::Value, DeError> {
         match self.0 {
+            Cell::Json(j) => j.deserialize_struct(name, fields, v).map_err(json_err),
             Cell::Text(s) => {
-                Self::json(&s, |value, v| value.deserialize_struct(name, fields, v), v)
+                Self::json_text(&s, |value, v| value.deserialize_struct(name, fields, v), v)
             }
             other => Err(DeError(format!("expected JSON object, got {other:?}"))),
         }
@@ -320,12 +404,13 @@ impl<'de> Deserializer<'de> for CellDe {
 
     fn deserialize_enum<V: Visitor<'de>>(
         self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
+        name: &'static str,
+        variants: &'static [&'static str],
         v: V,
     ) -> Result<V::Value, DeError> {
         match self.0 {
             Cell::Text(s) => v.visit_enum(s.into_deserializer()),
+            Cell::Json(j) => j.deserialize_enum(name, variants, v).map_err(json_err),
             other => Err(DeError(format!("expected enum text, got {other:?}"))),
         }
     }
@@ -343,6 +428,73 @@ impl<'de> Deserializer<'de> for CellDe {
     }
 
     serde::forward_to_deserialize_any! {
-        i128 u128 char bytes byte_buf unit_struct tuple_struct identifier
+        i128 u128 char unit_struct tuple_struct identifier
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    fn cols(names: &[&str]) -> Arc<[String]> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[derive(Deserialize, Debug)]
+    struct Item {
+        id: Uuid,
+        name: Option<String>,
+        enabled: bool,
+        tags: Vec<String>,
+        at: DateTime<Utc>,
+        meta: crate::types::Json<serde_json::Value>,
+    }
+
+    #[test]
+    fn struct_columns_map_by_name_and_types_round_trip() {
+        let id = Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
+        let at = DateTime::parse_from_rfc3339("2026-11-11T01:02:03.456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let item: Item = from_row(
+            &cols(&["enabled", "id", "name", "tags", "at", "meta", "extra"]),
+            vec![
+                Cell::Bool(true),
+                Cell::Text(id.to_string()),
+                Cell::Null,
+                Cell::Array(vec![Cell::Text("a".into()), Cell::Text("b".into())]),
+                time(at),
+                Cell::Json(serde_json::json!({"k": [1, 2]})),
+                Cell::Int(7),
+            ],
+        )
+        .unwrap();
+        assert_eq!(item.id, id);
+        assert_eq!(item.name, None);
+        assert!(item.enabled);
+        assert_eq!(item.tags, ["a", "b"]);
+        assert_eq!(item.at, at);
+        assert_eq!(item.meta.0, serde_json::json!({"k": [1, 2]}));
+    }
+
+    #[test]
+    fn tuples_and_scalars_map_by_position() {
+        let (n, s, f): (i64, String, f64) = from_row(
+            &cols(&["count", "?column?", "avg"]),
+            vec![Cell::Int(3), Cell::Text("x".into()), Cell::Real(1.5)],
+        )
+        .unwrap();
+        assert_eq!((n, s.as_str(), f), (3, "x", 1.5));
+        let v: Option<i32> = from_scalar(vec![Cell::Null]).unwrap();
+        assert_eq!(v, None);
+        let b: Vec<u8> = from_scalar(vec![Cell::Bytes(vec![1, 2, 3])]).unwrap();
+        assert_eq!(b, [1, 2, 3]);
+    }
+
+    #[test]
+    fn decode_errors_do_not_panic() {
+        let r: Result<i64, _> = from_scalar(vec![Cell::Text("nope".into())]);
+        assert!(r.is_err());
     }
 }

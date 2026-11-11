@@ -27,13 +27,22 @@ pub struct Activity {
     pub created_at: DateTime<Utc>,
 }
 
-/// 活動（table alias `a`）的 `topic_ids`（依順序的 JSON 陣列）與相容舊欄位 `topic_id`（第一個題目）。
-/// PostgreSQL 版用 `LATERAL` 加 `array_agg`；SQLite 用相關子查詢與 `json_group_array`。
+/// `topic_ids`（依順序）與相容舊欄位 `topic_id`（第一個題目）兩個輸出欄位；需搭配 `topic_join!`。
 macro_rules! topic_columns {
     () => {
-        "(SELECT json_group_array(topic_id) FROM
-             (SELECT topic_id FROM activity_topics WHERE activity_id = a.id ORDER BY position)) AS topic_ids,
-         (SELECT topic_id FROM activity_topics WHERE activity_id = a.id ORDER BY position LIMIT 1) AS topic_id"
+        "COALESCE(tp.ids, ARRAY[]::uuid[]) AS topic_ids, tp.ids[1] AS topic_id"
+    };
+}
+
+/// 取得活動（table alias 為 `$alias`）的有序題目陣列 `tp.ids`。
+macro_rules! topic_join {
+    ($alias:literal) => {
+        concat!(
+            "LEFT JOIN LATERAL (SELECT array_agg(topic_id ORDER BY position) AS ids
+                                FROM activity_topics WHERE activity_id = ",
+            $alias,
+            ".id) tp ON true "
+        )
     };
 }
 
@@ -44,6 +53,7 @@ macro_rules! activity_select {
             topic_columns!(),
             ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
+            topic_join!("a"),
             $tail
         )
     };
@@ -63,9 +73,9 @@ pub async fn list(
     let (after_time, after_id) = after.unzip();
     sqlx::query_as(activity_select!(
         "JOIN classrooms cl ON cl.id = a.classroom_id
-         WHERE ($1 OR cl.created_by = $2) AND ($3 IS NULL OR a.classroom_id = $3)
+         WHERE ($1 OR cl.created_by = $2) AND ($3::uuid IS NULL OR a.classroom_id = $3)
            AND a.is_archived = $4
-           AND ($5 IS NULL
+           AND ($5::timestamptz IS NULL
                 OR a.created_at < $5 OR (a.created_at = $5 AND a.id > $6))
          ORDER BY a.created_at DESC, a.id ASC LIMIT $7"
     ))
@@ -117,34 +127,33 @@ pub async fn create_with_schedule<'e>(
     schedule: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
 ) -> Result<Activity, sqlx::Error> {
     let (opens_at, closes_at) = schedule;
-    // SQLite 不能在 CTE 裡 INSERT：活動與題目在同一個 D1 batch 內寫入（原子），再讀回。
-    let pool = sqlx::Executor::into_pool(executor);
-    let id = Uuid::new_v4();
-    let mut writes = vec![
-        sqlx::query(
-            "INSERT INTO activities (id, title, description, classroom_id, created_by, opens_at, closes_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(id)
-        .bind(title)
-        .bind(description)
-        .bind(classroom_id)
-        .bind(created_by)
-        .bind(opens_at)
-        .bind(closes_at),
-    ];
-    for (position, topic_id) in topic_ids.iter().enumerate() {
-        writes.push(
-            sqlx::query(
-                "INSERT INTO activity_topics (activity_id, topic_id, position) VALUES ($1, $2, $3)",
-            )
-            .bind(id)
-            .bind(topic_id)
-            .bind(position as i64),
-        );
-    }
-    pool.batch(writes).await?;
-    find_by_id(&pool, id).await
+    sqlx::query_as(
+        "WITH a AS (
+            INSERT INTO activities (title, description, classroom_id, created_by, opens_at, closes_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
+         ),
+         ins AS (
+            INSERT INTO activity_topics (activity_id, topic_id, position)
+            SELECT a.id, t.topic_id, (t.ord - 1)::integer
+            FROM a
+            CROSS JOIN LATERAL unnest($7::uuid[]) WITH ORDINALITY AS t(topic_id, ord)
+         )
+         SELECT a.id, a.title, a.description,
+                $7::uuid[] AS topic_ids,
+                ($7::uuid[])[1] AS topic_id,
+                a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+         FROM a",
+    )
+    .bind(title)
+    .bind(description)
+    .bind(classroom_id)
+    .bind(created_by)
+    .bind(opens_at)
+    .bind(closes_at)
+    .bind(topic_ids)
+    .fetch_one(executor)
+    .await
 }
 
 /// 改變狀態；活動不存在、不在操作者可管理的教室、教室或活動已封存時回 `None`（呼叫端再分辨原因）。
@@ -155,25 +164,26 @@ pub async fn set_status_writable(
     is_admin: bool,
     status: &str,
 ) -> Result<Option<Activity>, sqlx::Error> {
-    // SQLite 不能在 CTE 裡 UPDATE：先更新，有更新到再讀回。
-    let updated: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE activities SET status = $2, updated_at = now()
-         WHERE id = $1 AND NOT is_archived
-           AND EXISTS (SELECT 1 FROM classrooms cl
-                       WHERE cl.id = activities.classroom_id AND ($3 OR cl.created_by = $4)
-                         AND NOT cl.is_archived)
-         RETURNING id",
-    )
+    sqlx::query_as(concat!(
+        "WITH upd AS (
+            UPDATE activities a SET status = $2, updated_at = now()
+            FROM classrooms cl
+            WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
+              AND NOT cl.is_archived AND NOT a.is_archived
+            RETURNING a.id, a.title, a.description, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+         )
+         SELECT u.id, u.title, u.description, ",
+        topic_columns!(),
+        ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
+         FROM upd u ",
+        topic_join!("u")
+    ))
     .bind(id)
     .bind(status)
     .bind(is_admin)
     .bind(actor_id)
     .fetch_optional(pool)
-    .await?;
-    match updated {
-        Some(id) => find_by_id(pool, id).await.map(Some),
-        None => Ok(None),
-    }
+    .await
 }
 
 /// 學生可選的活動：已發布、未封存、在開放期間內（以資料庫時間計算），且所在教室的名單內有這位學生。
@@ -183,8 +193,8 @@ pub async fn list_published_for_student(
 ) -> Result<Vec<Activity>, sqlx::Error> {
     sqlx::query_as(activity_select!(
         "WHERE a.status = 'published' AND NOT a.is_archived
-           AND (a.opens_at IS NULL OR now() >= a.opens_at)
-           AND (a.closes_at IS NULL OR now() < a.closes_at)
+           AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
+           AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
            AND NOT EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = a.classroom_id AND cl.is_archived)
            AND EXISTS (SELECT 1 FROM enrollments e
                        WHERE e.classroom_id = a.classroom_id AND e.user_id = $1)
@@ -236,7 +246,7 @@ pub async fn list_published_with_progress(
                 ON conv.activity_id = at.activity_id AND conv.topic_id = at.topic_id
                AND conv.user_id = $1
          LEFT JOIN summaries sm ON sm.conversation_id = conv.id
-         WHERE at.activity_id IN (SELECT value FROM json_each($2))
+         WHERE at.activity_id = ANY($2)
          ORDER BY at.activity_id, at.position",
     )
     .bind(user_id)
@@ -293,19 +303,21 @@ pub async fn find_startable_topic(
     topic_id: Option<Uuid>,
 ) -> Result<Option<Startable>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.id, t.id AS topic_id, a.classroom_id,
-                CASE WHEN $3 IS NULL THEN a.title ELSE t.title END AS title,
-                CASE WHEN $3 IS NULL THEN a.description ELSE t.description END AS description
+        "SELECT a.id, ft.topic_id, a.classroom_id,
+                CASE WHEN $3::uuid IS NULL THEN a.title ELSE t.title END AS title,
+                CASE WHEN $3::uuid IS NULL THEN a.description ELSE t.description END AS description
          FROM activities a
-         JOIN topics t ON t.id = (SELECT topic_id FROM activity_topics
-                                  WHERE activity_id = a.id AND ($3 IS NULL OR topic_id = $3)
-                                  ORDER BY position LIMIT 1)
+         JOIN LATERAL (SELECT topic_id FROM activity_topics
+                       WHERE activity_id = a.id AND ($3::uuid IS NULL OR topic_id = $3)
+                       ORDER BY position LIMIT 1) ft ON true
+         JOIN topics t ON t.id = ft.topic_id
          JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE a.id = $1 AND a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
-           AND (a.opens_at IS NULL OR now() >= a.opens_at)
-           AND (a.closes_at IS NULL OR now() < a.closes_at)
+           AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
+           AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
            AND EXISTS (SELECT 1 FROM enrollments e
-                       WHERE e.classroom_id = a.classroom_id AND e.user_id = $2)",
+                       WHERE e.classroom_id = a.classroom_id AND e.user_id = $2)
+         FOR SHARE OF a, cl",
     )
     .bind(id)
     .bind(user_id)
@@ -320,11 +332,19 @@ pub async fn set_archived<'e>(
     id: Uuid,
     archived: bool,
 ) -> Result<Activity, sqlx::Error> {
-    let pool = sqlx::Executor::into_pool(conn);
-    sqlx::query("UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(archived)
-        .execute(&pool)
-        .await?;
-    find_by_id(&pool, id).await
+    sqlx::query_as(concat!(
+        "WITH upd AS (
+            UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
+            RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
+         )
+         SELECT u.id, u.title, u.description, ",
+        topic_columns!(),
+        ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
+         FROM upd u ",
+        topic_join!("u")
+    ))
+    .bind(id)
+    .bind(archived)
+    .fetch_one(conn)
+    .await
 }

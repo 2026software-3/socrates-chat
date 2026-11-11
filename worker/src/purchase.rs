@@ -67,14 +67,13 @@ pub(crate) async fn buy(
     Path(id): Path<String>,
 ) -> Result<Json<PartView>, ApiError> {
     let mut tx = state.pool.begin().await?;
-    // PostgreSQL 版在這裡鎖住學生與商品；D1 版改由下方的條件式寫入保證不透支、價格一致。
-    let part: Part = sqlx::query_as(
-        "SELECT id, name_zh_tw, name_en, name_es, price, enabled FROM store_parts WHERE id=$1",
-    )
-    .bind(&id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(ApiError::not_found)?;
+    // 鎖定學生，讓並行購買無法花費同一筆餘額；鎖定商品，確保價格與啟用狀態一致。
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE")
+        .bind(cu.user.id)
+        .execute(&mut *tx)
+        .await?;
+    let part: Part = sqlx::query_as("SELECT id, name_zh_tw, name_en, name_es, price, enabled FROM store_parts WHERE id=$1 FOR SHARE")
+        .bind(&id).fetch_optional(&mut *tx).await?.ok_or_else(ApiError::not_found)?;
     if !part.enabled {
         return Err(ApiError::not_found());
     }
@@ -87,16 +86,8 @@ pub(crate) async fn buy(
         return Err(ApiError::conflict("insufficient_points", "點數不足"));
     }
     let entry = Entry::purchase(cu.user.id, "part_purchase", &part.id, part.price as u32);
-    // 上面的檢查只為了回應正確的錯誤碼；真正的保證在條件式寫入（D1 沒有列鎖）
-    if !points::record_purchase_if_affordable(&mut tx, &entry).await? {
-        let owned: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM point_ledger WHERE user_id=$1 AND source_type='purchase' AND source_id=$2)")
-            .bind(cu.user.id).bind(&id).fetch_one(&mut *tx).await?;
-        return Err(if owned {
-            ApiError::conflict("part_owned", "已擁有此部件")
-        } else {
-            // 並行的另一筆購買先花掉了餘額，或部件剛被停用／改價
-            ApiError::conflict("insufficient_points", "點數不足")
-        });
+    if !points::record(&mut tx, &entry).await? {
+        return Err(ApiError::conflict("part_owned", "已擁有此部件"));
     }
     achievements::record_first_character_part_in_tx(&mut tx, cu.user.id).await?;
     tx.commit().await?;
@@ -136,13 +127,8 @@ pub(crate) async fn update(
         return Err(ApiError::bad_request("invalid_request", "價格不可為負"));
     }
     let mut tx = state.pool.begin().await?;
-    let old: Part = sqlx::query_as(
-        "SELECT id, name_zh_tw, name_en, name_es, price, enabled FROM store_parts WHERE id=$1",
-    )
-    .bind(&id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(ApiError::not_found)?;
+    let old: Part = sqlx::query_as("SELECT id, name_zh_tw, name_en, name_es, price, enabled FROM store_parts WHERE id=$1 FOR UPDATE")
+        .bind(&id).fetch_optional(&mut *tx).await?.ok_or_else(ApiError::not_found)?;
     let new: Part = sqlx::query_as("UPDATE store_parts SET price=$2, enabled=$3 WHERE id=$1 RETURNING id, name_zh_tw, name_en, name_es, price, enabled")
         .bind(&id).bind(body.price).bind(body.enabled).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO audit_logs (actor_id, action, target_email, old_value, new_value) VALUES ($1, 'part_updated', $2, $3, $4)")

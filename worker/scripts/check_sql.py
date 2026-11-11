@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""靜態檢查 Workers 版的每一條 SQL：抽出 `sqlx::query*` 的字串常值，套用 sqlx-d1 的改寫
-（`$N` → `?N`、`now()` → ISO 時間），再對 D1 schema（migrations/*.sql）跑 `EXPLAIN`。
+"""抽出 Workers 版每一條靜態 SQL（`sqlx::query*` 的字串常值、`concat!` 與 SQL 巨集），輸出成 JSON，
+讓呼叫端對 PostgreSQL（套用 backend/migrations 的試行資料庫）逐條 `PREPARE` 檢查。
 
-EXPLAIN 只編譯不執行，能抓到語法錯誤、不存在的表或欄位、SQLite 沒有的函式。
-抓不到的：執行期的型別問題、條件邏輯是否與 PostgreSQL 版相同。
+PREPARE 只解析與規劃、不執行：能抓到語法錯誤、不存在的表或欄位、無法推斷型別的參數。
+抓不到的：執行期的型別問題、條件邏輯是否與後端相同。
 
-用法：python3 -I scripts/check_sql.py [src 目錄] [migrations 目錄]
+用法：python3 -I scripts/check_sql.py [src 目錄] > statements.json
 """
 import glob
 import os
 import re
-import sqlite3
+import json
 import sys
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else 'src'
-MIGRATIONS = sys.argv[2] if len(sys.argv) > 2 else 'migrations'
-NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
 # lib.rs 的 generation_unclaimed!() 巨集內容
 MACROS = {}
@@ -113,42 +111,10 @@ def collect_macros(paths):
             MACROS[m.group(1)] = (params, src[m.end():end].strip() + ' ')
 
 
-def translate(sql):
-    out = []
-    i = 0
-    in_str = False
-    while i < len(sql):
-        c = sql[i]
-        if in_str:
-            out.append(c)
-            if c == "'":
-                in_str = False
-            i += 1
-            continue
-        if c == "'":
-            in_str = True
-            out.append(c)
-            i += 1
-        elif c == '$' and i + 1 < len(sql) and sql[i + 1].isdigit():
-            out.append('?')
-            i += 1
-        elif sql.startswith('now()', i) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == '_')):
-            out.append(NOW_SQL)
-            i += 5
-        else:
-            out.append(c)
-            i += 1
-    return ''.join(out)
-
-
 def main():
     collect_macros(sorted(glob.glob(os.path.join(SRC, '*.rs'))))
-
-    db = sqlite3.connect(':memory:')
-    for f in sorted(glob.glob(os.path.join(MIGRATIONS, '*.sql'))):
-        db.executescript(open(f).read())
-
-    total = failures = dynamic = 0
+    out = []
+    dynamic = []
     pattern = re.compile(r'sqlx::query(?:_as|_scalar)?(?:::<[^(]*?>)?\(')
     for path in sorted(glob.glob(os.path.join(SRC, '*.rs'))):
         src = open(path).read()
@@ -157,24 +123,13 @@ def main():
         body = src if cut < 0 else src[:cut]
         for m in pattern.finditer(body):
             line = body.count('\n', 0, m.start()) + 1
-            sql = read_sql_expr(body, m.end())
             loc = f'{os.path.basename(path)}:{line}'
+            sql = read_sql_expr(body, m.end())
             if sql is None:
-                dynamic += 1
-                print(f'DYNAMIC {loc}')
-                continue
-            total += 1
-            translated = translate(sql)
-            nums = [int(n) for n in re.findall(r'\?(\d+)', translated)]
-            params = [None] * (max(nums) if nums else 0)
-            try:
-                db.execute('EXPLAIN ' + translated, params)
-            except sqlite3.Error as e:
-                failures += 1
-                print(f'FAIL {loc}: {e}')
-                print('     ' + ' '.join(sql.split())[:300])
-    print(f'checked {total} statements, {failures} failed, {dynamic} dynamic (not checked)')
-    sys.exit(1 if failures else 0)
+                dynamic.append(loc)
+            else:
+                out.append({'loc': loc, 'sql': sql})
+    json.dump({'statements': out, 'dynamic': dynamic}, sys.stdout, ensure_ascii=False, indent=1)
 
 
 if __name__ == '__main__':

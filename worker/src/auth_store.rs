@@ -197,7 +197,7 @@ pub async fn initialize_language(
 }
 
 /// `find_active_session` 一次查回的 session、使用者與角色。
-/// （SQLx 版用 `#[sqlx(flatten)]` 內嵌 `User`；D1 版的布林欄位要逐欄轉換，所以平鋪。）
+/// （SQLx 版用 `#[sqlx(flatten)]` 內嵌 `User`；Workers 版的 shim 依欄位名稱轉換，平鋪比較單純。）
 #[derive(FromRow)]
 struct SessionUserRow {
     session_id: Uuid,
@@ -218,53 +218,42 @@ struct SessionUserRow {
     student: bool,
 }
 
-/// `last_seen_at` 最多每隔這麼久寫一次：每個請求都寫會很快用完 D1 免費方案的每日寫入額度。
-/// 閒置上限是 7 天，一分鐘的誤差不影響。
-const LAST_SEEN_WRITE_EVERY: Duration = Duration::minutes(1);
-
 /// 查詢有效的 session 並更新 `last_seen_at`，連同使用者與角色一起查回。
 ///
-/// 閒置超過 7 天或建立超過 30 天視為失效（回傳 `None`）。每個需要登入的請求都會呼叫：
-/// 查詢是一個語句；`last_seen_at` 的更新最多每分鐘一次（SQLite 不能在 CTE 裡 UPDATE，所以分成兩個語句）。
+/// 閒置超過 7 天或建立超過 30 天視為失效（回傳 `None`）。每個需要登入的請求都會呼叫，
+/// 所以合成一個語句，只需一次資料庫往返。
 pub async fn find_active_session(
     pool: &PgPool,
     token_hash: &[u8],
     now: DateTime<Utc>,
 ) -> Result<Option<SessionUser>, sqlx::Error> {
     let row: Option<SessionUserRow> = sqlx::query_as(
-        "SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
+        "WITH s AS (
+             UPDATE sessions SET last_seen_at = $2
+             WHERE token_hash = $1 AND last_seen_at > $3 AND created_at > $4
+             RETURNING id, user_id, created_at, last_seen_at, must_change_password
+         )
+         SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
                 s.must_change_password AS session_must_change_password,
                 u.id, u.google_sub, u.email, u.student_id AS student_number, u.display_name, u.language, u.is_admin,
                 u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
                 EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id = u.id) AS student
-         FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = $1 AND s.last_seen_at > $2 AND s.created_at > $3",
+         FROM s JOIN users u ON u.id = s.user_id",
     )
     .bind(token_hash)
+    .bind(now)
     .bind(now - SESSION_IDLE_TTL)
     .bind(now - SESSION_ABSOLUTE_TTL)
     .fetch_optional(pool)
     .await?;
-    let Some(r) = row else {
-        return Ok(None);
-    };
-    let mut last_seen_at = r.last_seen_at;
-    if now - last_seen_at >= LAST_SEEN_WRITE_EVERY {
-        sqlx::query("UPDATE sessions SET last_seen_at = $2 WHERE id = $1")
-            .bind(r.session_id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-        last_seen_at = now;
-    }
-    Ok(Some(SessionUser {
+    Ok(row.map(|r| SessionUser {
         session: Session {
             id: r.session_id,
             user_id: r.id,
             created_at: r.session_created_at,
-            last_seen_at,
+            last_seen_at: r.last_seen_at,
             must_change_password: r.session_must_change_password,
         },
         user: User {
@@ -322,7 +311,7 @@ async fn save_state(
     link_user_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
     // 順便清掉放棄的登入流程，避免資料表無限成長
-    sqlx::query("DELETE FROM oauth_login_states WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-10 minutes')")
+    sqlx::query("DELETE FROM oauth_login_states WHERE created_at < now() - interval '10 minutes'")
         .execute(pool)
         .await?;
     sqlx::query(
@@ -364,7 +353,7 @@ pub async fn link_google(
     }
     let mut tx = pool.begin().await?;
     let is_student: Option<bool> =
-        sqlx::query_scalar("SELECT student_id IS NOT NULL FROM users WHERE id = $1")
+        sqlx::query_scalar("SELECT student_id IS NOT NULL FROM users WHERE id = $1 FOR UPDATE")
             .bind(user_id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -383,27 +372,12 @@ pub async fn link_google(
     if taken {
         return Ok(LinkOutcome::InUse);
     }
-    // 上面的檢查只為了回應正確的結果；D1 沒有列鎖，檢查與寫入之間可能有人把這個信箱加進教師名單，
-    // 所以同樣的條件再放進 UPDATE（單一語句是原子的）。信箱與 Google 帳號另有唯一約束。
-    let changed = sqlx::query(
-        "UPDATE users SET email = $2, google_sub = $3, updated_at = now()
-         WHERE id = $1 AND student_id IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM teachers WHERE email = $2)
-           AND NOT EXISTS (SELECT 1 FROM users o WHERE o.id <> $1 AND (o.email = $2 OR o.google_sub = $3))",
-    )
-    .bind(user_id)
-    .bind(&email)
-    .bind(google_sub)
-    .execute(&mut *tx)
-    .await;
-    match changed {
-        Ok(r) if r.rows_affected() == 1 => {}
-        Ok(_) => return Ok(LinkOutcome::InUse),
-        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
-            return Ok(LinkOutcome::InUse);
-        }
-        Err(e) => return Err(e),
-    }
+    sqlx::query("UPDATE users SET email = $2, google_sub = $3, updated_at = now() WHERE id = $1")
+        .bind(user_id)
+        .bind(&email)
+        .bind(google_sub)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(LinkOutcome::Linked)
 }
@@ -624,7 +598,7 @@ pub async fn clear_login_failures_of_user(
         .flatten()
         .map(|account| login_key(&account))
         .collect();
-    sqlx::query("DELETE FROM login_failures WHERE login_key IN (SELECT value FROM json_each($1))")
+    sqlx::query("DELETE FROM login_failures WHERE login_key = ANY($1)")
         .bind(keys)
         .execute(&mut *conn)
         .await?;
@@ -665,11 +639,13 @@ pub async fn delete_sessions_except(
     user_id: Uuid,
     keep: Option<&[u8]>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND ($2 IS NULL OR token_hash <> $2)")
-        .bind(user_id)
-        .bind(keep)
-        .execute(conn)
-        .await?;
+    sqlx::query(
+        "DELETE FROM sessions WHERE user_id = $1 AND ($2::bytea IS NULL OR token_hash <> $2)",
+    )
+    .bind(user_id)
+    .bind(keep)
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -685,7 +661,7 @@ pub async fn reset_password(
         "INSERT INTO users (email, password_hash, must_change_password)
          VALUES (lower($1), $2, true)
          ON CONFLICT (email) DO UPDATE SET
-            password_hash = excluded.password_hash, must_change_password = true, updated_at = now()
+            password_hash = EXCLUDED.password_hash, must_change_password = true, updated_at = now()
          RETURNING id",
     )
     .bind(email)

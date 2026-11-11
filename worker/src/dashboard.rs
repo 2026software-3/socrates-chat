@@ -73,7 +73,7 @@ pub(crate) async fn personal(
     let ((total_conversations, total_turns, completed), recent): ((i64, i64, i64), Vec<RecentRow>) =
         tokio::try_join!(
             sqlx::query_as(
-                "SELECT count(*), COALESCE(sum(turn_count), 0),
+                "SELECT count(*), COALESCE(sum(turn_count), 0)::bigint,
                         (SELECT count(*) FROM summaries s
                          JOIN conversations c ON c.id = s.conversation_id
                          WHERE c.user_id = $1 AND s.status = 'ready')
@@ -193,7 +193,7 @@ pub(crate) async fn class(
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN activities a ON a.id = c.activity_id
          LEFT JOIN claim_groups g ON g.id = s.claim_group_id
-         WHERE s.status = 'ready' AND ($3 IS NULL OR c.classroom_id = $3)
+         WHERE s.status = 'ready' AND ($3::uuid IS NULL OR c.classroom_id = $3)
          ORDER BY c.ended_at, s.conversation_id",
     )
     .bind(cu.roles.admin)

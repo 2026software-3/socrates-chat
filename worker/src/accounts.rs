@@ -155,14 +155,14 @@ pub(crate) fn ensure_confirmed(given: &str, expected: &str) -> Result<(), ApiErr
 
 /// 教室與活動刪除共用的 SQL 與稽核動作。
 pub(crate) struct DeleteSpec {
-    /// 要刪的列是否存在（D1 版當作稽核寫入的條件；PostgreSQL 版用來鎖列）
+    /// 鎖住要刪的列；開始對話會對同一列取 `FOR SHARE`，所以鎖住後再計數不會漏掉新對話
     pub lock: &'static str,
     pub count_conversations: &'static str,
     pub delete: &'static str,
     pub action: &'static str,
 }
 
-/// 計算一併刪除的對話數、寫入稽核日誌並刪除，三者在同一個 D1 batch 內（S-14）。
+/// 在同一個交易中鎖列、計算一併刪除的對話數、刪除並寫入稽核日誌（S-14）。
 pub(crate) async fn delete_with_audit(
     pool: &sqlx::PgPool,
     spec: &DeleteSpec,
@@ -171,27 +171,29 @@ pub(crate) async fn delete_with_audit(
     target: &str,
     reason: Option<String>,
 ) -> Result<(), ApiError> {
-    // 稽核（含一併刪除的對話數）與刪除在同一個 D1 batch（原子），依序執行：先在刪除前計數並寫稽核，
-    // 再刪除。PostgreSQL 版以 FOR UPDATE 鎖列再計數；batch 內不會有其他寫入插進來，計數一樣準確。
-    let audit_sql = format!(
-        "INSERT INTO audit_logs (actor_id, action, target_email, reason, item_count)
-         SELECT $2, $3, $4, $5, ({}) WHERE EXISTS ({})",
-        spec.count_conversations, spec.lock
-    );
-    let results = pool
-        .batch(vec![
-            sqlx::query(&audit_sql)
-                .bind(id)
-                .bind(actor)
-                .bind(spec.action)
-                .bind(target)
-                .bind(clean_reason(reason)),
-            sqlx::query(spec.delete).bind(id),
-        ])
+    let mut tx = pool.begin().await?;
+    let locked: Option<Uuid> = sqlx::query_scalar(spec.lock)
+        .bind(id)
+        .fetch_optional(&mut *tx)
         .await?;
-    if results.get(1).is_none_or(|r| r.rows_affected() == 0) {
+    if locked.is_none() {
         return Err(ApiError::not_found());
     }
+    let conversations: i64 = sqlx::query_scalar(spec.count_conversations)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query(spec.delete).bind(id).execute(&mut *tx).await?;
+    audit_counted(
+        &mut *tx,
+        actor,
+        spec.action,
+        target,
+        clean_reason(reason).as_deref(),
+        Some(conversations),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -231,14 +233,16 @@ pub(crate) async fn set_status(
     }
     let reason = clean_reason(body.reason);
     let mut tx = state.pool.begin().await?;
-    // PostgreSQL 版在這裡以 FOR UPDATE 鎖住所有管理者；D1 沒有列鎖，「至少保留一位管理者」改由下方
-    // UPDATE 的條件保證（單一語句是原子的），兩位管理者同時互相停用時只有一個成功。
-    // 只有學號、沒有信箱的帳號 email 是 NULL：稽核對象改用帳號 ID（與重設密碼相同）
-    let target: Option<(Option<String>, bool, bool)> =
-        sqlx::query_as("SELECT email, is_admin, disabled_at IS NOT NULL FROM users WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    // 以相同順序鎖住管理者，避免並行操作把最後兩位管理者同時停用。
+    sqlx::query("SELECT id FROM users WHERE is_admin ORDER BY id FOR UPDATE")
+        .fetch_all(&mut *tx)
+        .await?;
+    let target: Option<(Option<String>, bool, bool)> = sqlx::query_as(
+        "SELECT email, is_admin, disabled_at IS NOT NULL FROM users WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some((email, is_admin, disabled)) = target else {
         return Err(ApiError::not_found());
     };
@@ -260,24 +264,8 @@ pub(crate) async fn set_status(
             ));
         }
     }
-    let changed = sqlx::query(
-        "UPDATE users SET disabled_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now()
-         WHERE id = $1
-           AND (NOT $2 OR NOT is_admin
-                OR EXISTS (SELECT 1 FROM users o
-                           WHERE o.is_admin AND o.disabled_at IS NULL AND o.id <> $1))",
-    )
-    .bind(id)
-    .bind(body.disabled)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if changed == 0 {
-        return Err(ApiError::conflict(
-            "last_admin",
-            "至少需保留一位啟用中的管理者",
-        ));
-    }
+    sqlx::query("UPDATE users SET disabled_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now() WHERE id = $1")
+        .bind(id).bind(body.disabled).execute(&mut *tx).await?;
     if body.disabled {
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(id)
@@ -332,7 +320,7 @@ pub(crate) async fn delete_student(
     };
     let mut tx = state.pool.begin().await?;
     let account: Option<(Uuid, Option<String>, Option<String>, bool)> = sqlx::query_as(
-        "SELECT id, email, student_id, is_admin FROM users WHERE id = $1 OR email = $2",
+        "SELECT id, email, student_id, is_admin FROM users WHERE id = $1 OR email = $2 FOR UPDATE",
     )
     .bind(id)
     .bind(normalized_email.as_deref())
@@ -367,25 +355,11 @@ pub(crate) async fn delete_student(
     }
     // 限流紀錄用學號與電子郵件的雜湊為鍵，要在帳號還在時清掉
     crate::auth_store::clear_login_failures_of_user(&mut tx, user_id).await?;
-    // 對話、訊息、總結與 session 由外鍵連動刪除。
-    // PostgreSQL 版以 FOR UPDATE 鎖住帳號；D1 沒有列鎖，上面檢查之後學生可能剛被加進別位教師的教室，
-    // 所以「完全屬於自己教室」與「不是管理者」的條件再放進 DELETE（單一語句是原子的）。
-    let deleted = sqlx::query(
-        "DELETE FROM users WHERE id = $1 AND NOT is_admin
-           AND ($2 OR (EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id = $1)
-                       AND NOT EXISTS (SELECT 1 FROM enrollments e
-                                       JOIN classrooms c ON c.id = e.classroom_id
-                                       WHERE e.user_id = $1 AND c.created_by <> $3)))",
-    )
-    .bind(user_id)
-    .bind(cu.roles.admin)
-    .bind(cu.user.id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if deleted == 0 {
-        return Err(ApiError::not_found());
-    }
+    // 對話、訊息、總結與 session 由外鍵連動刪除
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
     audit(
         &mut *tx,
         cu.user.id,

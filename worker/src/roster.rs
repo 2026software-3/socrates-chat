@@ -334,6 +334,9 @@ pub(crate) async fn is_staff_email(
     Ok(staff)
 }
 
+/// 匯入交易共用的 advisory lock 鍵。
+const IMPORT_LOCK_KEY: i64 = 393;
+
 #[utoipa::path(
     post,
     path = "/api/classrooms/{id}/roster/import",
@@ -355,99 +358,49 @@ pub(crate) async fn import_roster(
     let mut existing = 0;
     let invalid = parsed.invalid;
     let mut credentials = Vec::new();
-    crate::classrooms::ensure_writable(&state.pool, classroom.id).await?;
-    // 整批名單、帳號與稽核放在同一個 D1 batch（原子）：PostgreSQL 版用一個交易，避免失敗時遺失
-    // 一次性的臨時密碼；D1 沒有交易，逐列寫入時中途失敗會留下已建立、密碼卻沒回給教師的帳號。
-    // 每列三個語句，依序執行：
-    //   1. 建立帳號：學號已存在就不動（ON CONFLICT），兩個教室同時匯入同一學號也不會失敗
-    //   2. 稽核：只在這列真的會被加入、且教室未封存時記錄（必須在 3 之前判斷）
-    //   3. 加入名單：教室在檢查後被封存時不加入（取代 PostgreSQL 版教室列的共享鎖）
-    // 匯入只新增，不移除名單上原有的人。
-    // 電子郵件不經匯入：Google 登入靠電子郵件比對帳號，匯入若能設定信箱，
-    // 知道學號的人就能接管別人的帳號，所以信箱只由學生自己填寫。
-    // 已有帳號的學號不必產生臨時密碼（每個雜湊都花 CPU）；這只是最佳化，正確性由 ON CONFLICT 保證
-    let numbers: Vec<&str> = parsed
-        .students
-        .iter()
-        .map(|r| r.student_number.as_str())
-        .collect();
-    let known: Vec<String> = sqlx::query_scalar(
-        "SELECT student_id FROM users WHERE student_id IN (SELECT value FROM json_each($1))",
-    )
-    .bind(&numbers)
-    .fetch_all(&state.pool)
-    .await?;
-    // 每列：(學號, 臨時密碼, 建立帳號語句的位置, 加入名單語句的位置)
-    let mut pending = Vec::with_capacity(parsed.students.len());
-    let mut writes = Vec::with_capacity(parsed.students.len() * 3);
+    let mut tx = state.pool.begin().await?;
+    // 封存檢查與寫入同一個交易：教室列的共享鎖持續到提交，封存不會插在中間
+    crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
+    // 整批名單、帳號與稽核一起提交，避免失敗時遺失一次性的臨時密碼。
+    // 匯入只新增，不移除名單上原有的人
+    // 匯入交易序列化，避免兩個教室同時替相同學號或信箱建立帳號。
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(IMPORT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
     for row in &parsed.students {
-        let mut created_at = None;
-        let mut temporary_password = None;
-        if !known.contains(&row.student_number) {
-            let password = password::generate_temporary();
-            let hash = hash_temporary(password.clone()).await?;
-            created_at = Some(writes.len());
-            writes.push(
-                sqlx::query(
-                    "INSERT INTO users (student_id, imported_name, display_name, password_hash, must_change_password)
-                     VALUES ($1, $2, $2, $3, true) ON CONFLICT (student_id) DO NOTHING",
-                )
-                .bind(&row.student_number)
-                .bind(&row.name)
-                .bind(&hash),
-            );
-            temporary_password = Some(password);
-        }
-        writes.push(
-            sqlx::query(
-                "INSERT INTO audit_logs (actor_id, action, target_email)
-                 SELECT $1, 'roster_added', u.id FROM users u
-                 WHERE u.student_id = $3
-                   AND NOT (SELECT is_archived FROM classrooms WHERE id = $2)
-                   AND NOT EXISTS (SELECT 1 FROM enrollments e
-                                   WHERE e.classroom_id = $2 AND e.user_id = u.id)",
-            )
-            .bind(cu.user.id)
-            .bind(classroom.id)
-            .bind(&row.student_number),
-        );
-        writes.push(
-            sqlx::query(
-                "INSERT INTO enrollments (classroom_id, user_id, student_id)
-                 SELECT $1, id, student_id FROM users
-                 WHERE student_id = $2 AND NOT (SELECT is_archived FROM classrooms WHERE id = $1)
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(classroom.id)
-            .bind(&row.student_number),
-        );
-        let enrolled_at = writes.len() - 1;
-        pending.push((
-            row.student_number.clone(),
-            temporary_password,
-            created_at,
-            enrolled_at,
-        ));
-    }
-    let results = state.pool.batch(writes).await?;
-    let affected = |i: usize| results.get(i).is_some_and(|r| r.rows_affected() == 1);
-    for (student_number, temporary_password, created_at, enrolled_at) in pending {
-        // 帳號是這次建立的，臨時密碼才有效；既有帳號（含同時被別的匯入建立的）密碼不變
-        if let (Some(i), Some(temporary_password)) = (created_at, temporary_password)
-            && affected(i)
+        // 電子郵件不經匯入：Google 登入靠電子郵件比對帳號，匯入若能設定信箱，
+        // 知道學號的人就能接管別人的帳號，所以信箱只由學生自己填寫。
+        let user_id = if let Some(id) =
+            roster_store::find_import_account(&mut tx, &row.student_number).await?
         {
+            id
+        } else {
+            let temporary_password = password::generate_temporary();
+            let hash = hash_temporary(temporary_password.clone()).await?;
+            let id = roster_store::create_student(&mut tx, &row.student_number, &row.name, &hash)
+                .await?;
             credentials.push(Credential {
-                student_number,
+                student_number: row.student_number.clone(),
                 temporary_password,
             });
-        }
-        // 教室在檢查後才被封存時不會加入，計為 existing；已建立的帳號照樣回傳臨時密碼
-        if affected(enrolled_at) {
+            id
+        };
+        if roster_store::add_user(&mut tx, classroom.id, user_id).await? {
             added += 1;
+            audit(
+                &mut *tx,
+                cu.user.id,
+                "roster_added",
+                &user_id.to_string(),
+                None,
+            )
+            .await?;
         } else {
             existing += 1;
         }
     }
+    tx.commit().await?;
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(ImportResult {

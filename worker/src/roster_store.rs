@@ -28,7 +28,7 @@ pub async fn find_import_account(
     conn: &mut PgConnection,
     student_number: &str,
 ) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT id FROM users WHERE student_id = $1")
+    sqlx::query_scalar("SELECT id FROM users WHERE student_id = $1 FOR UPDATE")
         .bind(student_number)
         .fetch_optional(conn)
         .await
@@ -85,7 +85,7 @@ pub async fn list_roster(
     sqlx::query_as(
         "SELECT u.id, u.email, e.student_id AS student_number, u.display_name
          FROM enrollments e JOIN users u ON u.id = e.user_id
-         WHERE e.classroom_id = $1 AND ($2 IS NULL OR u.id > $2)
+         WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
          ORDER BY u.id LIMIT $3",
     )
     .bind(classroom_id)
@@ -134,10 +134,9 @@ pub async fn remove_user(
     identifier: &str,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
-        "DELETE FROM enrollments
-         WHERE classroom_id = $1
-           AND user_id IN (SELECT id FROM users WHERE id = $2 OR email = lower($2))
-         RETURNING user_id",
+        "DELETE FROM enrollments e USING users u
+         WHERE e.classroom_id = $1 AND e.user_id = u.id
+           AND (u.id::text = $2 OR u.email = lower($2)) RETURNING u.id",
     )
     .bind(classroom_id)
     .bind(identifier)
@@ -161,7 +160,7 @@ pub async fn user_belongs_only_to_owner(
     owner_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT max(c.created_by = $2) AND min(c.created_by = $2)
+        "SELECT bool_or(c.created_by = $2) AND bool_and(c.created_by = $2)
          FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id
          WHERE e.user_id = $1",
     )
@@ -191,10 +190,10 @@ pub async fn list_students(
                             AND s.status = 'ready')
                     AS completed_conversations
          FROM enrollments e JOIN users u ON u.id = e.user_id
-         WHERE e.classroom_id = $1 AND ($2 IS NULL OR u.id > $2)
-           AND ($4 IS NULL
-                OR u.email LIKE $4 ESCAPE '\\'
-                OR u.display_name LIKE $4 ESCAPE '\\')
+         WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
+           AND ($4::text IS NULL
+                OR u.email ILIKE $4 ESCAPE '\\'
+                OR u.display_name ILIKE $4 ESCAPE '\\')
          ORDER BY u.id LIMIT $3",
     )
     .bind(classroom_id)
@@ -251,9 +250,9 @@ pub async fn count_students_matching(
         "SELECT count(*)
          FROM enrollments e JOIN users u ON u.id = e.user_id
          WHERE e.classroom_id = $1
-           AND ($2 IS NULL
-                OR u.email LIKE $2 ESCAPE '\\'
-                OR u.display_name LIKE $2 ESCAPE '\\')",
+           AND ($2::text IS NULL
+                OR u.email ILIKE $2 ESCAPE '\\'
+                OR u.display_name ILIKE $2 ESCAPE '\\')",
     )
     .bind(classroom_id)
     .bind(search)

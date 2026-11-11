@@ -17,7 +17,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, Postgres, Transaction};
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -57,28 +57,23 @@ pub async fn end_conversation(
     id: Uuid,
     stale_secs: f64,
 ) -> Result<bool, sqlx::Error> {
-    // 結束與建立總結列在同一個 D1 batch（原子）：D1 沒有交易回滾，分開寫時第二句失敗會留下
-    // 「已結束卻沒有總結列」的對話，學生連重試都不行（重試需要總結列）。
-    // 第二句以對話已結束為條件，重複結束時總結列已存在（主鍵 + DO NOTHING）。
-    let pool = sqlx::Executor::into_pool(&mut *conn);
-    let results = pool
-        .batch(vec![
-            sqlx::query(concat!(
-                "UPDATE conversations SET status = 'ended', ended_at = now()
-                 WHERE id = $1 AND status = 'active' AND ",
-                generation_unclaimed!(),
-            ))
-            .bind(id)
-            .bind(stale_secs),
-            sqlx::query(
-                "INSERT INTO summaries (conversation_id)
-                 SELECT $1 WHERE (SELECT status FROM conversations WHERE id = $1) = 'ended'
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(id),
-        ])
+    let r = sqlx::query(concat!(
+        "UPDATE conversations SET status = 'ended', ended_at = now()
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+    ))
+    .bind(id)
+    .bind(stale_secs)
+    .execute(&mut *conn)
+    .await?;
+    if r.rows_affected() == 0 {
+        return Ok(false);
+    }
+    sqlx::query("INSERT INTO summaries (conversation_id) VALUES ($1)")
+        .bind(id)
+        .execute(&mut *conn)
         .await?;
-    Ok(results.first().is_some_and(|r| r.rows_affected() == 1))
+    Ok(true)
 }
 
 /// 服務啟動時呼叫：背景任務不會跨重啟存活，所以此時還是 pending 的總結都是孤兒，
@@ -117,6 +112,28 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
 const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
 
+/// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
+///
+/// 發點給對話擁有者：同一場對話只入帳一次（帳本以對話 ID 防重複），刪除對話不收回（S-07.2）；
+/// 接著記錄完成事件並判定成就（S-07.3）。
+async fn on_conversation_completed(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    owner: Uuid,
+) -> Result<(), sqlx::Error> {
+    let source_id = id.to_string();
+    let entry = points::Entry::award(
+        owner,
+        COMPLETION_POINTS,
+        "conversation_completed",
+        points::Source::Conversation,
+        &source_id,
+    );
+    points::record(tx, &entry).await?;
+    crate::achievements::record_completed_conversation_in_tx(tx, owner, id, Utc::now()).await?;
+    Ok(())
+}
+
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
     let ((owner, title, description, activity_id, language), turns): (
         (Uuid, String, String, Option<Uuid>, String),
@@ -153,54 +170,24 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     }
     match summary {
         Some(s) => {
-            // 總結、對話點數與完成紀錄在同一個 D1 batch（原子）：D1 沒有交易回滾，分開寫時
-            // 總結已標成 ready、點數卻沒寫入，之後不會再有機會補發。點數與完成紀錄以「這一代總結
-            // 已是 ready」為條件，兩者都是冪等寫入（唯一約束 + DO NOTHING）。
+            // 總結、對話點數與成就判定在同一個交易內。
             let mut tx = state.pool.begin().await?;
-            let source_id = id.to_string();
-            let entry = points::Entry::award(
-                owner,
-                COMPLETION_POINTS,
-                "conversation_completed",
-                points::Source::Conversation,
-                &source_id,
-            );
-            let results = state
-                .pool
-                .batch(vec![
-                    sqlx::query(
-                        "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
-                                rules_version = $4, completed_at = now(), claim = $6
-                         WHERE conversation_id = $1 AND attempt = $5 AND status = 'pending'",
-                    )
-                    .bind(id)
-                    .bind(s.stance)
-                    .bind(s.reasons)
-                    .bind(rules_version(&language))
-                    .bind(attempt)
-                    .bind(s.claim.as_deref()),
-                    points::record_query_when(
-                        &entry,
-                        "EXISTS (SELECT 1 FROM summaries
-                                 WHERE conversation_id = $7 AND attempt = $8 AND status = 'ready')",
-                    )
-                    .bind(id)
-                    .bind(attempt),
-                    sqlx::query(
-                        "INSERT INTO achievement_completion_events (user_id, conversation_id, completed_at)
-                         SELECT $1, $2, now()
-                         WHERE EXISTS (SELECT 1 FROM summaries
-                                       WHERE conversation_id = $2 AND attempt = $3 AND status = 'ready')
-                         ON CONFLICT DO NOTHING",
-                    )
-                    .bind(owner)
-                    .bind(id)
-                    .bind(attempt),
-                ])
-                .await?;
-            // 成就依完成紀錄重新判定；這一步失敗時，下一次完成對話會補上（門檻比較的是累計值）
-            if results.get(2).is_some_and(|r| r.rows_affected() == 1) {
-                crate::achievements::evaluate_completions_in_tx(&mut tx, owner).await?;
+            let updated = sqlx::query(
+                "UPDATE summaries SET status = 'ready', stance = $2, reasons = $3,
+                        rules_version = $4, completed_at = now(), claim = $6
+                 WHERE conversation_id = $1 AND attempt = $5 AND status = 'pending'",
+            )
+            .bind(id)
+            .bind(s.stance)
+            .bind(s.reasons)
+            .bind(rules_version(&language))
+            .bind(attempt)
+            .bind(s.claim.as_deref())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if updated > 0 {
+                on_conversation_completed(&mut tx, id, owner).await?;
             }
             tx.commit().await?;
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
@@ -228,7 +215,7 @@ async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, 
         crate::chat::heard_content!(),
         " FROM messages WHERE conversation_id = $1 AND ",
         crate::chat::heard_only!(),
-        " ORDER BY rowid",
+        " ORDER BY seq",
     ))
     .bind(id)
     .fetch_all(&state.pool)
@@ -343,7 +330,7 @@ pub(crate) async fn retry(
                 completed_at = NULL
          WHERE conversation_id = $1
            AND (status = 'failed'
-                OR (status = 'pending' AND started_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || $2 || ' seconds')))
+                OR (status = 'pending' AND started_at < now() - make_interval(secs => $2)))
          RETURNING attempt",
     )
     .bind(id)
@@ -736,16 +723,16 @@ pub(crate) async fn list(
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN users u ON u.id = c.user_id
          WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
-           AND ($3 IS NULL OR c.classroom_id = $3)
-           AND ($4 IS NULL OR u.id = $4)
-           AND ($5 IS NULL OR lower(c.title) = lower($5))
-           AND ($6 IS NULL
-                OR u.display_name LIKE $6 ESCAPE '\\'
-                OR u.email LIKE $6 ESCAPE '\\'
-                OR c.title LIKE $6 ESCAPE '\\')
-           AND ($7 IS NULL
+           AND ($3::uuid IS NULL OR c.classroom_id = $3)
+           AND ($4::uuid IS NULL OR u.id = $4)
+           AND ($5::text IS NULL OR lower(c.title) = lower($5))
+           AND ($6::text IS NULL
+                OR u.display_name ILIKE $6 ESCAPE '\\'
+                OR u.email ILIKE $6 ESCAPE '\\'
+                OR c.title ILIKE $6 ESCAPE '\\')
+           AND ($7::timestamptz IS NULL
                 OR c.ended_at < $7 OR (c.ended_at = $7 AND s.conversation_id > $8))
-           AND ($9 IS NULL OR c.activity_id = $9)
+           AND ($9::uuid IS NULL OR c.activity_id = $9)
          ORDER BY c.ended_at DESC, s.conversation_id ASC
          LIMIT $10",
     )

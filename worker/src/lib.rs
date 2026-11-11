@@ -33,7 +33,7 @@ use crate::{
 /// 送出訊息、重試與結束對話共用同一個條件，改一處即同時生效；定義在所有模組之前才能被它們使用。
 macro_rules! generation_unclaimed {
     () => {
-        "(generating_since IS NULL OR generating_since < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || $2 || ' seconds'))"
+        "(generating_since IS NULL OR generating_since < now() - make_interval(secs => $2))"
     };
 }
 
@@ -126,13 +126,14 @@ tokio::task_local! {
 
 /// 回應送出後仍要完成的背景工作（AI 回覆、總結）：在請求內呼叫時交給 `ctx.waitUntil`。
 /// 背景工作裡再開的背景工作也看得到同一個 `Context`。
+/// 背景工作有自己的資料庫連線範圍（請求的共用連線在回應送出後就關閉）。
 pub(crate) fn spawn_waited<F: std::future::Future<Output = ()> + 'static>(fut: F) {
     match CONTEXT.try_with(Arc::clone) {
         Ok(ctx) => {
             let inner = ctx.clone();
-            ctx.wait_until(CONTEXT.scope(inner, fut));
+            ctx.wait_until(CONTEXT.scope(inner, sqlx::inherit(fut)));
         }
-        Err(_) => rt::spawn(fut),
+        Err(_) => rt::spawn(sqlx::inherit(fut)),
     }
 }
 
@@ -520,11 +521,8 @@ fn shared(env: &worker::Env) -> Result<&'static (AppState, Router), worker::Erro
     }
     let config = Config::from_source(env).map_err(|e| worker::Error::RustError(e.to_string()))?;
     // 欄位上的唯一索引在 SQLite 只回報欄位清單；對應回 PostgreSQL 版程式比對的約束名稱
-    sqlx::register_constraint_aliases(&[(
-        "conversations.user_id, conversations.activity_id, conversations.topic_id",
-        "conversations_user_activity_uniq",
-    )]);
-    let pool = PgPool::new(env.d1("DB")?);
+    let pool = PgPool::new(&env.hyperdrive("DB")?)
+        .map_err(|_| worker::Error::RustError("invalid Hyperdrive connection string".into()))?;
     let identity = identity::GoogleIdentity::new(
         &config.google_client_id,
         &config.google_client_secret,
@@ -618,15 +616,19 @@ async fn fetch(
     init_tracing();
     let (state, router) = shared(&env)?;
     let ctx = Arc::new(ctx);
+    // 這個請求的查詢共用一條連線（第一次查詢時才連，請求結束時關閉）
     CONTEXT
-        .scope(ctx, async move {
-            seed_once(state).await;
-            let mut router = router.clone();
-            Ok(router
-                .call(req)
-                .await
-                .unwrap_or_else(|never| match never {}))
-        })
+        .scope(
+            ctx,
+            sqlx::scope(async move {
+                seed_once(state).await;
+                let mut router = router.clone();
+                Ok(router
+                    .call(req)
+                    .await
+                    .unwrap_or_else(|never| match never {}))
+            }),
+        )
         .await
 }
 
@@ -643,7 +645,7 @@ async fn scheduled(
         tracing::error!("scheduled: invalid configuration");
         return;
     };
-    match summary::recover_orphaned(&state.pool).await {
+    match sqlx::scope(summary::recover_orphaned(&state.pool)).await {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
         Err(_) => tracing::error!("failed to recover orphaned summaries"),

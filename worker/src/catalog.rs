@@ -175,7 +175,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     }
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
-                category = CASE WHEN $4 THEN $5 ELSE category END,
+                category = CASE WHEN $4 THEN $5::text ELSE category END,
                 is_active = COALESCE($6, is_active),
                 updated_at = now()
          WHERE id = $1
@@ -325,12 +325,11 @@ async fn ensure_topics_selectable<'e>(
     ids: &[Uuid],
     already_selected: &[Uuid],
 ) -> Result<(), ApiError> {
-    let found: Vec<(Uuid, bool)> = sqlx::query_as(
-        "SELECT id, is_active FROM topics WHERE id IN (SELECT value FROM json_each($1))",
-    )
-    .bind(ids)
-    .fetch_all(executor)
-    .await?;
+    let found: Vec<(Uuid, bool)> =
+        sqlx::query_as("SELECT id, is_active FROM topics WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(executor)
+            .await?;
     if found.len() != ids.len() {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
     }
@@ -499,7 +498,7 @@ pub(crate) async fn update_activity(
     type CurrentSchedule = (Uuid, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
     let current: Option<CurrentSchedule> = sqlx::query_as(
         "SELECT a.classroom_id, a.opens_at, a.closes_at FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
-         WHERE a.id = $1 AND ($2 OR cl.created_by = $3)",
+         WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
     )
     .bind(id)
     .bind(cu.roles.admin)
@@ -546,13 +545,6 @@ pub(crate) async fn update_activity(
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
-            // PostgreSQL 版以活動列的鎖讓開始對話等到題目更換完成；D1 沒有列鎖，改記下檢查當下的對話數，
-            // 更換題目的每個語句都要求對話數沒變（見下方 batch），中間有人開始對話就整批不寫入。
-            let conversations_seen: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM conversations WHERE activity_id = $1")
-                    .bind(id)
-                    .fetch_one(&mut *tx)
-                    .await?;
             let locked: Vec<Uuid> = if conv_topics.contains(&None) {
                 current_topics.clone()
             } else {
@@ -565,36 +557,20 @@ pub(crate) async fn update_activity(
                 ));
             }
 
-            // 更新題目關聯：刪除與重新插入在同一個 D1 batch（原子），每個語句都帶相同的對話數條件
-            let mut writes = vec![
-                sqlx::query(
-                    "DELETE FROM activity_topics WHERE activity_id = $1
-                       AND (SELECT count(*) FROM conversations WHERE activity_id = $1) = $2",
-                )
+            // 更新題目關聯
+            sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1")
                 .bind(id)
-                .bind(conversations_seen),
-            ];
-            for (position, topic_id) in new_ids.iter().enumerate() {
-                writes.push(
-                    sqlx::query(
-                        "INSERT INTO activity_topics (activity_id, topic_id, position)
-                         SELECT $1, $2, $3
-                         WHERE (SELECT count(*) FROM conversations WHERE activity_id = $1) = $4",
-                    )
-                    .bind(id)
-                    .bind(topic_id)
-                    .bind(position as i64)
-                    .bind(conversations_seen),
-                );
-            }
-            let results = state.pool.batch(writes).await?;
-            // 活動至少有一個題目，條件成立時刪除一定有列；沒有表示剛好有學生開始了對話
-            if results.first().is_some_and(|r| r.rows_affected() == 0) {
-                return Err(ApiError::conflict(
-                    "activity_topic_locked",
-                    "已有學生開始對話，不能更換題目",
-                ));
-            }
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO activity_topics (activity_id, topic_id, position)
+                 SELECT $1, t.topic_id, (t.ord - 1)::integer
+                 FROM unnest($2::uuid[]) WITH ORDINALITY AS t(topic_id, ord)",
+            )
+            .bind(id)
+            .bind(&new_ids)
+            .execute(&mut *tx)
+            .await?;
         }
     }
 
@@ -685,7 +661,7 @@ async fn set_archived(
     let mut tx = state.pool.begin().await?;
     let current: Option<(bool, bool)> = sqlx::query_as(
         "SELECT a.is_archived, cl.is_archived FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
-         WHERE a.id = $1 AND ($2 OR cl.created_by = $3)",
+         WHERE a.id = $1 AND ($2 OR cl.created_by = $3) FOR UPDATE OF a",
     )
     .bind(id)
     .bind(cu.roles.admin)
@@ -696,19 +672,8 @@ async fn set_archived(
     if classroom_archived {
         return Err(ApiError::conflict("classroom_archived", "教室已封存"));
     }
-    // 狀態有沒有改變以條件式 UPDATE 的結果為準（D1 沒有列鎖，兩個請求同時封存時只記一次稽核）
-    let _ = was_archived;
-    let changed = sqlx::query(
-        "UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1 AND is_archived <> $2",
-    )
-    .bind(id)
-    .bind(archived)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected()
-        == 1;
-    let updated = activity_store::find_by_id(&mut *tx, id).await?;
-    if changed {
+    let updated = activity_store::set_archived(&mut *tx, id, archived).await?;
+    if was_archived != archived {
         let action = if archived {
             "activity_archived"
         } else {
@@ -795,7 +760,7 @@ pub(crate) async fn delete_activity(
     delete_with_audit(
         &state.pool,
         &DeleteSpec {
-            lock: "SELECT id FROM activities WHERE id = $1",
+            lock: "SELECT id FROM activities WHERE id = $1 FOR UPDATE",
             count_conversations: "SELECT count(*) FROM conversations WHERE activity_id = $1",
             delete: "DELETE FROM activities WHERE id = $1",
             action: "activity_deleted",

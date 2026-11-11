@@ -174,20 +174,9 @@ pub(crate) async fn create(
         ));
     };
     // 每位學生在每個活動的每個題目至多一場對話；唯一索引也涵蓋並行請求。
-    // 寫入當下再確認一次來源仍可用（D1 沒有列鎖）：上面讀到之後，教師可能剛換掉活動的題目、
-    // 停止開放或封存活動與教室。PostgreSQL 版以 FOR SHARE 鎖住活動與教室列達到同樣效果。
     let created = sqlx::query_as(
         "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
-         SELECT $1, $2, $3, $4, $5, $6, $7
-         WHERE CASE WHEN $2 IS NULL
-                    THEN EXISTS (SELECT 1 FROM topics WHERE id = $3 AND is_active)
-                    ELSE EXISTS (SELECT 1 FROM activity_topics at
-                                 JOIN activities a ON a.id = at.activity_id
-                                 JOIN classrooms cl ON cl.id = a.classroom_id
-                                 WHERE at.activity_id = $2 AND at.topic_id = $3
-                                   AND a.status = 'published' AND NOT a.is_archived
-                                   AND NOT cl.is_archived)
-               END
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, activity_id, topic_id, classroom_id,
                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                    title, description, language, status,
@@ -200,16 +189,10 @@ pub(crate) async fn create(
     .bind(title)
     .bind(description)
     .bind(&cu.user.language)
-    .fetch_optional(&mut *tx)
+    .fetch_one(&mut *tx)
     .await;
     let c: Conversation = match created {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return Err(ApiError::bad_request(
-                "invalid_conversation_source",
-                "活動或題目不可用",
-            ));
-        }
+        Ok(c) => c,
         Err(sqlx::Error::Database(e))
             if e.constraint() == Some("conversations_user_activity_uniq") =>
         {
@@ -252,8 +235,8 @@ pub(crate) async fn list(
         };
     let rows = sqlx::query_as(conversation_select!(
         "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $2
-           AND ($3 IS NULL OR activity_id = $3)
-           AND ($4 IS NULL OR created_at < $4 OR (created_at = $4 AND id > $5))
+           AND ($3::uuid IS NULL OR activity_id = $3)
+           AND ($4::timestamptz IS NULL OR created_at < $4 OR (created_at = $4 AND id > $5))
          ORDER BY created_at DESC, id ASC LIMIT $6"
     ))
     .bind(cu.user.id)
@@ -300,12 +283,12 @@ pub(crate) async fn owned_conversation_in<'e>(
 macro_rules! heard_content {
     () => {
         "CASE WHEN heard_chars IS NULL THEN content
-              ELSE rtrim(substr(content, 1, heard_chars)) END"
+              ELSE rtrim(left(content, heard_chars)) END"
     };
 }
 macro_rules! heard_only {
     () => {
-        "heard_chars IS NOT 0"
+        "heard_chars IS DISTINCT FROM 0"
     };
 }
 pub(crate) use {heard_content, heard_only};
@@ -320,7 +303,7 @@ pub async fn load_messages(
         " AS content, source, question_type, created_at FROM messages
          WHERE conversation_id = $1 AND ",
         heard_only!(),
-        " ORDER BY rowid",
+        " ORDER BY seq",
     ))
     .bind(conversation_id)
     .fetch_all(&state.pool)
@@ -420,23 +403,6 @@ pub(crate) async fn submit_message(
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
-    if answered_only {
-        // D1 沒有回滾，這個唯讀檢查要在下面 claim 回合的 UPDATE 之前，否則失敗時回合已被佔用。
-        // 檢查與 claim 之間若有別的訊息寫入，claim 會因 generating_since 而失敗（reply_in_progress）。
-        // 沒被聽到的回覆也算回覆過
-        let last: Option<(String,)> = sqlx::query_as(
-            "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY rowid DESC LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if last.is_some_and(|(role,)| role == "student") {
-            return Err(ApiError::conflict(
-                "unanswered_message",
-                "上一則訊息還沒有回覆",
-            ));
-        }
-    }
     // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
     // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
     // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
@@ -455,6 +421,21 @@ pub(crate) async fn submit_message(
     let Some((turn, stage)) = turn else {
         return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
     };
+    if answered_only {
+        // 上面的 UPDATE 鎖住對話列，檢查與寫入之間不會有別的訊息。沒被聽到的回覆也算回覆過
+        let last: Option<(String,)> = sqlx::query_as(
+            "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if last.is_some_and(|(role,)| role == "student") {
+            return Err(ApiError::conflict(
+                "unanswered_message",
+                "上一則訊息還沒有回覆",
+            ));
+        }
+    }
     let m = sqlx::query_as(
         "INSERT INTO messages (conversation_id, role, content, source)
          VALUES ($1, 'student', $2, $3)

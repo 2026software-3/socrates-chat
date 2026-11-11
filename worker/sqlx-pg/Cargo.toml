@@ -1,0 +1,20 @@
+[package]
+name = "sqlx-pg"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Minimal sqlx-shaped API over tokio-postgres through Cloudflare Hyperdrive, used by the Workers port"
+
+[lib]
+name = "sqlx"
+
+[dependencies]
+worker = { version = "0.8.7", features = ["tokio-postgres"] }
+tokio-postgres = { version = "0.7.18", default-features = false, features = ["js", "with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+tokio = { version = "1.53.1", default-features = false, features = ["sync", "rt"] }
+futures-util = "0.3.34"
+wasm-bindgen-futures = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "wasmbind"] }
+uuid = { version = "1.26.1", features = ["serde"] }

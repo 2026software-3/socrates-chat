@@ -264,11 +264,12 @@ pub(crate) async fn update_classroom(
     };
     // 鎖住教室列後在同一個交易內更新並寫稽核，封存狀態是否改變以鎖定後的值為準
     let mut tx = state.pool.begin().await?;
-    let was_archived: bool = sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let was_archived: bool =
+        sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
     if was_archived
         && (changes.name.is_some() || changes.year_label.is_some() || changes.description.is_some())
     {
@@ -331,7 +332,7 @@ pub(crate) async fn delete_classroom(
     delete_with_audit(
         &state.pool,
         &DeleteSpec {
-            lock: "SELECT id FROM classrooms WHERE id = $1",
+            lock: "SELECT id FROM classrooms WHERE id = $1 FOR UPDATE",
             count_conversations: "SELECT count(*) FROM conversations WHERE classroom_id = $1",
             delete: "DELETE FROM classrooms WHERE id = $1",
             action: "classroom_deleted",
@@ -350,10 +351,11 @@ pub(crate) async fn ensure_writable<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     id: Uuid,
 ) -> Result<(), ApiError> {
-    let archived: bool = sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1")
-        .bind(id)
-        .fetch_one(executor)
-        .await?;
+    let archived: bool =
+        sqlx::query_scalar("SELECT is_archived FROM classrooms WHERE id = $1 FOR SHARE")
+            .bind(id)
+            .fetch_one(executor)
+            .await?;
     if archived {
         Err(ApiError::conflict("classroom_archived", "教室已封存"))
     } else {

@@ -195,7 +195,7 @@ pub(crate) async fn save_heard(state: &AppState, id: Uuid, chars: usize) {
     if let Err(e) = sqlx::query(
         "UPDATE messages SET heard_chars = $2
          WHERE role = 'ai' AND id = (
-             SELECT id FROM messages WHERE conversation_id = $1 ORDER BY rowid DESC LIMIT 1
+             SELECT id FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1
          )",
     )
     .bind(id)
@@ -546,15 +546,16 @@ async fn save_reply(
     meta: &TurnMeta,
 ) -> Result<Option<Saved>, sqlx::Error> {
     let mut tx = state.pool.begin().await?;
-    let (status, stage, ready): (String, i16, bool) =
-        sqlx::query_as("SELECT status, stage, converge_ready FROM conversations WHERE id = $1")
-            .bind(conv.id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let (status, stage, ready): (String, i16, bool) = sqlx::query_as(
+        "SELECT status, stage, converge_ready FROM conversations WHERE id = $1 FOR UPDATE",
+    )
+    .bind(conv.id)
+    .fetch_one(&mut *tx)
+    .await?;
     let last: Option<(String,)> = sqlx::query_as(concat!(
         "SELECT role FROM messages WHERE conversation_id = $1 AND ",
         heard_only!(),
-        " ORDER BY rowid DESC LIMIT 1",
+        " ORDER BY seq DESC LIMIT 1",
     ))
     .bind(conv.id)
     .fetch_optional(&mut *tx)
@@ -569,37 +570,26 @@ async fn save_reply(
         stage
     };
     let converge_ready = ready || (stage == 3 && meta.advance);
-    // 保存回覆與更新階段：SQLite 不能在 CTE 裡寫入，改成同一個 D1 batch（原子、一次往返）。
-    // PostgreSQL 版以 FOR UPDATE 鎖住對話列；D1 沒有列鎖，上面讀到「進行中」之後對話可能已被結束
-    // （claim 逾時後），所以兩個語句都再要求對話仍是 active，否則整批不寫入。
-    let message_id = Uuid::new_v4();
-    let results = state
-        .pool
-        .batch(vec![
-            sqlx::query(
-                "INSERT INTO messages (id, conversation_id, role, content, rules_version, question_type,
-                                       advance_reason)
-                 SELECT $1, $2, 'ai', $3, $4, $5, $6
-                 WHERE (SELECT status FROM conversations WHERE id = $2) = 'active'",
-            )
-            .bind(message_id)
-            .bind(conv.id)
-            .bind(text)
-            .bind(rules_version(&conv.language))
-            .bind(&meta.question_type)
-            .bind(&meta.reason),
-            sqlx::query(
-                "UPDATE conversations SET stage = $2, converge_ready = $3
-                 WHERE id = $1 AND status = 'active'",
-            )
-            .bind(conv.id)
-            .bind(new_stage)
-            .bind(converge_ready),
-        ])
-        .await?;
-    if results.first().is_none_or(|r| r.rows_affected() == 0) {
-        return Ok(None);
-    }
+    // 保存回覆與更新階段合成一個語句，少一次資料庫往返
+    let (message_id,): (Uuid,) = sqlx::query_as(
+        "WITH m AS (
+             INSERT INTO messages (conversation_id, role, content, rules_version, question_type,
+                                   advance_reason)
+             VALUES ($1, 'ai', $2, $3, $4, $5) RETURNING id
+         ), c AS (
+             UPDATE conversations SET stage = $6, converge_ready = $7 WHERE id = $1
+         )
+         SELECT id FROM m",
+    )
+    .bind(conv.id)
+    .bind(text)
+    .bind(rules_version(&conv.language))
+    .bind(&meta.question_type)
+    .bind(&meta.reason)
+    .bind(new_stage)
+    .bind(converge_ready)
+    .fetch_one(&mut *tx)
+    .await?;
     let closing = meta.question_type.as_deref() == Some("wrap_up")
         && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
     let writable = match conv.classroom_id {

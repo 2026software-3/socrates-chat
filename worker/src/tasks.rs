@@ -72,24 +72,9 @@ pub(crate) struct TaskUpdate {
     reward: i32,
 }
 
-/// 台北時間（UTC+8，沒有夏令時間）的今天，或本週一（PostgreSQL 的 `date_trunc('week')`）。
-/// SQLite 沒有時區運算，改在 Rust 計算。
-async fn period_start(_conn: &mut PgConnection, period: &str) -> Result<NaiveDate, sqlx::Error> {
-    use chrono::Datelike;
-    let today = (chrono::Utc::now() + chrono::Duration::hours(8)).date_naive();
-    Ok(if period == "weekly" {
-        today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)
-    } else {
-        today
-    })
-}
-
-/// 台北時間某日 00:00 對應的 UTC 時間。
-fn taipei_midnight(date: NaiveDate) -> chrono::DateTime<chrono::Utc> {
-    date.and_hms_opt(0, 0, 0)
-        .expect("midnight exists")
-        .and_utc()
-        - chrono::Duration::hours(8)
+async fn period_start(conn: &mut PgConnection, period: &str) -> Result<NaiveDate, sqlx::Error> {
+    sqlx::query_scalar("SELECT CASE WHEN $1 = 'weekly' THEN date_trunc('week', clock_timestamp() AT TIME ZONE 'Asia/Taipei')::date ELSE (clock_timestamp() AT TIME ZONE 'Asia/Taipei')::date END")
+        .bind(period).fetch_one(conn).await
 }
 
 async fn progress(
@@ -98,13 +83,8 @@ async fn progress(
     task: &Task,
     start: NaiveDate,
 ) -> Result<i64, sqlx::Error> {
-    let days = if task.period == "weekly" { 7 } else { 1 };
-    sqlx::query_scalar("SELECT count(*) FROM achievement_completion_events WHERE user_id = $1 AND completed_at >= $2 AND completed_at < $3")
-        .bind(user_id)
-        .bind(taipei_midnight(start))
-        .bind(taipei_midnight(start + chrono::Duration::days(days)))
-        .fetch_one(conn)
-        .await
+    sqlx::query_scalar("SELECT count(*) FROM achievement_completion_events WHERE user_id = $1 AND completed_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Taipei') AND completed_at < (($2::date + CASE WHEN $3 = 'weekly' THEN 7 ELSE 1 END)::timestamp AT TIME ZONE 'Asia/Taipei')")
+        .bind(user_id).bind(start).bind(&task.period).fetch_one(conn).await
 }
 
 fn source_id(id: &str, start: NaiveDate) -> String {
@@ -140,15 +120,16 @@ pub(crate) async fn claim(
     Json(body): Json<Claim>,
 ) -> Result<Json<TaskView>, ApiError> {
     let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT id FROM users WHERE id=$1")
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE")
         .bind(cu.user.id)
         .execute(&mut *tx)
         .await?;
-    let task: Task = sqlx::query_as("SELECT id, period, goal, reward FROM tasks WHERE id=$1")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let task: Task =
+        sqlx::query_as("SELECT id, period, goal, reward FROM tasks WHERE id=$1 FOR SHARE")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
     let start = period_start(&mut tx, &task.period).await?;
     if body.period_start != start {
         return Err(ApiError::conflict("conflict", "任務週期已結束"));
@@ -194,11 +175,12 @@ pub(crate) async fn update(
         ));
     }
     let mut tx = state.pool.begin().await?;
-    let old: Task = sqlx::query_as("SELECT id, period, goal, reward FROM tasks WHERE id=$1")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let old: Task =
+        sqlx::query_as("SELECT id, period, goal, reward FROM tasks WHERE id=$1 FOR UPDATE")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
     let new: Task = sqlx::query_as(
         "UPDATE tasks SET goal=$2, reward=$3 WHERE id=$1 RETURNING id, period, goal, reward",
     )

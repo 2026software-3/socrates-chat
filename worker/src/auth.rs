@@ -724,8 +724,8 @@ pub(crate) async fn update_me(
     let (display_name, language): (Option<String>, String) = sqlx::query_as(
         "UPDATE users SET
              display_name = CASE WHEN $2 THEN COALESCE($3, imported_name) ELSE display_name END,
-             language = COALESCE($4, language),
-             language_initialized = language_initialized OR $4 IS NOT NULL,
+             language = COALESCE($4::text, language),
+             language_initialized = language_initialized OR $4::text IS NOT NULL,
              updated_at = now()
          WHERE id = $1 RETURNING display_name, language",
     )

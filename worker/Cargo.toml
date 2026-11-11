@@ -1,19 +1,19 @@
 [workspace]
-members = [".", "sqlx-d1"]
+members = [".", "sqlx-pg"]
 
 [package]
 name = "socrates-chat-worker"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Cloudflare Workers + D1 trial port of socrates-chat-backend"
+description = "Cloudflare Workers + Hyperdrive (Supabase PostgreSQL) trial port of socrates-chat-backend"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-sqlx = { path = "sqlx-d1", package = "sqlx-d1" }
-worker = { version = "0.8.7", features = ["http", "axum", "d1"] }
+sqlx = { path = "sqlx-pg", package = "sqlx-pg" }
+worker = { version = "0.8.7", features = ["http", "axum"] }
 axum = { version = "0.8.9", default-features = false, features = ["json", "query", "form", "multipart", "matched-path", "original-uri"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-service = "0.3.3"

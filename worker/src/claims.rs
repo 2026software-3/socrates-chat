@@ -179,28 +179,29 @@ pub(crate) async fn regroup(
             state.refund_ai(cu.user.id, usage_slot);
             ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
         })?;
-    // AI 呼叫期間教室可能被封存：寫入前再確認一次
-    crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
-    // 刪除舊群組與建立新群組在同一個 D1 batch（原子）：D1 沒有交易回滾，逐句寫入時新群組撞到
-    // 唯一約束（例如 AI 給了兩個同名群組）會留下「舊分組已刪、新分組只建一半」。整批失敗時舊分組不變。
-    // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定。
-    let mut writes =
-        vec![sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1").bind(body.activity_id)];
+    let mut tx = state.pool.begin().await?;
+    // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
+    crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;
+    // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定
+    sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1")
+        .bind(body.activity_id)
+        .execute(&mut *tx)
+        .await?;
     for (name, members) in groups {
-        let gid = Uuid::new_v4();
-        writes.push(
-            sqlx::query("INSERT INTO claim_groups (id, activity_id, name) VALUES ($1, $2, $3)")
-                .bind(gid)
-                .bind(body.activity_id)
-                .bind(name),
-        );
+        let (gid,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO claim_groups (activity_id, name) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(body.activity_id)
+        .bind(&name)
+        .fetch_one(&mut *tx)
+        .await?;
         let ids: Vec<Uuid> = members.into_iter().map(|i| rows[i].0).collect();
-        writes.push(
-            sqlx::query("UPDATE summaries SET claim_group_id = $1 WHERE conversation_id IN (SELECT value FROM json_each($2))")
-                .bind(gid)
-                .bind(ids),
-        );
+        sqlx::query("UPDATE summaries SET claim_group_id = $1 WHERE conversation_id = ANY($2)")
+            .bind(gid)
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await?;
     }
-    state.pool.batch(writes).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
