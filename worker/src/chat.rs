@@ -297,7 +297,15 @@ pub async fn load_messages(
     state: &AppState,
     conversation_id: Uuid,
 ) -> Result<Vec<Message>, ApiError> {
-    Ok(sqlx::query_as(concat!(
+    Ok(load_messages_in(&state.pool, conversation_id).await?)
+}
+
+/// 與 [`load_messages`] 相同，但在指定的連線（例如交易）上查詢。
+pub(crate) fn load_messages_in<'e>(
+    conn: impl sqlx::PgExecutor<'e>,
+    conversation_id: Uuid,
+) -> impl std::future::Future<Output = Result<Vec<Message>, sqlx::Error>> + Send {
+    sqlx::query_as(concat!(
         "SELECT id, role, ",
         heard_content!(),
         " AS content, source, question_type, created_at FROM messages
@@ -306,8 +314,7 @@ pub async fn load_messages(
         " ORDER BY seq",
     ))
     .bind(conversation_id)
-    .fetch_all(&state.pool)
-    .await?)
+    .fetch_all(conn)
 }
 
 #[utoipa::path(
@@ -367,12 +374,19 @@ pub(crate) async fn send_message(
         Some("speech-openai") => "speech-openai",
         Some(_) => return Err(ApiError::bad_request("invalid_source", "訊息來源不正確")),
     };
-    match submit_message(&state, cu.user.id, id, content, source, false).await? {
+    match submit_message(&state, cu.user.id, id, content, source).await? {
         Submitted::Ended(first) => Ok(reply::single_event(first)),
         Submitted::Reply {
             conversation,
             first,
-        } => reply::begin_stream(state, cu.user.id, *conversation, first).await,
+            messages,
+        } => Ok(reply::begin_stream(
+            state,
+            cu.user.id,
+            *conversation,
+            first,
+            messages,
+        )),
     }
 }
 
@@ -380,22 +394,25 @@ pub(crate) async fn send_message(
 pub(crate) enum Submitted {
     /// 達回合上限：對話已結束，不產生回覆。
     Ended(Event),
-    /// 已保存並取得產生回覆的權利；`first` 是保存好的學生訊息事件。
+    /// 已保存並取得產生回覆的權利；`first` 是保存好的學生訊息事件，`messages` 是含這則訊息的歷史。
     Reply {
         conversation: Box<Conversation>,
         first: Event,
+        messages: Vec<Message>,
     },
 }
 
-/// 保存學生訊息並更新回合數；文字與語音對話共用。`answered_only` 時，上一則學生訊息
-/// 還沒有回覆就拒絕：語音對話沒有重試的畫面，不能把新的發言疊上去。
+/// 保存學生訊息並更新回合數。（PostgreSQL 版的 `answered_only` 只給 cascade 語音用，Workers 版沒有。）
+///
+/// 往返次數（Workers 上每次往返都要 CPU）：`BEGIN` 與查詢對話一起送出；claim 回合、存學生訊息與
+/// 達回合上限時的結束對話合成一個語句，與載入歷史、提交一起送出。共 2 次（PostgreSQL 版 6 次；
+/// 教室中的對話另加一次封存檢查）。
 pub(crate) async fn submit_message(
     state: &AppState,
     user: Uuid,
     id: Uuid,
     content: &str,
     source: &str,
-    answered_only: bool,
 ) -> Result<Submitted, ApiError> {
     // 封存檢查與寫入在同一個交易內，教室列的共享鎖持續到提交
     let mut tx = state.pool.begin().await?;
@@ -403,53 +420,54 @@ pub(crate) async fn submit_message(
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
-    // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
+    // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個語句內更新
     // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
-    // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
-    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
-        "UPDATE conversations SET turn_count = turn_count + 1,
-                generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
-         WHERE id = $1 AND status = 'active' AND ",
+    // （達回合上限時不產生回覆，所以不 claim）。
+    // 到達回合上限：不再追問，直接結束並建立產生中的總結（S-03.3），與 `summary::end_conversation`
+    // 相同的寫入，條件已在 `c` 檢查（進行中、沒有 claim）。
+    // claim 失敗時什麼都不寫（`FROM c` 沒有列），提交的是空交易，所以提交可以一起送出。
+    let h = tx.handle();
+    let saved = sqlx::query(concat!(
+        "WITH c AS (
+             UPDATE conversations SET turn_count = turn_count + 1,
+                    generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END,
+                    status = CASE WHEN turn_count + 1 >= $3 THEN 'ended' ELSE status END,
+                    ended_at = CASE WHEN turn_count + 1 >= $3 THEN now() ELSE ended_at END
+             WHERE id = $1 AND status = 'active' AND ",
         generation_unclaimed!(),
-        " RETURNING turn_count, stage",
+        "    RETURNING turn_count, stage
+         ), s AS (
+             INSERT INTO summaries (conversation_id) SELECT $1 FROM c WHERE c.turn_count >= $3
+         ), m AS (
+             INSERT INTO messages (conversation_id, role, content, source)
+             SELECT $1, 'student', $4, $5 FROM c
+             RETURNING id, role, content, source, question_type, created_at
+         )
+         SELECT c.turn_count, c.stage, m.id, m.role, m.content, m.source, m.question_type,
+                m.created_at
+         FROM c, m",
     ))
     .bind(id)
     .bind(state.config.generation_stale_secs())
     .bind(state.config.max_turns as i32)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((turn, stage)) = turn else {
-        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
-    };
-    if answered_only {
-        // 上面的 UPDATE 鎖住對話列，檢查與寫入之間不會有別的訊息。沒被聽到的回覆也算回覆過
-        let last: Option<(String,)> = sqlx::query_as(
-            "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if last.is_some_and(|(role,)| role == "student") {
-            return Err(ApiError::conflict(
-                "unanswered_message",
-                "上一則訊息還沒有回覆",
-            ));
-        }
-    }
-    let m = sqlx::query_as(
-        "INSERT INTO messages (conversation_id, role, content, source)
-         VALUES ($1, 'student', $2, $3)
-         RETURNING id, role, content, source, question_type, created_at",
-    )
-    .bind(id)
     .bind(content)
     .bind(source)
-    .fetch_one(&mut *tx)
-    .await?;
-    // 到達回合上限：不再追問，直接產生總結並結束（S-03.3）
-    let auto_ended = turn >= state.config.max_turns as i32
-        && summary::end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
-    tx.commit().await?;
+    .fetch_all(h.clone());
+    // 同一個交易、排在上面語句之後：看得到剛存的學生訊息。claim 失敗時結果不用
+    let history = load_messages_in(h, id);
+    let (saved, messages) = tx
+        .commit_after(async move {
+            let (saved, history) = futures_util::join!(saved, history);
+            Ok((saved?, history?))
+        })
+        .await?;
+    let Some(row) = saved.into_iter().next() else {
+        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+    };
+    let turn: i32 = row.try_get("turn_count")?;
+    let stage: i16 = row.try_get("stage")?;
+    let m: Message = row.decode()?;
+    let auto_ended = turn >= state.config.max_turns as i32;
     // 第一個事件是保存好的學生訊息；之後才是 AI 回覆的 delta／done／error
     let first = reply::event(
         "message",
@@ -469,6 +487,7 @@ pub(crate) async fn submit_message(
     Ok(Submitted::Reply {
         conversation: Box::new(conversation),
         first,
+        messages,
     })
 }
 

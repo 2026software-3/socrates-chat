@@ -284,28 +284,15 @@ pub(crate) async fn stream(
 
 /// 學生訊息剛保存、且呼叫端已取得產生權利（`generating_since`）時，開始串流 AI 回覆。
 /// `conversation` 須已反映這一輪的回合數與階段；`first` 是串流的第一個事件（保存好的學生訊息）。
-/// 載入失敗時釋放 claim 並回傳錯誤。
-pub async fn begin_stream(
+/// `messages` 是含這則學生訊息的歷史（由 `submit_message` 在同一個交易內載入）。
+pub fn begin_stream(
     state: AppState,
     user: Uuid,
     conversation: Conversation,
     first: Event,
-) -> Result<EventStream, ApiError> {
-    match load_messages(&state, conversation.id).await {
-        Ok(messages) => Ok(spawn_stream(
-            state,
-            user,
-            conversation,
-            messages,
-            Some(first),
-            None,
-            None,
-        )),
-        Err(e) => {
-            release_generation(&state, conversation.id).await;
-            Err(e)
-        }
-    }
+    messages: Vec<Message>,
+) -> EventStream {
+    spawn_stream(state, user, conversation, messages, Some(first), None, None)
 }
 
 /// 語音回覆被收聽方放棄（打斷）的信號：收聽方在一個字都沒收到就放棄時通知，產生回覆的工作隨即中止，
@@ -371,11 +358,15 @@ fn spawn_stream(
                 }
             };
             // 釋放前寫入：下一輪一開始載入的歷史就要是學生聽到的版本
-            if let Some(chars) = reply.seal() {
+            let heard = reply.seal();
+            if let Some(chars) = heard {
                 save_heard(&state, id, chars).await;
             }
-            // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
-            release_generation(&state, id).await;
+            // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim。
+            // 回覆已保存時，`save_reply` 已在同一個語句釋放（少一次往返）
+            if failed || heard.is_some() {
+                release_generation(&state, id).await;
+            }
             state.live.finish(reply, last, failed);
         }
         .in_current_span(),
@@ -545,6 +536,7 @@ async fn save_reply(
     text: &str,
     meta: &TurnMeta,
 ) -> Result<Option<Saved>, sqlx::Error> {
+    // `BEGIN` 與鎖對話列一起送出；收尾以外的情況，保存與提交也一起送出：共 2 次往返（原本 5 次）
     let mut tx = state.pool.begin().await?;
     let (status, stage, ready): (String, i16, bool) = sqlx::query_as(
         "SELECT status, stage, converge_ready FROM conversations WHERE id = $1 FOR UPDATE",
@@ -552,15 +544,7 @@ async fn save_reply(
     .bind(conv.id)
     .fetch_one(&mut *tx)
     .await?;
-    let last: Option<(String,)> = sqlx::query_as(concat!(
-        "SELECT role FROM messages WHERE conversation_id = $1 AND ",
-        heard_only!(),
-        " ORDER BY seq DESC LIMIT 1",
-    ))
-    .bind(conv.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if status != "active" || last.is_none_or(|(r,)| r != "student") {
+    if status != "active" {
         return Ok(None);
     }
     // 階段只進不退；第 3 階段達成條件即符合收斂條件（S-03.2、S-03.3）
@@ -570,17 +554,25 @@ async fn save_reply(
         stage
     };
     let converge_ready = ready || (stage == 3 && meta.advance);
-    // 保存回覆與更新階段合成一個語句，少一次資料庫往返
-    let (message_id,): (Uuid,) = sqlx::query_as(
+    let closing = meta.question_type.as_deref() == Some("wrap_up")
+        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+    // 保存回覆、更新階段並釋放 claim 合成一個語句。最後一則（聽到的）訊息必須是學生的：
+    // 對話列已在上面鎖住，這個語句的快照在鎖之後，與原本先查再寫相同。沒有寫入時不更新對話
+    let save = sqlx::query_as::<(Uuid,)>(concat!(
         "WITH m AS (
              INSERT INTO messages (conversation_id, role, content, rules_version, question_type,
                                    advance_reason)
-             VALUES ($1, 'ai', $2, $3, $4, $5) RETURNING id
+             SELECT $1, 'ai', $2, $3, $4, $5
+             WHERE (SELECT role FROM messages WHERE conversation_id = $1 AND ",
+        heard_only!(),
+        "       ORDER BY seq DESC LIMIT 1) = 'student'
+             RETURNING id
          ), c AS (
-             UPDATE conversations SET stage = $6, converge_ready = $7 WHERE id = $1
+             UPDATE conversations SET stage = $6, converge_ready = $7, generating_since = NULL
+             WHERE id = $1 AND EXISTS (SELECT 1 FROM m)
          )
          SELECT id FROM m",
-    )
+    ))
     .bind(conv.id)
     .bind(text)
     .bind(rules_version(&conv.language))
@@ -588,27 +580,32 @@ async fn save_reply(
     .bind(&meta.reason)
     .bind(new_stage)
     .bind(converge_ready)
-    .fetch_one(&mut *tx)
-    .await?;
-    let closing = meta.question_type.as_deref() == Some("wrap_up")
-        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+    .fetch_optional(tx.handle());
+    if !closing {
+        // 沒有寫入（已有回覆）時提交的是空交易，無害
+        let Some((message_id,)) = tx.commit_after(save).await? else {
+            return Ok(None);
+        };
+        return Ok(Some(Saved {
+            message_id,
+            stage: new_stage,
+            converge_ready,
+            ended: false,
+        }));
+    }
+    let Some((message_id,)) = save.await? else {
+        return Ok(None);
+    };
     let writable = match conv.classroom_id {
-        Some(room) if closing => crate::classrooms::ensure_writable(&mut *tx, room)
+        Some(room) => crate::classrooms::ensure_writable(&mut *tx, room)
             .await
             .is_ok(),
-        _ => true,
+        None => true,
     };
-    let ended = if closing && writable {
-        // 這次產生已完成：先放掉自己的 claim，否則會被當成 AI 還在回覆
-        sqlx::query("UPDATE conversations SET generating_since = NULL WHERE id = $1")
-            .bind(conv.id)
-            .execute(&mut *tx)
+    // claim 已在上面的語句釋放，結束對話不會被當成 AI 還在回覆
+    let ended = writable
+        && crate::summary::end_conversation(&mut tx, conv.id, state.config.generation_stale_secs())
             .await?;
-        crate::summary::end_conversation(&mut tx, conv.id, state.config.generation_stale_secs())
-            .await?
-    } else {
-        false
-    };
     tx.commit().await?;
     if ended {
         crate::summary::spawn_generation(state.clone(), conv.id, 1);

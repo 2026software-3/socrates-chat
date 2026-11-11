@@ -63,7 +63,7 @@ npx wrangler deploy --var APP_BASE_URL:https://<worker>.<subdomain>.workers.dev
 ## 試行結果（2026-11-11，Supabase 東京 ap-northeast-1）
 
 - wasm gzip 後 1.65 MB（免費方案上限 3 MB；D1 版 1.46 MB）。
-- `cargo clippy --target wasm32-unknown-unknown -- -D warnings` 通過；原生單元測試 70 個通過、7 個需要 JS 執行環境（與 D1 版相同），shim 另有 3 個測試。`check_sql.py` 的 167 條靜態 SQL 對試行資料庫 `PREPARE` 全數通過；另有 8 條動態 SQL 未檢查（與後端相同的寫法）。
+- `cargo clippy --target wasm32-unknown-unknown -- -D warnings` 通過；原生單元測試 70 個通過、7 個需要 JS 執行環境（與 D1 版相同），shim 另有 3 個測試。`check_sql.py` 的 162 條靜態 SQL（語句合併後從 167 條減少） 對試行資料庫 `PREPARE` 全數通過；另有 8 條動態 SQL 未檢查（與後端相同的寫法）。
 - 線上煙霧測試 **42/42**（真實 AI，設定同 D1 版）。
 - 並行測試 **7/7**：同一學生同時買兩個部件不會透支（每次正好一筆成功、一筆 `insufficient_points`）、最後兩位管理者互相停用只成功一個、兩個教室同時匯入同一新學生只產生一組臨時密碼、30 人整批匯入與重複匯入。這些都靠 PostgreSQL 的列鎖與交易，與 `backend/` 相同。
 - 延遲（從開發機量）：與 D1 版相近，一般 API 130–400 ms，AI 回覆約 4–5 秒（大部分是 AI）。
@@ -71,15 +71,19 @@ npx wrangler deploy --var APP_BASE_URL:https://<worker>.<subdomain>.workers.dev
 
   | 請求 | D1 版 | Supabase 版 |
   | --- | --- | --- |
-  | 不碰資料庫（`/health`） | 1–2 ms | 1–2 ms |
-  | 一條連線＋1–2 個查詢（`/ready`、`/api/points`） | 約 3 ms | 6–11 ms |
-  | 送出訊息（串流 AI 回覆） | 15–21 ms | 26–40 ms（中位數約 33） |
+  | 不碰資料庫（`/health`） | 1–2 ms | 2–3 ms |
+  | 一條連線＋1–2 個查詢（`/ready`、`/api/points`） | 約 3 ms | 3–5 ms |
+  | 送出訊息（串流 AI 回覆） | 15–21 ms | 17–28 ms（中位數約 23；改寫前 26–40、中位數約 33） |
 
-  - 每條新連線要做一次 PostgreSQL 啟動與 SCRAM-SHA-256 驗證（4096 輪 HMAC 在 wasm 裡算），約 4 ms；之後每個查詢 1 ms 以內。
-  - 送出訊息經由請求內的連線池只用 1 條連線，但有 9 個查詢加兩組 `BEGIN`／`COMMIT`，約 13 次往返（D1 版因為用 batch 合併，約 9 次）。
-  - 第一版每個交易各開一條連線，每則訊息約 4 條；改成請求內的連線池後只剩 1 條，CPU 只少一點，可見主要成本在往返次數。
-  - 要再降，得把 `BEGIN` 與第一個查詢管線化、或把查詢併成更少的語句；這部分還沒做。
-- 全部請求的結果都是 `ok`，沒有因 CPU 超時被中止；但送出訊息穩定超過免費方案的 10 ms 約 3 倍，比 D1 版更容易在多人同時使用時遇到 1102 錯誤（還沒驗證）。
-- 用量：Hyperdrive 免費方案每天 100,000 次查詢；以每則訊息約 13 次往返估算，一天約 7,000 則訊息。Supabase 免費專案一週沒有活動會暫停。
+  - 每條新連線要做一次 PostgreSQL 啟動與 SCRAM-SHA-256 驗證（4096 輪 HMAC 在 wasm 裡算），約 4 ms；每次往返約 1–1.5 ms；AI 串流的處理與請求本身約 8 ms。
+  - 送出訊息原本約 13 次往返，改寫後 5 次：
+    - shim 的 `begin()` 送出 `BEGIN` 後不等回應，第一個查詢接著送出（tokio-postgres 在第一次 poll 就把請求寫進連線，PostgreSQL 依序執行），兩者共用一次往返。
+    - `Transaction::commit_after(query)` 把最後的查詢與 `COMMIT` 一起送出；只用在查詢結果不影響「要不要提交」的地方（交易出錯時 PostgreSQL 會把 `COMMIT` 當成 `ROLLBACK`，不會寫一半）。
+    - 學生訊息寫入、`turn_count`／claim 更新、到達輪數上限時的結束與 `summaries` 列併成一條 CTE；讀取歷史訊息與它管線化，和 `COMMIT` 一起送出。
+    - AI 回覆寫入與釋放 claim（`generating_since = NULL`）併成一條 CTE，不再另外釋放；只有失敗或只聽到部分回覆時才另外釋放。
+  - SQL 的語意與 `backend/` 相同（同樣的條件式 claim、`FOR UPDATE`），只是語句合併；同一場對話同時送兩則訊息時，仍然只有一則成功、另一則 `409 reply_in_progress`，資料庫只多一組學生／AI 訊息（線上驗證過）。
+  - 匯入名單、改密碼與登入真實帳號的 CPU 主要是 PBKDF2（100,000 輪約 15 ms），與資料庫無關。
+- 全部請求的結果都是 `ok`，沒有因 CPU 超時被中止；但送出訊息仍穩定超過免費方案的 10 ms 約 2 倍，多人同時使用時可能遇到 1102 錯誤（還沒驗證）。
+- 用量：Hyperdrive 免費方案每天 100,000 次查詢；送出訊息雖然只有 5 次往返，語句仍約 10 條（含 `BEGIN`／`COMMIT`），以此估算一天約 10,000 則訊息。Supabase 免費專案一週沒有活動會暫停。
 - 試行站與 NTNU 共用同一把 AI key，試行站的用量會算進同一個額度。
 - 未驗證：長回覆的總結能否在 `waitUntil` 30 秒內寫完、Google 登入、語音 STT／TTS、多 isolate 下的限流行為、Supabase 暫停後恢復的行為。

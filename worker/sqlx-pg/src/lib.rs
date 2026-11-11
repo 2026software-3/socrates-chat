@@ -10,6 +10,9 @@
 //! - 交易獨佔借來的連線直到 `commit`／`rollback`（與 SQLx 相同）；沒有提交就被丟掉的交易送出
 //!   `ROLLBACK` 後關閉該連線，不放回池裡。
 //! - 背景工作用 [`inherit`] 沿用請求的連線池（`waitUntil` 仍屬於同一個請求）。
+//! - 管線化：`BEGIN` 送出後不等回應，與交易的第一個查詢一起到達（結果在提交時檢查）；
+//!   [`Transaction::handle`] 讓同一個交易的幾個查詢（以及 [`Transaction::commit_after`] 的 `COMMIT`）
+//!   一次送出。PostgreSQL 依序執行同一條連線上的請求，所以語意與逐一等待相同，只是少了往返。
 //! - 不在任何 scope 裡時，每次查詢臨時開一條連線。
 //!
 //! 每個查詢都用 `query_typed`／`execute_typed`：參數帶著型別一起送，一次往返，不需要 prepare
@@ -23,7 +26,9 @@ use std::{
     future::Future,
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    pin::Pin,
     sync::Arc,
+    task::Poll,
 };
 
 use serde::de::DeserializeOwned;
@@ -210,16 +215,28 @@ impl Pool {
     }
 
     /// 開始交易：借一條連線獨佔使用，送出 `BEGIN`。
+    ///
+    /// 不等 `BEGIN` 的回應：第一次 poll 就把請求排進連線，之後的查詢排在它後面、一起送出，
+    /// 少一次往返。回應在提交時檢查。`BEGIN` 在可用的連線上只會因連線中斷而失敗，
+    /// 那時後面的查詢也會一起失敗。
     pub fn begin(&self) -> impl Future<Output = Result<Transaction<'static, Postgres>>> + Send {
         let lease = self.lease();
         async move {
             let mut lease = lease.await?;
-            if let Err(e) = lease.client.batch_execute("BEGIN").await {
-                lease.reusable = false;
-                return Err(Error::from_pg(e));
-            }
+            let client = lease.client.clone();
+            let mut begin: PendingBegin =
+                Box::pin(async move { client.batch_execute("BEGIN").await });
+            let pending = match futures_util::poll!(begin.as_mut()) {
+                Poll::Pending => Some(begin),
+                Poll::Ready(Ok(())) => None,
+                Poll::Ready(Err(e)) => {
+                    lease.reusable = false;
+                    return Err(Error::from_pg(e));
+                }
+            };
             Ok(Transaction {
                 conn: PgConnection { lease },
+                begin: pending,
                 open: true,
                 _p: PhantomData,
             })
@@ -232,26 +249,6 @@ impl Pool {
             Ok(PoolConnection(PgConnection {
                 lease: lease.await?,
             }))
-        }
-    }
-
-    /// 在同一個交易裡依序執行多個語句（全部成功或全部回滾）；回傳各語句影響的列數。
-    pub fn batch(
-        &self,
-        queries: Vec<Query>,
-    ) -> impl Future<Output = Result<Vec<QueryResult>>> + Send {
-        let begin = self.begin();
-        async move {
-            if queries.is_empty() {
-                return Ok(Vec::new());
-            }
-            let mut tx = begin.await?;
-            let mut results = Vec::with_capacity(queries.len());
-            for q in queries {
-                results.push(q.execute(&mut tx).await?);
-            }
-            tx.commit().await?;
-            Ok(results)
         }
     }
 }
@@ -276,11 +273,28 @@ impl DerefMut for PoolConnection {
     }
 }
 
+type PendingBegin =
+    Pin<Box<dyn Future<Output = std::result::Result<(), tokio_postgres::Error>> + Send>>;
+
 /// 交易。沒有 `commit` 就被丟掉時回滾（與 SQLx 相同）。
 pub struct Transaction<'c, DB = Postgres> {
     conn: PgConnection,
+    /// 已送出、還沒讀回應的 `BEGIN`
+    begin: Option<PendingBegin>,
     open: bool,
     _p: PhantomData<(&'c (), DB)>,
+}
+
+/// 交易所用連線的把手：不借用交易，所以可以先建立好幾個查詢再一起等（`join`），
+/// 讓它們一次送出。只能在交易提交或回滾之前使用。
+#[derive(Clone)]
+pub struct Handle(Arc<Client>);
+
+impl<'c> Executor<'c> for Handle {
+    type Database = Postgres;
+    fn into_target(self) -> Target {
+        Target::Client(self.0)
+    }
 }
 
 impl<DB> Transaction<'_, DB> {
@@ -292,8 +306,46 @@ impl<DB> Transaction<'_, DB> {
         self.finish("ROLLBACK").await
     }
 
+    /// 見 [`Handle`]。
+    pub fn handle(&self) -> Handle {
+        Handle(self.conn.lease.client.clone())
+    }
+
+    /// 執行 `query`（以 [`Self::handle`] 建立）並提交，兩者一起送出、少一次往返。
+    /// `query` 失敗時 PostgreSQL 把這個 `COMMIT` 當成回滾，回傳 `query` 的錯誤；
+    /// 所以只適合「查詢結果不影響要不要提交」的情況（例如條件式寫入，沒寫到也可以提交）。
+    pub async fn commit_after<T>(
+        mut self,
+        query: impl Future<Output = Result<T>> + Send,
+    ) -> Result<T> {
+        self.open = false;
+        let begin = self.begin.take();
+        let client = self.conn.lease.client.clone();
+        let (b, r, c) = futures_util::join!(
+            async move {
+                match begin {
+                    Some(b) => b.await,
+                    None => Ok(()),
+                }
+            },
+            query,
+            client.batch_execute("COMMIT"),
+        );
+        self.conn.lease.reusable = b.is_ok() && c.is_ok();
+        b.map_err(Error::from_pg)?;
+        let value = r?;
+        c.map_err(Error::from_pg)?;
+        Ok(value)
+    }
+
     async fn finish(&mut self, sql: &str) -> Result<()> {
         self.open = false;
+        if let Some(begin) = self.begin.take()
+            && let Err(e) = begin.await
+        {
+            self.conn.lease.reusable = false;
+            return Err(Error::from_pg(e));
+        }
         let r = self.conn.lease.client.batch_execute(sql).await;
         // 失敗時連線狀態不明，不放回池裡
         self.conn.lease.reusable = r.is_ok();
