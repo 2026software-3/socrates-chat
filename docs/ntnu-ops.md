@@ -295,6 +295,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 2026-11-08 | 以手機行動網路經 Funnel 故意登入失敗，`login_failures` 記到手機的真實 IPv6 `/64` 網段，確認 `TRUSTED_PROXIES` 在新入口下正常；測試紀錄已刪除。 |
 | 2026-11-10 | 資料庫由 volume `socrates-ntnu_pgdata` 搬到 D 槽 `D:\socrates-ntnu\pgdata`（bind mount，來源用 `/run/desktop/mnt/host/d/...`）。搬前 `pg_dump` 備份；搬後 `users` 40、`conversations` 66、`_sqlx_migrations` 14 筆與搬前一致，`/health`、`/ready` 回 200，公開網址 `/ready` 回 200。中斷約 1 分鐘。舊 volume 保留當退路。 |
 | 2026-11-10 | 評估 app 放雲端（DB 留 D 槽、cascade 留本機）：Docker cloud sandbox 的 UDP 不通、位在美西、24 小時過期，經 Tailscale 只能走 DERP，往返 170–200 ms；Cloudflare Containers 約 9.6–21 美元／月且仍需把 DB 接回本機。結論：NTNU 維持本機部署，見「雲端部署評估」。 |
+| 2026-11-11 | 部署 PR #509（`perf/chat-merge-queries`，cherry-pick `7c8eb51`、`c64fb21`、`ba1728c`）：送出訊息與保存 AI 回覆合併查詢，每則文字訊息的資料庫往返 13 → 10 次（教室對話），沒有 migration。部署前在 deploy 樹跑 sbx-test：750 通過、0 失敗；`pg_dump` 備份 `~/ntnu-backup-2026-11-11.sql`。只重建 `app`，`/health`、`/ready`（本機與公開網址）皆正常，`users` 40、`conversations` 70、`messages` 631、`_sqlx_migrations` 14 筆與部署前一致。舊映像留為 `socrates-ntnu-app:pre-chat-merge-20261111`，退回時把它改標回 `latest` 再以 `--no-build --force-recreate app` 重建。 |
 | 2026-11-10 | 補充評估「後端改寫成 Worker 加 Workers Paid」：約 5 美元／月，但後端約 15,440 行、74 個端點、180 處 SQLx 查詢要重寫，資料庫仍在本機、可用性沒改善，且需先改規格。結論：不採用。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
