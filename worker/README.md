@@ -100,4 +100,7 @@ npx wrangler deploy --var APP_BASE_URL:https://<worker>.<subdomain>.workers.dev
 - `cargo clippy --target wasm32-unknown-unknown -- -D warnings` 通過；`check_sql.py` 檢查 170 條靜態 SQL 全數通過，另有 8 條動態 SQL 已人工確認。
 - 端對端煙霧測試（登入、教室、名單匯入、活動、開始對話、重複開始回 409、SSE 回覆、結束、背景總結、儀表板、點數、任務、管理介面、權限）：本機以假 AI 端點 **42/42** 通過；部署到 workers.dev 後 **40/43**，失敗的 3 項都需要真的 AI key（部署只放了佔位 key，AI 失敗時正確送出 `error` 事件，總結標成 `failed`）。
 - CPU 時間（`wrangler tail`，29 個請求，全部 `ok`、沒有超時中止）：中位數 7 ms；冷啟動 56 ms；**登入 7–27 ms**，常超過免費方案的 10 ms。Cloudflare 容許偶爾超出，持續超出會回 1102 錯誤，是免費方案最大的風險。
-- 未驗證：真實 AI 串流的長回覆在 `waitUntil` 30 秒內能否寫完、Google 登入（需要 OAuth client）、語音 STT／TTS、多 isolate 下的限流行為。
+- **接上真實 AI 後（2026-11-11）**：沿用 NTNU 的 AI 設定（`gpt-5.4-mini`，備援 `gpt-5-mini,gpt-5.4-nano,gpt-5.4`，推理強度 high），key 以 `OPENAI_API_KEYS` secret 設定、不進版本控制。線上煙霧測試 **42/42**：一則 AI 回覆約 4.9 秒串流完成，結束對話後的背景總結約 2 秒產生（`waitUntil` 上限 30 秒）。
+- **CPU 風險比登入更大的是對話**：同一輪 tail 收到的 20 筆全部 `ok`，中位數 7 ms，但送出訊息（串流 AI 回覆）一次 **68 ms CPU**。目前推測花在逐段解析 AI 串流，未做 profiling。每則訊息都是這個量級，免費方案在多人同時使用時很可能開始回 1102。
+- 試行站與 NTNU 共用同一把 key，試行站的用量會算進同一個額度。
+- 未驗證：長回覆（接近 `AI_TOTAL_TIMEOUT_SECS`）的總結能否在 `waitUntil` 30 秒內寫完、Google 登入（需要 OAuth client）、語音 STT（NTNU 用本機的 whisper，Worker 連不到）與 TTS、多 isolate 下的限流行為。
