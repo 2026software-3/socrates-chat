@@ -645,9 +645,25 @@ async fn scheduled(
         tracing::error!("scheduled: invalid configuration");
         return;
     };
-    match sqlx::scope(summary::recover_orphaned(&state.pool)).await {
-        Ok(0) => {}
-        Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
-        Err(_) => tracing::error!("failed to recover orphaned summaries"),
-    }
+    sqlx::scope(async {
+        match summary::recover_orphaned(&state.pool).await {
+            Ok(0) => {}
+            Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
+            Err(_) => tracing::error!("failed to recover orphaned summaries"),
+        }
+        match keep_alive(&state.pool).await {
+            Ok(()) => tracing::info!("database keep-alive ok"),
+            Err(_) => tracing::error!("database keep-alive failed"),
+        }
+    })
+    .await;
+}
+
+/// Supabase 免費專案一週內使用者查詢太少就會暫停（「每天幾次查詢」通常就夠）。
+/// 與上面的回收分開，回收邏輯改變或失敗時仍有讀取應用程式資料表的查詢；每 10 分鐘一次，用量可忽略。
+async fn keep_alive(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query_scalar::<bool>("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(pool)
+        .await
+        .map(|_| ())
 }

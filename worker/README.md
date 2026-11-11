@@ -22,7 +22,7 @@ Schema 直接用 `backend/migrations`，沒有另外的 migration。
 
 - `tokio` 只留 `sync`／`macros`／`rt`。`rt` 模組以 JS 時鐘實作 `Instant`、`sleep`、`timeout`；`std::time::Instant` 在 wasm32 會 panic，不可使用。
 - 回應送出後的背景工作（AI 回覆寫入、總結生成）用 `ctx.waitUntil`：瀏覽器斷線後最多再跑 30 秒。
-- 卡住的總結由 cron（每 10 分鐘）執行 `recover_orphaned`，取代 PostgreSQL 版啟動時與背景迴圈的回收。
+- 卡住的總結由 cron（每 10 分鐘）執行 `recover_orphaned`，取代 PostgreSQL 版啟動時與背景迴圈的回收。同一個 cron 另外讀一次 `users`（`keep_alive`）：Supabase 免費專案一週內使用者查詢太少會暫停，這個查詢與回收分開，回收邏輯改變或失敗時仍會執行。
 - `reqwest` 換成以 `fetch` 實作的 `http` 模組（同樣的 builder 介面）；AI 串流由 JS 緩衝、每 100 ms 取一次。
 - Google 登入自行實作 OIDC（PKCE、state、nonce），state 綁定發起登入的瀏覽器（cookie）。ID token 直接從 token endpoint 經 TLS 取得，依 OIDC Core 3.1.3.7 只驗證 claims，不驗簽章。
 - 用戶端 IP 取自 `CF-Connecting-IP`。
@@ -84,6 +84,6 @@ npx wrangler deploy --var APP_BASE_URL:https://<worker>.<subdomain>.workers.dev
   - SQL 的語意與 `backend/` 相同（同樣的條件式 claim、`FOR UPDATE`），只是語句合併；同一場對話同時送兩則訊息時，仍然只有一則成功、另一則 `409 reply_in_progress`，資料庫只多一組學生／AI 訊息（線上驗證過）。
   - 匯入名單、改密碼與登入真實帳號的 CPU 主要是 PBKDF2（100,000 輪約 15 ms），與資料庫無關。
 - 全部請求的結果都是 `ok`，沒有因 CPU 超時被中止；但送出訊息仍穩定超過免費方案的 10 ms 約 2 倍，多人同時使用時可能遇到 1102 錯誤（還沒驗證）。
-- 用量：Hyperdrive 免費方案每天 100,000 次查詢；送出訊息雖然只有 5 次往返，語句仍約 10 條（含 `BEGIN`／`COMMIT`），以此估算一天約 10,000 則訊息。Supabase 免費專案一週沒有活動會暫停。
+- 用量：Hyperdrive 免費方案每天 100,000 次查詢；送出訊息雖然只有 5 次往返，語句仍約 10 條（含 `BEGIN`／`COMMIT`），以此估算一天約 10,000 則訊息。Supabase 免費專案一週沒有活動會暫停，cron 每 10 分鐘的 `keep_alive` 查詢用來避免（一天 144 次，佔 Hyperdrive 額度不到 0.2%）。
 - 試行站與 NTNU 共用同一把 AI key，試行站的用量會算進同一個額度。
 - 未驗證：長回覆的總結能否在 `waitUntil` 30 秒內寫完、Google 登入、語音 STT／TTS、多 isolate 下的限流行為、Supabase 暫停後恢復的行為。

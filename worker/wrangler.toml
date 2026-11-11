@@ -23,7 +23,7 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/health", "/ready"]
 
-# 回收卡住的總結（PostgreSQL 版在啟動與背景工作中執行）。
+# 回收卡住的總結（PostgreSQL 版在啟動與背景工作中執行），並碰一下資料庫，避免 Supabase 免費專案因一週沒活動被暫停。
 [triggers]
 crons = ["*/10 * * * *"]
 
