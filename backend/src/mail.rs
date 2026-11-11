@@ -255,13 +255,21 @@ mod tests {
     #[test]
     fn debug_output_has_no_credentials_or_recipients() {
         let text = format!("{:?}", config());
-        for secret in [
+        // 失敗訊息只報第幾個欄位，不把憑證或整段 Debug 輸出印出來：
+        // 這個測試要保證的就是它們不會出現在任何輸出裡
+        for (i, secret) in [
             "mailer-user",
             "p4ssw0rd-secret",
             "ops@example.test",
             "noreply@example.test",
-        ] {
-            assert!(!text.contains(secret), "{secret} 出現在 Debug 輸出：{text}");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                !text.contains(secret),
+                "Debug 輸出含有不該出現的值（第 {i} 項：帳號、密碼、收件信箱、寄件人依序）"
+            );
         }
         assert!(text.contains("smtp.example.test"));
     }
