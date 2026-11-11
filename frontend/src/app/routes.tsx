@@ -5,6 +5,7 @@ import { Layout } from '@/app/layout'
 import { RouteErrorBoundary } from '@/app/route-error-boundary'
 import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { adminFeature, opsNav } from '@/features/admin'
+import { MaintenancePage } from '@/features/announcements/maintenance-page'
 import { DisabledPage } from '@/features/auth/disabled-page'
 import { LoginPage } from '@/features/auth/login-page'
 import { ChangePasswordPage } from '@/features/auth/change-password-page'
@@ -50,6 +51,7 @@ function Shell() {
   }
   if (auth.status === 'anon') return <Navigate to="/login" replace />
   if (auth.status === 'disabled') return <DisabledPage />
+  if (auth.status === 'maintenance') return <MaintenancePage />
   const { me } = auth
   // 臨時密碼：改密碼前其他 API 都會回 password_change_required，所以只放行改密碼頁
   if (me.must_change_password) return <ChangePasswordPage />

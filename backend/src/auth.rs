@@ -520,6 +520,13 @@ async fn finish_login(
     if user.disabled {
         return Err("account_disabled");
     }
+    // 維護模式中只有管理者能登入（S-15.2）：在核發 session 前拒絕
+    if crate::announcements::blocks_login(state, user.id)
+        .await
+        .map_err(|_| "login_failed")?
+    {
+        return Err("maintenance");
+    }
     user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
         .await
         .map_err(|_| "login_failed")?;
@@ -762,6 +769,10 @@ pub(crate) async fn password_login(
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if account.disabled {
         return Err(ACCOUNT_DISABLED);
+    }
+    // 維護模式中只有管理者能登入（S-15.2）：密碼正確之後、核發 session 之前拒絕
+    if crate::announcements::blocks_login(&state, account.id).await? {
+        return Err(crate::announcements::MAINTENANCE_ERROR);
     }
     auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
     // 登入一律建立新 session（防止 session fixation）
