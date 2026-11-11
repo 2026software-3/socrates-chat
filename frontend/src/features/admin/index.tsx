@@ -38,4 +38,5 @@ export const opsNav: NavItem[] = [
   { to: '/admin/logs', labelKey: 'admin.nav.logs', access: 'admin' },
   { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
   { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },
+  { to: '/admin/complaints', labelKey: 'complaints.admin.nav', access: 'admin' },
 ]

@@ -10,6 +10,7 @@ import { LoginPage } from '@/features/auth/login-page'
 import { ChangePasswordPage } from '@/features/auth/change-password-page'
 import { PendingPage } from '@/features/auth/pending-page'
 import { chatFeature } from '@/features/chat'
+import { complaintsFeature } from '@/features/complaints'
 import { dashboardFeature } from '@/features/dashboard'
 import { studentFeature } from '@/features/student'
 import { AvailablePage } from '@/features/student/available-page'
@@ -19,7 +20,7 @@ import type { Roles } from '@/lib/types'
 import { Suspense, type ReactNode } from 'react'
 
 // 新增功能時：在 features/<name>/index.tsx 匯出 Feature，再加進這裡。
-export const features: Feature[] = [studentFeature, chatFeature, dashboardFeature, teacherFeature, adminFeature]
+export const features: Feature[] = [studentFeature, chatFeature, dashboardFeature, teacherFeature, complaintsFeature, adminFeature]
 const allNav = features.flatMap((f) => f.nav)
 /** 不參與討論的教師：拿掉學生功能（選題、我的對話、我的儀表板）。 */
 const staffNav = allNav.filter((n) => n.access !== 'member')
