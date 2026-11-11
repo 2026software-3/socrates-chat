@@ -1,0 +1,9 @@
+{
+  "topic_id": "TEST",
+  "motion": "是否應允許使用 AI？",
+  "rounds": [
+    {"id":"TEST-R01", "ai_question":"你認為應允許使用 AI 嗎？", "user_answer":"我認為應該允許使用 AI，因為能減少整理時間。"},
+    {"id":"TEST-R02", "ai_question":"若需要學生自主完成呢？", "user_answer":"但第一次寫論點應該自己完成，這才是練習。"},
+    {"id":"TEST-R03", "ai_question":"如何檢查 AI 遺漏？", "user_answer":"我目前不知道如何完整檢查 AI 遺漏，還沒有好的辦法。"}
+  ]
+}
