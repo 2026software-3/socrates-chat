@@ -97,7 +97,8 @@ export function AdminComplaintsPage() {
               >
                 {t(c.status === 'open' ? 'complaints.admin.resolve' : 'complaints.admin.reopen')}
               </Button>
-              {c.mail_status === 'failed' ? (
+              {/* 沒寄出的都能重寄：failed；卡在 pending（寄送途中程序重啟）；skipped（設定 SMTP 之前送出的） */}
+              {c.mail_status !== 'sent' ? (
                 <Button
                   size="sm"
                   variant="outline"
