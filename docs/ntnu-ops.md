@@ -94,6 +94,24 @@ SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
 - 對外入口也要確認：`"/mnt/c/Program Files/Tailscale/tailscale.exe" serve status` 應該有 `https://ray-nb.tail5fc9fe.ts.net (Funnel on)`。Windows 或 Tailscale 重啟後設定通常會保留，沒有的話重跑 `funnel --bg 3000`。
 - WSL 重開機後，已開著的終端機不一定有 `docker` 群組；`docker` 出現 `permission denied ... docker.sock` 時，開新的終端機。
 
+## 客訴通知信（SMTP）
+
+客訴表單（`/complaint`）與管理者的「客訴」頁（`/admin/complaints`）不需要設定就能用；沒設定 SMTP 時客訴照常存資料庫，寄信狀態顯示「未寄信（尚未設定 SMTP）」。要讓管理者收到通知信，在 `.env` 加上（變數說明見 `.env.example`）：
+
+```
+SMTP_HOST=...
+SMTP_FROM=Socrates <noreply@example.edu>
+COMPLAINT_TO=admin1@example.edu,admin2@example.edu
+SMTP_USERNAME=...
+SMTP_PASSWORD=...
+```
+
+- `SMTP_HOST`、`SMTP_FROM`、`COMPLAINT_TO` 缺任何一項就視為沒啟用；格式錯誤時後端啟動會失敗並指出是哪個變數（不印出位址或密碼）。
+- 預設用 STARTTLS（埠 587）；Gmail 這類服務要用應用程式密碼。`SMTP_SECURITY=tls` 走埠 465；`none` 只給本機測試。
+- 改 `.env` 後要重建後端容器才會生效。這是設定變更，不含 migration，但新版本本身含一個 migration（`create_complaints`），部署照「部署前檢查」。
+- 寄信失敗不影響提交者；管理者在「客訴」頁看到「寄信失敗」時可按「重寄通知信」。日誌只會有客訴編號與失敗類別（`build`／`timeout`／`transport`），要查原因請直接測 SMTP 連線。
+- 信件不含學號、電子郵件與對話原文；描述的原文只在信件內文與管理者的「客訴」頁。
+
 ## 刪除資料庫的限制
 
 - NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料。它會刪掉 `socrates-ntnu_pgdata`。

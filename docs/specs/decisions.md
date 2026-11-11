@@ -335,7 +335,7 @@
 - migration 使用 `sqlx migrate`（`backend/migrations/`）。
 - 設定與秘密一律用環境變數；本機用 `.env`（不進版控），並提供 `.env.example`。
 - **API 契約採 OpenAPI 3，用 `utoipa` 由程式碼產生（2026-10 決定）**：各 handler 以 `#[utoipa::path]`、型別以 `ToSchema` 標註，文件公開在 `GET /api/openapi.json`；測試檢查每個已文件化的端點都有對應路由且受保護。人讀的補充說明在 `docs/api/api-reference.md`。
-- **新增的環境變數（2026-11）**：客訴寄信用 `SMTP_FROM`、`COMPLAINT_TO` 與 SMTP 連線設定（S-17.3）；NTNU 加上反向代理後，`TRUSTED_PROXIES` 要包含代理所在的網段（S-16）。具體名稱在實作時補進 `.env.example`。
+- **新增的環境變數（2026-11）**：客訴寄信用 `SMTP_FROM`、`COMPLAINT_TO` 與 SMTP 連線設定（S-17.3）；NTNU 加上反向代理後，`TRUSTED_PROXIES` 要包含代理所在的網段（S-16）。名稱見 S-17.3 與 `.env.example`。
 
 ### S-08.4 對話 API 傳輸方式與錯誤邊界（已決定）
 
@@ -570,12 +570,14 @@
 ### S-17.3 寄信（SMTP，已決定）
 
 - **方式**：SMTP，以環境變數設定，不綁特定廠商（可接 Gmail 應用程式密碼、學校或其他 SMTP）；秘密不進版控、不進前端、不進日誌。
-- **環境變數**：寄件人 `SMTP_FROM`、收件信箱 `COMPLAINT_TO`（可多個，逗號分隔，與 `ADMIN_EMAILS` 脫鉤），以及 SMTP 連線設定（主機、埠、帳號、密碼、加密方式）；連線設定的變數名稱在實作時決定並補進 `.env.example`。
+- **環境變數**（定義在 `.env.example`）：`SMTP_HOST`、`SMTP_PORT`（預設依加密方式：587／465／25）、`SMTP_SECURITY`（`starttls` 預設、`tls`、`none`；`none` 只給本機測試與信任的內部網路）、`SMTP_USERNAME` 與 `SMTP_PASSWORD`（要一起設定，或都不設）、寄件人 `SMTP_FROM`、收件信箱 `COMPLAINT_TO`（可多個，逗號分隔，與 `ADMIN_EMAILS` 脫鉤）。`SMTP_HOST`、`SMTP_FROM`、`COMPLAINT_TO` 缺任何一項就視為沒啟用；有設定但格式錯誤時啟動即失敗（錯誤訊息不帶位址或憑證）。
 - **未設定時**：缺 SMTP 連線設定或收件信箱時功能照常（表單可送、存資料庫），寄信狀態為 `skipped`，不報錯，與 cascade「沒設定就不啟用」一致。
 - **寄信狀態**：`pending`／`sent`／`failed`／`skipped`。寄信在背景進行，不讓提交者等 SMTP；失敗時客訴仍保存、標記 `failed`，管理者在介面看得到並可重寄，不回錯給提交者。
 - **信件內容**：客訴編號、類別、描述、提交時間、對話編號（若有）、提交者的顯示名稱與角色，以及教室名稱（只在附對話編號時，帶該對話所屬教室）；**不含學號、電子郵件與對話原文**。標題只有固定格式（客訴編號與類別），不含描述。
 - **日誌**：只記客訴編號與寄信結果的類別；不記描述、收件信箱與 SMTP 憑證。
-- **仍待決定**：SMTP 實作用的套件（實作時評估，AGENTS.md 規定依賴只在需要時才加）；管理者是否可手動刪除客訴，以及已處理客訴的保存期限（目前保留到帳號刪除）。
+- **套件（實作時選定）**：`lettre` 0.11（tokio 非同步傳輸、rustls，不依賴系統 OpenSSL）。理由：Rust 生態中維護最久、最常用的 SMTP 用戶端，內建 STARTTLS／TLS、認證與信件組裝，免自己處理 MIME 與編碼；只開用到的功能（`builder`、`smtp-transport`、`tokio1-rustls`），不引入 native-tls。內文固定用 base64 傳輸編碼，中文在任何伺服器都不會被 8bit 處理弄壞。整封信（含連線）逾時 30 秒，避免背景工作卡在壞掉的 SMTP 伺服器。
+- **端點**：`POST /api/complaints`（學生或教師送出，成功 204；錯誤代碼 `invalid_category`、`invalid_description`、`complaint_rate_limited`）；管理者專用 `GET /api/admin/complaints?status=`（最新 200 則）、`PATCH /api/admin/complaints/{id}`（改處理狀態，稽核 `complaint_resolved`／`complaint_reopened`，狀態沒變就不寫稽核）、`POST /api/admin/complaints/{id}/resend`（重寄，204）。限流以資料庫的交易層級諮詢鎖（advisory lock）序列化同一人的送出，避免併發繞過每小時 3 則。
+- **仍待決定**：管理者是否可手動刪除客訴，以及已處理客訴的保存期限（目前保留到帳號刪除）。
 
 ## 學生連結 Google 帳號（2026-10，已決定）
 
@@ -664,7 +666,7 @@
 - S-01.4（登入限流與 S-08.2 同步修訂）、S-04.8（AI 產生引導問題待 S-06.1）的剩餘待確認項目（見各項）。
 - S-04.6、S-07.2、S-07.3、S-07.4 的剩餘待確認項目（見各項）。
 - F-20 類型卡與 S-04.5 思辨標籤在主要學派取消後的依據。
-- S-16 反向代理採 nginx 或 Caddy；S-17 的 SMTP 套件、管理者是否可手動刪除客訴與已處理客訴的保存期限（見各項）。
+- S-16 反向代理採 nginx 或 Caddy；S-17 管理者是否可手動刪除客訴與已處理客訴的保存期限（見各項）。
 
 **尚未討論**
 - S-04.1 題目統計指標
