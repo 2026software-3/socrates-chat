@@ -52,6 +52,7 @@ pub mod claims;
 pub mod classroom_store;
 pub mod classrooms;
 pub mod client_ip;
+pub mod complaints;
 pub mod config;
 pub mod dashboard;
 pub mod demo;
@@ -60,6 +61,7 @@ pub mod identity;
 pub mod key_pool;
 pub mod logging;
 pub mod login_rate_limit;
+pub mod mail;
 pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
@@ -200,6 +202,7 @@ pub fn app(state: AppState) -> Router {
         .merge(tasks::routes())
         .merge(purchase::routes())
         .merge(achievement_admin::routes())
+        .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
