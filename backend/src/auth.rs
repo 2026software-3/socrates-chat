@@ -675,7 +675,7 @@ fn valid_display_name(name: &str) -> bool {
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct MePatch {
-    /// 沒帶＝保留；`null` 或空白字串＝恢復匯入姓名；上限 30 個字元，不可含控制字元。
+    /// 沒帶＝保留；`null` 或空白字串＝清除（學生恢復匯入姓名，教師與管理者顯示電子郵件）；上限 30 個字元，不可含控制字元。
     #[serde(default, deserialize_with = "nullable")]
     display_name: Option<Option<String>>,
     /// 介面與之後建立之對話的語言；僅接受 `zh-TW`、`en`、`es`。
@@ -691,7 +691,7 @@ pub(crate) struct MePatch {
     responses(
         (status = 200, description = "更新後的使用者", body = MeResponse),
         (status = 400, description = "顯示名稱無效（invalid_display_name）或語言不受支援（invalid_language）"),
-        (status = 403, description = "非學生嘗試修改顯示名稱（所有登入者皆可修改語言）"),
+        (status = 403, description = "沒有任何角色的帳號嘗試修改顯示名稱（所有登入者皆可修改語言）"),
     )
 )]
 pub(crate) async fn update_me(
@@ -699,8 +699,12 @@ pub(crate) async fn update_me(
     State(state): State<AppState>,
     Json(p): Json<MePatch>,
 ) -> Result<Json<MeResponse>, ApiError> {
-    if p.display_name.is_some() && !cu.roles.student {
-        return Err(ApiError::forbidden("forbidden", "只有學生能修改顯示名稱"));
+    // 學生、教師與管理者都能改（S-08.2，2026-11-12 開放教師與管理者）；沒有任何角色（尚未開通）的帳號不行
+    if p.display_name.is_some() && !(cu.roles.student || cu.roles.teacher || cu.roles.admin) {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "尚未開通的帳號不能修改顯示名稱",
+        ));
     }
     if p.language
         .as_deref()
