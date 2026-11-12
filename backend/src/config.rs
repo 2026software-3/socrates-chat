@@ -18,6 +18,8 @@ pub struct Config {
     pub google_client_id: String,
     pub google_client_secret: String,
     pub google_redirect_url: String,
+    /// 選填的後端 Cloud Translation API 金鑰（與 Google 登入憑證分開）。
+    pub google_translation_api_key: Option<String>,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
     /// 首位管理者內建登入的初始密碼（S-01.3）；沒設定就不建立內建管理者帳號，只能用 Google 登入。
@@ -259,6 +261,9 @@ impl Config {
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
+            google_translation_api_key: env::var("GOOGLE_TRANSLATION_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty()),
             admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
             admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
                 .ok()
