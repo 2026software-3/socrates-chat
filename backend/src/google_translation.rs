@@ -4,7 +4,7 @@ use reqwest::{Client, header::HeaderValue, redirect::Policy};
 use serde::Deserialize;
 
 const ENDPOINT: &str = "https://translation.googleapis.com/language/translate/v2";
-const TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct GoogleTranslation {
@@ -14,7 +14,11 @@ pub(crate) struct GoogleTranslation {
 
 impl GoogleTranslation {
     pub(crate) fn new(key: &str) -> Option<Self> {
-        let mut key = HeaderValue::from_str(key.trim()).ok()?;
+        let key = key.trim();
+        if key.is_empty() {
+            return None;
+        }
+        let mut key = HeaderValue::from_str(key).ok()?;
         key.set_sensitive(true);
         Some(Self {
             http: Client::builder().redirect(Policy::none()).build().ok()?,
@@ -89,7 +93,12 @@ impl GoogleTranslation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, http::HeaderMap, routing::post};
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::post,
+    };
     use serde_json::{Value, json};
 
     #[tokio::test]
@@ -100,9 +109,18 @@ mod tests {
             "/translate",
             post(|headers: HeaderMap, Json(body): Json<Value>| async move {
                 assert_eq!(headers["x-goog-api-key"], "synthetic-key");
-                assert_eq!(body["q"], json!(["完成 {n} 場", "聯絡 [EMAIL]"]));
-                assert_eq!(body["source"], "zh-TW");
-                assert_eq!(body["format"], "text");
+                assert_eq!(
+                    body,
+                    json!({
+                        "q": ["完成 {n} 場", "聯絡 [EMAIL]"],
+                        "source": "zh-TW",
+                        "target": body["target"],
+                        "format": "text",
+                    })
+                );
+                if body["target"] == "zh-TW" {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
                 let title = if body["target"] == "en" {
                     "Finish {n} dialogues"
                 } else {
@@ -112,6 +130,7 @@ mod tests {
                     {"translatedText": title},
                     {"translatedText": "Contact [EMAIL]"}
                 ]}}))
+                .into_response()
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -123,6 +142,12 @@ mod tests {
         );
         assert_eq!(
             client.translate_at(&endpoint, "zh-TW", "es", input).await,
+            None
+        );
+        assert_eq!(
+            client
+                .translate_at(&endpoint, "zh-TW", "zh-TW", input)
+                .await,
             None
         );
         server.abort();

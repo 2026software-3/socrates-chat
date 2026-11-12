@@ -117,6 +117,8 @@ export type SummaryView = {
   /** 學生最終主張的一句短句（AI 寫的）；沒有時為 null；管理者看到的是固定字串 `message` */
   claim?: string | null
   completed_at: string | null
+  translation?: SummaryTranslation | null
+  translation_pending?: boolean
 }
 
 /** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
@@ -141,6 +143,8 @@ export type TeacherSummary = {
   stance: string | null
   reasons: string | null
   claim?: string | null
+  translation?: SummaryTranslation | null
+  translation_pending?: boolean
 }
 
 /** 教師唯讀檢視的一場已結束活動對話（GET /api/summaries/{id}/messages）；管理者的 content 一律是 `message`。 */
@@ -156,7 +160,7 @@ export type Transcript = {
   messages: Message[]
 }
 
-/** 教師明確觸發、僅保留在目前頁面的總結翻譯。 */
+/** 已保存或按需產生的總結譯文。 */
 export type SummaryTranslation = {
   language: Lang
   stance: string

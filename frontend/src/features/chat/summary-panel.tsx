@@ -18,6 +18,7 @@ export function SummaryPanel({ conversationId, pollMs, maxPollMs }: Props) {
   const { state, check, retry, retrying, retryError } = useSummary(conversationId, { pollMs, maxPollMs })
 
   const completed = state.kind === 'ready' && state.summary.completed_at ? formatDate(state.summary.completed_at, lang) : ''
+  const translation = state.kind === 'ready' && state.summary.translation?.language === lang ? state.summary.translation : null
 
   return (
     <Card role="region" aria-labelledby={titleId}>
@@ -66,9 +67,12 @@ export function SummaryPanel({ conversationId, pollMs, maxPollMs }: Props) {
               </div>
             ) : null}
             <dl className="space-y-4">
-              <SummaryItem label={t('chat.summary.stance')} text={state.summary.stance} />
-              <SummaryItem label={t('chat.summary.reasons')} text={state.summary.reasons} />
+              <SummaryItem label={t('chat.summary.stance')} text={translation?.stance ?? state.summary.stance} />
+              <SummaryItem label={t('chat.summary.reasons')} text={translation?.reasons ?? state.summary.reasons} />
             </dl>
+            {state.summary.translation_pending ? (
+              <p role="status" className="text-muted-foreground text-sm">{t('chat.summary.translationPending')}</p>
+            ) : null}
             {completed ? (
               <p className="text-muted-foreground text-xs">{t('chat.summary.completedAt', { date: completed })}</p>
             ) : null}
