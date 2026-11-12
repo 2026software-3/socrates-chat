@@ -37,12 +37,14 @@ macro_rules! generation_unclaimed {
     };
 }
 
+mod access_log;
 pub mod accounts;
 pub mod achievement_admin;
 pub mod achievements;
 pub mod activity_store;
 pub mod ai;
 pub mod ai_usage;
+pub mod announcements;
 pub mod auth;
 pub mod auth_store;
 pub mod cascade;
@@ -52,14 +54,18 @@ pub mod claims;
 pub mod classroom_store;
 pub mod classrooms;
 pub mod client_ip;
+pub mod complaints;
 pub mod config;
 pub mod dashboard;
 pub mod demo;
+pub mod diagnostics;
 pub mod error;
+mod google_translation;
 pub mod identity;
 pub mod key_pool;
 pub mod logging;
 pub mod login_rate_limit;
+pub mod mail;
 pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
@@ -68,7 +74,6 @@ pub mod pii;
 pub mod points;
 pub mod purchase;
 pub mod reply;
-pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
@@ -83,9 +88,12 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 6] = [
+pub const LONG_RUNNING_ROUTES: [&str; 8] = [
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
+    // 管理者新增、修改公告時同步翻譯內文
+    "/api/admin/announcements",
+    "/api/admin/announcements/{id}",
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
@@ -105,6 +113,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
     /// 自架語音同時進行中的使用者（S-05.5）。
@@ -113,12 +122,12 @@ pub struct AppState {
     pub voice_sessions: Arc<cascade::VoiceSessions>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
-    /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
-    pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
     /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
     pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
     /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
+    /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
+    pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
 }
 
 impl AppState {
@@ -129,6 +138,10 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let google_translation = config
+            .google_translation_api_key
+            .as_deref()
+            .and_then(google_translation::GoogleTranslation::new);
         let ai_usage = Arc::new(user_limit::UserLimiter::new(
             config.ai_usage_max,
             config.ai_usage_window,
@@ -139,13 +152,14 @@ impl AppState {
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
+            google_translation,
             voice,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
             live: Arc::default(),
-            request_logs: Arc::default(),
             translation_limit: Arc::default(),
             ai_usage,
+            maintenance: Arc::default(),
         }
     }
 
@@ -192,7 +206,7 @@ pub fn app(state: AppState) -> Router {
         .merge(catalog::routes())
         .merge(chat::routes())
         .merge(reply::routes())
-        .merge(request_logs::routes())
+        .merge(diagnostics::routes())
         .merge(summary::routes())
         .merge(voice::routes())
         .merge(cascade::routes())
@@ -200,8 +214,10 @@ pub fn app(state: AppState) -> Router {
         .merge(tasks::routes())
         .merge(purchase::routes())
         .merge(achievement_admin::routes())
+        .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(announcements::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
@@ -209,6 +225,11 @@ pub fn app(state: AppState) -> Router {
                 .custom_html(include_str!("redoc.html")),
         )
         .fallback(fallback)
+        // 最內層：維護模式開啟時擋下非管理者（S-15.2）；其餘層（CSRF、逾時、request ID、安全標頭）照常包住它
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            maintenance_gate,
+        ))
         .layer(middleware::from_fn(api_rejections))
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 明確設定全域 body 上限；語音辨識在自己的 router 內放寬。超過時的 413 由 `api_rejections` 轉成 JSON
@@ -218,7 +239,7 @@ pub fn app(state: AppState) -> Router {
             request_timeout,
         ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
-        .layer(middleware::from_fn_with_state(state.clone(), request_id))
+        .layer(middleware::from_fn(request_id))
         // 真正的最外層：所有回應（含錯誤與 CSRF 拒絕）都補上安全標頭
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -247,15 +268,13 @@ async fn openapi_json() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], DOC.as_str())
 }
 
-/// 健康檢查會被外部探測器頻繁呼叫，不進 request log ring（stdout 仍輸出）。
-async fn health() -> Response {
-    request_logs::not_in_ring(Json(Health { status: "ok" }))
+async fn health() -> Json<Health> {
+    Json(Health { status: "ok" })
 }
 
 /// 就緒檢查（S-09.3）：以 `SELECT 1` 確認資料庫連得上，失敗或逾時回 503。
 /// 與 `/health`（只表示程序存活）不同；探針不需登入。日誌與回應只帶固定的錯誤種類，
-/// 不含連線字串、主機或資料庫的錯誤訊息。任何回應（成功、失敗）都不進 request log ring，與 `/health` 一致；
-/// 失敗的紀錄看 stdout 的 tracing 輸出。
+/// 不含連線字串、主機或資料庫的錯誤訊息。失敗的紀錄看 stdout 的 tracing 輸出。
 #[utoipa::path(
     get,
     path = "/ready",
@@ -275,7 +294,7 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
     )
     .await;
     match check {
-        Ok(Ok(_)) => request_logs::not_in_ring(Json(Health { status: "ok" })),
+        Ok(Ok(_)) => Json(Health { status: "ok" }).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
             database_unavailable()
@@ -287,14 +306,13 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
     }
 }
 
-/// 失敗的回應同樣不進 request log ring：長時間故障時探針每隔幾秒一筆，會擠掉真正的請求。
-/// 失敗仍由上面的 `tracing::warn!` 輸出到 stdout。
 fn database_unavailable() -> Response {
-    request_logs::not_in_ring(ApiError::new(
+    ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
         "database_unavailable",
         "資料庫暫時無法使用",
-    ))
+    )
+    .into_response()
 }
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
@@ -313,15 +331,16 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
 }
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
-async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let id = uuid::Uuid::new_v4().to_string();
+async fn request_id(req: Request, next: Next) -> Response {
+    let request_uuid = uuid::Uuid::new_v4();
+    let id = request_uuid.to_string();
     let method = req.method().clone();
     // 只記錄路由模板；原始 URL 可能含 email 等個資。
     let route = req
         .extensions()
         .get::<MatchedPath>()
         .map(MatchedPath::as_str)
-        .unwrap_or(request_logs::FALLBACK_ROUTE)
+        .unwrap_or(access_log::FALLBACK_ROUTE)
         .to_string();
     let span = tracing::info_span!(
         "http_request",
@@ -331,7 +350,14 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
     );
     let started = Instant::now();
     let mut res = error::REQUEST_ID
-        .scope(id.clone(), next.run(req).instrument(span.clone()))
+        .scope(
+            id.clone(),
+            diagnostics::scope_request(
+                request_uuid,
+                &route,
+                next.run(req).instrument(span.clone()),
+            ),
+        )
         .await;
     if let Ok(v) = HeaderValue::from_str(&id) {
         res.headers_mut().insert("x-request-id", v);
@@ -341,11 +367,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         .extensions()
         .get::<error::ErrorCode>()
         .map(|code| code.0.to_string());
-    // 沒有對應路由的請求（掃描、前端靜態檔、被 CSRF 擋下的未知路徑）會擠掉真正的應用請求，不進 ring；
-    // 其餘由路由或處理函式自己標記。stdout 的 tracing event 一律輸出。
-    let in_ring = route != request_logs::FALLBACK_ROUTE && request_logs::kept_in_ring(&res);
-    let entry = request_logs::RequestLogEntry {
-        created_at: chrono::Utc::now(),
+    let entry = access_log::RequestLogEntry {
         request_id: id,
         method: method.to_string(),
         route,
@@ -356,8 +378,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
     if is_event_stream(&res) {
         // 串流的結果（最後的 done／error 事件）要等本文讀完才知道，因此記錄延後到本文結束或被丟棄時。
         let (parts, body) = res.into_parts();
-        let mut log =
-            request_logs::StreamLog::new(state.request_logs.clone(), span, started, entry, in_ring);
+        let mut log = access_log::StreamLog::new(span, started, entry);
         let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
             if let Ok(bytes) = &chunk {
                 log.observe(bytes);
@@ -366,7 +387,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         }));
         return Response::from_parts(parts, body);
     }
-    request_logs::record(&state.request_logs, &span, entry, in_ring);
+    access_log::record(&span, &entry);
     res
 }
 
@@ -378,6 +399,41 @@ fn is_event_stream(res: &Response) -> bool {
 
 fn is_api_path(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
+}
+
+/// 維護模式中照常服務的路徑（S-15.2）：公告端點（登入頁據此顯示維護提示）、登入與登出
+/// （非管理者的登入在核發 session 前另行拒絕）、API 文件。`/health`、`/ready` 與前端檔案不在 `/api` 底下。
+fn maintenance_exempt(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/announcements"
+            | "/api/openapi.json"
+            | "/api/auth/login"
+            | "/api/auth/logout"
+            | "/api/auth/google/login"
+            | "/api/auth/google/callback"
+    ) || path.starts_with("/api/docs")
+}
+
+/// 維護模式（S-15.2）：開啟時，`/api` 與 cascade 內部端點（`/internal`）只放行管理者與例外路徑，
+/// 其餘回 503 `maintenance`。已經開始的串流（進行中的 AI 回覆）不受影響，因為只檢查請求開始的當下。
+async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    use axum::extract::FromRequestParts;
+
+    let path = req.uri().path();
+    let gated = is_api_path(path) || path.starts_with("/internal/");
+    if !gated || maintenance_exempt(path) || !state.maintenance.is_on(&state.pool).await {
+        return next.run(req).await;
+    }
+    let (mut parts, body) = req.into_parts();
+    let is_admin = auth::AnyCurrentUser::from_request_parts(&mut parts, &state)
+        .await
+        .is_ok_and(|auth::AnyCurrentUser(cu)| cu.roles.admin);
+    if is_admin {
+        next.run(Request::from_parts(parts, body)).await
+    } else {
+        announcements::MAINTENANCE_ERROR.into_response()
+    }
 }
 
 /// 框架本身的拒絕（`Json`／`Path`／`Query` 解析失敗、方法不符、本文過大）是純文字，沒有 API error code。

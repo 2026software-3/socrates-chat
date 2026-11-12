@@ -40,7 +40,7 @@ static RULES: LazyLock<[(Regex, &str); 4]> = LazyLock::new(|| {
 
 /// 依序套用每條規則；佔位詞本身不符合任何規則，已遮蔽的片段不會被重複處理。
 /// 沒有任何比對時原字串直接傳回，不複製。
-fn mask(mut text: String) -> String {
+pub(crate) fn mask(mut text: String) -> String {
     for (re, placeholder) in RULES.iter() {
         if let Some(masked) = replace_isolated(&text, re, placeholder) {
             text = masked;

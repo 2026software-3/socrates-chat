@@ -12,6 +12,8 @@ export type Me = {
   is_admin: boolean
   /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
   must_change_password: boolean
+  /** 有內建密碼且不是示範帳號：個人設定才顯示「更改密碼」（S-18） */
+  can_change_password: boolean
   roles: Roles
 }
 
@@ -40,8 +42,19 @@ export type Activity = {
   created_at: string
 }
 
-/** 學生目錄中的活動：多帶所屬教室名稱，供依教室分組（S-14；學生只看得到教室名稱）。 */
-export type StudentActivity = Activity & { classroom_name: string }
+/** 學生在活動中某一題的進度（F-29.6）。 */
+export type TopicProgress = {
+  topic_id: string
+  title: string
+  /** 這位學生在此題的對話；還沒開始為 null */
+  conversation_id: string | null
+  conversation_status: ConversationStatus | null
+  /** 此題總結已產生（S-04.7：完成一題的條件） */
+  summary_ready: boolean
+}
+
+/** 學生看到的活動：所屬教室名稱（供依教室分組，S-14；學生只看得到教室名稱）、每題進度與整體完成度（每題都有總結才算完成）。 */
+export type StudentActivity = Activity & { classroom_name: string; topics: TopicProgress[]; completed: boolean }
 
 export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
@@ -62,6 +75,7 @@ export type Conversation = {
   turn_count: number
   converge_ready: boolean
   created_at: string
+  updated_at: string
   ended_at: string | null
   /** 學生已封存：只從自己的清單隱藏，可復原 */
   is_archived: boolean
@@ -110,6 +124,12 @@ export type TeacherSummary = {
   conversation_id: string
   /** 對話所屬的教室 */
   classroom_id: string
+  /** 對話所屬的活動 ID；個人練習為 null */
+  activity_id: string | null
+  /** 對話所屬的題目 ID；個人練習為 null，題目被刪除後也會變成 null */
+  topic_id: string | null
+  /** 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3） */
+  activity_completed: boolean
   title: string
   ended_at: string
   /** 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號 */
