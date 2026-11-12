@@ -12,6 +12,8 @@ export type Me = {
   is_admin: boolean
   /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
   must_change_password: boolean
+  /** 有內建密碼且不是示範帳號：個人設定才顯示「更改密碼」（S-18） */
+  can_change_password: boolean
   roles: Roles
 }
 
