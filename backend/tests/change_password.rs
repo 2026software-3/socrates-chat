@@ -47,7 +47,8 @@ async fn login(app: &Router, account: &str, pw: &str) -> Response<Body> {
 
 async fn login_cookie(app: &Router, account: &str, pw: &str) -> String {
     let res = login(app, account, pw).await;
-    assert_eq!(res.status(), StatusCode::OK, "{account}");
+    // 失敗訊息不帶帳號：示範帳號與公開的密碼來自同一份清單，不把它們印進任何輸出
+    assert_eq!(res.status(), StatusCode::OK, "登入應該成功");
     session_cookie(&res).unwrap()
 }
 
@@ -254,7 +255,7 @@ async fn demo_accounts_cannot_change_their_public_password_in_demo_mode(pool: Pg
     let accounts = listed["accounts"].as_array().unwrap();
     assert!(accounts.iter().any(|a| a["role"] == "teacher"));
     assert!(accounts.iter().any(|a| a["role"] == "student"));
-    for a in accounts {
+    for (i, a) in accounts.iter().enumerate() {
         let (account, pw) = (
             a["account"].as_str().unwrap(),
             a["password"].as_str().unwrap(),
@@ -263,7 +264,7 @@ async fn demo_accounts_cannot_change_their_public_password_in_demo_mode(pool: Pg
         assert_eq!(
             me(&app, &cookie).await["can_change_password"],
             false,
-            "{account}"
+            "第 {i} 個示範帳號的 can_change_password 應為 false"
         );
         assert_json_error(
             change(&app, &cookie, pw, &NEW).await,
@@ -275,7 +276,7 @@ async fn demo_accounts_cannot_change_their_public_password_in_demo_mode(pool: Pg
         assert_eq!(
             login(&app, account, pw).await.status(),
             StatusCode::OK,
-            "{account}"
+            "第 {i} 個示範帳號的公開密碼應照舊可用"
         );
         assert_eq!(
             login(&app, account, &NEW).await.status(),
