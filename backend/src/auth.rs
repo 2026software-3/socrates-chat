@@ -559,7 +559,7 @@ async fn finish_login(
         .await
         .map_err(|_| "login_failed")?
     {
-        return Err("maintenance");
+        return Err("maintenance".into());
     }
     user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
         .await
