@@ -580,11 +580,26 @@ pub(crate) struct MeResponse {
     language: String,
     is_admin: bool,
     must_change_password: bool,
+    /// 能否在個人設定更改密碼（S-18）：有內建密碼，且不是示範模式的示範帳號。
+    /// 只用 Google 登入、沒有密碼的帳號為 `false`，前端不顯示更改密碼。
+    can_change_password: bool,
     roles: Roles,
 }
 
-impl From<CurrentUser> for MeResponse {
-    fn from(cu: CurrentUser) -> Self {
+/// 示範模式下的示範帳號不能改密碼：密碼是公開的固定值，被改掉其他人就登不進去（S-18）。
+fn is_locked_demo_account(state: &AppState, user: &auth_store::User) -> bool {
+    state.config.demo_mode
+        && crate::demo::is_demo_account(user.email.as_deref(), user.student_number.as_deref())
+}
+
+impl MeResponse {
+    async fn build(state: &AppState, cu: CurrentUser) -> Result<Self, ApiError> {
+        let can_change_password = !is_locked_demo_account(state, &cu.user)
+            && auth_store::has_password(&state.pool, cu.user.id).await?;
+        Ok(Self::new(cu, can_change_password))
+    }
+
+    fn new(cu: CurrentUser, can_change_password: bool) -> Self {
         let u = cu.user;
         Self {
             id: u.id,
@@ -594,6 +609,7 @@ impl From<CurrentUser> for MeResponse {
             language: u.language,
             is_admin: u.is_admin,
             must_change_password: cu.must_change_password,
+            can_change_password,
             roles: cu.roles,
         }
     }
@@ -604,10 +620,13 @@ impl From<CurrentUser> for MeResponse {
     path = "/api/me",
     tag = "auth",
     summary = "目前登入者與角色",
-    responses((status = 200, description = "目前使用者", body = MeResponse))
+    responses((status = 200, description = "目前使用者（含 `can_change_password`）", body = MeResponse))
 )]
-pub(crate) async fn me(AnyCurrentUser(cu): AnyCurrentUser) -> Json<MeResponse> {
-    Json(cu.into())
+pub(crate) async fn me(
+    AnyCurrentUser(cu): AnyCurrentUser,
+    State(state): State<AppState>,
+) -> Result<Json<MeResponse>, ApiError> {
+    Ok(Json(MeResponse::build(&state, cu).await?))
 }
 
 /// 顯示名稱的長度上限（Unicode 字元數，去頭尾空白後計算；S-08.2 第 3 節）。
@@ -665,7 +684,7 @@ pub(crate) async fn update_me(
         ));
     }
     if name.is_none() && p.language.is_none() {
-        return Ok(Json(cu.into()));
+        return Ok(Json(MeResponse::build(&state, cu).await?));
     }
     // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
     let (display_name, language): (Option<String>, String) = sqlx::query_as(
@@ -684,7 +703,7 @@ pub(crate) async fn update_me(
     .await?;
     cu.user.display_name = display_name;
     cu.user.language = language;
-    Ok(Json(cu.into()))
+    Ok(Json(MeResponse::build(&state, cu).await?))
 }
 
 // ---- 內建帳號密碼登入（S-08.2 第 1 節）----
@@ -809,7 +828,12 @@ pub(crate) struct ChangePasswordBody {
     tag = "auth",
     summary = "更改自己的密碼",
     request_body = ChangePasswordBody,
-    responses((status = 204, description = "已更改，其他 session 失效"), (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody))
+    responses(
+        (status = 204, description = "已更改，其他 session 失效"),
+        (status = 400, description = "invalid_current_password / invalid_new_password / password_unchanged", body = crate::error::ErrorBody),
+        (status = 403, description = "demo_account：示範模式的示範帳號不能改密碼", body = crate::error::ErrorBody),
+        (status = 429, description = "too_many_attempts：目前密碼連續輸錯 5 次，鎖定 15 分鐘", body = crate::error::ErrorBody)
+    )
 )]
 pub(crate) async fn change_password(
     AnyCurrentUser(cu): AnyCurrentUser,
@@ -817,6 +841,16 @@ pub(crate) async fn change_password(
     headers: HeaderMap,
     Json(body): Json<ChangePasswordBody>,
 ) -> Result<StatusCode, ApiError> {
+    if is_locked_demo_account(&state, &cu.user) {
+        return Err(ApiError::forbidden(
+            "demo_account",
+            "示範帳號的密碼不能更改",
+        ));
+    }
+    // 連續輸錯目前密碼的鎖定（S-18）：期間即使目前密碼正確也拒絕
+    if auth_store::is_change_password_locked(&state.pool, cu.user.id, Utc::now()).await? {
+        return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
+    }
     if !password::is_acceptable(&body.new_password) {
         return Err(ApiError::bad_request(
             "invalid_new_password",
@@ -834,14 +868,25 @@ pub(crate) async fn change_password(
         return Err(wrong_current);
     };
     if !verify_blocking(body.current_password, Some(current_hash)).await {
+        auth_store::record_change_password_failure(&state.pool, cu.user.id, Utc::now()).await?;
         return Err(wrong_current);
     }
     let new_hash = hash_blocking(body.new_password).await?;
+    // 同時清除這個使用者的失敗計數（含更改密碼的計數）
     auth_store::set_password(&state.pool, cu.user.id, &new_hash, false).await?;
     // 保留目前登入，其他裝置的 session 全部失效
     let keep = token_from_headers(&headers).map(hash_token);
     auth_store::delete_sessions_except(&state.pool, cu.user.id, keep.as_ref().map(|h| &h[..]))
         .await?;
+    // 稽核只記帳號 ID，不記任何密碼內容（S-18）
+    let _ = audit(
+        &state.pool,
+        cu.user.id,
+        "change_password",
+        &cu.user.id.to_string(),
+        None,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
