@@ -3,6 +3,7 @@ import { PageHeader } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { SystemOverview } from '@/features/admin/system-overview'
 import { useT, type MessageKey } from '@/i18n'
 import type { ClassDashboard, EmailList, Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
@@ -38,6 +39,7 @@ export function AdminHome() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('admin.home.title')} description={t('admin.home.tagline')} />
+      <SystemOverview />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <OpsCard
           to="/admin/teachers"
