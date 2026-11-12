@@ -200,11 +200,19 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     expect(settings.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('keeps the other content when the account cannot change its password', async () => {
+  it('keeps the other content and explains, in the settings, why a student cannot change the password', async () => {
     mockDashboard()
     await open({ student: true }, { can_change_password: false })
     expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
     noChangeButton()
+    expect(within(screen.getByRole('form', { name: '個人設定' })).getByText('這個帳號不能在這裡更改密碼。')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('explains it to a student who is also a teacher, too', async () => {
+    mockDashboard()
+    await open({ student: true, teacher: true }, { can_change_password: false })
+    expect(screen.getAllByText('這個帳號不能在這裡更改密碼。')).toHaveLength(1)
   })
 
   it('shows a retryable error for the dashboard part without hiding the settings', async () => {
