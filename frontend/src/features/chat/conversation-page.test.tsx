@@ -583,6 +583,21 @@ describe('ConversationPage: summary states', () => {
     expect(screen.getByText('Translation pending. Showing the original summary.')).toBeInTheDocument()
   })
 
+  it('updates the open summary when its pending translation finishes', async () => {
+    const translation = { language: 'en' as const, stance: 'Pull the lever', reasons: 'Save more people' }
+    mockDetail(makeDetail({ status: 'ended' }))
+    mockSummaries(
+      { ...makeSummary(), translation: null, translation_pending: true },
+      { ...makeSummary(), translation, translation_pending: false },
+    )
+    renderPage({ lang: 'en' })
+
+    expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
+    expect(await screen.findByText(translation.stance)).toBeInTheDocument()
+    expect(screen.getByText(translation.reasons)).toBeInTheDocument()
+    expect(screen.queryByText('Translation pending. Showing the original summary.')).not.toBeInTheDocument()
+  })
+
   it('shows the saved stance and reasons in the student account language', async () => {
     const translation = { language: 'en', stance: 'Pull the lever', reasons: 'Save more people' }
     mockDetail(makeDetail({ status: 'ended' }))
