@@ -327,7 +327,7 @@ pub(crate) async fn callback(
     }
     match finish_login(&state, p, preferred_language(&headers)).await {
         Ok((token, user)) => {
-            diagnostics::login(&state.pool, "google_login", Some(user), Ok(())).await;
+            diagnostics::login_success(&state.pool, "google_login", user);
             (
                 [(
                     header::SET_COOKIE,
@@ -338,18 +338,18 @@ pub(crate) async fn callback(
                 .into_response()
         }
         Err(error) => {
-            let class = if error.code == "account_disabled" {
-                Failure::AccountDisabled
-            } else {
-                Failure::InvalidCredentials
-            };
-            diagnostics::login(
-                &state.pool,
-                "google_login",
-                error.user,
-                Err((class, ApiError::new(StatusCode::SEE_OTHER, error.code, ""))),
-            )
-            .await;
+            // 只記錄有明確分類的拒絕（停用帳號）。使用者取消授權、state 過期、驗證信箱未通過或
+            // 暫時性錯誤不是憑證錯誤，記進 invalid_credentials 會灌水統計、也讓暴力破解排查失準。
+            if error.code == "account_disabled" {
+                diagnostics::login_failure(
+                    &state.pool,
+                    "google_login",
+                    error.user,
+                    Failure::AccountDisabled,
+                    StatusCode::SEE_OTHER,
+                    error.code,
+                );
+            }
             login_error(&state, error.code)
         }
     }
@@ -781,19 +781,8 @@ pub(crate) async fn password_login(
         headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
         &state.config.trusted_proxies,
     );
+    // 已鎖定時的嘗試不寫診斷事件：鎖定只限制猜密碼的次數，不該讓資料列數量跟著無限成長
     if auth_store::is_locked(&state.pool, &login_account, &ip_key, now).await? {
-        let user = auth_store::find_password_account(&state.pool, &login_account)
-            .await
-            .ok()
-            .flatten()
-            .map(|account| account.id);
-        diagnostics::login(
-            &state.pool,
-            "password_login",
-            user,
-            Err((Failure::AccountLocked, login_rate_limit::TOO_MANY_ATTEMPTS)),
-        )
-        .await;
         return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
     }
     let account = auth_store::find_password_account(&state.pool, &login_account).await?;
@@ -802,30 +791,38 @@ pub(crate) async fn password_login(
     let ok = verify_blocking(body.password, real_hash).await && has_password;
     let user = account.as_ref().map(|account| account.id);
     let (Some(account), true) = (account, ok) else {
-        let locked =
+        let locks =
             auth_store::record_login_failure(&state.pool, &login_account, &ip_key, now).await?;
-        diagnostics::login(
+        diagnostics::login_failure(
             &state.pool,
             "password_login",
             user,
-            Err((Failure::InvalidCredentials, INVALID_CREDENTIALS)),
-        )
-        .await;
-        if locked {
-            diagnostics::account_lock(&state.pool, user, &INVALID_CREDENTIALS).await;
+            Failure::InvalidCredentials,
+            INVALID_CREDENTIALS.status,
+            INVALID_CREDENTIALS.code,
+        );
+        // 只有帳號層級的鎖定才記 account_lock；只觸發 IP 層級鎖定的不算針對帳號
+        if locks.account {
+            diagnostics::account_lock(
+                &state.pool,
+                user,
+                INVALID_CREDENTIALS.status,
+                INVALID_CREDENTIALS.code,
+            );
         }
         return Err(INVALID_CREDENTIALS);
     };
     auth_store::clear_login_failures_for(&state.pool, &login_account, &ip_key).await?;
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if account.disabled {
-        diagnostics::login(
+        diagnostics::login_failure(
             &state.pool,
             "password_login",
             Some(account.id),
-            Err((Failure::AccountDisabled, ACCOUNT_DISABLED)),
-        )
-        .await;
+            Failure::AccountDisabled,
+            ACCOUNT_DISABLED.status,
+            ACCOUNT_DISABLED.code,
+        );
         return Err(ACCOUNT_DISABLED);
     }
     auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
@@ -839,7 +836,7 @@ pub(crate) async fn password_login(
         .clone()
         .unwrap_or_else(|| account.id.to_string());
     audit(&state.pool, account.id, "login", &target, None).await?;
-    diagnostics::login(&state.pool, "password_login", Some(account.id), Ok(())).await;
+    diagnostics::login_success(&state.pool, "password_login", account.id);
     Ok((
         [(
             header::SET_COOKIE,

@@ -467,16 +467,15 @@ async fn generate(
     let activity = AiActivity::new("chat_reply", Some(user), conv.classroom_id).statuses(200, 200);
     for retry in 0..2 {
         let started = Instant::now();
-        let result = attempt(state, reply, &req).await;
-        activity
-            .record(
-                state,
-                Some(&state.config.openai_model),
-                retry,
-                started.into_std(),
-                result.as_ref().err().map(|(error, _)| error),
-            )
-            .await;
+        let (result, trace) = diagnostics::traced(attempt(state, reply, &req)).await;
+        activity.record(
+            state,
+            Some(&state.config.openai_model),
+            retry,
+            started.into_std(),
+            result.as_ref().err().map(|(error, _)| error),
+            &trace,
+        );
         match result {
             Ok(r) => {
                 outcome = Some(r);
@@ -560,7 +559,7 @@ async fn attempt(
         reply.delta(&rest);
     }
     if text.trim().is_empty() {
-        return Err((AiError, emitted));
+        return Err((AiError::invalid_output(), emitted));
     }
     Ok((text.trim().to_string(), parse_meta(&meta_raw)))
 }

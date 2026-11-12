@@ -2,6 +2,10 @@
 
 use std::{
     future::Future,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicI32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -14,6 +18,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
+use tokio::sync::Semaphore;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -21,10 +26,23 @@ use crate::{
     AppState,
     auth::RequireAdmin,
     error::{ApiError, ErrorBody},
+    mutex::lock,
     pagination::{self, Page, Pagination},
 };
 
-const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+/// 診斷寫入在背景進行，請求不等待。同時進行的寫入有上限，資料庫吃緊時直接丟棄新事件，
+/// 避免背景工作無限堆積。
+const MAX_PENDING_WRITES: usize = 64;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// 沒有對應帳號的失敗事件（對不存在的信箱嘗試登入）任何人都能觸發，每種事件每小時最多保留這麼多筆，
+/// 讓資料表大小有上限；已知帳號的失敗受登入鎖定限制。
+const ANONYMOUS_EVENTS_PER_HOUR: i64 = 100;
+static PENDING_WRITES: Semaphore = Semaphore::const_new(MAX_PENDING_WRITES);
+
+/// 等待進行中的診斷寫入全部結束（測試與需要讀回剛寫入事件的情境使用）。
+pub async fn flush() {
+    let _ = PENDING_WRITES.acquire_many(MAX_PENDING_WRITES as u32).await;
+}
 const PAGE_RESOURCE: &str = "admin_diagnostics";
 
 pub fn routes() -> Router<AppState> {
@@ -86,6 +104,8 @@ pub enum Failure {
     QuotaExceeded,
     RateLimited,
     ServiceError,
+    /// 供應商正常回應，但內容無法解析；不算供應商失敗
+    InvalidOutput,
     InvalidCredentials,
     AccountDisabled,
     AccountLocked,
@@ -100,6 +120,7 @@ impl Failure {
             Self::QuotaExceeded => "quota_exceeded",
             Self::RateLimited => "rate_limited",
             Self::ServiceError => "service_error",
+            Self::InvalidOutput => "invalid_output",
             Self::InvalidCredentials => "invalid_credentials",
             Self::AccountDisabled => "account_disabled",
             Self::AccountLocked => "account_locked",
@@ -125,7 +146,7 @@ impl Kind {
     }
 }
 
-struct Event<'a> {
+struct Event {
     kind: Kind,
     failure: Option<Failure>,
     function: &'static str,
@@ -133,104 +154,182 @@ struct Event<'a> {
     error_code: Option<&'static str>,
     user: Option<Uuid>,
     classroom: Option<Uuid>,
-    ai: Option<AiDetails<'a>>,
+    ai: Option<AiDetails>,
 }
 
-struct AiDetails<'a> {
+struct AiDetails {
     duration_ms: i64,
     retries: i32,
-    model: Option<&'a str>,
+    model: Option<String>,
 }
 
-async fn insert(pool: &PgPool, event: Event<'_>) {
+/// 供應商呼叫的嘗試次數與實際使用的模型。成功的串流回傳值不帶這些資訊，
+/// 由供應商寫進目前呼叫的追蹤，呼叫端在結束後讀取。
+#[derive(Default)]
+pub(crate) struct AiTrace {
+    attempts: AtomicI32,
+    model: Mutex<Option<String>>,
+}
+
+impl AiTrace {
+    pub(crate) fn note(&self, attempts: i32, model: &str) {
+        self.attempts.store(attempts, Ordering::Relaxed);
+        *lock(&self.model) = Some(model.to_owned());
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct AiSnapshot {
+    attempts: i32,
+    model: Option<String>,
+}
+
+tokio::task_local! {
+    static TRACE: Arc<AiTrace>;
+}
+
+pub(crate) fn current_trace() -> Option<Arc<AiTrace>> {
+    TRACE.try_with(Arc::clone).ok()
+}
+
+/// 執行 `future`，並回傳期間供應商回報的嘗試次數與模型。
+pub(crate) async fn traced<F: Future>(future: F) -> (F::Output, AiSnapshot) {
+    let trace = Arc::new(AiTrace::default());
+    let output = TRACE.scope(trace.clone(), future).await;
+    let snapshot = AiSnapshot {
+        attempts: trace.attempts.load(Ordering::Relaxed),
+        model: lock(&trace.model).clone(),
+    };
+    (output, snapshot)
+}
+
+fn safe_model(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 128
+        && !model.starts_with("sk-")
+        && !model.starts_with("AIza")
+        && model
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
+}
+
+/// 在背景寫入事件；請求不等待，也不受寫入結果影響。
+fn insert(pool: &PgPool, event: Event) {
     let context = CONTEXT
         .try_with(Clone::clone)
         .unwrap_or_else(|_| RequestContext {
             id: Uuid::new_v4(),
             route: "<background>".into(),
         });
-    let model = event.ai.as_ref().and_then(|ai| ai.model).filter(|model| {
-        !model.is_empty()
-            && model.len() <= 128
-            && !model.starts_with("sk-")
-            && !model.starts_with("AIza")
-            && model
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
-    });
-    let write = sqlx::query(
-        "INSERT INTO diagnostic_events
-            (request_id, kind, failure_class, function, route, status, error_code,
-             user_id, classroom_id, duration_ms, retry_count, model)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-    )
-    .bind(context.id)
-    .bind(event.kind.code())
-    .bind(event.failure.map(Failure::code))
-    .bind(event.function)
-    .bind(&context.route)
-    .bind(event.status as i16)
-    .bind(event.error_code)
-    .bind(event.user)
-    .bind(event.classroom)
-    .bind(event.ai.as_ref().map(|ai| ai.duration_ms))
-    .bind(event.ai.as_ref().map(|ai| ai.retries))
-    .bind(model)
-    .execute(pool);
-    match tokio::time::timeout(WRITE_TIMEOUT, write).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(class = %crate::error::db_error_class(&error), "diagnostic write failed")
+    let Ok(permit) = PENDING_WRITES.try_acquire() else {
+        tracing::warn!(class = "backlog", "diagnostic write dropped");
+        return;
+    };
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        let model = event
+            .ai
+            .as_ref()
+            .and_then(|ai| ai.model.as_deref())
+            .filter(|model| safe_model(model));
+        let anonymous_limit =
+            (event.user.is_none() && event.failure.is_some() && !matches!(event.kind, Kind::Ai))
+                .then_some(ANONYMOUS_EVENTS_PER_HOUR);
+        let write = sqlx::query(
+            "INSERT INTO diagnostic_events
+                (request_id, kind, failure_class, function, route, status, error_code,
+                 user_id, classroom_id, duration_ms, retry_count, model)
+             SELECT $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::smallint, $7::text,
+                    $8::uuid, $9::uuid, $10::bigint, $11::integer, $12::text
+             WHERE $13::bigint IS NULL OR (
+                SELECT count(*) FROM diagnostic_events
+                WHERE kind = $2 AND user_id IS NULL AND failure_class IS NOT NULL
+                  AND occurred_at >= now() - interval '1 hour') < $13",
+        )
+        .bind(context.id)
+        .bind(event.kind.code())
+        .bind(event.failure.map(Failure::code))
+        .bind(event.function)
+        .bind(&context.route)
+        .bind(event.status as i16)
+        .bind(event.error_code)
+        .bind(event.user)
+        .bind(event.classroom)
+        .bind(event.ai.as_ref().map(|ai| ai.duration_ms))
+        .bind(event.ai.as_ref().map(|ai| ai.retries))
+        .bind(model)
+        .bind(anonymous_limit)
+        .execute(&pool);
+        match tokio::time::timeout(WRITE_TIMEOUT, write).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(class = %crate::error::db_error_class(&error), "diagnostic write failed")
+            }
+            Err(_) => tracing::warn!(class = "timeout", "diagnostic write failed"),
         }
-        Err(_) => tracing::warn!(class = "timeout", "diagnostic write failed"),
-    }
+    });
 }
 
-pub(crate) async fn login(
-    pool: &PgPool,
-    function: &'static str,
-    user: Option<Uuid>,
-    outcome: Result<(), (Failure, ApiError)>,
-) {
-    let (failure, status, error_code) = match outcome {
-        Ok(()) => (
-            None,
-            if function == "google_login" { 303 } else { 200 },
-            None,
-        ),
-        Err((failure, error)) => (Some(failure), error.status.as_u16(), Some(error.code)),
-    };
+pub(crate) fn login_success(pool: &PgPool, function: &'static str, user: Uuid) {
     insert(
         pool,
         Event {
             kind: Kind::Login,
-            failure,
+            failure: None,
             function,
-            status,
-            error_code,
+            status: if function == "google_login" { 303 } else { 200 },
+            error_code: None,
+            user: Some(user),
+            classroom: None,
+            ai: None,
+        },
+    );
+}
+
+pub(crate) fn login_failure(
+    pool: &PgPool,
+    function: &'static str,
+    user: Option<Uuid>,
+    failure: Failure,
+    status: StatusCode,
+    code: &'static str,
+) {
+    insert(
+        pool,
+        Event {
+            kind: Kind::Login,
+            failure: Some(failure),
+            function,
+            status: status.as_u16(),
+            error_code: Some(code),
             user,
             classroom: None,
             ai: None,
         },
-    )
-    .await;
+    );
 }
 
-pub(crate) async fn account_lock(pool: &PgPool, user: Option<Uuid>, response: &ApiError) {
+/// 帳號層級的鎖定：只在剛達到鎖定門檻的那一次記錄。
+pub(crate) fn account_lock(
+    pool: &PgPool,
+    user: Option<Uuid>,
+    status: StatusCode,
+    code: &'static str,
+) {
     insert(
         pool,
         Event {
             kind: Kind::AccountLock,
             failure: Some(Failure::AccountLocked),
             function: "password_login",
-            status: response.status.as_u16(),
-            error_code: Some(response.code),
+            status: status.as_u16(),
+            error_code: Some(code),
             user,
             classroom: None,
             ai: None,
         },
-    )
-    .await;
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -266,6 +365,7 @@ impl AiActivity {
         self
     }
 
+    /// 執行一次 AI 嘗試並記錄結果。`retry` 是這次之前已重試的次數。
     pub(crate) async fn run<T>(
         self,
         state: &AppState,
@@ -274,24 +374,32 @@ impl AiActivity {
         future: impl Future<Output = Result<T, crate::ai::AiError>>,
     ) -> Result<T, crate::ai::AiError> {
         let started = Instant::now();
-        let result = future.await;
-        self.record(state, model, retry, started, result.as_ref().err())
-            .await;
+        let (result, trace) = traced(future).await;
+        self.record(state, model, retry, started, result.as_ref().err(), &trace);
         result
     }
 
-    pub(crate) async fn record(
+    pub(crate) fn record(
         self,
         state: &AppState,
         model: Option<&str>,
         retry: i32,
         started: Instant,
         error: Option<&crate::ai::AiError>,
+        trace: &AiSnapshot,
     ) {
+        // 失敗帶有自己的嘗試次數與模型；成功時取供應商回報的追蹤，沒有就用呼叫端給的模型
+        let attempts = error
+            .map(|error| error.provider_attempts)
+            .filter(|attempts| *attempts > 0)
+            .unwrap_or(trace.attempts);
         let ai = AiDetails {
             duration_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-            retries: retry + error.map_or(0, |error| (error.provider_attempts - 1).max(0)),
-            model: error.and_then(|error| error.model.as_deref()).or(model),
+            retries: retry + (attempts - 1).max(0),
+            model: error
+                .and_then(|error| error.model.clone())
+                .or_else(|| trace.model.clone())
+                .or_else(|| model.map(str::to_owned)),
         };
         insert(
             &state.pool,
@@ -309,8 +417,7 @@ impl AiActivity {
                 classroom: self.classroom,
                 ai: Some(ai),
             },
-        )
-        .await;
+        );
     }
 }
 
@@ -354,6 +461,7 @@ enum AiStatus {
 struct Counts {
     ai_calls: i64,
     ai_failures: i64,
+    ai_invalid_outputs: i64,
     login_failures: i64,
     account_locks: i64,
 }
@@ -362,7 +470,10 @@ struct Counts {
 struct Statistics {
     ai_status: AiStatus,
     ai_calls: i64,
+    /// 供應商失敗（不含 `invalid_output`）
     ai_failures: i64,
+    /// 供應商正常回應但內容無法解析的次數
+    ai_invalid_outputs: i64,
     login_failures: i64,
     account_locks: i64,
 }
@@ -455,7 +566,9 @@ pub(crate) async fn status(
         let from = Utc::now() - chrono::Duration::hours(i64::from(query.period.hours()));
         let counts = sqlx::query_as::<_, Counts>(
             "SELECT count(*) FILTER (WHERE kind = 'ai') AS ai_calls,
-                    count(*) FILTER (WHERE kind = 'ai' AND failure_class IS NOT NULL) AS ai_failures,
+                    count(*) FILTER (WHERE kind = 'ai' AND failure_class IS NOT NULL
+                                       AND failure_class <> 'invalid_output') AS ai_failures,
+                    count(*) FILTER (WHERE kind = 'ai' AND failure_class = 'invalid_output') AS ai_invalid_outputs,
                     count(*) FILTER (WHERE kind = 'login' AND failure_class IS NOT NULL) AS login_failures,
                     count(*) FILTER (WHERE kind = 'account_lock') AS account_locks
              FROM diagnostic_events WHERE occurred_at >= $1 AND occurred_at <= now()
@@ -482,6 +595,7 @@ pub(crate) async fn status(
                 ai_status,
                 ai_calls: counts.ai_calls,
                 ai_failures: counts.ai_failures,
+                ai_invalid_outputs: counts.ai_invalid_outputs,
                 login_failures: counts.login_failures,
                 account_locks: counts.account_locks,
             });

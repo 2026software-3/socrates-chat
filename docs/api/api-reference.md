@@ -32,11 +32,11 @@
 
 ### 後台狀態與診斷（F-33.1）
 
-- `GET /api/admin/status?period=24h|7d|30d` 預設最近 24 小時。回傳 `service`、`database`、`period`、`diagnostics_available`、`statistics` 與最多 10 筆 `recent_errors`。統計包含 `ai_calls`、`ai_failures`、`login_failures`、`account_locks` 及 `ai_status`（`no_data`、`ok`、`has_failures`）。AI 統計只使用實際執行的呼叫，重試失敗仍算一次失敗。
+- `GET /api/admin/status?period=24h|7d|30d` 預設最近 24 小時。回傳 `service`、`database`、`period`、`diagnostics_available`、`statistics` 與最多 10 筆 `recent_errors`。統計包含 `ai_calls`、`ai_failures`、`ai_invalid_outputs`、`login_failures`、`account_locks` 及 `ai_status`（`no_data`、`ok`、`has_failures`）。AI 統計以每一次實際執行的嘗試為單位：自動重試的每次嘗試各算一次呼叫，失敗的嘗試各算一次失敗（失敗一次再成功＝2 次呼叫、1 次失敗）。`ai_failures` 只計供應商失敗；供應商正常回應但內容無法解析的算 `ai_invalid_outputs`，不影響 `ai_status`。`account_locks` 只計帳號層級的鎖定（同一登入帳號輸入在所有 IP 的失敗總數達門檻），單一 IP 的鎖定不計入。
 - 若診斷無法讀取，狀態端點保留已知的服務及資料庫狀態，回 `diagnostics_available: false`、`statistics: null`。若資料庫故障使 PostgreSQL session 無法驗證，前端可用既有的 `/health` 和 `/ready` 顯示基礎健康狀態。
 - `GET /api/admin/diagnostics` 回 `{ items, next_cursor }`，由新到舊。可篩選 `from`（含）、`to`（不含，均為 RFC 3339）、`kind`（`ai`、`login`、`account_lock`）、`failure_class`、`request_id`、`user_id`、`classroom_id`。最後三個欄位使用 UUID。分頁沿用 `limit` 和 `cursor`，更改條件後須從第一頁查詢。
-- 失敗分類包括 AI 的 `connection_failed`、`timeout`、`invalid_key`、`quota_exceeded`、`rate_limited`、`service_error`，以及登入的 `invalid_credentials`、`account_disabled`、`account_locked`。每筆失敗有時間、request ID、功能、路由模板、狀態碼及固定 error code。AI 另有耗時、重試次數及可用的模型名稱。可依 request ID 到容器 stdout 查相關記錄。
-- PostgreSQL 保存最近 30 天，每日清理到期事件，查詢也會排除到期事件。成功只供統計。帳號或教室可用內部 ID 關聯，未知帳號的失敗仍可從系統清單查看。兩個端點只允許管理者，查詢端點無法讀取時回 `503 diagnostics_unavailable`。
+- 失敗分類包括 AI 的 `connection_failed`、`timeout`、`invalid_key`、`quota_exceeded`、`rate_limited`、`service_error`、`invalid_output`，以及登入的 `invalid_credentials`、`account_disabled`、`account_locked`。每筆失敗有時間、request ID、功能、路由模板、狀態碼及固定 error code。AI 另有耗時、重試次數（該次嘗試之前已重試的次數加上供應商內部換金鑰或換備援模型的次數；成功事件同樣如此，模型為實際回覆的模型）及可用的模型名稱。診斷分類只供紀錄，不影響金鑰冷卻與備援模型的決定。可依 request ID 到容器 stdout 查相關記錄。
+- PostgreSQL 保存最近 30 天，每日清理到期事件，查詢也會排除到期事件。成功只供統計。帳號或教室可用內部 ID 關聯，未知帳號的失敗仍可從系統清單查看；因為任何人都能對不存在的信箱嘗試登入，這類事件每種每小時最多保留 100 筆，已鎖定後的登入嘗試不寫事件，Google 登入只記錄停用帳號的拒絕。診斷寫入在背景進行，不增加請求延遲；寫入積壓時新事件會被丟棄，不影響原請求結果。兩個端點只允許管理者，查詢端點無法讀取時回 `503 diagnostics_unavailable`。
 - 現有 `GET /api/admin/logs` 在 #466 前端切換前繼續提供。持久化診斷與 stdout 的 `request completed` 各自保留。
 
 ### 帳號管理
