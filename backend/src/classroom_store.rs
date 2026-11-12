@@ -143,12 +143,19 @@ pub async fn update_visible<'e>(
     .await
     .map_err(Into::into)
 }
+
 /// 教室學生統計：排除停用帳號與已移出名單的學生。
+#[derive(sqlx::FromRow)]
+pub struct StudentStatistics {
+    pub student_count: i64,
+    pub joined_count: i64,
+}
+
 pub async fn student_statistics(
     pool: &sqlx::PgPool,
     classroom_id: uuid::Uuid,
-) -> Result<(i64, i64), sqlx::Error> {
-    let (student_count, joined_count): (i64, i64) = sqlx::query_as(
+) -> Result<StudentStatistics, sqlx::Error> {
+    sqlx::query_as(
         r#"
         SELECT
             COUNT(*) AS student_count,
@@ -168,7 +175,5 @@ pub async fn student_statistics(
     )
     .bind(classroom_id)
     .fetch_one(pool)
-    .await?;
-
-    Ok((student_count, joined_count))
+    .await
 }
