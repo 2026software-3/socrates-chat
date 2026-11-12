@@ -7,38 +7,38 @@
 ## 基本資訊
 
 - Compose 專案名稱：`socrates-ntnu`（與開發用的 `socrates-chat` 分開）。
-- 資料庫資料放在 **D 槽**：`D:\socrates-ntnu\pgdata`（WSL 內是 `/mnt/d/socrates-ntnu/pgdata`），由 `docker-compose.ntnu.yml` 的 `db.volumes` 以 bind mount 掛入，不再使用 volume `socrates-ntnu_pgdata`（見下一節）。
+- 資料庫資料放在 Docker 命名 volume `socrates-ntnu_pgdata_v2`（2026-11-12 起，由 `docker-compose.ntnu.yml` 的 `db.volumes` 指定；見下一節）。舊 volume `socrates-ntnu_pgdata` 是 2026-11-10 的資料，只當退路。
 - 設定檔：`docker-compose.yml` + `docker-compose.ntnu.yml`，所有 compose 指令都要帶上 `-f` 與 `-p socrates-ntnu`。
 - 公開網址：`https://ray-nb.tail5fc9fe.ts.net`（Windows 端 Tailscale Funnel，見下一節）。這個值由 `docker-compose.ntnu.yml` 設定在容器的 `APP_BASE_URL`。
 - `.env` 的 `APP_BASE_URL` 是 `http://localhost:3000`，但容器實際使用的是覆寫後的公開網址。CSRF 檢查要求 `Origin` 標頭等於容器的 `APP_BASE_URL`，所以用 curl 或腳本呼叫 API 時，`Origin` 要填公開網址，不能填 `.env` 的值。
 
-## 資料庫位置（D 槽）
+## 資料庫位置（Docker 命名 volume）
 
-2026-11-10 起，`db` 的資料目錄是 D 槽的 `D:\socrates-ntnu\pgdata`。`docker-compose.ntnu.yml`（不進版控）的 `db` 以 `!override` 覆寫掉 `docker-compose.yml` 的 `pgdata` volume：
+2026-11-12 起，`db` 的資料放在 Docker 命名 volume `socrates-ntnu_pgdata_v2`。`docker-compose.ntnu.yml`（不進版控）的 `db` 以 `!override` 覆寫掉 `docker-compose.yml` 的 `pgdata` volume，並在檔案底部宣告它：
 
 ```yaml
     volumes: !override
-      - /run/desktop/mnt/host/d/socrates-ntnu/pgdata:/var/lib/postgresql/data
+      - pgdata_v2:/var/lib/postgresql/data
+...
+volumes:
+  pgdata_v2:
 ```
 
-- **來源要寫 `/run/desktop/mnt/host/d/...`，不要寫 `/mnt/d/...`。** 後者是 WSL 路徑，Docker Desktop 要等 `docker-desktop-bind-mounts` 的掛載點建好才掛得上；WSL 重開機後 engine 先自動重啟容器，掛載點還沒好就失敗，容器不會重試（`app` 的 `.apikeylist` 曾因此 `Exited (127)`）。`/run/desktop/mnt/host/d` 是 Docker Desktop 自己的 D 槽掛載點，不受這個時序影響。
-- 目錄擁有者必須是 `999:999`、權限 `700`（Postgres 的要求）；Docker Desktop 的 D 槽掛載會保留這兩項。不要在 Windows 檔案總管或 WSL 裡直接改 `pgdata` 內的檔案。
-- 備份、`pg_dump`、`docker exec ... psql` 的指令不變。`D:\socrates-ntnu\pgdata` 是 Postgres 的原始資料目錄，**不是備份**：D 槽壞掉或誤刪就沒了，備份仍要另外做。
-- 舊的 volume `socrates-ntnu_pgdata` 保留了搬移當時（2026-11-10 13:53）的完整資料，目前沒有容器使用，只當退路。確認 D 槽版本穩定運作一段時間後，經試用負責人同意再刪（`docker volume rm socrates-ntnu_pgdata`）。退回舊 volume 的做法：把 `docker-compose.ntnu.yml` 的 `db.volumes` 覆寫拿掉，重建 `db`；但搬移之後寫入的資料只在 D 槽，退回就會遺失，所以退回前要先 `pg_dump`。
+- **不要再把資料庫放在 D 槽的 bind mount。** 2026-11-10 曾搬到 `D:\socrates-ntnu\pgdata`（來源 `/run/desktop/mnt/host/d/...`），但 2026-11-12 09:16 WSL／Docker Desktop 重啟後，Docker 看到的 `/run/desktop/mnt/host/d` 變成一個 **tmpfs**（記憶體檔案系統，不是真的 D 槽），`D:\socrates-ntnu\pgdata` 也不見了（從 WSL 與 Windows 都看是空的；資源回收筒與 D 槽也找不到 `PG_VERSION`，**消失原因不明**）。`db` 啟動時資料目錄是空的，Postgres 建了全新資料庫，網站變成只有示範帳號。bind mount 到「Docker Desktop 可能沒掛上的主機路徑」沒有失敗保護：沒掛上時不會報錯，而是悄悄在別處建空目錄。
+- 命名 volume 放在 Docker 虛擬機的磁碟內，歷次重開機（2026-10-30 起到 2026-11-10）都正常；缺點是佔 C 槽或 Docker 的磁碟。要把資料放 D 槽，改用**備份**放 D 槽，不要放原始資料目錄。
+- 備份、`pg_dump`、`docker exec ... psql` 的指令不變。volume 不是備份：Docker 或磁碟壞掉就沒了，備份仍要另外做（見「部署前檢查」）。
+- 舊 volume `socrates-ntnu_pgdata` 是 2026-11-10 13:53 的資料（約 64.6 MB），目前沒有容器使用，只當退路，經試用負責人同意才刪。
+- **每次 WSL／Docker Desktop 重啟後，除了 `/health`、`/ready`，還要數一下資料**：`docker exec socrates-ntnu-db-1 psql -U socrates -d socrates -At -c "select count(*) from users"`（2026-11-12 的數字是 40，且不應該突然變成只有示範帳號的 12）。這次事故就是 `/health`、`/ready` 都回 200，資料卻已經空了。
 
-### 把資料庫搬到別的位置（2026-11-10 的做法，可重複）
+### 資料庫被重新初始化時的還原（2026-11-12 的做法）
 
-1. 依「部署前檢查」做 `pg_dump` 備份。
-2. `docker stop socrates-ntnu-app-1`，再 `docker stop -t 60 socrates-ntnu-db-1`（讓 Postgres 乾淨關閉）。
-3. 複製資料，保留擁有者與權限，並核對檔案數量一致：
-
-   ```bash
-   docker run --rm -v socrates-ntnu_pgdata:/from:ro -v /run/desktop/mnt/host/d/socrates-ntnu:/to alpine \
-     sh -c 'mkdir -p /to/pgdata && cp -a /from/. /to/pgdata/ && echo copied'
-   ```
-
-4. 改 `docker-compose.ntnu.yml` 的 `db.volumes`，`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml --profile app --profile cascade up -d --no-deps --no-build --force-recreate db`，等 `db` healthy，比對 `users`、`conversations`、`_sqlx_migrations` 的筆數。
-5. `docker start socrates-ntnu-app-1`，確認 `/health` 與 `/ready` 回 200。全程約 1 分鐘的中斷。
+1. 先確認真的是空的：`users`、`conversations` 筆數，`pg_postmaster_start_time()` 是不是剛剛，`_sqlx_migrations` 是不是從頭套用。
+2. 不要再重啟 `db`。用最新的 `pg_dump` 備份（`~/ntnu-backup-YYYY-MM-DD.sql`）還原；備份是 `--no-owner` 的純文字，含 `_sqlx_migrations`，還原進**空的**資料庫即可：
+   - `docker stop socrates-ntnu-app-1`；移除壞掉的 `db` 容器（`docker compose ... rm -sf db`，不加 `-v`）。
+   - 把 `docker-compose.ntnu.yml` 的 `db.volumes` 改成**新的**命名 volume（例如 `pgdata_v3`），`up -d --no-deps db`，等 healthy，確認 `information_schema.tables` 為 0。
+   - `docker exec -i socrates-ntnu-db-1 psql -U socrates -d socrates -v ON_ERROR_STOP=1 -q < ~/ntnu-backup-YYYY-MM-DD.sql`。
+   - `up -d --no-deps --no-build app`（啟動時會套用備份之後新增的 migration），核對 `users`、`conversations`、`audit_logs`、`_sqlx_migrations` 與 `/health`、`/ready`。
+3. 還原不回來的是「備份之後到事故之間」的資料；所以備份頻率決定損失，部署前與每次重啟後都要先有一份。
 
 ## 對外入口（Windows 端 Tailscale Funnel）
 
@@ -192,7 +192,7 @@ SMTP_PASSWORD=...
 
 ## 刪除資料庫的限制
 
-- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料。資料庫現在在 D 槽的 bind mount，`down -v` 不會刪它，但會刪掉保留當退路的舊 volume `socrates-ntnu_pgdata`。要刪資料庫本身得刪 `D:\socrates-ntnu\pgdata`，同樣要先取得試用負責人同意。
+- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料：它會刪掉所有命名 volume，包含現在的資料庫 `socrates-ntnu_pgdata_v2` 與保留當退路的舊 volume `socrates-ntnu_pgdata`。
 - 刪除前要先告知試用負責人，並留下 `_sqlx_migrations` 與 `users` 的摘要以便核對。
 
 ## 管理者帳號與密碼
@@ -365,6 +365,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 2026-11-10 | 補充評估「後端改寫成 Worker 加 Workers Paid」：約 5 美元／月，但後端約 15,440 行、74 個端點、180 處 SQLx 查詢要重寫，資料庫仍在本機、可用性沒改善，且需先改規格。結論：不採用。 |
 | 2026-11-11 | 部署 PR #509（`perf/chat-merge-queries`，cherry-pick `7c8eb51`、`c64fb21`、`ba1728c`）：送出訊息與保存 AI 回覆合併查詢，每則文字訊息的資料庫往返 13 → 10 次（教室對話），沒有 migration。部署前在 deploy 樹跑 sbx-test：750 通過、0 失敗；`pg_dump` 備份 `~/ntnu-backup-2026-11-11.sql`。只重建 `app`，`/health`、`/ready`（本機與公開網址）皆正常，`users` 40、`conversations` 70、`messages` 631、`_sqlx_migrations` 14 筆與部署前一致。舊映像留為 `socrates-ntnu-app:pre-chat-merge-20261111`，退回時把它改標回 `latest` 再以 `--no-build --force-recreate app` 重建。 |
 | 2026-11-12 | 部署 F-34 公告與維護模式（#519）、F-35 反向代理檔案（#520，**只加入檔案，`proxy` 服務與 funnel 都沒動**）、F-36 客訴與寄信（#526 的提交，含後續的修正）：cherry-pick 進 `deploy/ntnu-integration`（不整條合 main，因為 main 上還有 NTNU 沒部署的 #496～#500）。新增 migration `20261111000000`、`20261111000100`；先在還原的備份上演練（表建立成功、稽核約束保留既有動作並收下新動作、`users` 40／`audit_logs` 204 不變）。部署前 sbx-test：後端 786 通過、前端 693 通過、fmt／clippy 通過。`pg_dump` 備份 `~/ntnu-backup-2026-11-12.sql`，舊映像另存標籤 `socrates-ntnu-app:pre-s15-s17-20261112`。只重建 `app`；`/health`、`/ready` 回 200 且本文為 JSON，`_sqlx_migrations` 16 筆全部 success。SMTP 尚未設定，客訴寄信狀態會是 `skipped`。 |
+| 2026-11-12 | **資料庫被重新初始化**：09:16 WSL／Docker Desktop 重啟後，`db` 掛的 `/run/desktop/mnt/host/d/socrates-ntnu/pgdata` 在 Docker 內是 tmpfs，`D:\\socrates-ntnu\\pgdata` 也不見了（原因不明；資源回收筒與 D 槽都找不到），Postgres 建了全新資料庫：`users` 12（只有示範帳號與管理者）、對話 0；`/health`、`/ready` 仍回 200，所以沒有警報。發現時網站已經以空資料庫跑了約 7 分鐘，沒有真實使用者的寫入。處理：停 `app`、移除 `db` 容器、`docker-compose.ntnu.yml`（已備份到 `~/docker-compose.ntnu.yml.bak-20261112`）的 `db.volumes` 改為新命名 volume `pgdata_v2`、還原 `~/ntnu-backup-2026-11-12.sql`（部署 F-34～F-36 前的備份）、重啟 `app` 自動套用 `20261111000000`、`20261111000100`。結果：`users` 40、`conversations` 70、`messages` 647、`audit_logs` 204，`_sqlx_migrations` 16 筆全部 success，`/health`、`/ready` 回 200，示範教師與學生可登入且看得到示範教室與對話。遺失的只有備份之後到事故之間的變動（約 02:20～09:16，深夜；無法確認有沒有）。舊 volume `socrates-ntnu_pgdata` 未動。`scripts/seed-demo.sh` 沒有執行：示範資料已在備份裡，而且腳本會因為非示範活動「測試用活動2」使用示範題目 `…0101` 而違反外鍵中止（整筆交易回滾，資料未變）。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |
