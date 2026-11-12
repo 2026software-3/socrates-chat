@@ -43,8 +43,7 @@ describe('change password in the personal settings', () => {
     expect(form.getByLabelText('確認新密碼')).toBeInTheDocument()
   })
 
-  // 教師與純管理者目前沒有個人設定頁（/dashboard 只給學生，其他角色會被導走），入口放哪裡待需求方決定
-  it.todo('is offered to teachers and administrators with a built-in password')
+  // 教師與純管理者沒有個人設定頁（/dashboard 只給學生），他們在 /account 更改密碼，見 features/account
 
   it('is hidden when the backend says the account cannot change its password', async () => {
     // 只用 Google 登入的帳號沒有內建密碼，或示範模式的示範帳號

@@ -53,6 +53,11 @@ function Account({ me }: { me: Me }) {
         <Link to="/dashboard" className="text-sm font-medium underline-offset-4 hover:underline">
           {me.display_name ?? me.email}
         </Link>
+      ) : me.can_change_password ? (
+        // 教師與管理者沒有個人設定頁，更改密碼放在帳號頁（S-18）
+        <Link to="/account" className="text-sm font-medium underline-offset-4 hover:underline">
+          {me.display_name ?? me.email}
+        </Link>
       ) : (
         <span className="text-sm font-medium">{me.display_name ?? me.email}</span>
       )}
