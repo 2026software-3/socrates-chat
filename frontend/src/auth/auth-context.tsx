@@ -71,6 +71,12 @@ type AuthValue = AuthState & {
 
 const AuthContext = createContext<AuthValue | null>(null)
 
+/** The server-side preference, updated after the language change is saved. */
+export function useAccountLanguage() {
+  const auth = useAuth()
+  return auth.status === 'authed' ? auth.me.language : undefined
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' })
   const { setLang } = useI18n()

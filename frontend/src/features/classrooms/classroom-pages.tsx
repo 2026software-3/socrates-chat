@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router'
+import { useAccountLanguage } from '@/auth/auth-context'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { LoadMore } from '@/components/load-more'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -108,7 +109,9 @@ export function ClassroomStudentsPage() {
 /** 單一活動：論點分布，以及每位學生的總結（可點進學生）。 */
 export function ClassroomActivityPage() {
   const { activityId } = useParams()
-  return <WithClassroom>{(classroom) => <ActivityBody classroom={classroom} activityId={activityId ?? ''} />}</WithClassroom>
+  const accountLanguage = useAccountLanguage()
+  if (!accountLanguage) return <LoadingBlock />
+  return <WithClassroom>{(classroom) => <ActivityBody key={accountLanguage} classroom={classroom} activityId={activityId ?? ''} />}</WithClassroom>
 }
 
 function ActivityBody({ classroom, activityId }: { classroom: Classroom; activityId: string }) {
@@ -189,7 +192,9 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
 /** 單一學生在這間教室的討論情形：他完成的每場對話總結（不含原文）。 */
 export function ClassroomStudentPage() {
   const { studentId } = useParams()
-  return <WithClassroom>{(classroom) => <StudentBody classroom={classroom} studentId={studentId ?? ''} />}</WithClassroom>
+  const accountLanguage = useAccountLanguage()
+  if (!accountLanguage) return <LoadingBlock />
+  return <WithClassroom>{(classroom) => <StudentBody key={accountLanguage} classroom={classroom} studentId={studentId ?? ''} />}</WithClassroom>
 }
 
 function StudentBody({ classroom, studentId }: { classroom: Classroom; studentId: string }) {

@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
     AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo, diagnostics,
-    identity::GoogleIdentity, logging, password, summary,
+    identity::GoogleIdentity, logging, password, summary, summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
@@ -69,6 +69,18 @@ async fn main() {
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
     diagnostics::spawn_retention(pool.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
+    if let Ok(seconds) = std::env::var("SUMMARY_TRANSLATION_RETRY_SECS")
+        && !seconds.trim().is_empty()
+    {
+        let seconds: NonZeroU32 = seconds
+            .trim()
+            .parse()
+            .expect("invalid SUMMARY_TRANSLATION_RETRY_SECS");
+        summary_translation::spawn_worker(
+            state.clone(),
+            Duration::from_secs(u64::from(seconds.get())),
+        );
+    }
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind listener");
