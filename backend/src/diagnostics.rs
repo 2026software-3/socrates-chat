@@ -33,15 +33,22 @@ use crate::{
 /// 診斷寫入在背景進行，請求不等待。同時進行的寫入有上限，資料庫吃緊時直接丟棄新事件，
 /// 避免背景工作無限堆積。
 const MAX_PENDING_WRITES: usize = 64;
+/// 沒有對應帳號的失敗事件任何人都能大量觸發，獨立計算名額：灌爆它們不能擠掉其他事件
+/// （已知帳號的登入失敗、帳號鎖定、AI 呼叫）的寫入。
+const MAX_PENDING_ANONYMOUS_WRITES: usize = 16;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// 沒有對應帳號的失敗事件（對不存在的信箱嘗試登入）任何人都能觸發，每種事件每小時最多保留這麼多筆，
 /// 讓資料表大小有上限；已知帳號的失敗受登入鎖定限制。
 const ANONYMOUS_EVENTS_PER_HOUR: i64 = 100;
 static PENDING_WRITES: Semaphore = Semaphore::const_new(MAX_PENDING_WRITES);
+static PENDING_ANONYMOUS_WRITES: Semaphore = Semaphore::const_new(MAX_PENDING_ANONYMOUS_WRITES);
 
 /// 等待進行中的診斷寫入全部結束（測試與需要讀回剛寫入事件的情境使用）。
 pub async fn flush() {
     let _ = PENDING_WRITES.acquire_many(MAX_PENDING_WRITES as u32).await;
+    let _ = PENDING_ANONYMOUS_WRITES
+        .acquire_many(MAX_PENDING_ANONYMOUS_WRITES as u32)
+        .await;
 }
 const PAGE_RESOURCE: &str = "admin_diagnostics";
 
@@ -221,8 +228,15 @@ fn insert(pool: &PgPool, event: Event) {
             id: Uuid::new_v4(),
             route: "<background>".into(),
         });
-    let Ok(permit) = PENDING_WRITES.try_acquire() else {
-        tracing::warn!(class = "backlog", "diagnostic write dropped");
+    let anonymous =
+        event.user.is_none() && event.failure.is_some() && !matches!(event.kind, Kind::Ai);
+    let queue = if anonymous {
+        &PENDING_ANONYMOUS_WRITES
+    } else {
+        &PENDING_WRITES
+    };
+    let Ok(permit) = queue.try_acquire() else {
+        tracing::warn!(class = "backlog", anonymous, "diagnostic write dropped");
         return;
     };
     let pool = pool.clone();
@@ -233,9 +247,7 @@ fn insert(pool: &PgPool, event: Event) {
             .as_ref()
             .and_then(|ai| ai.model.as_deref())
             .filter(|model| safe_model(model));
-        let anonymous_limit =
-            (event.user.is_none() && event.failure.is_some() && !matches!(event.kind, Kind::Ai))
-                .then_some(ANONYMOUS_EVENTS_PER_HOUR);
+        let anonymous_limit = anonymous.then_some(ANONYMOUS_EVENTS_PER_HOUR);
         let write = sqlx::query(
             "INSERT INTO diagnostic_events
                 (request_id, kind, failure_class, function, route, status, error_code,
