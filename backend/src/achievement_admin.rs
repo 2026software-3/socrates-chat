@@ -567,22 +567,23 @@ async fn translate_achievement(
         .run(state, Some(&state.config.openai_model), 0, async {
             let raw = collect_background(state.ai.as_ref(), request, state.config.ai_total_timeout)
                 .await?;
-            let translated: Translation = serde_json::from_str(&raw).map_err(|_| AiError)?;
+            let translated: Translation =
+                serde_json::from_str(&raw).map_err(|_| AiError::invalid_output())?;
             if name.matches("{n}").count() != translated.name.matches("{n}").count()
                 || description.matches("{n}").count()
                     != translated.description.matches("{n}").count()
             {
-                return Err(AiError);
+                return Err(AiError::invalid_output());
             }
             Ok((
                 clean_text(&translated.name, MAX_NAME_CHARS, "invalid_name")
-                    .map_err(|_| AiError)?,
+                    .map_err(|_| AiError::invalid_output())?,
                 clean_text(
                     &translated.description,
                     MAX_DESCRIPTION_CHARS,
                     "invalid_description",
                 )
-                .map_err(|_| AiError)?,
+                .map_err(|_| AiError::invalid_output())?,
             ))
         })
         .await

@@ -51,6 +51,13 @@ pub async fn assign_group(
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct AssignSource {
+    language: String,
+    user_id: Option<Uuid>,
+    classroom_id: Uuid,
+}
+
 async fn try_assign(
     state: &AppState,
     conversation: Uuid,
@@ -58,24 +65,29 @@ async fn try_assign(
     topic: &str,
     claim: &str,
 ) -> Result<(), sqlx::Error> {
-    let ((language, user, classroom), existing): ((String, Uuid, Uuid), Vec<(String,)>) = tokio::try_join!(
+    // 活動或對話在回覆與背景任務之間被刪除時仍照舊退回 zh-TW 繼續；診斷用的使用者與教室缺值時記為空
+    let (source, existing): (Option<AssignSource>, Vec<(String,)>) = tokio::try_join!(
         sqlx::query_as(
             "SELECT u.language, c.user_id, a.classroom_id
              FROM activities a
              JOIN classrooms cl ON cl.id = a.classroom_id
              JOIN users u ON u.id = cl.created_by
-             JOIN conversations c ON c.activity_id = a.id AND c.id = $2
+             LEFT JOIN conversations c ON c.activity_id = a.id AND c.id = $2
              WHERE a.id = $1",
         )
         .bind(activity)
         .bind(conversation)
-        .fetch_one(&state.pool),
+        .fetch_optional(&state.pool),
         sqlx::query_as(
             "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
         )
         .bind(activity)
         .fetch_all(&state.pool),
     )?;
+    let (language, user, classroom) = match source {
+        Some(source) => (source.language, source.user_id, Some(source.classroom_id)),
+        None => ("zh-TW".to_owned(), None, None),
+    };
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
     let req = AiRequest {
         system: build_group_assign_prompt(topic, &existing, &language),
@@ -84,12 +96,12 @@ async fn try_assign(
             content: claim.to_string(),
         }],
     };
-    let grouped = AiActivity::new("claim_group", Some(user), Some(classroom))
+    let grouped = AiActivity::new("claim_group", user, classroom)
         .statuses(202, 202)
         .run(state, Some(&state.config.openai_model), 0, async {
             let raw =
                 collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
-            parse_group_name(&raw, &existing).ok_or(AiError)
+            parse_group_name(&raw, &existing).ok_or(AiError::invalid_output())
         })
         .await;
     let Ok(name) = grouped else {
@@ -188,7 +200,7 @@ pub(crate) async fn regroup(
     .statuses(204, 502)
     .run(&state, Some(&state.config.openai_model), 0, async {
         let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
-        parse_regroup(&raw, claims.len()).ok_or(AiError)
+        parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
     })
     .await
     .map_err(|_| {

@@ -6,7 +6,7 @@ CREATE TABLE diagnostic_events (
     failure_class text CHECK (
         failure_class IS NULL OR
         (kind = 'ai' AND failure_class IN ('connection_failed', 'timeout', 'invalid_key',
-            'quota_exceeded', 'rate_limited', 'service_error')) OR
+            'quota_exceeded', 'rate_limited', 'service_error', 'invalid_output')) OR
         (kind = 'login' AND failure_class IN ('invalid_credentials', 'account_disabled', 'account_locked')) OR
         (kind = 'account_lock' AND failure_class = 'account_locked')
     ),

@@ -278,14 +278,20 @@ async fn observe_voice<T>(
     let result = call.await;
     let error = match result.as_ref().err() {
         Some(VoiceError::Unavailable) => return result,
-        Some(VoiceError::Failed) => Some(crate::ai::AiError),
+        Some(VoiceError::Failed) => Some(crate::ai::AiError::unclassified()),
         Some(VoiceError::Classified(class)) => Some(crate::ai::AiError::classified(*class)),
         None => None,
     };
     crate::diagnostics::AiActivity::new(function, Some(user), None)
         .failure_code("voice_failed")
-        .record(state, model, 0, started, error.as_ref())
-        .await;
+        .record(
+            state,
+            model,
+            0,
+            started,
+            error.as_ref(),
+            &crate::diagnostics::AiSnapshot::default(),
+        );
     result
 }
 

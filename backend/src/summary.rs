@@ -174,7 +174,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
                     state.config.ai_total_timeout,
                 )
                 .await?;
-                parse_summary(&raw).ok_or(AiError)
+                parse_summary(&raw).ok_or(AiError::invalid_output())
             })
             .await;
         if let Ok(s) = generated {
@@ -471,7 +471,7 @@ pub(crate) async fn translate(
         .run(&state, Some(&state.config.openai_model), 0, async {
             let raw =
                 collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
-            parse_summary_translation(&raw).ok_or(AiError)
+            parse_summary_translation(&raw).ok_or(AiError::invalid_output())
         })
         .await;
     let Ok(translated) = translated else {

@@ -497,13 +497,13 @@ pub async fn is_locked(
 
 /// 記錄一次登入失敗：（登入帳號輸入, 來源 IP）累計達 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`；
 /// 同時累計這個登入帳號輸入在所有 IP 的總數，達 `MAX_EMAIL_LOGIN_FAILURES` 次就在所有 IP 鎖定。
-/// 鎖定已過期的紀錄會從 0 重新計。
+/// 鎖定已過期的紀錄會從 0 重新計。回傳這一次失敗剛觸發了哪一層鎖定。
 pub async fn record_login_failure(
     pool: &PgPool,
     account: &str,
     ip_key: &str,
     now: DateTime<Utc>,
-) -> Result<bool, sqlx::Error> {
+) -> Result<NewLocks, sqlx::Error> {
     let mut tx = pool.begin().await?;
     // 順便清掉很久以前的紀錄，避免用大量不存在的信箱讓資料表無限成長
     sqlx::query("DELETE FROM login_failures WHERE last_failed_at < $1")
@@ -511,8 +511,8 @@ pub async fn record_login_failure(
         .execute(&mut *tx)
         .await?;
     let key = login_key(account);
-    let ip_locked = bump_failures(&mut tx, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
-    let account_locked = bump_failures(
+    let ip = bump_failures(&mut tx, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
+    let account = bump_failures(
         &mut tx,
         &key,
         ACCOUNT_TOTAL_KEY,
@@ -521,7 +521,16 @@ pub async fn record_login_failure(
     )
     .await?;
     tx.commit().await?;
-    Ok(ip_locked || account_locked)
+    Ok(NewLocks { ip, account })
+}
+
+/// 一次登入失敗剛觸發的鎖定。校園共用 IP 下 IP 層級的鎖定不代表針對某個帳號，要分開看。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewLocks {
+    /// 這個（登入帳號輸入, 來源 IP）剛達到鎖定門檻
+    pub ip: bool,
+    /// 這個登入帳號輸入在所有 IP 的總數剛達到鎖定門檻
+    pub account: bool,
 }
 
 async fn bump_failures(

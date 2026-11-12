@@ -153,7 +153,7 @@ impl AiProvider for FakeAi {
                 chunks
                     .into_iter()
                     .map(|c| Ok(c.to_string()))
-                    .chain([Err(AiError)]),
+                    .chain([Err(AiError::unclassified())]),
             )
             .boxed()),
             Some(Script::Hang) => std::future::pending().await,
@@ -163,7 +163,7 @@ impl AiProvider for FakeAi {
                     Ok(c.to_string())
                 })
                 .boxed()),
-            Some(Script::Fail) | None => Err(AiError),
+            Some(Script::Fail) | None => Err(AiError::unclassified()),
         }
     }
 }
