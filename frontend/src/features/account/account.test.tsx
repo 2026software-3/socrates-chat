@@ -36,8 +36,9 @@ describe('the account page', () => {
     ['a teacher who is also an admin', { teacher: true, admin: true }],
   ])('offers only the change-password form to %s', async (_label, roles) => {
     await open(roles)
-    // 平常只有一個按鈕，不攤開表單
+    // 平常只有一個按鈕，不攤開表單，也沒有另外的標題列
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '密碼' })).not.toBeInTheDocument()
     const form = await openDialog()
     expect(form.getByLabelText('目前密碼')).toHaveAttribute('autocomplete', 'current-password')
     expect(form.getByLabelText('新密碼')).toBeInTheDocument()
@@ -182,7 +183,7 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     expect(screen.getByRole('heading', { name: '個人設定' })).toBeInTheDocument()
     expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Google 帳號' })).toBeInTheDocument()
-    expect(changeButton()).toBeInTheDocument()
+    expect(within(screen.getByRole('form', { name: '個人設定' })).getByRole('button', { name: '更改密碼' })).toBeInTheDocument()
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
     // 原個人儀表板的內容
     expect(await screen.findByText('已完成對話')).toBeInTheDocument()

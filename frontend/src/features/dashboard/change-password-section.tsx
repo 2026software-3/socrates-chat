@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,49 +10,53 @@ import { api } from '@/lib/api'
 type Result = { kind: 'mismatch' } | { kind: 'error'; error: unknown } | null
 
 /**
- * 帳號頁的「密碼」列（S-18）：平常只有一個「更改密碼」按鈕，表單在彈出視窗裡，不攤開在頁面上。
- * 成功後視窗關閉，確認訊息留在列下方；再次開啟時重新開始（輸入與錯誤都不保留）。
+ * 「更改密碼」的彈出視窗（S-18）：表單不攤開在頁面上，按下按鈕才出現。
+ * 內容只在開啟時才掛載：關閉（含 Esc）就丟掉輸入與錯誤，再次開啟從空白開始，密碼不留在元件裡。
+ * 注意：視窗要放在任何 `<form>` 的外面。React 的事件會穿過 portal 往上冒泡，
+ * 放在個人設定表單裡面，視窗內送出密碼會連帶觸發外層表單的送出。
  */
-export function ChangePasswordSection() {
+export function ChangePasswordDialog({ open, onOpenChange, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; onSaved: () => void }) {
+  const t = useT()
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent aria-describedby={undefined}>
+        <DialogHeader>
+          <DialogTitle>{t('profile.password.title')}</DialogTitle>
+        </DialogHeader>
+        <PasswordForm
+          onSaved={() => {
+            onOpenChange(false)
+            onSaved()
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 教師與管理者的帳號頁：沒有個人設定，只有這一個按鈕；成功後確認訊息留在按鈕旁。 */
+export function ChangePasswordButton() {
   const t = useT()
   const [open, setOpen] = useState(false)
   const [saved, setSaved] = useState(false)
   return (
-    <Card>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-medium">{t('profile.password.heading')}</h2>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setSaved(false)
-              setOpen(true)
-            }}
-          >
-            {t('profile.password.title')}
-          </Button>
-        </div>
-        {saved ? (
-          <Alert role="status">
-            <AlertTitle>{t('profile.password.saved')}</AlertTitle>
-          </Alert>
-        ) : null}
-      </CardContent>
-      <Dialog open={open} onOpenChange={setOpen}>
-        {/* 內容只在開啟時才掛載：關閉就丟掉輸入，密碼不留在元件裡 */}
-        <DialogContent aria-describedby={undefined}>
-          <DialogHeader>
-            <DialogTitle>{t('profile.password.title')}</DialogTitle>
-          </DialogHeader>
-          <PasswordForm
-            onSaved={() => {
-              setOpen(false)
-              setSaved(true)
-            }}
-          />
-        </DialogContent>
-      </Dialog>
-    </Card>
+    <div className="flex flex-wrap items-center gap-3">
+      <Button
+        variant="outline"
+        onClick={() => {
+          setSaved(false)
+          setOpen(true)
+        }}
+      >
+        {t('profile.password.title')}
+      </Button>
+      {saved ? (
+        <p role="status" className="text-sm">
+          {t('profile.password.saved')}
+        </p>
+      ) : null}
+      <ChangePasswordDialog open={open} onOpenChange={setOpen} onSaved={() => setSaved(true)} />
+    </div>
   )
 }
 
