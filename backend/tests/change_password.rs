@@ -494,3 +494,59 @@ async fn the_forced_change_after_a_temporary_password_is_audited_too(pool: PgPoo
         me(&app, &cookie).await["id"].as_str().unwrap().to_string()
     );
 }
+
+// ---- 限流的安全性（commit 安全審查）----
+
+#[sqlx::test]
+async fn login_inputs_can_never_touch_the_change_password_counter(pool: PgPool) {
+    // 登入的帳號輸入由未驗證的人控制：就算有人知道某位使用者的 ID，送出看起來像更改密碼鍵的
+    // 「帳號」也不能把對方的更改密碼鎖住
+    let app = test_app(pool.clone());
+    let id = user_with_password(&pool, "student@example.com", &OLD).await;
+    let cookie = login_cookie(&app, "student@example.com", &OLD).await;
+    let now = chrono::Utc::now();
+    for input in [
+        format!("change-password:{id}"),
+        format!("CHANGE-PASSWORD:{id}").to_uppercase(),
+        format!("  change-password:{id}  "),
+    ] {
+        for _ in 0..auth_store::MAX_EMAIL_LOGIN_FAILURES {
+            auth_store::record_login_failure(&pool, &input, "", now)
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        change(&app, &cookie, &OLD, &NEW).await.status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[sqlx::test]
+async fn parallel_guesses_cannot_get_past_the_attempt_limit(pool: PgPool) {
+    // 先檢查鎖定、驗證完才記失敗的話，並行送出的請求會在鎖定生效前一起通過檢查
+    let app = test_app(pool.clone());
+    user_with_password(&pool, "student@example.com", &OLD).await;
+    let cookie = login_cookie(&app, "student@example.com", &OLD).await;
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let (app, cookie) = (app.clone(), cookie.clone());
+        handles.push(tokio::spawn(async move {
+            change(&app, &cookie, "wrong-password", &NEW).await.status()
+        }));
+    }
+    let mut statuses = Vec::new();
+    for h in handles {
+        statuses.push(h.await.unwrap());
+    }
+    let wrong = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::BAD_REQUEST)
+        .count();
+    let blocked = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert_eq!(wrong, 5, "只有前 5 次猜測能被驗證：{statuses:?}");
+    assert_eq!(blocked, 15, "其餘都要被擋下：{statuses:?}");
+}

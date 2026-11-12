@@ -526,7 +526,7 @@ pub async fn record_login_failure(
 }
 
 async fn bump_failures(
-    pool: &PgPool,
+    conn: impl sqlx::PgExecutor<'_>,
     login_key: &str,
     key: &str,
     max_failures: i32,
@@ -551,7 +551,7 @@ async fn bump_failures(
     .bind(now)
     .bind(max_failures)
     .bind(now + LOGIN_LOCK_DURATION)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -598,45 +598,52 @@ pub async fn clear_login_failures_of_user(
     Ok(())
 }
 
-/// 更改密碼時「目前密碼錯誤」的限流鍵：以使用者為單位（S-18），與登入的鍵共用 `login_failures`，
-/// 但用不同的前綴，不會與任何學號或電子郵件相撞。
+/// 更改密碼時「目前密碼錯誤」的限流鍵：以使用者為單位（S-18），與登入共用 `login_failures`。
+///
+/// 登入的鍵是「正規化後的帳號輸入」的雜湊，而帳號輸入由未驗證的人控制，所以這裡**不能**用
+/// `login_key`：否則有人送出 `change-password:<使用者 ID>` 當帳號，就會落在同一列，不登入也能把對方
+/// 的更改密碼鎖住。這裡的原文含小寫字母卻沒有 `@`，而正規化後的登入輸入不含 `@` 時一定全大寫、
+/// 含 `@` 時一定有 `@`，兩者的雜湊原文不可能相同。
 fn change_password_key(user_id: Uuid) -> String {
-    login_key(&format!("change-password:{user_id}"))
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("change-password\0{user_id}").as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
-/// 這個使用者目前是否因為連續輸錯目前密碼而不能更改密碼。
-pub async fn is_change_password_locked(
+/// 更改密碼前先「預扣」一次嘗試（S-18）：這個使用者目前被鎖定就回 `false`；否則累計一次，
+/// 連續 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`，並回 `true` 讓這次嘗試繼續驗證。
+/// 成功更改或管理者重設密碼時由 `clear_login_failures_of_user` 清掉，所以只有輸錯才會累積。
+///
+/// 檢查與累計在同一個交易內，並以使用者為單位的 advisory lock 序列化：並行送出的猜測沒辦法
+/// 在鎖定生效前一起通過檢查，之後才各自驗證（先檢查、驗證完才記失敗會有這個競態）。
+pub async fn try_charge_change_password_attempt(
     pool: &PgPool,
     user_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, sqlx::Error> {
+    let key = change_password_key(user_id);
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&key)
+        .execute(&mut *tx)
+        .await?;
     let (locked,): (bool,) = sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM login_failures
                         WHERE login_key = $1 AND ip = $2 AND locked_until > $3)",
     )
-    .bind(change_password_key(user_id))
+    .bind(&key)
     .bind(ACCOUNT_TOTAL_KEY)
     .bind(now)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok(locked)
-}
-
-/// 記錄一次「目前密碼輸入錯誤」：連續 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`；
-/// 鎖定已過期的紀錄從 0 重新計。成功更改或管理者重設密碼時由 `clear_login_failures_of_user` 清掉。
-pub async fn record_change_password_failure(
-    pool: &PgPool,
-    user_id: Uuid,
-    now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    bump_failures(
-        pool,
-        &change_password_key(user_id),
-        ACCOUNT_TOTAL_KEY,
-        MAX_LOGIN_FAILURES,
-        now,
-    )
-    .await
+    if locked {
+        return Ok(false);
+    }
+    bump_failures(&mut *tx, &key, ACCOUNT_TOTAL_KEY, MAX_LOGIN_FAILURES, now).await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// 設定密碼：同時清除鎖定。`must_change` 為 true 表示這是臨時密碼。

@@ -847,10 +847,6 @@ pub(crate) async fn change_password(
             "示範帳號的密碼不能更改",
         ));
     }
-    // 連續輸錯目前密碼的鎖定（S-18）：期間即使目前密碼正確也拒絕
-    if auth_store::is_change_password_locked(&state.pool, cu.user.id, Utc::now()).await? {
-        return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
-    }
     if !password::is_acceptable(&body.new_password) {
         return Err(ApiError::bad_request(
             "invalid_new_password",
@@ -863,12 +859,16 @@ pub(crate) async fn change_password(
             "新密碼不能與目前密碼相同",
         ));
     }
+    // 連續輸錯目前密碼的鎖定（S-18）：驗證前先原子地預扣一次嘗試，鎖定期間即使目前密碼正確也拒絕；
+    // 成功更改時計數會被清掉，所以只有輸錯才會累積
+    if !auth_store::try_charge_change_password_attempt(&state.pool, cu.user.id, Utc::now()).await? {
+        return Err(login_rate_limit::TOO_MANY_ATTEMPTS);
+    }
     let wrong_current = ApiError::bad_request("invalid_current_password", "目前密碼不正確");
     let Some(current_hash) = auth_store::password_hash_of(&state.pool, cu.user.id).await? else {
         return Err(wrong_current);
     };
     if !verify_blocking(body.current_password, Some(current_hash)).await {
-        auth_store::record_change_password_failure(&state.pool, cu.user.id, Utc::now()).await?;
         return Err(wrong_current);
     }
     let new_hash = hash_blocking(body.new_password).await?;
