@@ -8,8 +8,9 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, TranslatedSummary, build_summary_translation_prompt,
-        collect_background, parse_summary_translation, validated_summary_translation,
+        AiError, AiRequest, ChatRole, ChatTurn, TranslatedSummary,
+        build_summary_translation_prompt, collect_background, parse_summary_translation,
+        validated_summary_translation,
     },
     google_translation::TIMEOUT as GOOGLE_TIMEOUT,
     summary::MASKED,
@@ -102,7 +103,7 @@ async fn process_next(state: &AppState, retry_delay: Duration) -> Result<bool, s
     let fields = [&*stance, &*reasons];
     let result = match via_google(state, &job.source_language, &job.language, fields).await {
         Some(translation) => Some(translation),
-        None => via_ai(state, &job.language, fields).await,
+        None => via_ai(state, &job.language, fields).await.ok(),
     };
     let (stance, reasons) = result.map_or((None, None), |result| {
         (Some(result.stance), Some(result.reasons))
@@ -142,7 +143,7 @@ pub(crate) async fn via_ai(
     state: &AppState,
     target: &str,
     fields: [&str; 2],
-) -> Option<TranslatedSummary> {
+) -> Result<TranslatedSummary, AiError> {
     let [stance, reasons] = fields;
     let req = AiRequest {
         system: format!(
@@ -154,11 +155,11 @@ pub(crate) async fn via_ai(
             content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
-        .await
-        .ok()?;
-    let result = parse_summary_translation(&raw)?;
-    preserves_tokens(fields, &result).then_some(result)
+    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+    let result = parse_summary_translation(&raw).ok_or_else(AiError::invalid_output)?;
+    preserves_tokens(fields, &result)
+        .then_some(result)
+        .ok_or_else(AiError::invalid_output)
 }
 
 fn preserves_tokens(fields: [&str; 2], result: &TranslatedSummary) -> bool {

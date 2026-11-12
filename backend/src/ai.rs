@@ -84,7 +84,100 @@ pub struct AiRequest {
 
 /// 外部 AI 服務錯誤。不帶內部細節，避免被帶到回應或日誌（S-08.1）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiError;
+pub struct AiError {
+    pub(crate) class: crate::diagnostics::Failure,
+    pub(crate) model: Option<String>,
+    pub(crate) provider_attempts: i32,
+}
+
+impl AiError {
+    /// 沒有更具體原因的失敗；呼叫端應盡量用 `classified` 明確選擇分類。
+    pub const fn unclassified() -> Self {
+        Self::classified(crate::diagnostics::Failure::ServiceError)
+    }
+
+    /// 供應商正常回應，但內容無法解析成預期格式。
+    pub const fn invalid_output() -> Self {
+        Self::classified(crate::diagnostics::Failure::InvalidOutput)
+    }
+
+    pub const fn classified(class: crate::diagnostics::Failure) -> Self {
+        Self {
+            class,
+            model: None,
+            provider_attempts: 0,
+        }
+    }
+
+    pub(crate) fn transport(error: &reqwest::Error) -> Self {
+        use crate::diagnostics::Failure;
+        Self::classified(if error.is_timeout() {
+            Failure::Timeout
+        } else if error.is_connect() {
+            Failure::ConnectionFailed
+        } else {
+            Failure::ServiceError
+        })
+    }
+
+    pub(crate) async fn response(mut response: reqwest::Response) -> Self {
+        use crate::diagnostics::Failure;
+        let class = match response.status().as_u16() {
+            401 | 403 => Failure::InvalidKey,
+            402 => Failure::QuotaExceeded,
+            408 | 504 => Failure::Timeout,
+            429 => {
+                #[derive(Deserialize)]
+                struct Envelope {
+                    error: ProviderCode,
+                }
+                #[derive(Deserialize)]
+                struct ProviderCode {
+                    code: Option<serde_json::Value>,
+                    #[serde(rename = "type")]
+                    kind: Option<String>,
+                }
+                // The response may include sensitive text. Only recognize
+                // fixed provider codes and discard the body.
+                let quota = tokio::time::timeout(Duration::from_millis(100), async {
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = response.chunk().await.ok()? {
+                        if bytes.len() + chunk.len() > 64 * 1024 {
+                            return None;
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    serde_json::from_slice::<Envelope>(&bytes).ok()
+                })
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|body| {
+                    body.error.code.as_ref().and_then(serde_json::Value::as_str)
+                        == Some("insufficient_quota")
+                        || body.error.kind.as_deref() == Some("insufficient_quota")
+                });
+                if quota {
+                    Failure::QuotaExceeded
+                } else {
+                    Failure::RateLimited
+                }
+            }
+            _ => Failure::ServiceError,
+        };
+        Self::classified(class)
+    }
+
+    fn with_model(mut self, model: &str) -> Self {
+        self.model = Some(model.to_owned());
+        self
+    }
+
+    fn add_attempts(mut self, attempts: i32) -> Self {
+        self.provider_attempts += attempts;
+        self
+    }
+}
 
 /// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
@@ -743,18 +836,18 @@ const MAX_KEY_WAIT: Duration = Duration::from_secs(30);
 /// 對單一模型送出請求失敗的原因，用來決定要不要換備援模型。
 enum SendFailure {
     /// 這個模型被限流：每次失敗都是 429，或它的 key 在先前的 429 之後還在冷卻中。可以換備援模型。
-    RateLimited,
+    RateLimited(AiError),
     /// 其他原因（連線失敗、5xx、key 被拒絕、請求本身有誤）。換模型無濟於事，不換。
-    Failed,
+    Failed(AiError),
 }
 
 impl SendFailure {
     /// 到目前為止的失敗全是 429 就算限流。
-    fn from_only_rate_limited(only_rate_limited: bool) -> Self {
+    fn from_only_rate_limited(only_rate_limited: bool, error: AiError) -> Self {
         if only_rate_limited {
-            Self::RateLimited
+            Self::RateLimited(error)
         } else {
-            Self::Failed
+            Self::Failed(error)
         }
     }
 }
@@ -806,7 +899,7 @@ impl OpenAiProvider {
                 _ => break,
             }
         }
-        Err(AiError)
+        Err(AiError::unclassified())
     }
 
     /// 對一個模型送出請求並回傳成功的回應；429 與 401/402/403 讓該 key 冷卻後換下一把重試，5xx 也換下一把
@@ -817,11 +910,17 @@ impl OpenAiProvider {
         keys: &KeyPool,
         body: &(impl Serialize + Sync),
         may_wait: bool,
-    ) -> Result<reqwest::Response, SendFailure> {
+    ) -> Result<(reqwest::Response, i32), SendFailure> {
         let mut server_errored: Vec<usize> = Vec::new();
+        let mut attempts = 0;
         // 到目前為止的失敗是否全是 429。還沒送出請求就沒有 key 可用時，要看冷卻的原因：
         // 是先前的 429 才算限流；key 被拒絕（401/402/403）換模型也沒用
         let mut only_rate_limited = keys.usable_count() > 0 || keys.has_rate_limited_key();
+        let mut last_error = AiError::classified(if only_rate_limited {
+            crate::diagnostics::Failure::RateLimited
+        } else {
+            crate::diagnostics::Failure::InvalidKey
+        });
         for _ in 0..=MAX_KEY_RETRIES {
             let Ok(lease) = Self::acquire_key(keys, may_wait).await else {
                 // 後面還有備援模型時，這只是要換模型的訊號，不是錯誤
@@ -830,12 +929,16 @@ impl OpenAiProvider {
                 } else {
                     tracing::warn!("no usable AI key for this model");
                 }
-                return Err(SendFailure::from_only_rate_limited(only_rate_limited));
+                return Err(SendFailure::from_only_rate_limited(
+                    only_rate_limited,
+                    last_error.add_attempts(attempts),
+                ));
             };
             if server_errored.contains(&lease.index) {
-                return Err(SendFailure::Failed);
+                return Err(SendFailure::Failed(last_error.add_attempts(attempts)));
             }
             tracing::debug!(key = lease.index + 1, "sending AI request");
+            attempts += 1;
             let res = self
                 .http
                 .post(format!("{}/chat/completions", self.base_url))
@@ -843,25 +946,30 @@ impl OpenAiProvider {
                 .json(body)
                 .send()
                 .await
-                .map_err(|_| SendFailure::Failed)?;
+                .map_err(|error| {
+                    SendFailure::Failed(AiError::transport(&error).add_attempts(attempts))
+                })?;
             let status = res.status();
             if status.is_success() {
-                return Ok(res);
+                return Ok((res, attempts));
             }
             tracing::warn!(status = %status, key = lease.index + 1, "AI provider returned an error status");
+            let retry_after = parse_retry_after(res.headers());
+            // 診斷分類只供紀錄，金鑰池與備援一律依原始 HTTP 狀態決定
+            last_error = AiError::response(res).await;
             only_rate_limited &= status.as_u16() == 429;
             if status.is_server_error() {
                 server_errored.push(lease.index);
             }
-            if !keys.report_failure(
-                lease.index,
-                status.as_u16(),
-                parse_retry_after(res.headers()),
-            ) {
-                return Err(SendFailure::Failed);
+            let retry = keys.report_failure(lease.index, status.as_u16(), retry_after);
+            if !retry {
+                return Err(SendFailure::Failed(last_error.add_attempts(attempts)));
             }
         }
-        Err(SendFailure::from_only_rate_limited(only_rate_limited))
+        Err(SendFailure::from_only_rate_limited(
+            only_rate_limited,
+            last_error.add_attempts(attempts),
+        ))
     }
 }
 
@@ -876,7 +984,10 @@ pub enum SseItem {
     /// （429、gRPC 的 ResourceExhausted），換一個模型有機會成功；其他錯誤換模型沒有幫助。
     /// 供應商的錯誤文字不保留，也不寫入日誌。
     Error {
+        /// 容量或限流類：還沒送出內容時可以換備援模型
         capacity: bool,
+        /// 只供診斷的分類，不影響是否換模型
+        class: Option<crate::diagnostics::Failure>,
     },
 }
 
@@ -905,15 +1016,30 @@ pub fn parse_sse_line(line: &str) -> Result<SseItem, AiError> {
     if data == "[DONE]" {
         return Ok(SseItem::Done);
     }
-    let v: serde_json::Value = serde_json::from_str(data).map_err(|_| AiError)?;
+    let v: serde_json::Value = serde_json::from_str(data).map_err(|_| AiError::unclassified())?;
     if let Some(text) = v["choices"][0]["delta"]["content"].as_str()
         && !text.is_empty()
     {
         return Ok(SseItem::Delta(text.to_string()));
     }
     if let Some(err) = v["error"].as_object() {
+        use crate::diagnostics::Failure;
+        let code = err.get("code");
+        let class = match code.and_then(serde_json::Value::as_u64) {
+            Some(401 | 403) => Some(Failure::InvalidKey),
+            Some(402) => Some(Failure::QuotaExceeded),
+            Some(408 | 504) => Some(Failure::Timeout),
+            _ if code.and_then(serde_json::Value::as_str) == Some("insufficient_quota")
+                || err.get("type").and_then(serde_json::Value::as_str)
+                    == Some("insufficient_quota") =>
+            {
+                Some(Failure::QuotaExceeded)
+            }
+            _ => None,
+        };
         return Ok(SseItem::Error {
             capacity: is_capacity_error(err),
+            class,
         });
     }
     // OpenRouter 用 `reasoning`，DeepSeek／vLLM 用 `reasoning_content`
@@ -943,7 +1069,8 @@ impl SseDecoder {
         // 逐行就地解碼，最後一次丟掉已處理的部分，不為每一行配置新的緩衝
         let mut start = 0;
         while let Some(i) = self.buf[start..].iter().position(|&b| b == b'\n') {
-            let line = std::str::from_utf8(&self.buf[start..start + i]).map_err(|_| AiError)?;
+            let line = std::str::from_utf8(&self.buf[start..start + i])
+                .map_err(|_| AiError::unclassified())?;
             items.push(parse_sse_line(line.trim_end())?);
             start += i + 1;
         }
@@ -976,7 +1103,7 @@ impl OpenAiProvider {
         &self,
         index: usize,
         req: &AiRequest,
-    ) -> Result<reqwest::Response, SendFailure> {
+    ) -> Result<(reqwest::Response, i32), SendFailure> {
         let target = &self.targets[index];
         let system = ChatMsg {
             content: &req.system,
@@ -1008,40 +1135,65 @@ impl OpenAiProvider {
         &self,
         start: usize,
         req: &AiRequest,
-    ) -> Option<(usize, reqwest::Response)> {
+    ) -> Result<(usize, reqwest::Response, i32), AiError> {
         let last = self.targets.len() - 1;
+        let mut attempts = 0;
         for i in start..=last {
             match self.send_to(i, req).await {
-                Ok(res) => {
+                Ok((res, current_attempts)) => {
                     if i > 0 {
                         tracing::warn!(model = %self.targets[i].model, "AI request served by a fallback model");
                     }
-                    return Some((i, res));
+                    return Ok((i, res, attempts + current_attempts));
                 }
-                Err(SendFailure::RateLimited) if i < last => {
+                Err(SendFailure::RateLimited(error)) if i < last => {
+                    attempts += error.provider_attempts;
                     tracing::warn!(
                         model = %self.targets[i].model,
                         next = %self.targets[i + 1].model,
                         "AI model rate limited, trying the next model"
                     );
                 }
-                Err(_) => return None,
+                Err(SendFailure::RateLimited(error) | SendFailure::Failed(error)) => {
+                    return Err(error
+                        .with_model(&self.targets[i].model)
+                        .add_attempts(attempts));
+                }
             }
         }
-        None
+        Err(
+            AiError::classified(crate::diagnostics::Failure::RateLimited)
+                .with_model(&self.targets[last].model),
+        )
     }
 
     /// 把成功的串流回應轉成逐段文字的串流。回應是第 `index` 個模型的；
     /// 還沒送出任何內容就收到容量錯誤時，在串流內部改用下一個備援模型。
-    fn into_stream(self, res: reqwest::Response, mut index: usize, req: AiRequest) -> AiStream {
+    fn into_stream(
+        self,
+        res: reqwest::Response,
+        mut index: usize,
+        mut attempts: i32,
+        req: AiRequest,
+        trace: Option<std::sync::Arc<crate::diagnostics::AiTrace>>,
+    ) -> AiStream {
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
+            let note = |attempts: i32, index: usize| {
+                if let Some(trace) = &trace {
+                    trace.note(attempts, &self.targets[index].model);
+                }
+            };
             let mut current = res;
             loop {
                 match pump(current, &tx).await {
                     Pump::Finished => return,
-                    Pump::Failed => {
-                        let _ = tx.send(Err(AiError)).await;
+                    Pump::Failed(error) => {
+                        let _ = tx
+                            .send(Err(error
+                                .with_model(&self.targets[index].model)
+                                .add_attempts(attempts)))
+                            .await;
                         return;
                     }
                     Pump::CapacityBeforeContent => {
@@ -1054,12 +1206,14 @@ impl OpenAiProvider {
                             "AI model reported a capacity error before any content, trying the next model"
                         );
                         match self.first_available(index + 1, &req).await {
-                            Some((next, res)) => {
+                            Ok((next, res, current_attempts)) => {
                                 current = res;
                                 index = next;
+                                attempts += current_attempts;
+                                note(attempts, index);
                             }
-                            None => {
-                                let _ = tx.send(Err(AiError)).await;
+                            Err(error) => {
+                                let _ = tx.send(Err(error.add_attempts(attempts))).await;
                                 return;
                             }
                         }
@@ -1076,7 +1230,7 @@ enum Pump {
     /// 看到結束標記，正常完成
     Finished,
     /// 失敗（連線中斷、格式錯誤、串流內的其他錯誤、已開始輸出後的任何錯誤）；呼叫端要送出錯誤
-    Failed,
+    Failed(AiError),
     /// 還沒送出任何內容（正文或推理）就收到容量錯誤；可以換備援模型
     CapacityBeforeContent,
 }
@@ -1086,9 +1240,12 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
     let mut decoder = SseDecoder::default();
     let mut started = false;
     while let Some(chunk) = bytes.next().await {
-        let items = match chunk.map_err(|_| AiError).and_then(|c| decoder.push(&c)) {
+        let items = match chunk
+            .map_err(|error| AiError::transport(&error))
+            .and_then(|c| decoder.push(&c))
+        {
             Ok(items) => items,
-            Err(_) => return Pump::Failed,
+            Err(error) => return Pump::Failed(error),
         };
         for item in items {
             match item {
@@ -1106,10 +1263,18 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
                         return Pump::Finished;
                     }
                 }
-                SseItem::Error { capacity: true } if !started => {
+                SseItem::Error { capacity: true, .. } if !started => {
                     return Pump::CapacityBeforeContent;
                 }
-                SseItem::Error { .. } => return Pump::Failed,
+                SseItem::Error { capacity, class } => {
+                    return Pump::Failed(match class {
+                        Some(class) => AiError::classified(class),
+                        None if capacity => {
+                            AiError::classified(crate::diagnostics::Failure::RateLimited)
+                        }
+                        None => AiError::unclassified(),
+                    });
+                }
                 // 看到結束標記才算正常完成
                 SseItem::Done => return Pump::Finished,
                 SseItem::Reasoning | SseItem::Ignore => {}
@@ -1117,14 +1282,21 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
         }
     }
     // 連線在看到結束標記前就斷了：視為失敗，不能當作完整回覆
-    Pump::Failed
+    Pump::Failed(AiError::classified(
+        crate::diagnostics::Failure::ConnectionFailed,
+    ))
 }
 
 #[async_trait]
 impl AiProvider for OpenAiProvider {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        let (index, res) = self.first_available(0, &req).await.ok_or(AiError)?;
-        Ok(self.clone().into_stream(res, index, req))
+        // 串流在另一個工作中讀取，先取得這次呼叫的診斷追蹤，成功時也能回報嘗試次數與模型
+        let trace = crate::diagnostics::current_trace();
+        let (index, res, attempts) = self.first_available(0, &req).await?;
+        if let Some(trace) = &trace {
+            trace.note(attempts, &self.targets[index].model);
+        }
+        Ok(self.clone().into_stream(res, index, attempts, req, trace))
     }
 }
 
@@ -1143,7 +1315,7 @@ pub async fn collect(
     let total_deadline = start + total;
     let mut stream = timeout_at(first_deadline, ai.stream_chat(req))
         .await
-        .map_err(|_| AiError)??;
+        .map_err(|_| AiError::classified(crate::diagnostics::Failure::Timeout))??;
     let mut text = String::new();
     let mut got_chunk = false;
     loop {
@@ -1153,7 +1325,8 @@ pub async fn collect(
             first_deadline.min(total_deadline)
         };
         match timeout_at(limit, stream.next()).await {
-            Err(_) | Ok(Some(Err(_))) => return Err(AiError),
+            Err(_) => return Err(AiError::classified(crate::diagnostics::Failure::Timeout)),
+            Ok(Some(Err(error))) => return Err(error),
             Ok(None) => return Ok(text),
             Ok(Some(Ok(chunk))) => {
                 got_chunk = true;
@@ -1792,7 +1965,7 @@ mod tests {
         );
         assert_eq!(parse_sse_line(": keep-alive"), Ok(SseItem::Ignore));
         // 壞掉的 JSON 不能被當作正常內容或正常結束
-        assert_eq!(parse_sse_line("data: {oops"), Err(AiError));
+        assert_eq!(parse_sse_line("data: {oops"), Err(AiError::unclassified()));
     }
 
     #[test]
@@ -1815,12 +1988,40 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_class_never_changes_whether_an_error_is_a_capacity_error() {
+        use crate::diagnostics::Failure;
+        // 額度用盡的 429 仍是容量錯誤（可換備援模型），分類只是額外資訊
+        assert_eq!(
+            parse_sse_line(
+                "data: {\"error\":{\"code\":429,\"type\":\"insufficient_quota\",\"message\":\"x\"}}"
+            ),
+            Ok(SseItem::Error {
+                capacity: true,
+                class: Some(Failure::QuotaExceeded),
+            })
+        );
+        assert_eq!(
+            parse_sse_line("data: {\"error\":{\"code\":401,\"message\":\"x\"}}"),
+            Ok(SseItem::Error {
+                capacity: false,
+                class: Some(Failure::InvalidKey),
+            })
+        );
+    }
+
+    #[test]
     fn error_chunks_are_classified_as_capacity_errors_or_other_errors() {
         let err = |code: u32, msg: &str| {
             format!("data: {{\"choices\":[],\"error\":{{\"code\":{code},\"message\":\"{msg}\"}}}}")
         };
-        let capacity = Ok(SseItem::Error { capacity: true });
-        let other = Ok(SseItem::Error { capacity: false });
+        let capacity = Ok(SseItem::Error {
+            capacity: true,
+            class: None,
+        });
+        let other = Ok(SseItem::Error {
+            capacity: false,
+            class: None,
+        });
         // 實測：NVIDIA 的並發上限用 HTTP 200 加 502 ResourceExhausted 的區塊送出
         assert_eq!(
             parse_sse_line(&err(
@@ -1864,9 +2065,9 @@ mod tests {
     #[test]
     fn decoder_rejects_invalid_utf8_and_bad_json() {
         let mut d = SseDecoder::default();
-        assert_eq!(d.push(b"data: \xff\xfe\n"), Err(AiError));
+        assert_eq!(d.push(b"data: \xff\xfe\n"), Err(AiError::unclassified()));
         let mut d = SseDecoder::default();
-        assert_eq!(d.push(b"data: {oops\n"), Err(AiError));
+        assert_eq!(d.push(b"data: {oops\n"), Err(AiError::unclassified()));
     }
 
     #[test]

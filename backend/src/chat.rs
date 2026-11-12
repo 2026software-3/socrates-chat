@@ -53,6 +53,7 @@ pub struct Conversation {
     pub turn_count: i32,
     pub converge_ready: bool,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     /// 學生已封存：只從自己的清單隱藏（S-14）
     pub is_archived: bool,
@@ -64,7 +65,9 @@ macro_rules! conversation_select {
             "SELECT id, activity_id, topic_id, classroom_id,
                     (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                     title, description, language, status, stage,
-                    turn_count, converge_ready, created_at, ended_at,
+                    turn_count, converge_ready, created_at,
+                    COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
+                    ended_at,
                     archived_at IS NOT NULL AS is_archived FROM conversations ",
             $tail
         )
@@ -180,7 +183,8 @@ pub(crate) async fn create(
          RETURNING id, activity_id, topic_id, classroom_id,
                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                    title, description, language, status,
-                   stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived",
+                   stage, turn_count, converge_ready, created_at, created_at AS updated_at, ended_at,
+                   archived_at IS NOT NULL AS is_archived",
     )
     .bind(cu.user.id)
     .bind(activity_id)
@@ -213,7 +217,7 @@ pub(crate) async fn create(
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
     params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的"), ("activity_id" = Option<Uuid>, Query, description = "只列這個活動的對話")),
-    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
+    responses((status = 200, description = "對話分頁，依 updated_at DESC, id ASC（無訊息時以 created_at 代替）", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
@@ -236,8 +240,12 @@ pub(crate) async fn list(
     let rows = sqlx::query_as(conversation_select!(
         "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $2
            AND ($3::uuid IS NULL OR activity_id = $3)
-           AND ($4::timestamptz IS NULL OR created_at < $4 OR (created_at = $4 AND id > $5))
-         ORDER BY created_at DESC, id ASC LIMIT $6"
+           AND (
+                $4::timestamptz IS NULL OR
+                COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) < $4 OR
+                (COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) = $4 AND id > $5)
+           )
+         ORDER BY updated_at DESC, id ASC LIMIT $6"
     ))
     .bind(cu.user.id)
     .bind(archived)
@@ -251,7 +259,7 @@ pub(crate) async fn list(
         rows,
         limit,
         "conversations",
-        |row: &Conversation| (row.created_at, row.id),
+        |row: &Conversation| (row.updated_at, row.id),
     )?))
 }
 
@@ -389,6 +397,8 @@ pub(crate) enum Submitted {
 
 /// 保存學生訊息並更新回合數；文字與語音對話共用。`answered_only` 時，上一則學生訊息
 /// 還沒有回覆就拒絕：語音對話沒有重試的畫面，不能把新的發言疊上去。
+///
+/// 資料庫往返（不含教室的封存檢查）：`BEGIN`、查詢對話、claim 回合與寫入（一個語句）、`COMMIT`。
 pub(crate) async fn submit_message(
     state: &AppState,
     user: Uuid,
@@ -403,52 +413,20 @@ pub(crate) async fn submit_message(
     if conversation.status != "active" {
         return Err(ApiError::conflict("conversation_ended", "對話已結束"));
     }
-    // 先存學生訊息，再呼叫 AI（S-03.5）；回合數與訊息在同一個交易內更新
-    // AI 正在回覆時不接受新訊息，避免回覆對不上提問；同時取得這一輪產生回覆的權利
-    // （達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行）
-    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
-        "UPDATE conversations SET turn_count = turn_count + 1,
-                generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
-         WHERE id = $1 AND status = 'active' AND ",
-        generation_unclaimed!(),
-        " RETURNING turn_count, stage",
-    ))
-    .bind(id)
-    .bind(state.config.generation_stale_secs())
-    .bind(state.config.max_turns as i32)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((turn, stage)) = turn else {
+    let claimed = if answered_only {
+        claim_answered_turn(&mut tx, state, id, content, source).await?
+    } else {
+        claim_turn(&mut tx, state, id, content, source).await?
+    };
+    let Some(Claimed {
+        turn_count: turn,
+        stage,
+        message: m,
+        auto_ended,
+    }) = claimed
+    else {
         return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
     };
-    if answered_only {
-        // 上面的 UPDATE 鎖住對話列，檢查與寫入之間不會有別的訊息。沒被聽到的回覆也算回覆過
-        let last: Option<(String,)> = sqlx::query_as(
-            "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if last.is_some_and(|(role,)| role == "student") {
-            return Err(ApiError::conflict(
-                "unanswered_message",
-                "上一則訊息還沒有回覆",
-            ));
-        }
-    }
-    let m = sqlx::query_as(
-        "INSERT INTO messages (conversation_id, role, content, source)
-         VALUES ($1, 'student', $2, $3)
-         RETURNING id, role, content, source, question_type, created_at",
-    )
-    .bind(id)
-    .bind(content)
-    .bind(source)
-    .fetch_one(&mut *tx)
-    .await?;
-    // 到達回合上限：不再追問，直接產生總結並結束（S-03.3）
-    let auto_ended = turn >= state.config.max_turns as i32
-        && summary::end_conversation(&mut tx, id, state.config.generation_stale_secs()).await?;
     tx.commit().await?;
     // 第一個事件是保存好的學生訊息；之後才是 AI 回覆的 delta／done／error
     let first = reply::event(
@@ -470,6 +448,117 @@ pub(crate) async fn submit_message(
         conversation: Box::new(conversation),
         first,
     })
+}
+
+/// claim 回合並保存學生訊息的結果。
+#[derive(FromRow)]
+struct Claimed {
+    turn_count: i32,
+    stage: i16,
+    #[sqlx(flatten)]
+    message: Message,
+    /// 到達回合上限，對話已在同一個交易內結束並建立總結列
+    auto_ended: bool,
+}
+
+/// 一個語句完成：claim 這一輪、回合數加一、存學生訊息；到達回合上限時不 claim，直接結束對話並
+/// 建立產生中的總結（S-03.3），寫入與 `summary::end_conversation` 相同。claim 失敗時沒有列、什麼都不寫。
+///
+/// 先存學生訊息，再呼叫 AI（S-03.5）。AI 正在回覆時不接受新訊息，避免回覆對不上提問。
+/// 並行的請求在 `UPDATE` 等同一列的鎖，拿到鎖後以最新的列重新檢查條件，只有一個成功。
+async fn claim_turn(
+    conn: &mut sqlx::PgConnection,
+    state: &AppState,
+    id: Uuid,
+    content: &str,
+    source: &str,
+) -> Result<Option<Claimed>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "WITH c AS (
+             UPDATE conversations SET turn_count = turn_count + 1,
+                    generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END,
+                    status = CASE WHEN turn_count + 1 >= $3 THEN 'ended' ELSE status END,
+                    ended_at = CASE WHEN turn_count + 1 >= $3 THEN now() ELSE ended_at END
+             WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+        "    RETURNING turn_count, stage
+         ), s AS (
+             INSERT INTO summaries (conversation_id) SELECT $1 FROM c WHERE c.turn_count >= $3
+         ), m AS (
+             INSERT INTO messages (conversation_id, role, content, source)
+             SELECT $1, 'student', $4, $5 FROM c
+             RETURNING id, role, content, source, question_type, created_at
+         )
+         SELECT c.turn_count, c.stage, c.turn_count >= $3 AS auto_ended,
+                m.id, m.role, m.content, m.source, m.question_type, m.created_at
+         FROM c, m",
+    ))
+    .bind(id)
+    .bind(state.config.generation_stale_secs())
+    .bind(state.config.max_turns as i32)
+    .bind(content)
+    .bind(source)
+    .fetch_optional(&mut *conn)
+    .await
+}
+
+/// 與 [`claim_turn`] 相同，但上一則學生訊息還沒有回覆就拒絕（語音對話用）。
+/// 檢查要在 claim 拿到對話列的鎖之後另開語句：同一個語句的子查詢看不到等鎖期間別人提交的訊息。
+async fn claim_answered_turn(
+    conn: &mut sqlx::PgConnection,
+    state: &AppState,
+    id: Uuid,
+    content: &str,
+    source: &str,
+) -> Result<Option<Claimed>, ApiError> {
+    // 達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行
+    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
+        "UPDATE conversations SET turn_count = turn_count + 1,
+                generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
+         WHERE id = $1 AND status = 'active' AND ",
+        generation_unclaimed!(),
+        " RETURNING turn_count, stage",
+    ))
+    .bind(id)
+    .bind(state.config.generation_stale_secs())
+    .bind(state.config.max_turns as i32)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((turn, stage)) = turn else {
+        return Ok(None);
+    };
+    // 上面的 UPDATE 鎖住對話列，檢查與寫入之間不會有別的訊息。沒被聽到的回覆也算回覆過
+    let last: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if last.is_some_and(|(role,)| role == "student") {
+        return Err(ApiError::conflict(
+            "unanswered_message",
+            "上一則訊息還沒有回覆",
+        ));
+    }
+    let message = sqlx::query_as(
+        "INSERT INTO messages (conversation_id, role, content, source)
+         VALUES ($1, 'student', $2, $3)
+         RETURNING id, role, content, source, question_type, created_at",
+    )
+    .bind(id)
+    .bind(content)
+    .bind(source)
+    .fetch_one(&mut *conn)
+    .await?;
+    // 到達回合上限：不再追問，直接產生總結並結束（S-03.3）
+    let auto_ended = turn >= state.config.max_turns as i32
+        && summary::end_conversation(conn, id, state.config.generation_stale_secs()).await?;
+    Ok(Some(Claimed {
+        turn_count: turn,
+        stage,
+        message,
+        auto_ended,
+    }))
 }
 
 /// 學生在上一則回覆沒被聽到時接著說的話：存成獨立的一則學生訊息，回合數不變，並取得產生回覆的權利。

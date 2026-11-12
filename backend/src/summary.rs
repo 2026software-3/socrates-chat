@@ -24,12 +24,13 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, build_summary_prompt, collect_background, format_transcript,
-        parse_summary, rules_version,
+        AiError, AiRequest, ChatRole, ChatTurn, build_summary_prompt, collect_background,
+        format_transcript, parse_summary, rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::{Message, load_messages, owned_conversation},
     classrooms::{ClassroomFilter, filtered_classroom},
+    diagnostics::{self, AiActivity},
     error::{ApiError, db_error_class},
     pagination::{self, Page, Pagination},
     points,
@@ -89,7 +90,7 @@ pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
 
 /// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
 pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
-    tokio::spawn(
+    tokio::spawn(diagnostics::inherit_request(
         async move {
             if let Err(e) = generate(&state, id, attempt).await {
                 // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
@@ -106,7 +107,7 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
             }
         }
         .in_current_span(),
-    );
+    ));
 }
 
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
@@ -134,13 +135,20 @@ async fn on_conversation_completed(
     Ok(())
 }
 
+#[derive(FromRow)]
+struct SummarySource {
+    owner: Uuid,
+    title: String,
+    description: String,
+    activity_id: Option<Uuid>,
+    language: String,
+    classroom: Option<Uuid>,
+}
+
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let ((owner, title, description, activity_id, language), turns): (
-        (Uuid, String, String, Option<Uuid>, String),
-        _,
-    ) = tokio::try_join!(
-        sqlx::query_as(
-            "SELECT user_id, title, description, activity_id, language
+    let (SummarySource { owner, title, description, activity_id, language, classroom }, turns) = tokio::try_join!(
+        sqlx::query_as::<_, SummarySource>(
+            "SELECT user_id AS owner, title, description, activity_id, language, classroom_id AS classroom
              FROM conversations WHERE id = $1"
         )
         .bind(id)
@@ -156,14 +164,20 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     };
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
-    for _ in 0..2 {
-        let raw = collect_background(
-            state.ai.as_ref(),
-            req.clone(),
-            state.config.ai_total_timeout,
-        )
-        .await;
-        if let Some(s) = raw.ok().and_then(|raw| parse_summary(&raw)) {
+    let activity = AiActivity::new("summary", Some(owner), classroom).statuses(202, 202);
+    for retry in 0..2 {
+        let generated = activity
+            .run(state, Some(&state.config.openai_model), retry, async {
+                let raw = collect_background(
+                    state.ai.as_ref(),
+                    req.clone(),
+                    state.config.ai_total_timeout,
+                )
+                .await?;
+                parse_summary(&raw).ok_or(AiError::invalid_output())
+            })
+            .await;
+        if let Ok(s) = generated {
             summary = Some(s);
             break;
         }
@@ -380,6 +394,12 @@ pub(crate) struct SummaryRow {
     conversation_id: Uuid,
     /// 對話所屬的教室
     classroom_id: Uuid,
+    /// 對話所屬的活動 ID（個人練習為 None）
+    activity_id: Option<Uuid>,
+    /// 對話所屬的題目 ID；個人練習為 None，題目被刪除後也會變成 None
+    topic_id: Option<Uuid>,
+    /// 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3）；非活動對話為 false
+    activity_completed: bool,
     title: String,
     ended_at: DateTime<Utc>,
     /// 排序與游標用，不輸出
@@ -431,8 +451,8 @@ pub(crate) async fn translate(
     if cu.roles.admin {
         return Err(ApiError::forbidden("forbidden", "沒有權限"));
     }
-    let source: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT s.stance, s.reasons, c.language
+    let source: Option<(String, String, String, Uuid)> = sqlx::query_as(
+        "SELECT s.stance, s.reasons, c.language, cl.id
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND cl.created_by = $2
@@ -442,7 +462,7 @@ pub(crate) async fn translate(
     .bind(cu.user.id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((stance, reasons, source_language)) = source else {
+    let Some((stance, reasons, source_language, classroom)) = source else {
         return Err(ApiError::not_found());
     };
     let language = cu.user.language;
@@ -463,24 +483,30 @@ pub(crate) async fn translate(
     };
     let [stance, reasons] = [stance, reasons].map(crate::pii::mask);
     let fields = [&*stance, &*reasons];
-    let translated =
-        if let Some(translation) = via_google(&state, &source_language, &language, fields).await {
-            translation
-        } else {
-            let usage_slot = state.charge_ai(cu.user.id).inspect_err(|_| {
-                state.translation_limit.refund(cu.user.id, slot);
-            })?;
-            let Some(translation) = via_ai(&state, &language, fields).await else {
-                state.translation_limit.refund(cu.user.id, slot);
-                state.refund_ai(cu.user.id, usage_slot);
-                return Err(ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    "ai_unavailable",
-                    "暫時無法完成翻譯",
-                ));
-            };
-            translation
+    let translated = if let Some(translation) =
+        via_google(&state, &source_language, &language, fields).await
+    {
+        translation
+    } else {
+        let usage_slot = state.charge_ai(cu.user.id).inspect_err(|_| {
+            state.translation_limit.refund(cu.user.id, slot);
+        })?;
+        let translation = AiActivity::new("summary_translation", Some(cu.user.id), Some(classroom))
+            .run(&state, Some(&state.config.openai_model), 0, async {
+                via_ai(&state, &language, fields).await
+            })
+            .await;
+        let Ok(translation) = translation else {
+            state.translation_limit.refund(cu.user.id, slot);
+            state.refund_ai(cu.user.id, usage_slot);
+            return Err(ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "ai_unavailable",
+                "暫時無法完成翻譯",
+            ));
         };
+        translation
+    };
     let stored: Option<SummaryTranslation> = sqlx::query_as(
         "INSERT INTO summary_translations (conversation_id, language, stance, reasons)
          SELECT conversation_id, $2, $3, $4 FROM summaries
@@ -735,7 +761,29 @@ pub(crate) async fn list(
     // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
-        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at, s.completed_at,
+        "SELECT s.conversation_id, c.classroom_id, c.activity_id, c.topic_id,
+                (
+                    c.activity_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM activity_topics at
+                        WHERE at.activity_id = c.activity_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM activity_topics at
+                        WHERE at.activity_id = c.activity_id
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM conversations conv
+                              JOIN summaries sm
+                                ON sm.conversation_id = conv.id
+                               AND sm.status = 'ready'
+                              WHERE conv.activity_id = at.activity_id
+                                AND conv.topic_id = at.topic_id
+                                AND conv.user_id = c.user_id
+                          )
+                    )
+                ) AS activity_completed,
+                c.title, c.ended_at, s.completed_at,
                 u.id AS student_user_id, u.student_id AS student_number,
                 u.display_name AS student_name, u.email AS student_email,
                 c.language,

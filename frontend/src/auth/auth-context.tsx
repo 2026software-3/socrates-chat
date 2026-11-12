@@ -57,6 +57,8 @@ type AuthState =
   | { status: 'error' }
   /** 帳號已被管理者停用（S-01.3） */
   | { status: 'disabled' }
+  /** 維護模式（S-15）：非管理者的請求一律回 503 `maintenance` */
+  | { status: 'maintenance' }
   | { status: 'authed'; me: Me }
 
 type AuthValue = AuthState & {
@@ -102,6 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setState({ status: 'anon' })
       }
       else if (isApiError(e) && e.code === 'account_disabled') setState({ status: 'disabled' })
+      else if (isApiError(e) && e.code === 'maintenance') setState({ status: 'maintenance' })
       else setState({ status: 'error' })
     }
   }, [setLang])

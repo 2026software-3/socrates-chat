@@ -104,7 +104,7 @@ describe('app shell', () => {
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '我的教室' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'main' })
-    for (const name of ['選擇題目', '我的對話', '我的儀表板']) {
+    for (const name of ['選擇題目', '我的對話', '帳號']) {
       expect(within(nav).queryByRole('link', { name })).not.toBeInTheDocument()
     }
   })
@@ -122,6 +122,10 @@ describe('app shell', () => {
     const nav = await screen.findByRole('navigation', { name: 'main' })
     expect(within(nav).getByRole('link', { name: '選擇題目' })).toBeInTheDocument()
     expect(within(nav).getByRole('link', { name: '我的對話' })).toBeInTheDocument()
+    // 個人儀表板已併入帳號頁（S-18）：側欄沒有「我的儀表板」也沒有「帳號」，帳號頁從右上角頭像進入
+    expect(within(nav).queryByRole('link', { name: '我的儀表板' })).not.toBeInTheDocument()
+    expect(within(nav).queryByRole('link', { name: '帳號' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
     expect(within(nav).queryByRole('link', { name: '學生帳號' })).not.toBeInTheDocument()
     expect(within(nav).queryByRole('link', { name: '教師管理' })).not.toBeInTheDocument()
   })
@@ -160,6 +164,16 @@ describe('app shell', () => {
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
       http.get('/api/dashboard/class', () => HttpResponse.json({ ...emptyClass, masked: true, students_total: 2 })),
       http.get('/api/topics', () => HttpResponse.json([])),
+      http.get('/api/admin/status', () =>
+        HttpResponse.json({
+          service: 'ok',
+          database: 'ok',
+          period: '24h',
+          diagnostics_available: true,
+          statistics: null,
+          recent_errors: [],
+        }),
+      ),
     )
   }
 
@@ -175,9 +189,11 @@ describe('app shell', () => {
       '教師管理',
       '修課名單',
       '題目庫',
-      '執行日誌',
+      '診斷',
       '任務設定',
       '部件設定',
+      '公告與維護',
+      '客訴',
     ])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })

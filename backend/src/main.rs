@@ -1,7 +1,7 @@
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo,
+    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo, diagnostics,
     identity::GoogleIdentity, logging, password, summary, summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -67,10 +67,8 @@ async fn main() {
     )
     .with_fallbacks(config.openai_fallback_models.clone())
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
-    let mut state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
-    if let Ok(key) = std::env::var("GOOGLE_TRANSLATION_API_KEY") {
-        state = state.with_google_translation(&key);
-    }
+    diagnostics::spawn_retention(pool.clone());
+    let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     if let Ok(seconds) = std::env::var("SUMMARY_TRANSLATION_RETRY_SECS")
         && !seconds.trim().is_empty()
     {
