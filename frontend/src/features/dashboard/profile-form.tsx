@@ -18,8 +18,9 @@ const DISPLAY_NAME_MAX = 30
 const nameLength = (value: string) => Array.from(value.trim()).length
 
 /**
- * 學生的個人設定：顯示名稱（留空會清除，介面回到顯示電子郵件）、Google 帳號，
- * 以及「儲存」旁的「更改密碼」按鈕（S-18）；不能改密碼的帳號在同一位置顯示說明。彈出視窗放在表單外面，見 `ChangePasswordDialog`。
+ * 個人設定（S-18）：顯示名稱（留空會清除，學生回到匯入的姓名，教師與管理者回到顯示電子郵件）、
+ * 以及「儲存」旁的「更改密碼」按鈕；不能改密碼的帳號在同一位置顯示說明。彈出視窗放在表單外面，見 `ChangePasswordDialog`。
+ * 學生另有 Google 帳號區塊；教師與管理者改為多兩列唯讀的帳號資訊（電子郵件、角色）。
  */
 export function ProfileForm() {
   const auth = useAuth()
@@ -129,6 +130,29 @@ function GoogleLink({ me, update }: { me: Me; update: (me: Me) => void }) {
   )
 }
 
+/** 教師與管理者的帳號資訊：電子郵件與角色（唯讀）。 */
+function AccountInfo({ me }: { me: Me }) {
+  const t = useT()
+  const roles = (['admin', 'teacher'] as const)
+    .filter((r) => me.roles[r])
+    .map((r) => t(`role.${r}`))
+    .join(' / ')
+  const rows = [
+    [t('account.email'), me.email ?? '—'],
+    [t('account.roles'), roles],
+  ] as const
+  return (
+    <dl className="space-y-3 text-sm">
+      {rows.map(([label, value]) => (
+        <div key={label} className="space-y-1">
+          <dt className="text-muted-foreground text-xs">{label}</dt>
+          <dd className="break-words">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 function Form({ me, update, password }: { me: Me; update: (me: Me) => void; password: { saved: boolean; open: () => void } | null }) {
   const t = useT()
   const [name, setName] = useState(me.display_name ?? '')
@@ -188,6 +212,7 @@ function Form({ me, update, password }: { me: Me; update: (me: Me) => void; pass
             </p>
             {tooLong ? <p className="text-destructive text-xs">{t('profile.tooLong', { max: DISPLAY_NAME_MAX })}</p> : null}
           </div>
+          {me.roles.student ? null : <AccountInfo me={me} />}
           <div className="flex flex-wrap items-center gap-3">
             <Button type="submit" disabled={saving || tooLong}>
               {t('profile.save')}
