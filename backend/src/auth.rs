@@ -162,6 +162,15 @@ pub struct CurrentUser {
 /// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
 pub struct AnyCurrentUser(pub CurrentUser);
 
+pub(crate) struct MaintenanceAuthenticatedUser(pub AnyCurrentUser);
+
+fn take_maintenance_authenticated_user(parts: &mut Parts) -> Option<AnyCurrentUser> {
+    parts
+        .extensions
+        .remove::<MaintenanceAuthenticatedUser>()
+        .map(|cached| cached.0)
+}
+
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
 
@@ -187,6 +196,10 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(user) = take_maintenance_authenticated_user(parts) {
+            return Ok(user);
+        }
+
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
         // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
         let SessionUser {
@@ -985,6 +998,7 @@ pub(crate) async fn reset_password(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
 
     fn pick(value: &str) -> &'static str {
         let mut headers = HeaderMap::new();
@@ -1010,5 +1024,42 @@ mod tests {
         // 沒有可接受的支援語言時回到繁體中文
         assert_eq!(pick("es;q=0"), "zh-TW");
         assert_eq!(pick("fr, *;q=0.5"), "zh-TW");
+    }
+
+    #[test]
+    fn maintenance_user_is_reused_from_request_extensions() {
+        let expected = AnyCurrentUser(CurrentUser {
+            user: auth_store::User {
+                id: Uuid::nil(),
+                google_sub: None,
+                email: Some("admin@example.com".to_string()),
+                student_number: None,
+                display_name: None,
+                language: "zh-TW".to_string(),
+                is_admin: true,
+                must_change_password: false,
+                created_at: Utc::now(),
+                disabled: false,
+            },
+            roles: Roles {
+                admin: true,
+                teacher: false,
+                student: false,
+            },
+            must_change_password: false,
+        });
+        let mut parts = axum::http::Request::new(Body::empty()).into_parts().0;
+        parts
+            .extensions
+            .insert(MaintenanceAuthenticatedUser(expected));
+
+        let cached = take_maintenance_authenticated_user(&mut parts).unwrap();
+        assert!(cached.0.roles.admin);
+        assert!(
+            parts
+                .extensions
+                .get::<MaintenanceAuthenticatedUser>()
+                .is_none()
+        );
     }
 }

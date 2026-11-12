@@ -10,10 +10,7 @@
 //! 稽核日誌只記操作者、動作與公告編號，不記公告內文。
 
 use std::{
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -75,22 +72,22 @@ pub fn routes() -> Router<AppState> {
 
 /// 維護模式旗標的記憶體快取。資料庫是唯一的真相：快取過期就重讀，讀取失敗時沿用上一次的值。
 #[derive(Default)]
+struct MaintenanceCache {
+    on: bool,
+    checked: Option<Instant>,
+    generation: u64,
+}
+
+#[derive(Default)]
 pub struct MaintenanceFlag {
-    on: AtomicBool,
-    checked: Mutex<Option<Instant>>,
+    cache: Mutex<MaintenanceCache>,
 }
 
 impl MaintenanceFlag {
     pub(crate) async fn is_on(&self, pool: &PgPool) -> bool {
-        let stale = self
-            .checked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none_or(|at| at.elapsed() >= MAINTENANCE_CACHE);
-        if stale {
+        if let Some(generation) = self.begin_refresh() {
             // 先記下檢查時間：資料庫讀不到時也只每 MAINTENANCE_CACHE 才再試一次，
-            // 而且最多等 1 秒，不讓資料庫故障拖慢每個請求；讀不到就沿用上一個值
-            *self.checked.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            // 而且最多等 1 秒，不讓資料庫故障拖慢每個請求；讀不到就沿用上一個值。
             let read = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 sqlx::query_scalar::<_, bool>("SELECT enabled FROM maintenance_mode")
@@ -98,19 +95,62 @@ impl MaintenanceFlag {
             )
             .await;
             match read {
-                Ok(Ok(v)) => self.set(v),
+                Ok(Ok(v)) => self.apply_refresh(generation, v),
                 Ok(Err(e)) => {
                     tracing::warn!(class = %crate::error::db_error_class(&e), "failed to read maintenance flag");
                 }
                 Err(_) => tracing::warn!("timed out reading maintenance flag"),
             }
         }
-        self.on.load(Ordering::Relaxed)
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .on
+    }
+
+    fn begin_refresh(&self) -> Option<u64> {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache
+            .checked
+            .is_some_and(|at| at.elapsed() < MAINTENANCE_CACHE)
+        {
+            return None;
+        }
+        // Mark before querying so concurrent requests do not all refresh at once.
+        cache.checked = Some(Instant::now());
+        Some(cache.generation)
+    }
+
+    fn apply_refresh(&self, generation: u64, value: bool) {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.generation == generation {
+            cache.on = value;
+            cache.checked = Some(Instant::now());
+        }
     }
 
     fn set(&self, value: bool) {
-        self.on.store(value, Ordering::Relaxed);
-        *self.checked.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.on = value;
+        cache.checked = Some(Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_older_refresh_cannot_overwrite_a_newer_set() {
+        let flag = MaintenanceFlag::default();
+        let generation = flag.begin_refresh().unwrap();
+
+        flag.set(true);
+        flag.apply_refresh(generation, false);
+
+        let cache = flag.cache.lock().unwrap();
+        assert!(cache.on);
     }
 }
 
