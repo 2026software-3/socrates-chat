@@ -20,7 +20,7 @@ function mockDashboard() {
 async function openSettings(roles: Partial<Roles>, canChange = true) {
   mockDashboard()
   mockMe(makeMe(roles, { can_change_password: canChange }))
-  renderApp(null, { route: '/dashboard' })
+  renderApp(null, { route: '/account' })
   await screen.findByRole('heading', { name: '個人設定' })
 }
 

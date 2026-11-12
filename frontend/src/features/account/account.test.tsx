@@ -8,6 +8,13 @@ import { server } from '@/test/server'
 
 /** `/account`（F-37、S-18）：教師與管理者更改密碼的地方，所有已開通的角色都進得去；全部使用合成資料。 */
 
+const emptyDashboard = { total_conversations: 0, completed: 0, total_turns: 0, recent: [] }
+
+/** 學生的帳號頁會讀個人儀表板；教師與管理者不會（見下面的測試）。 */
+function mockDashboard(data: object = emptyDashboard) {
+  server.use(http.get('/api/dashboard/me', () => HttpResponse.json(data)))
+}
+
 const open = async (roles: Partial<Roles>, overrides: Partial<Me> = {}) => {
   mockMe(makeMe(roles, overrides))
   renderApp(null, { route: '/account' })
@@ -21,16 +28,16 @@ describe('the account page', () => {
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
     ['a teacher who is also an admin', { teacher: true, admin: true }],
-    ['a student', { student: true }],
-  ])('offers the change-password form to %s', async (_label, roles) => {
+  ])('offers only the change-password form to %s', async (_label, roles) => {
     await open(roles)
     const form = within(section())
     expect(form.getByLabelText('目前密碼')).toHaveAttribute('autocomplete', 'current-password')
     expect(form.getByLabelText('新密碼')).toBeInTheDocument()
     expect(form.getByLabelText('確認新密碼')).toBeInTheDocument()
-    // 這頁只放更改密碼：顯示名稱與 Google 連結是學生個人設定的內容
+    // 教師與管理者的帳號頁只放更改密碼：顯示名稱、Google 連結與儀表板內容是學生的
     expect(screen.queryByLabelText('顯示名稱')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Google 帳號' })).not.toBeInTheDocument()
+    expect(screen.queryByText('已完成對話')).not.toBeInTheDocument()
   })
 
   it('does not send an admin-only account back to the operations home', async () => {
@@ -93,37 +100,132 @@ describe('the account page', () => {
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
   })
 
-  it('is not in the navigation list: it is reached from the name in the sidebar', async () => {
+  it('is not in the navigation list: it is reached from the avatar at the top right', async () => {
     await open({ teacher: true })
     const nav = screen.getByRole('navigation', { name: 'main' })
     expect(within(nav).queryByRole('link', { name: '帳號' })).not.toBeInTheDocument()
   })
 })
 
-describe('the name in the sidebar', () => {
+describe('the avatar at the top right', () => {
   it.each<[string, Partial<Roles>]>([
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
     ['a teacher who is also an admin', { teacher: true, admin: true }],
   ])('links %s with a built-in password to /account', async (_label, roles) => {
     await open(roles)
-    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+    const avatar = screen.getByRole('link', { name: 'Test User' })
+    expect(avatar).toHaveAttribute('href', '/account')
+    expect(avatar).toHaveTextContent('T')
+    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Test User' })).toBe(avatar)
   })
 
   it.each<[string, Partial<Roles>]>([
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
-  ])('keeps the name of %s plain text when the account cannot change its password', async (_label, roles) => {
+  ])('does not link the avatar of %s when the account cannot change its password', async (_label, roles) => {
     await open(roles, { can_change_password: false })
     expect(screen.getByText('Test User')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Test User' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Test User' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the name in the sidebar as plain text: the avatar is the only way in', async () => {
+    await open({ teacher: true })
+    expect(screen.getAllByRole('link', { name: 'Test User' })).toHaveLength(1)
+    expect(screen.getByText('Test User')).not.toHaveAttribute('href')
   })
 
   it.each<[string, Partial<Roles>]>([
     ['a student', { student: true }],
     ['a student who is also a teacher', { student: true, teacher: true }],
-  ])('still links %s to the personal settings', async (_label, roles) => {
+  ])('shows %s an avatar at the top right that links to their account page', async (_label, roles) => {
+    mockDashboard()
     await open(roles)
-    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/dashboard')
+    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+  })
+
+  it('keeps the avatar of a student linked even without a built-in password (the page still has their settings)', async () => {
+    mockDashboard()
+    await open({ student: true }, { can_change_password: false })
+    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+  })
+})
+
+describe('the account page for students (the former personal dashboard, S-18)', () => {
+  const recent = [
+    {
+      conversation_id: '11111111-1111-4111-8111-111111111111',
+      title: '電車難題',
+      claim: '不應該扳動',
+      stance: '義務論',
+      stage: 3,
+      turn_count: 4,
+      ended_at: '2026-11-10T08:00:00Z',
+    },
+  ]
+
+  it('shows the personal settings and the dashboard content on one page', async () => {
+    mockDashboard({ total_conversations: 5, completed: 2, total_turns: 17, recent })
+    await open({ student: true })
+    // 個人設定：顯示名稱、Google 帳號、更改密碼
+    expect(screen.getByRole('heading', { name: '個人設定' })).toBeInTheDocument()
+    expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Google 帳號' })).toBeInTheDocument()
+    expect(within(section()).getByLabelText('目前密碼')).toBeInTheDocument()
+    // 原個人儀表板的內容
+    expect(await screen.findByText('已完成對話')).toBeInTheDocument()
+    expect(screen.getByText('17')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '電車難題' })).toHaveAttribute('href', '/conversations/11111111-1111-4111-8111-111111111111')
+    expect(screen.queryByRole('heading', { level: 1, name: '我的儀表板' })).not.toBeInTheDocument()
+  })
+
+  it('puts the settings above the dashboard content, as the old page did', async () => {
+    mockDashboard({ total_conversations: 5, completed: 2, total_turns: 17, recent })
+    await open({ student: true })
+    const settings = screen.getByRole('heading', { name: '個人設定' })
+    const stats = await screen.findByText('已完成對話')
+    expect(settings.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the other content when the account cannot change its password', async () => {
+    mockDashboard()
+    await open({ student: true }, { can_change_password: false })
+    expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '更改密碼' })).not.toBeInTheDocument()
+  })
+
+  it('shows a retryable error for the dashboard part without hiding the settings', async () => {
+    server.use(http.get('/api/dashboard/me', () => apiError(500, 'internal')))
+    await open({ student: true })
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
+    expect(section()).toBeInTheDocument()
+  })
+
+  it('has neither 「帳號」 nor 「我的儀表板」 in the sidebar: it is reached from the avatar', async () => {
+    mockDashboard()
+    await open({ student: true })
+    const nav = screen.getByRole('navigation', { name: 'main' })
+    expect(within(nav).queryByRole('link', { name: '帳號' })).not.toBeInTheDocument()
+    expect(within(nav).queryByRole('link', { name: '我的儀表板' })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+  })
+
+  it('does not ask for the dashboard data when a teacher or an admin opens the page', async () => {
+    let asked = 0
+    server.use(
+      http.get('/api/dashboard/me', () => {
+        asked += 1
+        return HttpResponse.json(emptyDashboard)
+      }),
+    )
+    for (const roles of [{ teacher: true }, { admin: true }] as Partial<Roles>[]) {
+      const view = (mockMe(makeMe(roles)), renderApp(null, { route: '/account' }))
+      await screen.findByRole('heading', { level: 1, name: '帳號' })
+      await screen.findByRole('region', { name: '更改密碼' })
+      view.unmount()
+    }
+    expect(asked).toBe(0)
   })
 })

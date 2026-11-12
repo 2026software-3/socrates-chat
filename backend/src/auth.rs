@@ -356,14 +356,14 @@ pub(crate) async fn callback(
 }
 
 fn link_redirect(state: &AppState, query: &str) -> Response {
-    Redirect::to(&format!("{}/dashboard?{query}", state.config.app_base_url)).into_response()
+    Redirect::to(&format!("{}/account?{query}", state.config.app_base_url)).into_response()
 }
 
 #[utoipa::path(
     get,
     path = "/api/auth/google/link",
     tag = "auth",
-    summary = "學生連結 Google 帳號：導向 Google 授權頁（回呼後導回 /dashboard?link=ok 或 ?link_error=code）",
+    summary = "學生連結 Google 帳號：導向 Google 授權頁（回呼後導回 /account?link=ok 或 ?link_error=code）",
     responses(
         (status = 303, description = "重新導向到 Google"),
         (status = 403, description = "沒有學號的帳號不能連結")
