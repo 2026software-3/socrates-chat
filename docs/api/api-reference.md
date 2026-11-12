@@ -38,7 +38,7 @@
 - `GET /api/admin/diagnostics` 回 `{ items, next_cursor }`，由新到舊。可篩選 `from`（含）、`to`（不含，均為 RFC 3339）、`kind`（`ai`、`login`、`account_lock`）、`failure_class`、`request_id`、`user_id`、`classroom_id`。最後三個欄位使用 UUID。分頁沿用 `limit` 和 `cursor`，更改條件後須從第一頁查詢。
 - 失敗分類包括 AI 的 `connection_failed`、`timeout`、`invalid_key`、`quota_exceeded`、`rate_limited`、`service_error`、`invalid_output`，以及登入的 `invalid_credentials`、`account_disabled`、`account_locked`。每筆失敗有時間、request ID、功能、路由模板、狀態碼及固定 error code。AI 另有耗時、重試次數（該次嘗試之前已重試的次數加上供應商內部換金鑰或換備援模型的次數；成功事件同樣如此，模型為實際回覆的模型）及可用的模型名稱。診斷分類只供紀錄，不影響金鑰冷卻與備援模型的決定。可依 request ID 到容器 stdout 查相關記錄。
 - PostgreSQL 保存最近 30 天，每日清理到期事件，查詢也會排除到期事件。成功只供統計。帳號或教室可用內部 ID 關聯，未知帳號的失敗仍可從系統清單查看；因為任何人都能對不存在的信箱嘗試登入，這類事件每種每小時最多保留 100 筆，已鎖定後的登入嘗試不寫事件，Google 登入只記錄停用帳號的拒絕。診斷寫入在背景進行，不增加請求延遲；寫入積壓時新事件會被丟棄，不影響原請求結果。兩個端點只允許管理者，查詢端點無法讀取時回 `503 diagnostics_unavailable`。
-- 現有 `GET /api/admin/logs` 在 #466 前端切換前繼續提供。持久化診斷與 stdout 的 `request completed` 各自保留。
+- 程序記憶體的 request 日誌與 `GET /api/admin/logs` 已移除（#465）：成功的請求不再有後台可查，完整請求日誌以容器 stdout 的 `request completed`（含 request ID）為準；持久化診斷只保存失敗事件。
 
 ### 帳號管理
 
@@ -213,7 +213,7 @@
 - `POST /api/classrooms/{id}/roster/import` 一次回傳明文臨時密碼：已限制只出現一次、僅匯入者（教師或管理者，2026-10 修訂，原為僅管理者）可取得；教師知道臨時密碼的風險已由需求方接受（`S-08.2-auth-verification.md`）；回應帶 `Cache-Control: no-store`。
 - 登入失敗鎖定已改為以（登入帳號輸入, 來源 IP）為單位，另有每登入帳號輸入的跨 IP 總量上限，登入端點本身也有來源 IP 的請求頻率限制（#295 已完成；規則見 S-08.2 與上方「登入」的說明）。其他未登入端點目前沒有 IP 請求頻率限制，見 #475。
 - #324、#325 已完成：全域 request body 上限（1 MiB，超過回 `413 payload_too_large`）與請求逾時（10 秒，SSE 等長時間路由用較長逾時，逾時回 `408 request_timeout`），見「通則」。
-- `GET /ready`（S-09.3）已實作：公開，不需登入；以 `SELECT 1` 檢查資料庫連線（最多等 3 秒），成功回 `200 { status: "ok" }`，失敗或逾時回 `503 database_unavailable`（標準錯誤格式，不含連線資訊）。`/ready` 的探測（成功或失敗）一律不進 `/admin/logs` 的 request log，與 `/health` 一致；失敗仍由 tracing 輸出到 stdout。`/health` 仍只表示程序存活。
+- `GET /ready`（S-09.3）已實作：公開，不需登入；以 `SELECT 1` 檢查資料庫連線（最多等 3 秒），成功回 `200 { status: "ok" }`，失敗或逾時回 `503 database_unavailable`（標準錯誤格式，不含連線資訊）。失敗由 tracing 輸出到 stdout。`/health` 仍只表示程序存活。
 - 稽核（`audit_logs`）涵蓋登入、disable／enable／delete、教師與名單異動、reset-password（F-22.1）；日後的調價（S-07 §5 要求）也要進 `audit_logs`。
 
 ## 建議的處理順序

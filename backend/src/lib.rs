@@ -37,6 +37,7 @@ macro_rules! generation_unclaimed {
     };
 }
 
+mod access_log;
 pub mod accounts;
 pub mod achievement_admin;
 pub mod achievements;
@@ -72,7 +73,6 @@ pub mod pii;
 pub mod points;
 pub mod purchase;
 pub mod reply;
-pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
@@ -120,8 +120,6 @@ pub struct AppState {
     pub voice_sessions: Arc<cascade::VoiceSessions>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
-    /// 管理者暫時維運頁使用的近期 request log；程序重啟即清空。
-    pub(crate) request_logs: Arc<request_logs::RequestLogStore>,
     /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
     pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
     /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
@@ -152,7 +150,6 @@ impl AppState {
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
             live: Arc::default(),
-            request_logs: Arc::default(),
             translation_limit: Arc::default(),
             ai_usage,
             maintenance: Arc::default(),
@@ -202,7 +199,6 @@ pub fn app(state: AppState) -> Router {
         .merge(catalog::routes())
         .merge(chat::routes())
         .merge(reply::routes())
-        .merge(request_logs::routes())
         .merge(diagnostics::routes())
         .merge(summary::routes())
         .merge(voice::routes())
@@ -236,7 +232,7 @@ pub fn app(state: AppState) -> Router {
             request_timeout,
         ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
-        .layer(middleware::from_fn_with_state(state.clone(), request_id))
+        .layer(middleware::from_fn(request_id))
         // 真正的最外層：所有回應（含錯誤與 CSRF 拒絕）都補上安全標頭
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -265,15 +261,13 @@ async fn openapi_json() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], DOC.as_str())
 }
 
-/// 健康檢查會被外部探測器頻繁呼叫，不進 request log ring（stdout 仍輸出）。
-async fn health() -> Response {
-    request_logs::not_in_ring(Json(Health { status: "ok" }))
+async fn health() -> Json<Health> {
+    Json(Health { status: "ok" })
 }
 
 /// 就緒檢查（S-09.3）：以 `SELECT 1` 確認資料庫連得上，失敗或逾時回 503。
 /// 與 `/health`（只表示程序存活）不同；探針不需登入。日誌與回應只帶固定的錯誤種類，
-/// 不含連線字串、主機或資料庫的錯誤訊息。任何回應（成功、失敗）都不進 request log ring，與 `/health` 一致；
-/// 失敗的紀錄看 stdout 的 tracing 輸出。
+/// 不含連線字串、主機或資料庫的錯誤訊息。失敗的紀錄看 stdout 的 tracing 輸出。
 #[utoipa::path(
     get,
     path = "/ready",
@@ -293,7 +287,7 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
     )
     .await;
     match check {
-        Ok(Ok(_)) => request_logs::not_in_ring(Json(Health { status: "ok" })),
+        Ok(Ok(_)) => Json(Health { status: "ok" }).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
             database_unavailable()
@@ -305,14 +299,13 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
     }
 }
 
-/// 失敗的回應同樣不進 request log ring：長時間故障時探針每隔幾秒一筆，會擠掉真正的請求。
-/// 失敗仍由上面的 `tracing::warn!` 輸出到 stdout。
 fn database_unavailable() -> Response {
-    request_logs::not_in_ring(ApiError::new(
+    ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
         "database_unavailable",
         "資料庫暫時無法使用",
-    ))
+    )
+    .into_response()
 }
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
@@ -331,7 +324,7 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
 }
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
-async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> Response {
+async fn request_id(req: Request, next: Next) -> Response {
     let request_uuid = uuid::Uuid::new_v4();
     let id = request_uuid.to_string();
     let method = req.method().clone();
@@ -340,7 +333,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         .extensions()
         .get::<MatchedPath>()
         .map(MatchedPath::as_str)
-        .unwrap_or(request_logs::FALLBACK_ROUTE)
+        .unwrap_or(access_log::FALLBACK_ROUTE)
         .to_string();
     let span = tracing::info_span!(
         "http_request",
@@ -367,11 +360,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         .extensions()
         .get::<error::ErrorCode>()
         .map(|code| code.0.to_string());
-    // 沒有對應路由的請求（掃描、前端靜態檔、被 CSRF 擋下的未知路徑）會擠掉真正的應用請求，不進 ring；
-    // 其餘由路由或處理函式自己標記。stdout 的 tracing event 一律輸出。
-    let in_ring = route != request_logs::FALLBACK_ROUTE && request_logs::kept_in_ring(&res);
-    let entry = request_logs::RequestLogEntry {
-        created_at: chrono::Utc::now(),
+    let entry = access_log::RequestLogEntry {
         request_id: id,
         method: method.to_string(),
         route,
@@ -382,8 +371,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
     if is_event_stream(&res) {
         // 串流的結果（最後的 done／error 事件）要等本文讀完才知道，因此記錄延後到本文結束或被丟棄時。
         let (parts, body) = res.into_parts();
-        let mut log =
-            request_logs::StreamLog::new(state.request_logs.clone(), span, started, entry, in_ring);
+        let mut log = access_log::StreamLog::new(span, started, entry);
         let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
             if let Ok(bytes) = &chunk {
                 log.observe(bytes);
@@ -392,7 +380,7 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         }));
         return Response::from_parts(parts, body);
     }
-    request_logs::record(&state.request_logs, &span, entry, in_ring);
+    access_log::record(&span, &entry);
     res
 }
 
