@@ -47,8 +47,8 @@ services:
 
   # ---- 伺服器端語音對話（cascade，docs/specs/cascade-voice-spike.md）----
   # 預設不啟動。啟用：COMPOSE_PROFILES=cascade（或 docker compose --profile app --profile cascade up -d --build），
-  # 並在 .env 設 CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime、CASCADE_LLM_TOKEN、CASCADE_REFERENCE_TEXT，
-  # 把參考音放在 CASCADE_REFS_DIR（預設 ./cascade-refs）的 reference.wav。需要 NVIDIA GPU（TTS 約 5 GB 顯存）與
+  # 並在 .env 設 CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime、CASCADE_LLM_TOKEN。
+  # 需要 NVIDIA GPU 與
   # NVIDIA Container Toolkit。服務之間走 compose 內部網路，不對主機開 port。
   cascade-tts:
     profiles: ["cascade"]
@@ -73,8 +73,6 @@ services:
     volumes:
       - cascade_cache:/root/.cache
       - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
-      # cascade 的 TTS 節點把參考音「路徑」傳給 TTS 服務，由 TTS 自己讀檔，所以兩個容器都要掛同一個 /refs
-      - ${CASCADE_REFS_DIR:-./cascade-refs}:/refs:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
       interval: 10s
@@ -105,7 +103,7 @@ services:
       retries: 30
       start_period: 60s
 
-  # cascade 與 TTS／Whisper 之間的轉接層：繁轉簡、帶 max_new_tokens，ASR 轉給 cascade-whisper
+  # cascade 與 TTS／Whisper 之間的轉接層：繁轉簡，ASR 轉給 cascade-whisper
   cascade-adapter:
     profiles: ["cascade"]
     image: socrates-cascade:latest
@@ -132,9 +130,7 @@ services:
     logging: *cascade-logging
     environment:
       CASCADE_LLM_TOKEN: ${CASCADE_LLM_TOKEN:-}
-      CASCADE_REFERENCE_TEXT: ${CASCADE_REFERENCE_TEXT:-}
     volumes:
-      - ${CASCADE_REFS_DIR:-./cascade-refs}:/refs:ro
       - cascade_cache:/root/.cache
       - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
     healthcheck:
