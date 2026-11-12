@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { accountMessages } from '@/features/account/messages'
 import { adminMessages } from '@/features/admin/messages'
 import { announcementsMessages } from '@/features/announcements/messages'
 import { authMessages } from '@/features/auth/messages'
@@ -26,6 +27,7 @@ const bundles = [
   classroomsMessages,
   voiceMessages,
   dashboardMessages,
+  accountMessages,
   teacherMessages,
   adminMessages,
   announcementsMessages,

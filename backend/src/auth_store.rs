@@ -471,6 +471,17 @@ pub async fn password_hash_of(pool: &PgPool, user_id: Uuid) -> Result<Option<Str
     Ok(row.and_then(|(h,)| h))
 }
 
+/// 這個使用者有沒有內建密碼（只用 Google 登入的帳號沒有）；`GET /api/me` 的 `can_change_password` 用，
+/// 不把雜湊讀出來。
+pub async fn has_password(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let found: Option<(bool,)> =
+        sqlx::query_as("SELECT password_hash IS NOT NULL FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(found.is_some_and(|(has,)| has))
+}
+
 /// `login_failures` 裡代表「這個登入帳號輸入在所有 IP 的累計」的列（不會是任何真實的 `rate_limit_key`）。
 const ACCOUNT_TOTAL_KEY: &str = "*";
 
@@ -515,7 +526,7 @@ pub async fn record_login_failure(
 }
 
 async fn bump_failures(
-    pool: &PgPool,
+    conn: impl sqlx::PgExecutor<'_>,
     login_key: &str,
     key: &str,
     max_failures: i32,
@@ -540,7 +551,7 @@ async fn bump_failures(
     .bind(now)
     .bind(max_failures)
     .bind(now + LOGIN_LOCK_DURATION)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -572,17 +583,67 @@ pub async fn clear_login_failures_of_user(
             .bind(user_id)
             .fetch_optional(&mut *conn)
             .await?;
-    let keys: Vec<String> = row
+    let mut keys: Vec<String> = row
         .into_iter()
         .flat_map(|(email, student_id)| [email, student_id])
         .flatten()
         .map(|account| login_key(&account))
         .collect();
+    // 更改密碼的「目前密碼錯誤」計數也一併清掉（S-18）
+    keys.push(change_password_key(user_id));
     sqlx::query("DELETE FROM login_failures WHERE login_key = ANY($1)")
         .bind(keys)
         .execute(&mut *conn)
         .await?;
     Ok(())
+}
+
+/// 更改密碼時「目前密碼錯誤」的限流鍵：以使用者為單位（S-18），與登入共用 `login_failures`。
+///
+/// 登入的鍵是「正規化後的帳號輸入」的雜湊，而帳號輸入由未驗證的人控制，所以這裡**不能**用
+/// `login_key`：否則有人送出 `change-password:<使用者 ID>` 當帳號，就會落在同一列，不登入也能把對方
+/// 的更改密碼鎖住。這裡的原文含小寫字母卻沒有 `@`，而正規化後的登入輸入不含 `@` 時一定全大寫、
+/// 含 `@` 時一定有 `@`，兩者的雜湊原文不可能相同。
+fn change_password_key(user_id: Uuid) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("change-password\0{user_id}").as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// 更改密碼前先「預扣」一次嘗試（S-18）：這個使用者目前被鎖定就回 `false`；否則累計一次，
+/// 連續 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`，並回 `true` 讓這次嘗試繼續驗證。
+/// 成功更改或管理者重設密碼時由 `clear_login_failures_of_user` 清掉，所以只有輸錯才會累積。
+///
+/// 檢查與累計在同一個交易內，並以使用者為單位的 advisory lock 序列化：並行送出的猜測沒辦法
+/// 在鎖定生效前一起通過檢查，之後才各自驗證（先檢查、驗證完才記失敗會有這個競態）。
+pub async fn try_charge_change_password_attempt(
+    pool: &PgPool,
+    user_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let key = change_password_key(user_id);
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&key)
+        .execute(&mut *tx)
+        .await?;
+    let (locked,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM login_failures
+                        WHERE login_key = $1 AND ip = $2 AND locked_until > $3)",
+    )
+    .bind(&key)
+    .bind(ACCOUNT_TOTAL_KEY)
+    .bind(now)
+    .fetch_one(&mut *tx)
+    .await?;
+    if locked {
+        return Ok(false);
+    }
+    bump_failures(&mut *tx, &key, ACCOUNT_TOTAL_KEY, MAX_LOGIN_FAILURES, now).await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// 設定密碼：同時清除鎖定。`must_change` 為 true 表示這是臨時密碼。
