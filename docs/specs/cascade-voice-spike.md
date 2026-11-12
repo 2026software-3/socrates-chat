@@ -8,7 +8,7 @@
 瀏覽器 ── WS /api/conversations/{id}/voice ── Rust ── WS ── cascade（VAD、斷句、打斷）
                                                ▲             │
              現有回覆流程（用量、提示、遮蔽、存檔）│             ├─ ASR：CPU whisper-small
-                                               └─ 內部 LLM 端點 └─ TTS：轉接層 → Qwen3-TTS 0.6B（GPU）
+                                               └─ 內部 LLM 端點 └─ TTS：轉接層 → Kokoro-82M（GPU）
 ```
 
 - 瀏覽器只連 Rust，不直連 cascade 或 AI 服務。Rust 檢查登入、對話擁有者與 Origin，只放行音訊相關事件。
@@ -16,11 +16,11 @@
 - `CASCADE_LLM_TOKEN` 是部署方自己產生的共用密碼（例如 `openssl rand -hex 32`），不是 OpenAI 金鑰；同一個值要同時是後端的環境變數 `CASCADE_LLM_TOKEN`，以及啟動 cascade 的行程的同名環境變數（`launch.yaml` 的 LLM 節點用 `api_key_env` 指向它，檔案裡不寫密碼），cascade 以 `Authorization: Bearer` 送給 `/internal/cascade/v1/*`。內部端點只認這個密鑰，不看 cookie；不得進版控。
 - cascade 沒有逐會話傳身分的管道，由 Rust 把一次性代號放進 `instructions`，成為 system message 開頭，再由內部 LLM 端點解析。瀏覽器不能送 `session.update`，也收不到 `session.*`。
 - OpenAI 收到的是專案自己的提示與資料庫歷史，cascade 的 system prompt 與歷史都不會送出。
-- TTS 前要有轉接層：cascade 不送 `max_new_tokens`，也不做繁轉簡，直連會踩中暴走條件。
+- 轉接層把語音辨識請求轉給 Whisper，並將 TTS 文字繁轉簡後送給 Kokoro。Kokoro 預設使用 `zm_yunjian` 聲線，不需要參考音。
 
 ## cascade 設定
 
-cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），範本是 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)：複製後改成自己的環境。範本的結構與實測用的設定相同，差別只有：路徑與參考音三處換成佔位，`dialog` 不設 `system_prompt`（見下表），沒有密鑰。必要的欄位：
+本機設定範本為 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)，複製後修改路徑；Docker 使用 [`docker/cascade/launch.yaml`](../../docker/cascade/launch.yaml)。必要的欄位：
 
 | 欄位 | 值 | 說明 |
 | --- | --- | --- |
@@ -29,25 +29,24 @@ cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），�
 | `session_nodes.llm.api_key_env` | `CASCADE_LLM_TOKEN` | 環境變數的名稱，不是密碼本身 |
 | `stages.vad.factory.silence_duration_ms` | `1000` | 預設 160 ms 時學生一停頓就被切成新的一句 |
 | `session_nodes.asr` | `kind: openai_transcription`、`language: zh`、`response_format: json` | `base_url` 指向轉接層，轉給 `scripts/whisper-server.py` |
-| `session_nodes.tts` | `kind: openai_speech`、`language: Chinese`、`reference_audio_path`、`reference_text` | `base_url` 指向轉接層；參考音要自己準備且逐字稿一致，只限本機評估 |
+| `session_nodes.tts` | `kind: openai_speech`、`language: Chinese`、`model: hexgrad/Kokoro-82M` | `base_url` 指向轉接層；不需要參考音 |
 | `session_nodes.dialog` | 不設 `system_prompt` | 後端建立每場語音時以 `instructions` 覆蓋它，AI 的提示與歷史由後端提供，這裡寫了也不會送給 OpenAI；留著人設文字只會誤導 |
 | `session_nodes.aligner` | `method: sentence` | 打斷時裁切到句子邊界，`heard_chars` 靠它的進度 |
 
 其餘節點與連線（`inputs`、`session_publish`）照範本，不要改。後端這一端要設 `CASCADE_REALTIME_URL`（cascade 的 `/v1/realtime`）與 `CASCADE_LLM_TOKEN`。
 
-轉接層是 [`docker/cascade/tts_adapter.py`](../../docker/cascade/tts_adapter.py)（本機評估是 `127.0.0.1:8103`）：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並補上 `max_new_tokens` 與繁轉簡。
+轉接層是 [`docker/cascade/tts_adapter.py`](../../docker/cascade/tts_adapter.py)（本機評估是 `127.0.0.1:8103`）：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並將 TTS 文字繁轉簡。Kokoro 端點輸出 24 kHz、16-bit 小端 PCM，帶 `X-Sample-Rate`；目前每句全部合成完才回傳，不提供句內增量串流。沒有可唸內容的句子（只有標點、符號或表情）回傳約 50 ms 靜音，不回錯誤，因為 TTS 回 500 時 cascade 會關閉整場會話；服務啟動時先預熱模型，`/health` 通過才代表第一句不會再付冷啟動成本。
 
 ## 用 docker compose 啟動整套 cascade
 
-`docker-compose.yml` 的 `cascade` profile 包含四個服務：`cascade-tts`（Qwen3-TTS 0.6B，使用 GPU）、`cascade-whisper`（CPU，small）、`cascade-adapter`（轉接層）、`cascade`（本體；LLM 回呼 `http://app:3000/internal/cascade/v1`）。**預設不啟用**，只在指定 profile 時才會建置與啟動，沒有 profile 的 `docker compose up` 與 CI 不受影響。
+`docker-compose.yml` 的 `cascade` profile 包含四個服務：`cascade-tts`（Kokoro-82M，使用 GPU）、`cascade-whisper`（CPU，small）、`cascade-adapter`（轉接層）、`cascade`（本體；LLM 回呼 `http://app:3000/internal/cascade/v1`）。**預設不啟用**，只在指定 profile 時才會建置與啟動，沒有 profile 的 `docker compose up` 與 CI 不受影響。
 
 | 項目 | 設定 |
 | --- | --- |
 | 啟用 | `COMPOSE_PROFILES=cascade`，或 `docker compose --profile app --profile cascade up -d --build` |
 | 後端環境變數 | `CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime`、`CASCADE_LLM_TOKEN`（與 cascade 容器同一個值，compose 會從 `.env` 帶入） |
-| 參考音 | `CASCADE_REFS_DIR`（預設 `./cascade-refs`）下放 `reference.wav`，逐字稿設在 `CASCADE_REFERENCE_TEXT`；參考音不進版控 |
 | 模型快取 | 預設存在 `cascade_hf` volume（首次啟動下載）；`CASCADE_HF_CACHE=~/.cache/huggingface` 可重用主機已下載的模型 |
-| 需求 | NVIDIA GPU（TTS 約 5 GB 顯存）與 NVIDIA Container Toolkit；服務之間走 compose 內部網路，不對主機開 port |
+| 需求 | NVIDIA GPU 與 NVIDIA Container Toolkit；服務之間走 compose 內部網路，不對主機開 port |
 
 映像固定 `sglang-omni==0.2.0`（實測版本），CUDA 13 開發版基底。cascade 與 TTS 沒有 GPU 時無法啟動，所以不要在沒有 GPU 的環境啟用這個 profile。
 
@@ -72,9 +71,13 @@ cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），�
 - **唸完才算結束**：cascade 約領先播放 1 秒，文字更早，所以回到聆聽要等 `response.done` 而且本機播完。之後重新讀取對話，同步階段、建議收斂與是否已結束。
 - **畫面文字**：顯示 cascade 收到的回覆文字；打斷時可能比學生聽到的多。重新整理後顯示資料庫的完整回覆。
 
-## 實測結果
+## Kokoro 替換驗證
 
-都使用合成語音；LLM 為假回覆。
+Kokoro 的 GPU 單請求評估見 [`scripts/voice-benchmark/RESULTS.md`](../../scripts/voice-benchmark/RESULTS.md)。隔離容器以 RTX 4050 測試中文，Kokoro API 與 `sglang-omni` 原生 TTS 客戶端經轉接層均可取得 24 kHz PCM。該評估用 `zf_xiaobei` 與繁體原文，部署則是 `zm_yunjian` 與轉接層轉成的簡體文字，數字只能當量級參考。這不代表 Rust／WebSocket／ASR 的完整語音鏈路已用 Kokoro 重測，或已確認多人容量；部署前須以部署設定重測。
+
+## 先前 Qwen 實測結果
+
+以下為替換前 Qwen 的結果，不代表 Kokoro 鏈路；都使用合成語音，LLM 為假回覆。
 
 | 項目 | 結果 |
 | --- | --- |
@@ -96,9 +99,9 @@ cascade 的 `launch.yaml` 不在 repo（內含本機路徑與參考音檔），�
 - **容錯：** ASR 回 500 時 cascade 直接關閉整個會話，沒有重試。
 - **啟動順序：** cascade 啟動時探測 LLM，Rust 要先就緒。
 - **繁簡：** `whisper-server.py` 把中文轉成臺灣繁體（OpenCC `s2tw`）。轉換只是字詞對應，不校正辨識錯字；改用其他 ASR 服務時要各自處理。
-- **容量：** 一台 6 GB 只能驗證可行性；多人同時使用未測，TTS 沒有全站併發上限。
-- **聲音：** 參考音只供本機評估，不能作為正式聲音。
-- **其他語言：** 只測了中文。英文、西文未測。
+- **容量：** Kokoro TTS 合成以單一鎖序列化，併發請求會排隊。打斷造成連線中斷時，排隊中的請求直接放棄，合成中的在下一個音訊區塊之間停止（單一區塊內無法中斷，cascade 逐句送出時多半就是一個區塊）。整體多人容量與長時間穩定性尚未驗證。
+- **聲音：** Kokoro 預設使用 `zm_yunjian`；聲音自然度、授權及正式使用仍需確認。
+- **其他語言：** 即時對話目前只開放中文；英文、西文雖曾單獨測試模型，尚未接入此服務。
 
 ## 待需求方決定
 

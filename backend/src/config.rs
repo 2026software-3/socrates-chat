@@ -74,6 +74,8 @@ pub struct Config {
     /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
     /// 讓登入頁一鍵填入。密碼公開，只能用在展示環境；示範帳號不含管理者。
     pub demo_mode: bool,
+    /// 客訴通知信的 SMTP 設定（S-17.3）；沒設定（缺主機、寄件人或收件信箱）就是 `None`，客訴照常保存、寄信狀態為 `skipped`。
+    pub smtp: Option<crate::mail::SmtpConfig>,
 }
 
 #[derive(Debug)]
@@ -315,6 +317,7 @@ impl Config {
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
             request_timeout: Duration::from_secs(request_timeout_secs),
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
+            smtp: crate::mail::SmtpConfig::from_env()?,
             app_base_url,
         })
     }

@@ -108,11 +108,12 @@ describe('profile form on the personal dashboard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱太長或含有不允許的字元')
   })
 
-  it('does not link the name for teachers, who cannot rename', async () => {
+  it('does not link the name of teachers to the personal settings, which they cannot rename in', async () => {
     mockMe(makeMe({ teacher: true }))
     renderApp(null, { route: '/' })
     expect(await screen.findByText('Test User')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Test User' })).not.toBeInTheDocument()
+    // 教師只有帳號頁（更改密碼，S-18），沒有個人設定；沒有內建密碼的教師則完全不連結（見 features/account）
+    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
   })
 })
 

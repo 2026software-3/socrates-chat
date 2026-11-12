@@ -37,11 +37,12 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta, build_system_prompt,
-        closing_instruction, parse_meta, rules_version,
+        AiError, AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta,
+        build_system_prompt, closing_instruction, parse_meta, rules_version,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, heard_only, load_messages},
+    diagnostics::{self, AiActivity, Failure},
     error::ApiError,
     mutex::lock,
 };
@@ -96,6 +97,11 @@ impl LiveReply {
         }
         let ev = delta_event(text);
         live.watchers.retain(|w| w.send(ev.clone()).is_ok());
+    }
+
+    /// 語音對話的回覆（有收回覆文字的通道）：可能有暫存的打斷位置要在釋放 claim 前寫入。
+    fn is_voice(&self) -> bool {
+        lock(&self.live).tap.is_some()
     }
 
     /// 收尾：之後的 `cut` 不再暫存，回傳已暫存的聽到字元數。
@@ -356,15 +362,18 @@ fn spawn_stream(
     }
     let id = conversation.id;
     let reply = state.live.start(id, tx, tap);
-    tokio::spawn(
+    tokio::spawn(diagnostics::inherit_request(
         async move {
             // 每位使用者的 AI 用量上限：用完時學生訊息已保存，但不呼叫 AI，以 error 事件結束（之後可重試）
             let mut failed = true;
+            // 保存回覆的語句已一併釋放 claim
+            let mut released = false;
             let last = match state.charge_ai(user) {
                 Err(_) => event("error", json!({"code": crate::ai_usage::EXCEEDED_CODE})),
                 Ok(slot) => {
-                    let run = AssertUnwindSafe(generate(&state, &conversation, messages, &reply))
-                        .catch_unwind();
+                    let run =
+                        AssertUnwindSafe(generate(&state, user, &conversation, messages, &reply))
+                            .catch_unwind();
                     let result = match &abandoned {
                         Some(abandoned) => tokio::select! {
                             result = run => Some(result),
@@ -375,7 +384,8 @@ fn spawn_stream(
                     match result {
                         Some(Ok(Ok(done))) => {
                             failed = false;
-                            done
+                            released = done.released;
+                            done.event
                         }
                         // 沒有得到回覆：不扣額度，AI 當機時的重試不該把學生鎖在外面
                         Some(Ok(Err(error))) => {
@@ -398,12 +408,15 @@ fn spawn_stream(
             if let Some(chars) = reply.seal() {
                 save_heard(&state, id, chars).await;
             }
-            // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim
-            release_generation(&state, id).await;
+            // 先釋放再送出最後一個事件：收到 done 後立刻送下一則訊息時，不會撞上還沒釋放的 claim。
+            // 回覆已保存且同一個語句已釋放時不必再釋放（少一次往返）
+            if !released {
+                release_generation(&state, id).await;
+            }
             state.live.finish(reply, last, failed);
         }
         .in_current_span(),
-    );
+    ));
     event_stream(rx)
 }
 
@@ -427,13 +440,20 @@ fn delta_event(text: &str) -> Event {
         .expect("a string always serializes")
 }
 
+/// 回覆已保存：`event` 是 done 事件，`released` 表示保存的語句已釋放 claim。
+struct Done {
+    event: Event,
+    released: bool,
+}
+
 /// 產生並保存回覆，片段經 `reply` 送給所有連線；回傳最後一個事件（done／error）。
 async fn generate(
     state: &AppState,
+    user: Uuid,
     conv: &Conversation,
     messages: Vec<Message>,
     reply: &LiveReply,
-) -> Result<Event, Event> {
+) -> Result<Done, Event> {
     let mut req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
@@ -461,13 +481,24 @@ async fn generate(
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
-    for _ in 0..2 {
-        match attempt(state, reply, &req).await {
+    let activity = AiActivity::new("chat_reply", Some(user), conv.classroom_id).statuses(200, 200);
+    for retry in 0..2 {
+        let started = Instant::now();
+        let (result, trace) = diagnostics::traced(attempt(state, reply, &req)).await;
+        activity.record(
+            state,
+            Some(&state.config.openai_model),
+            retry,
+            started.into_std(),
+            result.as_ref().err().map(|(error, _)| error),
+            &trace,
+        );
+        match result {
             Ok(r) => {
                 outcome = Some(r);
                 break;
             }
-            Err(emitted_any) if emitted_any => break,
+            Err((_, true)) => break,
             Err(_) => {}
         }
     }
@@ -475,17 +506,21 @@ async fn generate(
         return Err(event("error", json!({"code": "ai_unavailable"})));
     };
 
-    match save_reply(state, conv, &text, &meta).await {
-        Ok(Some(saved)) => Ok(event(
-            "done",
-            json!({
-                "message_id": saved.message_id,
-                "question_type": meta.question_type,
-                "stage": saved.stage,
-                "suggest_end": saved.converge_ready,
-                "ended": saved.ended,
-            }),
-        )),
+    // 語音對話可能有暫存的打斷位置，要等寫入後才釋放，所以不在保存時釋放
+    match save_reply(state, conv, &text, &meta, !reply.is_voice()).await {
+        Ok(Some(saved)) => Ok(Done {
+            event: event(
+                "done",
+                json!({
+                    "message_id": saved.message_id,
+                    "question_type": meta.question_type,
+                    "stage": saved.stage,
+                    "suggest_end": saved.converge_ready,
+                    "ended": saved.ended,
+                }),
+            ),
+            released: saved.released,
+        }),
         // 對話在串流期間已結束或已有回覆
         Ok(None) => Err(event("error", json!({"code": "conflict"}))),
         Err(e) => {
@@ -500,7 +535,7 @@ async fn attempt(
     state: &AppState,
     reply: &LiveReply,
     req: &AiRequest,
-) -> Result<(String, TurnMeta), bool> {
+) -> Result<(String, TurnMeta), (AiError, bool)> {
     let start = Instant::now();
     // 建立連線與等待第一個片段共用同一個首 token 期限（S-03.5）
     let first_token_deadline = start + state.config.ai_first_token_timeout;
@@ -509,7 +544,8 @@ async fn attempt(
     let mut stream = match timeout_at(first_token_deadline, state.ai.stream_chat(req.clone())).await
     {
         Ok(Ok(s)) => s,
-        _ => return Err(false),
+        Ok(Err(error)) => return Err((error, false)),
+        Err(_) => return Err((AiError::classified(Failure::Timeout), false)),
     };
     let mut got_chunk = false;
     let mut emitted = false;
@@ -522,7 +558,8 @@ async fn attempt(
             first_token_deadline.min(total_deadline)
         };
         match timeout_at(limit, stream.next()).await {
-            Err(_) | Ok(Some(Err(_))) => return Err(emitted),
+            Err(_) => return Err((AiError::classified(Failure::Timeout), emitted)),
+            Ok(Some(Err(error))) => return Err((error, emitted)),
             Ok(None) => break,
             Ok(Some(Ok(chunk))) => {
                 // 空片段（模型開始推理）也算首個 token，但沒有文字可送
@@ -543,7 +580,7 @@ async fn attempt(
         reply.delta(&rest);
     }
     if text.trim().is_empty() {
-        return Err(emitted);
+        return Err((AiError::invalid_output(), emitted));
     }
     Ok((text.trim().to_string(), parse_meta(&meta_raw)))
 }
@@ -553,16 +590,23 @@ struct Saved {
     stage: i16,
     converge_ready: bool,
     ended: bool,
+    /// 保存的語句已釋放 claim
+    released: bool,
 }
 
 /// 保存 AI 回覆並更新階段；對話已結束或最後一則已不是學生訊息時不保存。
 /// 模型判斷可以收尾、且確實符合收斂條件或到了收尾回合時，這則回覆就是結束語：直接結束討論
 /// 並產生總結，不再等學生回應（S-03.3）。封存教室中的對話一律不收尾（S-14）。
+///
+/// `release` 時（且不是收尾），保存回覆的同一個語句一併釋放 claim。收尾的路徑不變：可寫入時先
+/// 釋放再結束對話，否則由呼叫端釋放。
+/// 資料庫往返（不收尾）：`BEGIN`、鎖對話列、保存（一個語句）、`COMMIT`。
 async fn save_reply(
     state: &AppState,
     conv: &Conversation,
     text: &str,
     meta: &TurnMeta,
+    release: bool,
 ) -> Result<Option<Saved>, sqlx::Error> {
     let mut tx = state.pool.begin().await?;
     let (status, stage, ready): (String, i16, bool) = sqlx::query_as(
@@ -571,15 +615,7 @@ async fn save_reply(
     .bind(conv.id)
     .fetch_one(&mut *tx)
     .await?;
-    let last: Option<(String,)> = sqlx::query_as(concat!(
-        "SELECT role FROM messages WHERE conversation_id = $1 AND ",
-        heard_only!(),
-        " ORDER BY seq DESC LIMIT 1",
-    ))
-    .bind(conv.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if status != "active" || last.is_none_or(|(r,)| r != "student") {
+    if status != "active" {
         return Ok(None);
     }
     // 階段只進不退；第 3 階段達成條件即符合收斂條件（S-03.2、S-03.3）
@@ -589,17 +625,27 @@ async fn save_reply(
         stage
     };
     let converge_ready = ready || (stage == 3 && meta.advance);
-    // 保存回覆與更新階段合成一個語句，少一次資料庫往返
-    let (message_id,): (Uuid,) = sqlx::query_as(
+    let closing = meta.question_type.as_deref() == Some("wrap_up")
+        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+    let release = release && !closing;
+    // 保存回覆、更新階段（與釋放 claim）合成一個語句。最後一則（聽到的）訊息必須是學生的：
+    // 對話列已在上面鎖住，這個語句的快照在拿到鎖之後，與另開語句檢查相同。沒有寫入時不更新對話
+    let saved: Option<(Uuid,)> = sqlx::query_as(concat!(
         "WITH m AS (
              INSERT INTO messages (conversation_id, role, content, rules_version, question_type,
                                    advance_reason)
-             VALUES ($1, 'ai', $2, $3, $4, $5) RETURNING id
+             SELECT $1, 'ai', $2, $3, $4, $5
+             WHERE (SELECT role FROM messages WHERE conversation_id = $1 AND ",
+        heard_only!(),
+        "       ORDER BY seq DESC LIMIT 1) = 'student'
+             RETURNING id
          ), c AS (
-             UPDATE conversations SET stage = $6, converge_ready = $7 WHERE id = $1
+             UPDATE conversations SET stage = $6, converge_ready = $7,
+                    generating_since = CASE WHEN $8 THEN NULL ELSE generating_since END
+             WHERE id = $1 AND EXISTS (SELECT 1 FROM m)
          )
          SELECT id FROM m",
-    )
+    ))
     .bind(conv.id)
     .bind(text)
     .bind(rules_version(&conv.language))
@@ -607,10 +653,12 @@ async fn save_reply(
     .bind(&meta.reason)
     .bind(new_stage)
     .bind(converge_ready)
-    .fetch_one(&mut *tx)
+    .bind(release)
+    .fetch_optional(&mut *tx)
     .await?;
-    let closing = meta.question_type.as_deref() == Some("wrap_up")
-        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+    let Some((message_id,)) = saved else {
+        return Ok(None);
+    };
     let writable = match conv.classroom_id {
         Some(room) if closing => crate::classrooms::ensure_writable(&mut *tx, room)
             .await
@@ -637,6 +685,7 @@ async fn save_reply(
         stage: new_stage,
         converge_ready,
         ended,
+        released: release,
     }))
 }
 

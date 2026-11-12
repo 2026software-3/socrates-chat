@@ -203,6 +203,13 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     assert_eq!(request_fields["status"], 401);
     assert_eq!(request_fields["error_code"], "invalid_credentials");
     assert!(request_fields["duration_ms"].is_u64());
+    // 串流回應的標頭是 200，錯誤藏在最後的 error 事件：完成紀錄要等本文結束，並帶出該 error code
+    let streamed = completions
+        .iter()
+        .find(|f| f.get("route") == Some(&json!("/api/conversations/{id}/messages")))
+        .expect("串流回應結束後也要留下完成紀錄");
+    assert_eq!(streamed["status"], 200);
+    assert_eq!(streamed["error_code"], "ai_unavailable");
     let provider_entry = entries
         .iter()
         .find(|entry| entry["fields"]["message"] == "AI provider returned an error status")

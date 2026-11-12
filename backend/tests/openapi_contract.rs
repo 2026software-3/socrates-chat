@@ -176,6 +176,19 @@ mod classroom_scope {
         let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
         assert!(row.get("classroom_id").is_some(), "SummaryRow.classroom_id");
     }
+
+    /// F-29.3：總結列帶有活動完成狀態與題目、活動 ID。
+    #[test]
+    fn summary_rows_contract_supports_activity_completion() {
+        let doc = document();
+        let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
+        assert!(
+            row.get("activity_completed").is_some(),
+            "SummaryRow.activity_completed"
+        );
+        assert!(row.get("activity_id").is_some(), "SummaryRow.activity_id");
+        assert!(row.get("topic_id").is_some(), "SummaryRow.topic_id");
+    }
 }
 
 mod roster {

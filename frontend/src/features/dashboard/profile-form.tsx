@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { dictionaries, errorText, useT, type MessageKey } from '@/i18n'
 import { api } from '@/lib/api'
+import { ChangePasswordSection } from '@/features/dashboard/change-password-section'
 import type { Me } from '@/lib/types'
 
 /** 顯示名稱的長度上限；後端才是準則（S-08.2），這裡只是方便使用者。 */
@@ -25,6 +26,7 @@ export function ProfileForm() {
     <>
       <Form me={auth.me} update={auth.update} />
       {auth.me.roles.student ? <GoogleLink me={auth.me} update={auth.update} /> : null}
+      {auth.me.can_change_password ? <ChangePasswordSection /> : null}
     </>
   )
 }

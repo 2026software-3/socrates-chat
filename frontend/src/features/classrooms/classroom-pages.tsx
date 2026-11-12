@@ -43,6 +43,7 @@ export function ClassroomPage() {
 function ClassroomBody({ classroom }: { classroom: Classroom }) {
   const t = useT()
   const base = useClassroomsBase()
+  const isAdmin = base.startsWith('/admin')
   const stats = useFetch<ClassDashboard>(`/api/dashboard/class?classroom_id=${classroom.id}`)
   return (
     <Page
@@ -50,9 +51,18 @@ function ClassroomBody({ classroom }: { classroom: Classroom }) {
       crumbs={[{ label: t('classrooms.nav'), to: base }, { label: classroom.name }]}
       description={[classroom.year_label, classroom.description].filter(Boolean).join(' · ') || undefined}
       actions={
-        <Button asChild variant="outline">
-          <Link to={`${base}/${classroom.id}/students`}>{t('classrooms.students')}</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link to={`${base}/${classroom.id}/students`}>{t('classrooms.students')}</Link>
+          </Button>
+          {isAdmin ? (
+            <Button asChild variant="outline">
+              <Link to={`/admin/diagnostics?classroom_id=${encodeURIComponent(classroom.id)}`}>
+                {t('admin.diag.viewRelated')}
+              </Link>
+            </Button>
+          ) : null}
+        </div>
       }
     >
       {classroom.is_archived ? (
@@ -190,6 +200,7 @@ export function ClassroomStudentPage() {
 function StudentBody({ classroom, studentId }: { classroom: Classroom; studentId: string }) {
   const t = useT()
   const base = useClassroomsBase()
+  const isAdmin = base.startsWith('/admin')
   const summaries = usePagedFetch<TeacherSummary>(
     `/api/summaries?classroom_id=${encodeURIComponent(classroom.id)}&student=${encodeURIComponent(studentId)}`,
   )
@@ -199,6 +210,15 @@ function StudentBody({ classroom, studentId }: { classroom: Classroom; studentId
     <Page
       title={name}
       description={first?.student_name ? first.student_email : undefined}
+      actions={
+        isAdmin ? (
+          <Button asChild variant="outline">
+            <Link to={`/admin/diagnostics?user_id=${encodeURIComponent(studentId)}`}>
+              {t('admin.diag.viewRelated')}
+            </Link>
+          </Button>
+        ) : undefined
+      }
       crumbs={[
         { label: t('classrooms.nav'), to: base },
         { label: classroom.name, to: `${base}/${classroom.id}` },

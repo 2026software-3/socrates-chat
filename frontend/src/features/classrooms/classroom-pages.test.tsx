@@ -56,6 +56,9 @@ const activity: Activity = {
 const summary: TeacherSummary = {
   conversation_id: 'c1',
   classroom_id: ROOM_A,
+  activity_id: null,
+  topic_id: null,
+  activity_completed: false,
   title: '電車難題',
   ended_at: '2026-03-05T10:00:00Z',
   student_user_id: STUDENT,
@@ -161,6 +164,32 @@ describe('classroom → activity → student navigation', () => {
     server.use(http.get('/api/summaries', () => pageOf([])))
     renderAt(`/teacher/classrooms/${ROOM_A}/students/${STUDENT}`)
     expect(await screen.findByText(/還沒有完成的對話/u)).toBeInTheDocument()
+  })
+
+  it('lets admins open the related diagnostics from a classroom and from a student', async () => {
+    mockApi()
+    renderAt(`/admin/classrooms/${ROOM_A}`, { admin: true })
+    const classroomLink = await screen.findByRole('link', { name: '查看診斷紀錄' })
+    expect(classroomLink).toHaveAttribute('href', `/admin/diagnostics?classroom_id=${ROOM_A}`)
+  })
+
+  it('links a student page to the diagnostics of that account for admins only', async () => {
+    mockApi()
+    const admin = renderAt(`/admin/classrooms/${ROOM_A}/students/${STUDENT}`, { admin: true })
+    const link = await screen.findByRole('link', { name: '查看診斷紀錄' })
+    expect(link).toHaveAttribute('href', `/admin/diagnostics?user_id=${STUDENT}`)
+    admin.unmount()
+
+    renderAt(`/teacher/classrooms/${ROOM_A}/students/${STUDENT}`)
+    await screen.findByText('應該拉桿')
+    expect(screen.queryByRole('link', { name: '查看診斷紀錄' })).not.toBeInTheDocument()
+  })
+
+  it('does not show the diagnostics link on a teacher classroom page', async () => {
+    mockApi()
+    renderAt(`/teacher/classrooms/${ROOM_A}`)
+    await screen.findByRole('heading', { level: 1, name: '2026 春季班' })
+    expect(screen.queryByRole('link', { name: '查看診斷紀錄' })).not.toBeInTheDocument()
   })
 })
 

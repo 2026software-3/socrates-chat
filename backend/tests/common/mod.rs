@@ -102,6 +102,7 @@ pub fn test_config() -> Config {
         ai_total_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
         demo_mode: false,
+        smtp: None,
     }
 }
 
@@ -152,7 +153,7 @@ impl AiProvider for FakeAi {
                 chunks
                     .into_iter()
                     .map(|c| Ok(c.to_string()))
-                    .chain([Err(AiError)]),
+                    .chain([Err(AiError::unclassified())]),
             )
             .boxed()),
             Some(Script::Hang) => std::future::pending().await,
@@ -162,7 +163,7 @@ impl AiProvider for FakeAi {
                     Ok(c.to_string())
                 })
                 .boxed()),
-            Some(Script::Fail) | None => Err(AiError),
+            Some(Script::Fail) | None => Err(AiError::unclassified()),
         }
     }
 }
