@@ -660,7 +660,7 @@ pub async fn try_charge_change_password_attempt(
     if locked {
         return Ok(false);
     }
-    bump_failures(&mut *tx, &key, ACCOUNT_TOTAL_KEY, MAX_LOGIN_FAILURES, now).await?;
+    bump_failures(&mut tx, &key, ACCOUNT_TOTAL_KEY, MAX_LOGIN_FAILURES, now).await?;
     tx.commit().await?;
     Ok(true)
 }
