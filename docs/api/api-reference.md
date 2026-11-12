@@ -27,7 +27,7 @@
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
 - `GET /api/me` 回傳 `student_number`：帳號本身有學號就回傳（大寫，只會是登入者自己的），沒有學號的帳號（教師、管理者等）為 `null`；與角色無關，同時具備教師身分的學生帳號一樣看得到自己的學號。其他人的學號不會出現在學生可用的任何端點（S-01.4）。
 - `GET /api/me` 回傳 `can_change_password`：帳號有內建密碼且不是示範模式的示範帳號時為 `true`，前端依此決定是否在個人設定顯示「更改密碼」。`POST /api/auth/change-password` 對示範模式的示範帳號回 `403 demo_account`；目前密碼連續輸錯 5 次回 `429 too_many_attempts`（鎖定 15 分鐘，只針對更改密碼，不影響登入），成功更改會記稽核 `change_password`（S-18）。
-- `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生另可用同一 PATCH 修改 `display_name`；其他角色送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
+- `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生、教師與管理者另可用同一 PATCH 修改 `display_name`（上限 30 字元、不可含控制字元，違反回 `400 invalid_display_name`；`null` 或空白清除：學生回到匯入的姓名，教師與管理者回到顯示電子郵件）；沒有任何角色的帳號送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
 
 ## 管理（管理者）
 
