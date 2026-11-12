@@ -34,32 +34,6 @@ export function ChangePasswordDialog({ open, onOpenChange, onSaved }: { open: bo
   )
 }
 
-/** 教師與管理者的帳號頁：沒有個人設定，只有這一個按鈕；成功後確認訊息留在按鈕旁。 */
-export function ChangePasswordButton() {
-  const t = useT()
-  const [open, setOpen] = useState(false)
-  const [saved, setSaved] = useState(false)
-  return (
-    <div className="flex flex-wrap items-center gap-3">
-      <Button
-        variant="outline"
-        onClick={() => {
-          setSaved(false)
-          setOpen(true)
-        }}
-      >
-        {t('profile.password.title')}
-      </Button>
-      {saved ? (
-        <p role="status" className="text-sm">
-          {t('profile.password.saved')}
-        </p>
-      ) : null}
-      <ChangePasswordDialog open={open} onOpenChange={setOpen} onSaved={() => setSaved(true)} />
-    </div>
-  )
-}
-
 /** 同一個 `POST /api/auth/change-password`，沿用強制改密碼頁的欄位與規則；失敗時保留輸入。 */
 function PasswordForm({ onSaved }: { onSaved: () => void }) {
   const t = useT()
