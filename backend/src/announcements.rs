@@ -219,10 +219,11 @@ fn invalid_body(_: JsonRejection) -> ApiError {
 
 fn clean_text(raw: &str) -> Result<String, ApiError> {
     let text = raw.trim();
-    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS {
+    // NUL 字元存不進 Postgres 的 text 欄位，寫入會失敗變成 500，所以在這裡就拒絕
+    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS || text.contains('\0') {
         return Err(ApiError::bad_request(
             "invalid_text",
-            "公告內文不得為空，最多 1000 字",
+            "公告內文不得為空、不可含控制字元 NUL，且最多 1000 字",
         ));
     }
     Ok(text.to_string())
