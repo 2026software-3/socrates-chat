@@ -19,7 +19,7 @@ const nameLength = (value: string) => Array.from(value.trim()).length
 
 /**
  * 學生的個人設定：顯示名稱（留空會清除，介面回到顯示電子郵件）、Google 帳號，
- * 以及「儲存」旁的「更改密碼」按鈕（S-18）。彈出視窗放在表單外面，見 `ChangePasswordDialog`。
+ * 以及「儲存」旁的「更改密碼」按鈕（S-18）；不能改密碼的帳號在同一位置顯示說明。彈出視窗放在表單外面，見 `ChangePasswordDialog`。
  */
 export function ProfileForm() {
   const auth = useAuth()
@@ -207,7 +207,10 @@ function Form({ me, update, password }: { me: Me; update: (me: Me) => void; pass
               <Button type="button" variant="outline" onClick={password.open}>
                 {t('profile.password.title')}
               </Button>
-            ) : null}
+            ) : (
+              // 不能改密碼的帳號（只用 Google 登入，或示範帳號）：在按鈕本來的位置說明，免得以為功能壞了；只是提示，不是錯誤
+              <p className="text-muted-foreground text-sm">{t('account.unavailable')}</p>
+            )}
             {saved ? (
               <p role="status" className="text-sm">
                 {t('profile.saved')}

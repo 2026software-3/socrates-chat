@@ -89,11 +89,33 @@ describe('change password in the personal settings', () => {
 
   // 教師與純管理者沒有個人設定頁（/dashboard 只給學生），他們在 /account 更改密碼，見 features/account
 
-  it('is hidden when the backend says the account cannot change its password', async () => {
+  it('has no button when the backend says the account cannot change its password, and says why in the settings', async () => {
     // 只用 Google 登入的帳號沒有內建密碼，或示範模式的示範帳號
     await openSettings({ student: true }, false)
     expect(screen.queryByRole('button', { name: '更改密碼' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
+    // 不讓學生以為功能壞掉：個人設定裡（按鈕本來的位置）顯示說明，與教師、管理者的帳號頁同一句
+    const settings = screen.getByRole('form', { name: '個人設定' })
+    expect(within(settings).getByText('這個帳號不能在這裡更改密碼。')).toBeInTheDocument()
+    expect(within(settings).getByRole('button', { name: '儲存' })).toBeInTheDocument()
+    // 只是說明，不是錯誤
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not show the explanation to an account that can change its password', async () => {
+    await openSettings({ student: true })
+    expect(screen.queryByText('這個帳號不能在這裡更改密碼。')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['English', 'en', 'This account cannot change its password here.'],
+    ['Spanish', 'es', 'Esta cuenta no puede cambiar su contraseña aquí.'],
+  ] as const)('explains it in %s too', async (_name, lang, text) => {
+    mockDashboard()
+    // 畫面語言跟著使用者的偏好（`me.language`），所以從這裡設
+    mockMe(makeMe({ student: true }, { can_change_password: false, language: lang }))
+    renderApp(null, { route: '/account', lang })
+    expect(await screen.findByText(text)).toBeInTheDocument()
   })
 
   it('sends the current and new password, clears the fields and says other devices were signed out', async () => {

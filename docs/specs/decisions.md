@@ -607,7 +607,7 @@
 - **`/account` 頁**：
   - 所有已開通（至少有一個角色）的帳號都進得去，包含學生與純管理者；尚未開通的帳號不行（與其他頁面相同，只看得到說明頁）。純管理者原本只能進 `/admin` 底下，對 `/account` 開例外，不會被導回維運首頁。
   - 入口是**右上角的頭像**（取顯示名稱或電子郵件的第一個字，2026-11-12 需求方決定），不放在側欄：學生的側欄移除「我的儀表板」且不新增「帳號」項目，側欄底部的名稱改為純文字；學生原本沒有頂欄，新增一條只放頭像的細頂欄（高度與教師、管理者的頂欄相同）。學生的頭像一律連到 `/account`；教師與管理者在 `can_change_password` 為 `true` 時連到 `/account`，為 `false` 時頭像維持純顯示。
-  - `can_change_password` 為 `false` 的帳號：學生的 `/account` 照常顯示其他內容，只是沒有更改密碼區塊；教師與管理者沒有其他內容，不顯示表單，只顯示一句說明「這個帳號不能在這裡更改密碼」（只用 Google 登入沒有內建密碼，或示範帳號），也不回任何錯誤。
+  - `can_change_password` 為 `false` 的帳號（只用 Google 登入沒有內建密碼，或示範帳號）**所有角色都看到同一句說明「這個帳號不能在這裡更改密碼。」**（2026-11-12 需求方決定），沒有「更改密碼」按鈕也不回任何錯誤，說明只是提示、不是錯誤訊息：學生的說明顯示在個人設定裡、按鈕本來的位置（「儲存」旁），其他內容照常顯示；教師與管理者沒有其他內容，帳號頁標題下只有這句說明。學生不能因為看不到按鈕而以為功能壞了。三種介面語言都有這句。
 - **呈現方式**（2026-11-12 需求方決定）：更改密碼的表單**不攤開在頁面上**，也不另外佔一列或一張卡片。學生的「更改密碼」按鈕放在「個人設定」卡片裡、「儲存」按鈕旁；教師與管理者沒有個人設定，帳號頁標題下只有這一個按鈕。按下按鈕才彈出視窗，視窗內是目前密碼、新密碼、再輸入一次新密碼（兩次是否一致只在前端比對）。失敗時視窗保持開啟並保留輸入、顯示錯誤；成功後視窗關閉，確認訊息（提示其他裝置已登出）顯示在按鈕旁，目前這個登入保持。關閉視窗（含按 Esc）就丟掉輸入與錯誤，再次開啟從空白開始，再次按下按鈕時舊的確認訊息也會清掉。按鈕在個人設定表單裡，但視窗必須渲染在表單外面，視窗內送出密碼不得觸發儲存顯示名稱。
 - **顯示條件**：`GET /api/me` 新增布林欄位 `can_change_password`，為 `true` 才顯示區塊。條件是帳號有內建密碼（`password_hash` 非空），且**不是示範帳號**（見下）。只用 Google 登入、沒有內建密碼的帳號不顯示，要有密碼只能請管理者重設（S-01.1）；這次不做「自己用 Google 帳號設定密碼」。
 - **沿用 S-08.2 的規則**：驗證目前密碼；新密碼 8 到 128 字元（`invalid_new_password`）、不同於目前密碼（`password_unchanged`）、目前密碼錯誤回 `invalid_current_password`（沒有內建密碼的帳號也一樣，不另開錯誤碼）；成功後清除「須更改密碼」旗標、讓該帳號**其他** session 失效、清除該帳號的登入失敗計數。
@@ -621,10 +621,11 @@ Given / When / Then：
 - Given 有內建密碼的學生、教師或管理者，When 在 `/account` 輸入正確的目前密碼與合規的新密碼，Then 204，之後只能用新密碼登入，其他裝置的 session 失效，目前登入保持。
 - Given 目前密碼輸入錯誤，When 送出，Then 400 `invalid_current_password`，密碼不變；連續 5 次後回 429 `too_many_attempts`，鎖定期間輸入正確的目前密碼也拒絕。
 - Given 新密碼短於 8 或長於 128 字元，或與目前密碼相同，When 送出，Then 分別回 400 `invalid_new_password`、`password_unchanged`。
-- Given 只用 Google 登入、沒有內建密碼的帳號，When 呼叫 `GET /api/me`，Then `can_change_password` 為 `false`，`/account` 不顯示更改密碼區塊，教師與管理者的頭像不是連結。
+- Given 只用 Google 登入、沒有內建密碼的帳號，When 呼叫 `GET /api/me`，Then `can_change_password` 為 `false`，`/account` 沒有「更改密碼」按鈕而是顯示說明，教師與管理者的頭像不是連結。
 - Given 教師（非學生）有內建密碼，When 點右上角的頭像，Then 連到 `/account`，頁面有「更改密碼」按鈕；開啟 `/dashboard` 被導向 `/account`，不再被導回教師首頁。
 - Given 純管理者有內建密碼，When 開啟 `/account`，Then 不會被導回 `/admin`，頁面有「更改密碼」按鈕；開啟其他非 `/admin` 的功能頁仍被導回維運首頁。
-- Given `can_change_password` 為 `false` 的帳號，When 直接開啟 `/account`，Then 不顯示表單，只顯示「這個帳號不能在這裡更改密碼」。
+- Given `can_change_password` 為 `false` 的教師或管理者，When 直接開啟 `/account`，Then 沒有按鈕與表單，只顯示「這個帳號不能在這裡更改密碼。」。
+- Given `can_change_password` 為 `false` 的學生（例如示範帳號），When 開啟 `/account`，Then 個人設定裡「儲存」旁沒有「更改密碼」按鈕而是同一句說明，說明不是錯誤（沒有 `alert`），其他內容照常顯示；`can_change_password` 為 `true` 時不顯示這句。
 - Given 尚未開通的帳號，When 開啟 `/account`，Then 只看得到尚未開通的說明頁。
 - Given 學生，When 開啟 `/account`，Then 看到個人設定（顯示名稱、Google 帳號、更改密碼）與個人儀表板內容；側欄沒有「我的儀表板」也沒有「帳號」，從右上角頭像進入。
 - Given 任何已開通的角色，When 開啟 `/dashboard` 或 `/dashboard?link=ok`，Then 導向 `/account` 或 `/account?link=ok`（查詢字串保留）。
@@ -633,7 +634,7 @@ Given / When / Then：
 - Given 未登入，When 呼叫 change-password，Then 401。
 - Given 被強制改密碼的 session，When 以此端點更改成功，Then 旗標清除，其他 API 放行（S-08.2 原有流程）。
 
-授權測試證據：`backend/tests/` 的改密碼測試涵蓋未登入、無內建密碼帳號、示範帳號、目前密碼錯誤與限流、新密碼不合規、成功後其他 session 失效與稽核；前端測試涵蓋 `can_change_password` 為 `false` 時不顯示區塊、`/dashboard` 導向 `/account` 並保留查詢字串、學生的 `/account` 內容與右上角頭像（側欄沒有帳號項目）、`/account` 對學生、教師、純管理者與尚未開通帳號的路由行為（含純管理者不被導回 `/admin`、教師仍進不了 `/dashboard`）、頭像連結，以及各錯誤碼的在地化訊息（三種語言）。
+授權測試證據：`backend/tests/` 的改密碼測試涵蓋未登入、無內建密碼帳號、示範帳號、目前密碼錯誤與限流、新密碼不合規、成功後其他 session 失效與稽核；前端測試涵蓋 `can_change_password` 為 `false` 時沒有按鈕、學生與教師管理者都顯示說明（含英文與西班牙文）、`/dashboard` 導向 `/account` 並保留查詢字串、學生的 `/account` 內容與右上角頭像（側欄沒有帳號項目）、`/account` 對學生、教師、純管理者與尚未開通帳號的路由行為（含純管理者不被導回 `/admin`、教師仍進不了 `/dashboard`）、頭像連結，以及各錯誤碼的在地化訊息（三種語言）。
 
 ## 活動開放時間（F-02.4，已決定）
 
