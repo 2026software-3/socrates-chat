@@ -160,6 +160,16 @@ describe('app shell', () => {
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
       http.get('/api/dashboard/class', () => HttpResponse.json({ ...emptyClass, masked: true, students_total: 2 })),
       http.get('/api/topics', () => HttpResponse.json([])),
+      http.get('/api/admin/status', () =>
+        HttpResponse.json({
+          service: 'ok',
+          database: 'ok',
+          period: '24h',
+          diagnostics_available: true,
+          statistics: null,
+          recent_errors: [],
+        }),
+      ),
     )
   }
 
@@ -175,7 +185,7 @@ describe('app shell', () => {
       '教師管理',
       '修課名單',
       '題目庫',
-      '執行日誌',
+      '診斷',
       '任務設定',
       '部件設定',
       '公告與維護',
