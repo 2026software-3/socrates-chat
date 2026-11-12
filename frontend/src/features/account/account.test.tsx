@@ -21,7 +21,13 @@ const open = async (roles: Partial<Roles>, overrides: Partial<Me> = {}) => {
   await screen.findByRole('heading', { level: 1, name: '帳號' })
 }
 
-const section = () => screen.getByRole('region', { name: '更改密碼' })
+/** 「更改密碼」是頁面上的一個按鈕，表單在按下後的彈出視窗裡（S-18）。 */
+const changeButton = () => screen.getByRole('button', { name: '更改密碼' })
+const noChangeButton = () => expect(screen.queryByRole('button', { name: '更改密碼' })).not.toBeInTheDocument()
+async function openDialog() {
+  await userEvent.click(changeButton())
+  return within(await screen.findByRole('dialog', { name: '更改密碼' }))
+}
 
 describe('the account page', () => {
   it.each<[string, Partial<Roles>]>([
@@ -30,7 +36,9 @@ describe('the account page', () => {
     ['a teacher who is also an admin', { teacher: true, admin: true }],
   ])('offers only the change-password form to %s', async (_label, roles) => {
     await open(roles)
-    const form = within(section())
+    // 平常只有一個按鈕，不攤開表單
+    expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
+    const form = await openDialog()
     expect(form.getByLabelText('目前密碼')).toHaveAttribute('autocomplete', 'current-password')
     expect(form.getByLabelText('新密碼')).toBeInTheDocument()
     expect(form.getByLabelText('確認新密碼')).toBeInTheDocument()
@@ -43,7 +51,7 @@ describe('the account page', () => {
   it('does not send an admin-only account back to the operations home', async () => {
     await open({ admin: true })
     expect(screen.queryByRole('heading', { name: '系統維運' })).not.toBeInTheDocument()
-    expect(section()).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
   })
 
   it('changes the password from /account', async () => {
@@ -55,19 +63,21 @@ describe('the account page', () => {
       }),
     )
     await open({ teacher: true })
-    const form = within(section())
+    const form = await openDialog()
     await userEvent.type(form.getByLabelText('目前密碼'), 'old-pass-123')
     await userEvent.type(form.getByLabelText('新密碼'), 'new-pass-456')
     await userEvent.type(form.getByLabelText('確認新密碼'), 'new-pass-456')
     await userEvent.click(form.getByRole('button', { name: '更改密碼' }))
-    expect(await form.findByRole('status')).toHaveTextContent('密碼已更改，其他裝置已登出。')
+    // 成功後彈出視窗關閉，確認訊息留在頁面上
+    expect(await screen.findByRole('status')).toHaveTextContent('密碼已更改，其他裝置已登出。')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(posts).toEqual([{ current_password: 'old-pass-123', new_password: 'new-pass-456' }])
   })
 
   it('shows localized backend errors', async () => {
     server.use(http.post('/api/auth/change-password', () => apiError(400, 'invalid_current_password')))
     await open({ admin: true })
-    const form = within(section())
+    const form = await openDialog()
     await userEvent.type(form.getByLabelText('目前密碼'), 'wrong-pass-1')
     await userEvent.type(form.getByLabelText('新密碼'), 'new-pass-456')
     await userEvent.type(form.getByLabelText('確認新密碼'), 'new-pass-456')
@@ -81,7 +91,7 @@ describe('the account page', () => {
   ])('only explains that %s without a built-in password cannot change it here', async (_label, roles) => {
     await open(roles, { can_change_password: false })
     expect(screen.getByText('這個帳號不能在這裡更改密碼。')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '更改密碼' })).not.toBeInTheDocument()
+    noChangeButton()
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -172,7 +182,8 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     expect(screen.getByRole('heading', { name: '個人設定' })).toBeInTheDocument()
     expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Google 帳號' })).toBeInTheDocument()
-    expect(within(section()).getByLabelText('目前密碼')).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
+    expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
     // 原個人儀表板的內容
     expect(await screen.findByText('已完成對話')).toBeInTheDocument()
     expect(screen.getByText('17')).toBeInTheDocument()
@@ -192,7 +203,7 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     mockDashboard()
     await open({ student: true }, { can_change_password: false })
     expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '更改密碼' })).not.toBeInTheDocument()
+    noChangeButton()
   })
 
   it('shows a retryable error for the dashboard part without hiding the settings', async () => {
@@ -200,7 +211,7 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     await open({ student: true })
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(screen.getByLabelText('顯示名稱')).toBeInTheDocument()
-    expect(section()).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
   })
 
   it('has neither 「帳號」 nor 「我的儀表板」 in the sidebar: it is reached from the avatar', async () => {
@@ -223,7 +234,7 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     for (const roles of [{ teacher: true }, { admin: true }] as Partial<Roles>[]) {
       const view = (mockMe(makeMe(roles)), renderApp(null, { route: '/account' }))
       await screen.findByRole('heading', { level: 1, name: '帳號' })
-      await screen.findByRole('region', { name: '更改密碼' })
+      await screen.findByRole('button', { name: '更改密碼' })
       view.unmount()
     }
     expect(asked).toBe(0)
