@@ -102,6 +102,7 @@ pub fn test_config() -> Config {
         ai_total_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
         demo_mode: false,
+        smtp: None,
     }
 }
 
@@ -167,6 +168,15 @@ impl AiProvider for FakeAi {
     }
 }
 
+/// 直接寫入一個只有電子郵件的合成帳號，回傳使用者 ID。
+pub async fn seed_user(pool: &PgPool, email: &str) -> uuid::Uuid {
+    sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 pub fn test_app(pool: PgPool) -> Router {
     test_app_with_ai(pool, FakeAi::with(vec![]))
 }
@@ -223,6 +233,42 @@ pub async fn send(app: &Router, req: Request<Body>) -> Response<Body> {
 pub async fn json_body(res: Response<Body>) -> Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// 接著已讀到的第一頁，依 `next_cursor` 讀完其餘各頁，回傳每頁內容（含第一頁）；每頁都必須是 200。
+pub async fn pages_after(app: &Router, base: &str, cookie: &str, first: Value) -> Vec<Value> {
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let mut pages = vec![first];
+    while let Some(cursor) = pages.last().unwrap()["next_cursor"].as_str() {
+        assert!(pages.len() < 30, "too many pages");
+        let url = format!("{base}{sep}cursor={cursor}");
+        let res = send(app, get(&url, Some(cookie))).await;
+        assert_eq!(res.status(), StatusCode::OK, "{url}");
+        pages.push(json_body(res).await);
+    }
+    pages
+}
+
+/// 依 `next_cursor` 走完分頁列表的所有頁，回傳每頁內容。
+pub async fn all_pages(app: &Router, base: &str, cookie: &str) -> Vec<Value> {
+    let res = send(app, get(base, Some(cookie))).await;
+    assert_eq!(res.status(), StatusCode::OK, "{base}");
+    pages_after(app, base, cookie, json_body(res).await).await
+}
+
+/// 把各頁的 `items` 攤平成一個陣列。只讀第一頁的測試在測資超過一頁時會靜默漏掉資料。
+pub fn items_of(pages: &[Value]) -> Value {
+    Value::Array(
+        pages
+            .iter()
+            .flat_map(|p| p["items"].as_array().unwrap().iter().cloned())
+            .collect(),
+    )
+}
+
+/// 讀完分頁列表的所有頁，回傳全部項目。
+pub async fn all_items(app: &Router, base: &str, cookie: &str) -> Value {
+    items_of(&all_pages(app, base, cookie).await)
 }
 
 /// 錯誤回應必須是統一的 JSON 錯誤格式：指定的狀態碼與 `code`，且 `request_id` 與 `x-request-id` 一致。
@@ -443,7 +489,7 @@ pub async fn create_activity(app: &Router, a: &Actors, title: &str, topic_id: &s
             Some(serde_json::json!({
                 "title": title,
                 "description": "你會拉桿嗎？",
-                "topic_id": topic_id,
+                "topic_ids": [topic_id],
                 "classroom_id": a.classroom,
             })),
         ),
@@ -546,6 +592,49 @@ pub async fn student_says_events(
     } else {
         (status, Err(json_body(res).await))
     }
+}
+
+/// 輪詢到總結不再是 pending 為止（背景產生），回傳當時的總結。
+pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
+    for _ in 0..100 {
+        let res = send(
+            app,
+            get(&format!("/api/conversations/{conv}/summary"), Some(cookie)),
+        )
+        .await;
+        let v = json_body(res).await;
+        if v["status"] != "pending" {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("summary stayed pending");
+}
+
+/// 等假 AI 至少被呼叫 `n` 次；逾時就讓測試失敗，而不是卡住。
+pub async fn wait_until_ai_called(ai: &FakeAi, n: usize) {
+    for _ in 0..500 {
+        if ai.request_count() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("AI was not called {n} times");
+}
+
+/// 學生對自己的對話要求重新產生總結，回傳狀態碼。
+pub async fn retry_summary(app: &Router, cookie: &str, conv: &str) -> StatusCode {
+    send(
+        app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{conv}/summary/retry"),
+            Some(cookie),
+            None,
+        ),
+    )
+    .await
+    .status()
 }
 
 /// 直接寫入一則學生訊息當作測試前置條件：不經過 API、不呼叫 AI、不佔用假 AI 的腳本。

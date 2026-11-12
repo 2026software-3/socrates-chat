@@ -1,0 +1,12 @@
+# scripts/verify-proxy.sh 用的疊加設定：以假後端（合成資料）取代真的 `app`，
+# 讓反向代理的驗證不需要資料庫、AI 金鑰或建置映像。只在驗證用的 compose 專案裡使用。
+services:
+  fake-app:
+    image: python:3.12-alpine
+    command: ["python", "/proxy-check.py", "backend"]
+    volumes:
+      - ./scripts/proxy-check.py:/proxy-check.py:ro
+    networks:
+      default:
+        aliases:
+          - app

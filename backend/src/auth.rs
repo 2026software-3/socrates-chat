@@ -520,6 +520,13 @@ async fn finish_login(
     if user.disabled {
         return Err("account_disabled");
     }
+    // 維護模式中只有管理者能登入（S-15.2）：在核發 session 前拒絕
+    if crate::announcements::blocks_login(state, user.id)
+        .await
+        .map_err(|_| "login_failed")?
+    {
+        return Err("maintenance");
+    }
     user.language = auth_store::initialize_language(&state.pool, user.id, preferred_language)
         .await
         .map_err(|_| "login_failed")?;
@@ -566,6 +573,9 @@ pub(crate) async fn logout(
 pub(crate) struct MeResponse {
     id: Uuid,
     email: Option<String>,
+    /// 自己的學號（大寫）。帳號本身有學號就回傳，與角色無關（同時具備教師身分的學生也看得到自己的）；
+    /// 沒有學號的帳號（教師、管理者等）為 `null`（S-01.4）
+    student_number: Option<String>,
     display_name: Option<String>,
     language: String,
     is_admin: bool,
@@ -579,6 +589,7 @@ impl From<CurrentUser> for MeResponse {
         Self {
             id: u.id,
             email: u.email,
+            student_number: u.student_number,
             display_name: u.display_name,
             language: u.language,
             is_admin: u.is_admin,
@@ -758,6 +769,10 @@ pub(crate) async fn password_login(
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if account.disabled {
         return Err(ACCOUNT_DISABLED);
+    }
+    // 維護模式中只有管理者能登入（S-15.2）：密碼正確之後、核發 session 之前拒絕
+    if crate::announcements::blocks_login(&state, account.id).await? {
+        return Err(crate::announcements::MAINTENANCE_ERROR);
     }
     auth_store::initialize_language(&state.pool, account.id, preferred_language(&headers)).await?;
     // 登入一律建立新 session（防止 session fixation）

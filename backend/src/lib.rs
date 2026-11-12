@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, LazyLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -23,7 +23,7 @@ use utoipa_redoc::{Redoc, Servable};
 use crate::{
     ai::AiProvider,
     config::Config,
-    error::ApiError,
+    error::{ApiError, ErrorBody},
     identity::IdentityProvider,
     pii::MaskingAi,
     voice::{OpenAiVoice, VoiceProvider},
@@ -38,9 +38,12 @@ macro_rules! generation_unclaimed {
 }
 
 pub mod accounts;
+pub mod achievement_admin;
+pub mod achievements;
 pub mod activity_store;
 pub mod ai;
 pub mod ai_usage;
+pub mod announcements;
 pub mod auth;
 pub mod auth_store;
 pub mod cascade;
@@ -50,6 +53,7 @@ pub mod claims;
 pub mod classroom_store;
 pub mod classrooms;
 pub mod client_ip;
+pub mod complaints;
 pub mod config;
 pub mod dashboard;
 pub mod demo;
@@ -58,17 +62,20 @@ pub mod identity;
 pub mod key_pool;
 pub mod logging;
 pub mod login_rate_limit;
+pub mod mail;
 pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
 pub mod password;
 pub mod pii;
 pub mod points;
+pub mod purchase;
 pub mod reply;
 pub mod request_logs;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
+pub mod tasks;
 pub(crate) mod user_limit;
 pub mod voice;
 
@@ -79,7 +86,12 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 5] = [
+pub const LONG_RUNNING_ROUTES: [&str; 8] = [
+    // 管理者新增成就時同步翻譯名稱與說明
+    "/api/admin/achievements",
+    // 管理者新增、修改公告時同步翻譯內文
+    "/api/admin/announcements",
+    "/api/admin/announcements/{id}",
     // 同步等 AI 重新分組
     "/api/dashboard/class/regroup",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
@@ -113,6 +125,8 @@ pub struct AppState {
     pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
     /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
+    /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
+    pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
 }
 
 impl AppState {
@@ -140,6 +154,7 @@ impl AppState {
             request_logs: Arc::default(),
             translation_limit: Arc::default(),
             ai_usage,
+            maintenance: Arc::default(),
         }
     }
 
@@ -155,15 +170,23 @@ impl AppState {
     }
 }
 
-#[derive(Serialize)]
-struct Health {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Health {
+    #[schema(example = "ok")]
     status: &'static str,
 }
+
+/// 就緒檢查等資料庫回應的時間上限。資料庫卡住（連線被占滿、網路黑洞）時探針不能跟著卡住：
+/// 它比 pool 預設的取連線逾時（30 秒）與全域請求逾時（10 秒）都短。
+/// 探針端的逾時設定必須大於這個值，才收得到結構化的 503 而不是探針自己逾時。
+/// 規格（S-09.3）沒有指定秒數，3 秒是保守的假設。
+const READY_DB_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Builds the application router.
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/api/openapi.json", get(openapi_json))
         .merge(auth::routes(
             state.config.trusted_proxies.clone(),
@@ -183,8 +206,13 @@ pub fn app(state: AppState) -> Router {
         .merge(voice::routes())
         .merge(cascade::routes())
         .merge(points::routes())
+        .merge(tasks::routes())
+        .merge(purchase::routes())
+        .merge(achievement_admin::routes())
+        .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(announcements::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
@@ -192,6 +220,11 @@ pub fn app(state: AppState) -> Router {
                 .custom_html(include_str!("redoc.html")),
         )
         .fallback(fallback)
+        // 最內層：維護模式開啟時擋下非管理者（S-15.2）；其餘層（CSRF、逾時、request ID、安全標頭）照常包住它
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            maintenance_gate,
+        ))
         .layer(middleware::from_fn(api_rejections))
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         // 明確設定全域 body 上限；語音辨識在自己的 router 內放寬。超過時的 413 由 `api_rejections` 轉成 JSON
@@ -233,6 +266,51 @@ async fn openapi_json() -> impl IntoResponse {
 /// 健康檢查會被外部探測器頻繁呼叫，不進 request log ring（stdout 仍輸出）。
 async fn health() -> Response {
     request_logs::not_in_ring(Json(Health { status: "ok" }))
+}
+
+/// 就緒檢查（S-09.3）：以 `SELECT 1` 確認資料庫連得上，失敗或逾時回 503。
+/// 與 `/health`（只表示程序存活）不同；探針不需登入。日誌與回應只帶固定的錯誤種類，
+/// 不含連線字串、主機或資料庫的錯誤訊息。任何回應（成功、失敗）都不進 request log ring，與 `/health` 一致；
+/// 失敗的紀錄看 stdout 的 tracing 輸出。
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "ops",
+    summary = "就緒檢查",
+    description = "檢查資料庫連線（`SELECT 1`，最多等 3 秒）。公開，供探針與告警使用；`/health` 則只表示程序存活。",
+    security(()),
+    responses(
+        (status = 200, description = "資料庫可連線", body = Health),
+        (status = 503, description = "資料庫無法連線或逾時（`database_unavailable`）", body = ErrorBody)
+    )
+)]
+pub(crate) async fn ready(State(state): State<AppState>) -> Response {
+    let check = tokio::time::timeout(
+        READY_DB_TIMEOUT,
+        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.pool),
+    )
+    .await;
+    match check {
+        Ok(Ok(_)) => request_logs::not_in_ring(Json(Health { status: "ok" })),
+        Ok(Err(e)) => {
+            tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
+            database_unavailable()
+        }
+        Err(_) => {
+            tracing::warn!(class = "timeout", "readiness check failed");
+            database_unavailable()
+        }
+    }
+}
+
+/// 失敗的回應同樣不進 request log ring：長時間故障時探針每隔幾秒一筆，會擠掉真正的請求。
+/// 失敗仍由上面的 `tracing::warn!` 輸出到 stdout。
+fn database_unavailable() -> Response {
+    request_logs::not_in_ring(ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "database_unavailable",
+        "資料庫暫時無法使用",
+    ))
 }
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
@@ -316,6 +394,41 @@ fn is_event_stream(res: &Response) -> bool {
 
 fn is_api_path(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
+}
+
+/// 維護模式中照常服務的路徑（S-15.2）：公告端點（登入頁據此顯示維護提示）、登入與登出
+/// （非管理者的登入在核發 session 前另行拒絕）、API 文件。`/health`、`/ready` 與前端檔案不在 `/api` 底下。
+fn maintenance_exempt(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/announcements"
+            | "/api/openapi.json"
+            | "/api/auth/login"
+            | "/api/auth/logout"
+            | "/api/auth/google/login"
+            | "/api/auth/google/callback"
+    ) || path.starts_with("/api/docs")
+}
+
+/// 維護模式（S-15.2）：開啟時，`/api` 與 cascade 內部端點（`/internal`）只放行管理者與例外路徑，
+/// 其餘回 503 `maintenance`。已經開始的串流（進行中的 AI 回覆）不受影響，因為只檢查請求開始的當下。
+async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    use axum::extract::FromRequestParts;
+
+    let path = req.uri().path();
+    let gated = is_api_path(path) || path.starts_with("/internal/");
+    if !gated || maintenance_exempt(path) || !state.maintenance.is_on(&state.pool).await {
+        return next.run(req).await;
+    }
+    let (mut parts, body) = req.into_parts();
+    let is_admin = auth::AnyCurrentUser::from_request_parts(&mut parts, &state)
+        .await
+        .is_ok_and(|auth::AnyCurrentUser(cu)| cu.roles.admin);
+    if is_admin {
+        next.run(Request::from_parts(parts, body)).await
+    } else {
+        announcements::MAINTENANCE_ERROR.into_response()
+    }
 }
 
 /// 框架本身的拒絕（`Json`／`Path`／`Query` 解析失敗、方法不符、本文過大）是純文字，沒有 API error code。

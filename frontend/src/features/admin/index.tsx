@@ -1,5 +1,8 @@
 import type { Feature, NavItem } from '@/app/feature'
+import { AdminTasksPage } from '@/features/tasks/admin-tasks-page'
+import { AdminPartsPage } from '@/features/purchase/admin-parts-page'
 import { AdminHome } from '@/features/admin/admin-home'
+import { AdminAnnouncementsPage } from '@/features/announcements/admin-announcements-page'
 import { TeachersPage } from '@/features/admin/teachers-page'
 import { TopicsPage } from '@/features/admin/topics-page'
 import { LogsPage } from '@/features/admin/logs-page'
@@ -14,11 +17,17 @@ export const adminFeature: Feature = {
     { path: '/admin/roster', element: <RosterPage />, access: 'admin' },
     { path: '/admin/topics', element: <TopicsPage />, access: 'admin' },
     { path: '/admin/logs', element: <LogsPage />, access: 'admin' },
+    { path: '/admin/tasks', element: <AdminTasksPage />, access: 'admin' },
+    { path: '/admin/parts', element: <AdminPartsPage />, access: 'admin' },
+    { path: '/admin/announcements', element: <AdminAnnouncementsPage />, access: 'admin' },
   ],
   // 同時具備教師／學生角色的管理者沿用一般導覽，另有管理者專屬頁面。
   nav: [
     { to: '/admin/teachers', labelKey: 'admin.nav.teachers', access: 'admin' },
     { to: '/admin/logs', labelKey: 'admin.nav.logs', access: 'admin' },
+    { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
+    { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },
+    { to: '/admin/announcements', labelKey: 'admin.nav.announcements', access: 'admin' },
   ],
 }
 
@@ -30,4 +39,8 @@ export const opsNav: NavItem[] = [
   { to: '/admin/roster', labelKey: 'admin.nav.roster', access: 'admin' },
   { to: '/admin/topics', labelKey: 'admin.nav.topics', access: 'admin' },
   { to: '/admin/logs', labelKey: 'admin.nav.logs', access: 'admin' },
+  { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
+  { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },
+  { to: '/admin/announcements', labelKey: 'admin.nav.announcements', access: 'admin' },
+  { to: '/admin/complaints', labelKey: 'complaints.admin.nav', access: 'admin' },
 ]

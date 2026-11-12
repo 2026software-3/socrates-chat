@@ -1,5 +1,6 @@
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -38,6 +39,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   const [suggestEnd, setSuggestEnd] = useState(detail.converge_ready)
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState<unknown>()
+  // 後端沒算回合的學生訊息（被打斷、沒聽到回覆的接話）：標題列的回合數要扣掉它們
+  const [uncounted, setUncounted] = useState(() =>
+    Math.max(0, detail.messages.filter((m) => m.role === 'student').length - detail.turn_count),
+  )
 
   // 下一則學生訊息的輸入來源：語音輸入後送出時記錄為語音（S-05.4），送出後回到文字
   const messageSource = useMessageSource()
@@ -83,7 +88,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
     return {
       conversationId: detail.id,
       turns: voiceTurns,
-      appendStudent: (text) => runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] }),
+      appendStudent(text, { followUp }) {
+        if (followUp) setUncounted((n) => n + 1)
+        runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] })
+      },
       onSettled() {
         markAiUsageStale()
         // 語音回合沒有 SSE 的 done 事件；達回合上限而結束時也靠這裡切成唯讀
@@ -93,6 +101,9 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
             setStage(d.stage)
             setSuggestEnd(d.converge_ready)
             setStatus(d.status)
+            // 回合數以後端為準：多出來的學生訊息是後端沒算回合的接話
+            const students = runtime.thread.getState().messages.filter((m) => m.role === 'user').length
+            setUncounted(Math.max(0, students - d.turn_count))
           })
           .catch((e: unknown) => console.warn('[voice] could not refresh the conversation:', e))
       },
@@ -127,18 +138,23 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
             </div>
             {detail.description ? <p className="text-muted-foreground text-xs break-words">{detail.description}</p> : null}
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <RoundCount />
+              <RoundCount uncounted={uncounted} />
               <StageIndicator stage={stage} />
             </div>
           </div>
-          <EndDiscussion
-            ended={ended}
-            suggestEnd={suggestEnd}
-            pending={ending}
-            error={endError}
-            onClearError={() => setEndError(undefined)}
-            onConfirm={endDiscussion}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to={`/complaint?conversation=${encodeURIComponent(detail.id)}`}>{t('complaints.report')}</Link>
+            </Button>
+            <EndDiscussion
+              ended={ended}
+              suggestEnd={suggestEnd}
+              pending={ending}
+              error={endError}
+              onClearError={() => setEndError(undefined)}
+              onConfirm={endDiscussion}
+            />
+          </div>
         </header>
 
         <ChatThread
@@ -159,10 +175,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   )
 }
 
-/** 回合數：學生送出幾則訊息就是第幾回合；跟著對話串即時更新。 */
-function RoundCount() {
+/** 回合數：學生送出幾則訊息就是第幾回合（扣掉後端不算回合的接話）；跟著對話串即時更新。 */
+function RoundCount({ uncounted }: { uncounted: number }) {
   const t = useT()
-  const count = useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length)
+  const count = useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length) - uncounted
   return <span className="text-xs font-medium">{t('chat.round', { count })}</span>
 }
 

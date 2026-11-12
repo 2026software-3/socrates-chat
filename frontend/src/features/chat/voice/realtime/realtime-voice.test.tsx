@@ -94,6 +94,74 @@ describe('server voice conversation', () => {
     expect(posts).toEqual([])
   })
 
+  it('puts an interrupted utterance and the reply to the next one in order', async () => {
+    const { cb } = await startLive()
+    const aiBubbles = screen.getAllByText('蘇格拉底').length
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲')
+    })
+    expect(await screen.findByText('甲')).toBeInTheDocument()
+
+    // 第二句辨識完成時 session 先打斷還開著的回覆（收尾），第二句馬上出現，回覆接在它下面
+    act(() => {
+      cb.onReplyEnd()
+      cb.onTranscript('乙')
+    })
+    expect(await screen.findByText('乙')).toBeInTheDocument()
+    act(() => cb.onReplyDelta('回覆'))
+    const reply = await screen.findByText('回覆')
+    const first = screen.getByText('甲')
+    const second = screen.getByText('乙')
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(second.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 被打斷、沒有任何文字的那一輪不留空的 AI 泡泡
+    expect(screen.getAllByText('蘇格拉底')).toHaveLength(aiBubbles + 1)
+    act(() => cb.onReplyEnd())
+  })
+
+  it('counts an interrupted utterance and its follow-up as one turn in the header', async () => {
+    const { cb } = await startLive()
+    expect(screen.getByText('回合：1')).toBeInTheDocument()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲')
+    })
+    expect(await screen.findByText('回合：2')).toBeInTheDocument()
+
+    // 甲的回覆一個字都還沒有就被乙打斷：後端把乙存成獨立訊息但不加回合
+    act(() => {
+      cb.onReplyEnd()
+      cb.onTranscript('乙')
+    })
+    expect(await screen.findByText('乙')).toBeInTheDocument()
+    expect(screen.getByText('回合：2')).toBeInTheDocument()
+    act(() => cb.onReplyEnd())
+  })
+
+  it('takes the turn count from the server after a turn, even when text arrived but was never heard', async () => {
+    const user = userEvent.setup()
+    renderPage(makeDetail({ voice_realtime: true, turn_count: 1 }))
+    await user.click(await startButton())
+    const cb = callbacks()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('甲')
+    })
+    // 甲的回覆已有文字，但學生還沒聽到就被乙打斷：畫面無從得知，後端不為乙加回合
+    act(() => cb.onReplyDelta('回'))
+    act(() => {
+      cb.onReplyEnd()
+      cb.onTranscript('乙')
+    })
+    expect(await screen.findByText('回合：3')).toBeInTheDocument()
+
+    server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ voice_realtime: true, turn_count: 2 }))))
+    act(() => cb.onSettled())
+    expect(await screen.findByText('回合：2')).toBeInTheDocument()
+    act(() => cb.onReplyEnd())
+  })
+
   it('takes stage and ending from the server after a turn', async () => {
     const { cb } = await startLive()
     server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: 'ended', voice_realtime: true }))))

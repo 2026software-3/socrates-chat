@@ -36,8 +36,9 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - AI：OpenAI，後端以單一介面包裝 AI 呼叫，保留更換彈性（S-03.1）。
   - 對話 API：HTTP + SSE 串流（S-08.4），送出訊息的 POST 直接串流 AI 回覆；前端與 API 同網域部署（S-08.1）。
   - 登入驗證與 session 規格見 `docs/specs/S-08.2-auth-verification.md`；維運流程見 `docs/specs/S-09.3-ops-procedures.md`。
-  - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。正式上線前不需考慮資料庫轉移，不寫 `ALTER`，直接改原本的 `CREATE`（見 [CONTRIBUTING.md](CONTRIBUTING.md#資料庫-migration)）。
+  - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。NTNU 自 2026-11-07 起視為正式環境，migration 只往前：已合併的 migration 不修改也不刪除，schema 變更一律新增 migration（含既有資料的搬移，可以寫 `ALTER`）（見 [CONTRIBUTING.md](CONTRIBUTING.md#資料庫-migration)、S-09.3）。
   - 開發／CI 資料庫：Docker Compose 的 PostgreSQL（S-09.1）。
+  - 維運：公告與管理者可開關的維護模式（S-15）；NTNU 的 docker compose 在後端前加反向代理與靜態停機說明頁（S-16）；客訴以 SMTP 寄給管理者並存資料庫（S-17），寄信只用於客訴通知（nginx 或 Caddy、SMTP 套件仍待實作時選定）。
   - 前端：React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui、react-router、Vitest + Testing Library + MSW、oxlint；圖表用純 SVG、i18n 自行實作（S-11）。不得擴充或更換主要框架，新增主要依賴需先經規格討論。
 - **未定案，不得自行決定**：
   - OpenAI 具體模型（S-03.4 評估後決定）
@@ -76,7 +77,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
 ## 資安與個資底線
 
 - 應用程式的管理介面、API、報表、匯出與日誌中，每則訊息內容一律以固定字串 `message` 代替。系統管理者可直接存取資料庫與備份，因此讀得到原文；這是經需求方確認的例外（S-02.1），存取需留紀錄。
-- 其他敏感欄位（AI 總結、學生反思、分析結果、語音逐字稿）在管理介面一律遮蔽（S-02.1、S-02.2）；教師可看自己教室的對話原文，但日誌與送往 AI 的翻譯請求仍不得帶原文。
+- 其他敏感欄位（AI 總結、學生反思、分析結果、語音逐字稿）在管理介面一律遮蔽（S-02.1、S-02.2；客訴描述是例外，管理者看得到原文但日誌仍不記，S-17.2）；教師可看自己教室的對話原文，但日誌與送往 AI 的翻譯請求仍不得帶原文。
 - 日誌（tracing）不得記錄密碼、token、金鑰、聊天原文或敏感個資。
 - 授權檢查必須有測試證據，至少涵蓋未登入、角色不符、名單外帳號、存取他人資料等情境。
 - 測試資料只使用合成資料，不使用真實學生資料。

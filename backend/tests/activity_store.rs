@@ -41,10 +41,10 @@ async fn teacher_queries_go_through_their_own_classrooms(pool: PgPool) {
     );
     let (a, b) = (room(&pool, t1, "A").await, room(&pool, t2, "B").await);
     let topic = topic(&pool).await;
-    let in_a = activity_store::create_with_schedule(&pool, a, t1, "甲", "", topic, (None, None))
+    let in_a = activity_store::create_with_schedule(&pool, a, t1, "甲", "", &[topic], (None, None))
         .await
         .unwrap();
-    let in_b = activity_store::create_with_schedule(&pool, b, t2, "乙", "", topic, (None, None))
+    let in_b = activity_store::create_with_schedule(&pool, b, t2, "乙", "", &[topic], (None, None))
         .await
         .unwrap();
 
@@ -93,12 +93,14 @@ async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool
     let owner = user(&pool, "t@example.com").await;
     let (a, b) = (room(&pool, owner, "A").await, room(&pool, owner, "B").await);
     let topic = topic(&pool).await;
-    let in_a = activity_store::create_with_schedule(&pool, a, owner, "甲", "", topic, (None, None))
-        .await
-        .unwrap();
-    let in_b = activity_store::create_with_schedule(&pool, b, owner, "乙", "", topic, (None, None))
-        .await
-        .unwrap();
+    let in_a =
+        activity_store::create_with_schedule(&pool, a, owner, "甲", "", &[topic], (None, None))
+            .await
+            .unwrap();
+    let in_b =
+        activity_store::create_with_schedule(&pool, b, owner, "乙", "", &[topic], (None, None))
+            .await
+            .unwrap();
     sqlx::query("UPDATE activities SET status = 'published'")
         .execute(&pool)
         .await
@@ -145,10 +147,17 @@ async fn deleting_an_activity_or_classroom_deletes_its_conversations(pool: PgPoo
     let mut convs = Vec::new();
     let mut activities = Vec::new();
     for title in ["甲", "乙"] {
-        let activity =
-            activity_store::create_with_schedule(&pool, a, owner, title, "", topic, (None, None))
-                .await
-                .unwrap();
+        let activity = activity_store::create_with_schedule(
+            &pool,
+            a,
+            owner,
+            title,
+            "",
+            &[topic],
+            (None, None),
+        )
+        .await
+        .unwrap();
         let conv: Uuid = sqlx::query_scalar(
             "INSERT INTO conversations (user_id, activity_id, classroom_id, title) VALUES ($1, $2, $3, 't') RETURNING id",
         )
@@ -205,7 +214,7 @@ async fn personal_practice_never_matches_a_classroom_scoped_query(pool: PgPool) 
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO summaries (conversation_id, status, stance, reasons) VALUES ($1, 'ready', 's', 'r')",
+        "INSERT INTO summaries (conversation_id, status, stance, reasons, completed_at) VALUES ($1, 'ready', 's', 'r', now())",
     )
     .bind(practice).execute(&pool).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();

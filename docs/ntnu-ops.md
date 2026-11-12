@@ -2,12 +2,103 @@
 
 本文件只描述在 NTNU 試用機器上的維運做法。部署設定檔 `docker-compose.ntnu.yml` 與 `scripts/deploy-ntnu.sh` 不進版控，只存在這台機器上。
 
+**NTNU 自 2026-11-07 起視為正式環境**（[S-09.3](specs/S-09.3-ops-procedures.md)）：資料要保留，migration 只往前（已套用的 migration 檔不能改，改 schema 一律新增 migration），不再重建資料庫。這不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
+
 ## 基本資訊
 
 - Compose 專案名稱：`socrates-ntnu`（與開發用的 `socrates-chat` 分開）。
 - 設定檔：`docker-compose.yml` + `docker-compose.ntnu.yml`，所有 compose 指令都要帶上 `-f` 與 `-p socrates-ntnu`。
-- 公開網址：`https://raynb.tail5fc9fe.ts.net`（Tailscale Funnel）。這個值由 `docker-compose.ntnu.yml` 設定在容器的 `APP_BASE_URL`。
+- 公開網址：`https://ray-nb.tail5fc9fe.ts.net`（Windows 端 Tailscale Funnel，見下一節）。這個值由 `docker-compose.ntnu.yml` 設定在容器的 `APP_BASE_URL`。
 - `.env` 的 `APP_BASE_URL` 是 `http://localhost:3000`，但容器實際使用的是覆寫後的公開網址。CSRF 檢查要求 `Origin` 標頭等於容器的 `APP_BASE_URL`，所以用 curl 或腳本呼叫 API 時，`Origin` 要填公開網址，不能填 `.env` 的值。
+
+## 對外入口（Windows 端 Tailscale Funnel）
+
+2026-11-08 起，對外入口由 **Windows 的 Tailscale** 提供，WSL 裡不再有 Tailscale 節點（舊節點 `raynb` 已離線，舊網址 `raynb.tail5fc9fe.ts.net` 失效）。
+
+- 路徑：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3000` → `app` 容器。`~/.wslconfig` 設 `networkingMode=mirrored`，Windows 的 `127.0.0.1` 與 WSL 共用，所以不需要 portproxy。`app` 只綁 `127.0.0.1:3000`，不對區網開放。
+- 網域是「Tailscale 機器名稱」加 tailnet 後綴：機器名稱 `Ray_NB` → `ray-nb.tail5fc9fe.ts.net`。**機器名稱一改，網域就跟著變。**
+- 在 WSL 裡操作 Windows 的 Tailscale，用完整路徑：
+
+  ```bash
+  TS="/mnt/c/Program Files/Tailscale/tailscale.exe"
+  "$TS" funnel --bg 3000        # 公開 443，轉到 127.0.0.1:3000（會公開到網際網路）
+  "$TS" serve status            # 應該只有一條：https://ray-nb.tail5fc9fe.ts.net (Funnel on) → http://127.0.0.1:3000
+  ```
+
+- 從這台機器連自己的 Funnel 網址會被拒絕（`Connection refused`），要驗證外部可達，得用另一台裝置在行動網路下開網址。
+
+### 改 Tailscale 機器名稱或網域時
+
+serve／funnel 設定是綁在舊網域上的，改名後不會跟著搬。依序處理：
+
+1. 到 Tailscale 確認新的網域（`"$TS" status --json` 的 `Self.DNSName`）。
+2. 把 `docker-compose.ntnu.yml` 的 `APP_BASE_URL` 改成新網址，重建 `app`（`up -d --no-deps --no-build --force-recreate app`）。不改的話 CSRF 的 `Origin` 檢查會擋掉登入與所有寫入。
+3. 重設 funnel：`"$TS" serve reset`，再 `"$TS" funnel --bg 3000`。CLI 沒辦法依主機名單獨刪舊條目，所以只在設定裡沒有別的服務時才用 `reset`（先看 `serve status`）；會中斷幾秒。確認 `serve status` 不再出現舊網域。
+4. 到 Google Cloud Console，把 OAuth 的重新導向 URI 與授權來源換成新網域，否則 Google 登入會失敗。
+5. 通知使用者新網址。
+
+### 驗證 TRUSTED_PROXIES（來源 IP）
+
+登入限流以來源 IP 為鍵；`TRUSTED_PROXIES: 172.16.0.0/12`（`docker-compose.ntnu.yml`）讓後端信任 Docker bridge 閘道送來的 `X-Forwarded-For`。改變入口後要重驗：
+
+1. 用手機在行動網路（關 Wi-Fi）先查自己的 IPv6，馬上開公開網址，故意輸入錯誤密碼登入一次。
+2. 查 `login_failures`：
+
+   ```bash
+   docker exec socrates-ntnu-db-1 psql -U socrates -d socrates -c "select left(login_key,8), ip, failures, last_failed_at from login_failures order by last_failed_at"
+   ```
+
+3. `ip` 應該是手機的公網位址，不是 `172.x`（Docker 閘道）或 `100.x`（Tailscale）。IPv6 來源會合併成 `/64` 網段，所以只會看到前四段，例如 `2a09:bac3:5808:323::/64`。行動網路的位址會變動，查 IP 與登入要在同一分鐘內做。
+4. 測完刪掉測試紀錄（`login_key` 若是真實帳號輸入也要刪，避免殘留失敗次數）：`delete from login_failures where login_key like '<前 8 碼>%'`。
+
+## 反向代理與停機說明頁（S-16，選用）
+
+`docker-compose.yml` 有一個 `proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）。啟用後路徑變成：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3080` → `proxy` 容器 → `app:3000`。後端連不上（容器停掉、重建中、WSL 剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。這一層**預設沒有啟用**；是否上線由維護者決定。
+
+- `proxy` 只綁 `127.0.0.1:3080`（`PROXY_PORT` 可改）。`app` 仍然綁 `127.0.0.1:3000`，所以**切換與回退都只是改 funnel 指向哪個埠**，兩條路可以同時存在。
+- 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
+- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態與耗時；不記 Cookie、Referer、User-Agent。
+
+### 上線前驗證
+
+1. 在任何有 Docker 的機器上跑 `scripts/verify-proxy.sh`（用假後端，不碰 `socrates-ntnu`）：檢查轉發、`X-Forwarded-For`、後端自己的 503 原樣轉發、SSE、WebSocket 升級、大請求，以及後端停掉時的停機頁與回來後的自動恢復。
+2. 在 NTNU 機器上，**先不動 funnel**，只啟動代理，直接打代理的埠確認它轉得到真的後端：
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile app --profile proxy up -d --no-deps proxy
+   curl -s http://127.0.0.1:3080/proxy-health            # ok
+   curl -s http://127.0.0.1:3080/ready                   # {"status":"ok"}
+   ```
+
+3. 確認 `docker-compose.ntnu.yml` 的 `TRUSTED_PROXIES` 包含 compose 網路（目前 `172.16.0.0/12`）。代理的對端是 compose 網路內的位址，沒包含的話所有人在登入限流眼裡都是同一個來源。
+4. SSE 與語音要用真的後端確認：`verify-proxy.sh` 用的是假後端。切換後立刻開一場對話（回覆要逐段出現）並試一次語音；有問題就照下面〈回退〉。
+
+### 切換
+
+```bash
+TS="/mnt/c/Program Files/Tailscale/tailscale.exe"
+"$TS" funnel --bg 3080         # 公開 443 改轉到 127.0.0.1:3080（代理）
+"$TS" serve status             # 應該只有一條：https://ray-nb.tail5fc9fe.ts.net (Funnel on) → http://127.0.0.1:3080
+```
+
+切換後馬上重跑上面〈驗證 TRUSTED_PROXIES（來源 IP）〉的步驟：`login_failures.ip` 要是手機的公網位址，不是 `172.x`。再用 `docker stop socrates-ntnu-app-1` 短暫停掉 app（先告知使用者，會中斷服務）確認公開網址出現停機頁，之後 `docker start socrates-ntnu-app-1`。
+
+### 回退
+
+出任何問題（回覆不逐段、語音連不上、來源 IP 不對），直接把 funnel 改回後端，不需要改容器：
+
+```bash
+"$TS" funnel --bg 3000
+"$TS" serve status             # → http://127.0.0.1:3000
+```
+
+要完全移除代理：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy rm -sf proxy`。
+
+### 已知限制
+
+- 代理只在**後端連不上或逾時**（nginx 自己產生的 502、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
+- WSL 或 Docker Desktop 重啟後，`proxy` 與 `app` 都要回來；`app` 的 bind mount 失效時（見〈重啟後的恢復〉）代理仍會顯示停機頁，直到 `app` 重建。
+- 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）。
 
 ## 部署
 
@@ -16,12 +107,63 @@ SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
 ```
 
 - 不要把腳本接在管線後面（例如 `| tail`），管線會遮蔽失敗的退出碼。
-- `exit=0` 且 `/ready` 回 200 才算部署成功；`exit=1` 時，`deploy.log` 最後會有 app 最近 30 行日誌。
+- `exit=0` 且 `curl http://127.0.0.1:3000/health` 與 `curl http://127.0.0.1:3000/ready` 都回 200 才算部署成功；`exit=1` 時，`deploy.log` 最後會有 app 最近 30 行日誌。`/health` 只表示程序存活；`/ready` 以 `SELECT 1` 檢查資料庫（最多等 3 秒），正常回 200 `{"status":"ok"}`，不通回 503 `database_unavailable`。尚未重新部署包含 #473 的映像之前，舊映像沒有 `/ready` 路由，對它發請求會拿到前端首頁 HTML 的 200（SPA fallback），所以要確認回應本文是 JSON `{"status":"ok"}`，不能只看狀態碼。migration 是否全部套用仍要另外用 `_sqlx_migrations` 確認。
 - 日誌出現 `failed to run migrations` 時，表示資料庫的 migration 紀錄與程式不一致。先比對 `_sqlx_migrations` 的 checksum，不要直接 `down -v`。
+- `docker-compose.ntnu.yml` 或 `docker-compose.yml` 中 `db` 的設定有變動時，下一次部署會重建 `db` 容器（資料在 volume 裡不會丟，但會中斷幾秒）。
+
+### 部署前檢查（含 migration 的版本）
+
+1. **備份**（只讀，不影響執行中的資料庫）。備份含真實使用者資料：不進版控、權限限本人、用完要刪除（`shred -u`）。每日加密備份與保存方式見 [S-09.3 第 3 節](specs/S-09.3-ops-procedures.md)（是否適用 NTNU 待決定）。
+
+   ```bash
+   (umask 077; docker exec socrates-ntnu-db-1 pg_dump -U socrates -d socrates --no-owner > ~/ntnu-backup-$(date +%F).sql)
+   ```
+
+2. **migration 有變動時，先在還原的備份上演練**：另起臨時 PostgreSQL（不要用 `socrates-ntnu` 的 db，也不要共用它的 volume），還原備份，用新版後端加上 `RUN_MIGRATIONS=true` 啟動（`LISTEN_ADDR` 改到別的連接埠），確認沒有 `VersionMismatch`，並檢查資料搬移結果。用完以 `docker rm -fv` 移除，連同 volume。
+   - `sqlx::migrate!()` 在編譯時才嵌入 migration 檔；新增或還原 migration 後，要 touch `backend/src/main.rs` 強制重編，否則會跑到舊的 migration 內容。
+3. **不要修改已套用的 migration 檔。** 要修正 schema，新增一個 migration。
+
+## 重啟後的恢復
+
+`db` 與 `app` 都設 `restart: unless-stopped`（`docker-compose.ntnu.yml` 的 `db` 必須保留這一行）。WSL 或 Docker Desktop 重啟後，先用 `docker ps -a --filter name=socrates-ntnu` 確認 `db`、`app`、四個 cascade 容器都在，且 `/health` 與 `/ready` 都回 200（`/ready` 的本文要是 JSON `{"status":"ok"}`，見上）。
+
+- `app` 若是 `Exited (127)`，用 `docker inspect socrates-ntnu-app-1 --format '{{.State.Error}}'` 看原因。訊息是 `failed to fulfil mount request ... docker-desktop-bind-mounts ... no such file or directory` 時，表示容器指向的 bind mount 路徑已失效，`docker start` 沒用，要重建容器（不重建映像、不動其他服務）：
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.ntnu.yml --profile app up -d --no-deps --no-build --force-recreate app
+  ```
+
+- `app` 停著時，`socrates-ntnu-cascade-1` 會不斷重啟（它啟動時要探測 `http://app:3000/internal/cascade/v1/models`，連不到就結束）。這是正常現象，`app` 回來後會自己恢復，不用動 cascade。
+- 如果 `app` 正常、`cascade-1` 仍重啟，日誌是 `找不到 /refs/reference.wav`：同樣是 Docker Desktop 的 bind mount 失效（檔案本身在 `CASCADE_REFS_DIR`，通常沒掉）。重建 `cascade`（要帶 `--profile cascade`）：
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.ntnu.yml --profile app --profile cascade up -d --no-deps --no-build --force-recreate cascade
+  ```
+
+- 對外入口也要確認：`"/mnt/c/Program Files/Tailscale/tailscale.exe" serve status` 應該有 `https://ray-nb.tail5fc9fe.ts.net (Funnel on)`。Windows 或 Tailscale 重啟後設定通常會保留，沒有的話重跑 `funnel --bg 3000`。
+- WSL 重開機後，已開著的終端機不一定有 `docker` 群組；`docker` 出現 `permission denied ... docker.sock` 時，開新的終端機。
+
+## 客訴通知信（SMTP）
+
+客訴表單（`/complaint`）與管理者的「客訴」頁（`/admin/complaints`）不需要設定就能用；沒設定 SMTP 時客訴照常存資料庫，寄信狀態顯示「未寄信（尚未設定 SMTP）」。要讓管理者收到通知信，在 `.env` 加上（變數說明見 `.env.example`）：
+
+```
+SMTP_HOST=...
+SMTP_FROM=Socrates <noreply@example.edu>
+COMPLAINT_TO=admin1@example.edu,admin2@example.edu
+SMTP_USERNAME=...
+SMTP_PASSWORD=...
+```
+
+- `SMTP_HOST`、`SMTP_FROM`、`COMPLAINT_TO` 缺任何一項就視為沒啟用；格式錯誤時後端啟動會失敗並指出是哪個變數（不印出位址或密碼）。
+- 預設用 STARTTLS（埠 587）；Gmail 這類服務要用應用程式密碼。`SMTP_SECURITY=tls` 走埠 465；`none` 只給本機測試。
+- 改 `.env` 後要重建後端容器才會生效。這是設定變更，不含 migration，但新版本本身含一個 migration（`create_complaints`），部署照「部署前檢查」。
+- 寄信失敗不影響提交者；管理者在「客訴」頁看到「寄信失敗」、一直停在「寄送中」（寄送途中後端重啟）或「未寄信」（設定 SMTP 之前送出的）時，可按「重寄通知信」；已寄出的沒有這個按鈕。注意：「寄送中」其實仍在寄的時候按重寄可能寄出兩封。日誌只會有客訴編號與失敗類別（`build`／`timeout`／`transport`），要查原因請直接測 SMTP 連線。
+- 信件不含學號、電子郵件與對話原文；描述的原文只在信件內文與管理者的「客訴」頁。
 
 ## 刪除資料庫的限制
 
-- 不要對 `socrates-ntnu` 執行 `down -v`，除非已確認要刪除試用資料。它會刪掉 `socrates-ntnu_pgdata`。
+- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料。它會刪掉 `socrates-ntnu_pgdata`。
 - 刪除前要先告知試用負責人，並留下 `_sqlx_migrations` 與 `users` 的摘要以便核對。
 
 ## 管理者帳號與密碼
@@ -66,4 +208,12 @@ DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compo
 | --- | --- |
 | 2026-10-27 | 重建 `socrates-ntnu` 資料庫並重新部署（`/ready` 回 200，8 個 migration 全部成功）。以 `.env` 的 `ADMIN_EMAILS` 建立管理者帳號，登入測試通過。 |
 | 2026-10-27 | 從 `.env` 移除 `ADMIN_INITIAL_PASSWORD`。 |
+| 2026-11-07 | 決定 NTNU 自今天起視為正式環境：資料保留、migration 只往前（S-09.3）。 |
+| 2026-11-07 | 在還原的 NTNU 備份上演練 `fix/f-29.1-activity-topics-alter-migration`（還原 `20261002010000`、新增 `20261107000000`）：10 個活動全部搬入 `activity_topics`，既有 8 個 checksum 不變，後端不再 `VersionMismatch`。尚未部署到 NTNU。 |
+| 2026-11-07 | WSL 關機後 `db`（原本 `restart: no`）與 `app`（建立容器時 bind mount 路徑失效，`Exited (127)`）停止，網站約 30 分鐘連不上（13:17 起）；啟動 `db`、重建 `app` 後 `/ready` 回 200，cascade-1 恢復。`db` 改為 `restart: unless-stopped`。 |
+| 2026-11-08 | WSL 內的 Tailscale 節點 `raynb` 消失，對外入口改為 Windows 端 Tailscale Funnel，網址改為 `https://ray-nb.tail5fc9fe.ts.net`（機器名稱曾短暫為 `ray-nb-win`）。`APP_BASE_URL` 已改並重建 `app`，用 `serve reset` 清掉舊網域後重設 funnel，Google OAuth 的重新導向 URI 已更新。 |
+| 2026-11-08 | WSL 重開機後 `app`（`Exited (127)`）與 `cascade-1`（找不到 `/refs/reference.wav`）都因 bind mount 失效起不來，重建兩者後恢復（`/ready` 回 200，cascade 與 cascade-tts 皆 healthy）。 |
+| 2026-11-08 | 以手機行動網路經 Funnel 故意登入失敗，`login_failures` 記到手機的真實 IPv6 `/64` 網段，確認 `TRUSTED_PROXIES` 在新入口下正常；測試紀錄已刪除。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
+| 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
+| 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |

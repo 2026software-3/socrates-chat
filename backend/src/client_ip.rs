@@ -213,6 +213,22 @@ mod tests {
     }
 
     #[test]
+    fn compose_proxy_chain_gives_the_real_client_address() {
+        // Funnel → Docker 閘道 → nginx 容器 → app：Funnel 帶來真實來源，nginx 追加它看到的對端（閘道），
+        // app 看到的 TCP 對端是 nginx 容器。兩者都在 172.16.0.0/12 內，所以取到最左邊的真實來源（S-16）
+        let t = trusted("172.16.0.0/12");
+        assert_eq!(
+            resolve(Some(ip("172.18.0.3")), Some("203.0.113.9, 172.18.0.1"), &t),
+            Some(ip("203.0.113.9"))
+        );
+        // 沒有把代理網段加進 TRUSTED_PROXIES：標頭被忽略，所有人都變成代理的位址
+        assert_eq!(
+            resolve(Some(ip("172.18.0.3")), Some("203.0.113.9, 172.18.0.1"), &[]),
+            Some(ip("172.18.0.3"))
+        );
+    }
+
+    #[test]
     fn malformed_header_falls_back_to_the_peer() {
         let t = trusted("127.0.0.0/8");
         for bad in ["", "not-an-ip", "203.0.113.9, garbage"] {

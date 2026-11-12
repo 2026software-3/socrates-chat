@@ -89,6 +89,23 @@ mod classroom_scope {
     }
 
     #[test]
+    fn activities_contract_supports_multiple_topics() {
+        let doc = document();
+        let new = &doc["components"]["schemas"]["NewActivity"]["properties"];
+        assert!(new.get("topic_ids").is_some(), "NewActivity.topic_ids");
+        let patch = &doc["components"]["schemas"]["ActivityPatch"]["properties"];
+        assert!(patch.get("topic_ids").is_some(), "ActivityPatch.topic_ids");
+        let activity = &doc["components"]["schemas"]["Activity"]["properties"];
+        assert!(activity.get("topic_ids").is_some(), "Activity.topic_ids");
+
+        let patch_op = &doc["paths"]["/api/activities/{id}"]["patch"];
+        let conflicts = patch_op["responses"]["409"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(conflicts.contains("activity_topic_locked"));
+    }
+
+    #[test]
     fn conversations_expose_a_nullable_classroom() {
         let doc = document();
         let conversation = &doc["components"]["schemas"]["Conversation"]["properties"];
@@ -109,6 +126,32 @@ mod classroom_scope {
                 .as_str()
                 .unwrap()
                 .contains("invalid_conversation_source")
+        );
+    }
+
+    #[test]
+    fn conversation_creation_documents_activity_topic_selection() {
+        let doc = document();
+        let schema = &doc["components"]["schemas"]["NewConversation"]["properties"];
+        assert!(schema["activity_id"].is_object());
+        assert!(
+            schema["topic_id"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("活動")
+        );
+        let operation = &doc["paths"]["/api/conversations"]["post"];
+        assert!(
+            operation["responses"]["400"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("題目不屬於活動")
+        );
+        assert!(
+            operation["responses"]["409"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("activity_already_started")
         );
     }
 
@@ -257,6 +300,24 @@ mod roster {
             "student_id left in OpenAPI"
         );
         assert!(!text.contains("confirm_student_id"));
+    }
+
+    /// F-30.2：名單、教師總結列表與 `/api/me` 都帶學號。
+    #[test]
+    fn roster_summaries_and_me_carry_the_student_number() {
+        let document = serde_json::to_value(openapi::document()).unwrap();
+        let schemas = &document["components"]["schemas"];
+        for (schema, field) in [
+            ("RosterEntry", "student_number"),
+            ("RosterEntry", "display_name"),
+            ("SummaryRow", "student_number"),
+            ("MeResponse", "student_number"),
+        ] {
+            assert!(
+                schemas[schema]["properties"].get(field).is_some(),
+                "{schema}.{field}"
+            );
+        }
     }
 }
 
