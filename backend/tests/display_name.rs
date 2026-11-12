@@ -246,28 +246,73 @@ async fn google_login_does_not_overwrite_a_custom_name(pool: PgPool) {
     assert_eq!(me_name(&app, &cookie).await, "小明");
 }
 
-#[sqlx::test]
-async fn google_login_uses_imported_name_when_a_students_display_name_is_missing(pool: PgPool) {
-    let app = test_app(pool.clone());
-    let a = seed_actors(&app).await;
+async fn google_sub_of(pool: &PgPool, student_number: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT google_sub FROM users WHERE student_id = $1")
+        .bind(student_number)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn import_unbound_student(app: &axum::Router, a: &Actors) {
     let res = import_roster(
-        &app,
+        app,
         &a.teacher,
         &a.classroom,
         "匯入姓名,11234567A,another-student@example.com",
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
+}
 
-    // Exercise both the first binding by email and later logins by Google sub.
-    for _ in 0..2 {
-        sqlx::query("UPDATE users SET display_name = NULL WHERE student_id = '11234567A'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
-        assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
-    }
+#[sqlx::test]
+async fn first_google_binding_uses_imported_name_when_display_name_is_missing(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    sqlx::query("UPDATE users SET display_name = NULL WHERE student_id = '11234567A'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(google_sub_of(&pool, "11234567A").await, None);
+
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert_eq!(
+        google_sub_of(&pool, "11234567A").await.as_deref(),
+        Some("sub-another-student")
+    );
+    assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
+}
+
+#[sqlx::test]
+async fn later_google_login_uses_imported_name_when_display_name_is_missing(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert!(google_sub_of(&pool, "11234567A").await.is_some());
+
+    sqlx::query("UPDATE users SET display_name = NULL WHERE student_id = '11234567A'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
+}
+
+#[sqlx::test]
+async fn first_google_binding_keeps_a_custom_name_over_the_imported_name(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    sqlx::query("UPDATE users SET display_name = '自訂名稱' WHERE student_id = '11234567A'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(google_sub_of(&pool, "11234567A").await, None);
+
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert_eq!(me_name(&app, &cookie).await, "自訂名稱");
 }
 
 #[sqlx::test]
