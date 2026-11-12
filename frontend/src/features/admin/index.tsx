@@ -2,6 +2,7 @@ import type { Feature, NavItem } from '@/app/feature'
 import { AdminTasksPage } from '@/features/tasks/admin-tasks-page'
 import { AdminPartsPage } from '@/features/purchase/admin-parts-page'
 import { AdminHome } from '@/features/admin/admin-home'
+import { AdminAnnouncementsPage } from '@/features/announcements/admin-announcements-page'
 import { TeachersPage } from '@/features/admin/teachers-page'
 import { TopicsPage } from '@/features/admin/topics-page'
 import { DiagnosticsPage } from '@/features/admin/diagnostics-page'
@@ -18,6 +19,7 @@ export const adminFeature: Feature = {
     { path: '/admin/diagnostics', element: <DiagnosticsPage />, access: 'admin' },
     { path: '/admin/tasks', element: <AdminTasksPage />, access: 'admin' },
     { path: '/admin/parts', element: <AdminPartsPage />, access: 'admin' },
+    { path: '/admin/announcements', element: <AdminAnnouncementsPage />, access: 'admin' },
   ],
   // 同時具備教師／學生角色的管理者沿用一般導覽，另有管理者專屬頁面。
   nav: [
@@ -25,6 +27,7 @@ export const adminFeature: Feature = {
     { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics', access: 'admin' },
     { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
     { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },
+    { to: '/admin/announcements', labelKey: 'admin.nav.announcements', access: 'admin' },
   ],
 }
 
@@ -38,4 +41,6 @@ export const opsNav: NavItem[] = [
   { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics', access: 'admin' },
   { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
   { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },
+  { to: '/admin/announcements', labelKey: 'admin.nav.announcements', access: 'admin' },
+  { to: '/admin/complaints', labelKey: 'complaints.admin.nav', access: 'admin' },
 ]
