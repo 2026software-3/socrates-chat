@@ -174,8 +174,8 @@ describe('ConversationListPage', () => {
     expect(screen.queryByRole('link', { name: /開啟對話/ })).not.toBeInTheDocument()
   })
 
-  it('omits the created date instead of rendering a blank value when the date is invalid', async () => {
-    setup([makeConversation({ created_at: 'not-a-date' })])
+  it('omits the last updated date instead of rendering a blank value when the date is invalid', async () => {
+    setup([makeConversation({ updated_at: 'not-a-date' })])
     renderApp(null, { route: '/conversations' })
     await screen.findByRole('link', { name: /開啟對話/ })
     expect(screen.queryByText(/2026/)).not.toBeInTheDocument()
