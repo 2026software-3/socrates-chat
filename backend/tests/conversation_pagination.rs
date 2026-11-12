@@ -64,9 +64,20 @@ async fn sorts_by_latest_message_time_and_falls_back_to_creation_time(pool: PgPo
 
     let res = send(&app, get("/api/conversations?limit=10", Some(&a.student))).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let items = json_body(res).await["items"].as_array().unwrap();
-    let ids: Vec<_> = items.iter().map(|item| item["id"].as_str().unwrap().to_string()).collect();
-    assert_eq!(ids, vec![oldest.to_string(), newer.to_string(), no_messages.to_string()]);
+    let body = json_body(res).await;
+    let items = body["items"].as_array().unwrap();
+    let ids: Vec<_> = items
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            oldest.to_string(),
+            no_messages.to_string(),
+            newer.to_string()
+        ]
+    );
 }
 
 #[sqlx::test]
