@@ -51,6 +51,33 @@ describe('change password in the personal settings', () => {
     expect(screen.queryByLabelText('新密碼')).not.toBeInTheDocument()
   })
 
+  it('puts the button in the personal settings next to 儲存, not in a row or card of its own', async () => {
+    await openSettings({ student: true })
+    const settings = screen.getByRole('form', { name: '個人設定' })
+    expect(within(settings).getByRole('button', { name: '更改密碼' })).toHaveAttribute('type', 'button')
+    expect(within(settings).getByRole('button', { name: '儲存' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '密碼' })).not.toBeInTheDocument()
+  })
+
+  it('changing the password never saves the display name, even though the button sits in that form', async () => {
+    const patches: unknown[] = []
+    server.use(
+      http.patch('/api/me', async ({ request }) => {
+        patches.push(await request.json())
+        return HttpResponse.json(makeMe({ student: true }))
+      }),
+      http.post('/api/auth/change-password', () => new HttpResponse(null, { status: 204 })),
+    )
+    await openSettings({ student: true })
+    await fill('old-pass-123', 'new-pass-456', 'new-pass-456')
+    expect(await screen.findByRole('status')).toHaveTextContent('密碼已更改')
+    // 失敗與前端檢查的路徑也一樣：視窗裡按 Enter 或送出都不會碰到外層的個人設定表單
+    await openDialog()
+    await userEvent.type(within(section()).getByLabelText('目前密碼'), 'x{Enter}')
+    await userEvent.keyboard('{Escape}')
+    expect(patches).toEqual([])
+  })
+
   it('opens a dialog with the three fields', async () => {
     await openSettings({ student: true })
     await openDialog()

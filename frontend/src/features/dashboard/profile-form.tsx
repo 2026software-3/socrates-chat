@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { dictionaries, errorText, useT, type MessageKey } from '@/i18n'
 import { api } from '@/lib/api'
-import { ChangePasswordSection } from '@/features/dashboard/change-password-section'
+import { ChangePasswordDialog } from '@/features/dashboard/change-password-section'
 import type { Me } from '@/lib/types'
 
 /** 顯示名稱的長度上限；後端才是準則（S-08.2），這裡只是方便使用者。 */
@@ -17,16 +17,36 @@ const DISPLAY_NAME_MAX = 30
 /** 與後端一樣以 Unicode 字元計（emoji 算 1，不像 maxLength 以 UTF-16 計），去頭尾空白後再算。 */
 const nameLength = (value: string) => Array.from(value.trim()).length
 
-/** 個人儀表板上的顯示名稱設定：留空會清除，介面回到顯示電子郵件。 */
+/**
+ * 學生的個人設定：顯示名稱（留空會清除，介面回到顯示電子郵件）、Google 帳號，
+ * 以及「儲存」旁的「更改密碼」按鈕（S-18）。彈出視窗放在表單外面，見 `ChangePasswordDialog`。
+ */
 export function ProfileForm() {
   const auth = useAuth()
+  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [passwordSaved, setPasswordSaved] = useState(false)
   // 登入者載入完成前不顯示（外框保證實際使用時一定已登入）
   if (auth.status !== 'authed') return null
+  const canChangePassword = auth.me.can_change_password
   return (
     <>
-      <Form me={auth.me} update={auth.update} />
+      <Form
+        me={auth.me}
+        update={auth.update}
+        password={
+          canChangePassword
+            ? {
+                saved: passwordSaved,
+                open: () => {
+                  setPasswordSaved(false)
+                  setPasswordOpen(true)
+                },
+              }
+            : null
+        }
+      />
       {auth.me.roles.student ? <GoogleLink me={auth.me} update={auth.update} /> : null}
-      {auth.me.can_change_password ? <ChangePasswordSection /> : null}
+      {canChangePassword ? <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} onSaved={() => setPasswordSaved(true)} /> : null}
     </>
   )
 }
@@ -120,7 +140,7 @@ function GoogleLink({ me, update }: { me: Me; update: (me: Me) => void }) {
   )
 }
 
-function Form({ me, update }: { me: Me; update: (me: Me) => void }) {
+function Form({ me, update, password }: { me: Me; update: (me: Me) => void; password: { saved: boolean; open: () => void } | null }) {
   const t = useT()
   const [name, setName] = useState(me.display_name ?? '')
   const [saving, setSaving] = useState(false)
@@ -179,13 +199,23 @@ function Form({ me, update }: { me: Me; update: (me: Me) => void }) {
             </p>
             {tooLong ? <p className="text-destructive text-xs">{t('profile.tooLong', { max: DISPLAY_NAME_MAX })}</p> : null}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button type="submit" disabled={saving || tooLong}>
               {t('profile.save')}
             </Button>
+            {password ? (
+              <Button type="button" variant="outline" onClick={password.open}>
+                {t('profile.password.title')}
+              </Button>
+            ) : null}
             {saved ? (
               <p role="status" className="text-sm">
                 {t('profile.saved')}
+              </p>
+            ) : null}
+            {password?.saved ? (
+              <p role="status" className="text-sm">
+                {t('profile.password.saved')}
               </p>
             ) : null}
           </div>
