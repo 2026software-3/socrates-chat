@@ -1,8 +1,8 @@
 //! 儀表板（F-15、F-24；規格見 S-02.2、S-02.4、S-04.6、S-04.7）。
 //!
 //! - 個人儀表板：只算自己的對話與總結。
-//! - 教師儀表板：只給教師看；依 S-02.4 不設最小群體門檻。以「活動」為彙整單位（S-04.7）：
-//!   每位學生在一個活動至多一場對話，從題目庫開始的個人練習不屬於任何活動，不列入。
+//! - 教師儀表板：只給教師看；依 S-02.4 不設最小群體門檻。以「活動內的題目」為彙整單位（S-04.7）：
+//!   每位學生在活動內每題至多一場對話，從題目庫開始的個人練習不屬於任何活動，不列入。
 //!   管理者身分一律拿不到分析結果（S-02.2：分析結果屬敏感欄位），只看得到固定的 `masked: true`。
 //!
 //! 主張（claim）是 AI 在產生總結時給的，分組方式仍屬暫定。固定學派的 6 維雷達圖已取消（S-04.6），
@@ -117,11 +117,21 @@ pub(crate) struct ClaimGroupView {
 pub(crate) struct ActivityDistribution {
     activity_id: Uuid,
     title: String,
-    /// 這個活動已完成（有總結）的對話數；每位學生至多一場
+    /// 已產生總結的對話數，並非完成全部題目的學生數。
     completed: i64,
-    /// 主張分布：依人數多到少；超過 6 群時，最小的幾群併成「其他」
+    /// 依教師設定的題目順序，包含尚無總結的題目。
+    topics: Vec<TopicDistribution>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct TopicDistribution {
+    topic_id: Uuid,
+    title: String,
+    /// 本題已產生總結的對話數。
+    completed: i64,
+    /// 主張群依人數排序，超過六群後併入其他。
     claims: Vec<ClaimGroupView>,
-    /// 有主張但還沒歸群的場數（分組失敗或尚未分組），教師可按「重新分組」
+    /// 有主張但尚未分組的場數。
     ungrouped: i64,
 }
 
@@ -147,7 +157,7 @@ pub(crate) struct Class {
 struct ClassRow {
     user_id: Uuid,
     activity_id: Uuid,
-    activity_title: String,
+    topic_id: Option<Uuid>,
     claim: Option<String>,
     reasons: Option<String>,
     group_name: Option<String>,
@@ -186,13 +196,14 @@ pub(crate) async fn class(
     // 只有學生會有對話；事後被移出名單或改成教師也不影響已完成的對話（S-01.4）。
     // 內連接教室與活動：從題目庫開始的個人練習不屬於任何教室，教師看不到，也不納入統計（S-02.1、S-14）。
     let rows = sqlx::query_as::<_, ClassRow>(
-        "SELECT c.user_id, c.activity_id, a.title AS activity_title,
+        "SELECT c.user_id, c.activity_id, c.topic_id,
                 s.claim, s.reasons, g.name AS group_name
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN activities a ON a.id = c.activity_id
          LEFT JOIN claim_groups g ON g.id = s.claim_group_id
+              AND g.activity_id = c.activity_id AND g.topic_id = c.topic_id
          WHERE s.status = 'ready' AND ($3::uuid IS NULL OR c.classroom_id = $3)
          ORDER BY c.ended_at, s.conversation_id",
     )
@@ -200,35 +211,69 @@ pub(crate) async fn class(
     .bind(cu.user.id)
     .bind(classroom)
     .fetch_all(&state.pool);
-    let (students_total, rows) = tokio::try_join!(students_total, rows)?;
-    let mut by_activity: BTreeMap<Uuid, ActivityAcc> = BTreeMap::new();
-    let mut participants = std::collections::HashSet::new();
-    for r in &rows {
-        let activity = by_activity
-            .entry(r.activity_id)
-            .or_insert_with(|| ActivityAcc {
-                title: r.activity_title.clone(),
+    let topic_rows = sqlx::query_as::<_, (Uuid, String, Uuid, String)>(
+        "SELECT a.id, a.title, t.id, t.title
+         FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
+         JOIN activity_topics at ON at.activity_id = a.id
+         JOIN topics t ON t.id = at.topic_id
+         WHERE cl.created_by = $1 AND ($2::uuid IS NULL OR cl.id = $2)
+         ORDER BY a.id, at.position",
+    )
+    .bind(cu.user.id)
+    .bind(classroom)
+    .fetch_all(&state.pool);
+    let (students_total, rows, topic_rows) = tokio::try_join!(students_total, rows, topic_rows)?;
+    let mut by_topic: BTreeMap<(Uuid, Uuid), TopicAcc> = BTreeMap::new();
+    for (activity, _, topic, title) in &topic_rows {
+        by_topic.insert(
+            (*activity, *topic),
+            TopicAcc {
+                title: title.clone(),
                 completed: 0,
                 groups: BTreeMap::new(),
                 ungrouped: 0,
-            });
-        activity.completed += 1;
+            },
+        );
+    }
+    let mut participants = std::collections::HashSet::new();
+    for r in &rows {
+        participants.insert(r.user_id);
+        let Some(topic) = r
+            .topic_id
+            .and_then(|id| by_topic.get_mut(&(r.activity_id, id)))
+        else {
+            continue;
+        };
+        topic.completed += 1;
         if r.claim.is_some() {
             match &r.group_name {
-                Some(name) => activity
+                Some(name) => topic
                     .groups
                     .entry(name.clone())
                     .or_default()
                     .add(r.reasons.as_deref()),
-                None => activity.ungrouped += 1,
+                None => topic.ungrouped += 1,
             }
         }
-        participants.insert(r.user_id);
     }
-    let mut activities: Vec<ActivityDistribution> = by_activity
-        .into_iter()
-        .map(|(id, acc)| acc.finish(id))
-        .collect();
+    let mut by_activity: BTreeMap<Uuid, ActivityDistribution> = BTreeMap::new();
+    for (id, title, topic_id, _) in topic_rows {
+        let topic = by_topic
+            .remove(&(id, topic_id))
+            .expect("activity topic initialized")
+            .finish(topic_id);
+        let activity = by_activity
+            .entry(id)
+            .or_insert_with(|| ActivityDistribution {
+                activity_id: id,
+                title,
+                completed: 0,
+                topics: vec![],
+            });
+        activity.completed += topic.completed;
+        activity.topics.push(topic);
+    }
+    let mut activities: Vec<_> = by_activity.into_values().collect();
     activities.sort_by(|a, b| {
         b.completed
             .cmp(&a.completed)
@@ -244,8 +289,8 @@ pub(crate) async fn class(
     }))
 }
 
-/// 一個活動的累積結果。
-struct ActivityAcc {
+/// 活動內單一題目的累積結果。
+struct TopicAcc {
     title: String,
     completed: i64,
     groups: BTreeMap<String, GroupAcc>,
@@ -274,8 +319,8 @@ impl GroupAcc {
     }
 }
 
-impl ActivityAcc {
-    fn finish(self, activity_id: Uuid) -> ActivityDistribution {
+impl TopicAcc {
+    fn finish(self, topic_id: Uuid) -> TopicDistribution {
         let mut groups: Vec<(String, GroupAcc)> = self.groups.into_iter().collect();
         groups.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(&b.0)));
         let mut claims: Vec<ClaimGroupView> = Vec::new();
@@ -303,8 +348,8 @@ impl ActivityAcc {
                 reasons: rest.reasons,
             });
         }
-        ActivityDistribution {
-            activity_id,
+        TopicDistribution {
+            topic_id,
             title: self.title,
             completed: self.completed,
             claims,
