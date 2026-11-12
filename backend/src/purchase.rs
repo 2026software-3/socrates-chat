@@ -67,6 +67,7 @@ pub(crate) async fn buy(
     Path(id): Path<String>,
 ) -> Result<Json<PartView>, ApiError> {
     let mut tx = state.pool.begin().await?;
+    achievements::lock_catalog_for_event(&mut tx).await?;
     // 鎖定學生，讓並行購買無法花費同一筆餘額；鎖定商品，確保價格與啟用狀態一致。
     sqlx::query("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE")
         .bind(cu.user.id)

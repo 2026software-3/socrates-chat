@@ -28,6 +28,7 @@
 - `GET /api/me` 回傳 `student_number`：帳號本身有學號就回傳（大寫，只會是登入者自己的），沒有學號的帳號（教師、管理者等）為 `null`；與角色無關，同時具備教師身分的學生帳號一樣看得到自己的學號。其他人的學號不會出現在學生可用的任何端點（S-01.4）。
 - `GET /api/me` 回傳 `can_change_password`：帳號有內建密碼且不是示範模式的示範帳號時為 `true`，前端依此決定是否在個人設定顯示「更改密碼」。`POST /api/auth/change-password` 對示範模式的示範帳號回 `403 demo_account`；目前密碼連續輸錯 5 次回 `429 too_many_attempts`（鎖定 15 分鐘，只針對更改密碼，不影響登入），成功更改會記稽核 `change_password`（S-18）。
 - `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生另可用同一 PATCH 修改 `display_name`；其他角色送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
+- 學生的 `display_name` 去除頭尾空白後最多 30 個 Unicode 字元。若超過上限或包含控制字元、行／段落分隔字元，回 `400 invalid_display_name`。傳入 `null` 或空白字串會恢復匯入名單時的姓名，省略欄位則保留目前名稱。
 
 ## 管理（管理者）
 
@@ -111,6 +112,7 @@
 - 同一場對話同時只有一條回覆在產生：AI 回覆中不接受新訊息或第二條串流（`409 reply_in_progress`）。前端中途斷線時，後端仍會把完整回覆存下來。
 - 結束對話：背景產生總結（首次 202；已結束 200）；沒有訊息時 `empty_conversation`；AI 還在回覆時 `reply_in_progress`。
 - 總結：`status` 為 `pending`／`ready`／`failed`，`pending` 時請輪詢；失敗可用 `summary/retry` 重試（`summary_not_retryable`）。總結不可由學生修改。
+- 總結的 `stance`、`reasons` 與 `claim` 保留原文。`translation` 提供帳號語言的已保存譯文 `{ language, stance, reasons }`，其餘情況為 `null`。總結完成且需要的譯文尚未保存時，`translation_pending` 為 `true`，介面顯示原文並標示待完成。
   - `claim`：學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）。
   - 固定學派的 `framework`（主要學派）與 `framework_scores`（6 維分數）已取消（S-04.6）。題目綁定的新維度與分數由後續功能（F-03.4、F-24）加入，屆時再更新本節。
 - 刪除對話會一併刪除訊息與總結。
@@ -136,7 +138,8 @@
 
 - `GET /api/summaries/{conversation_id}/messages`：教師唯讀檢視一場對話的完整訊息，回 `{ conversation_id, classroom_id, title, language, student_user_id, student_name, ended_at, messages }`（`student_user_id` 是學生的使用者 UUID，不是學號），`messages` 欄位與 `GET /api/conversations/{id}` 的訊息相同（依序、含 `source`）。只限對話屬於自己建立的教室、且已結束的活動對話；個人練習、進行中的對話、他人教室的對話與不存在的 ID 一律回 `404`（不區分原因）；學生與名單外帳號回 `403`，未登入 `401`。管理者可呼叫但每則 `content` 一律是固定字串 `message`（S-02.2）。此端點不呼叫 AI；日誌不記錄訊息內容。
 
-- 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件（教師雖然看得到原文，翻譯請求仍只含總結兩個欄位）；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
+- `GET /api/summaries` 的每筆資料也提供 `translation` 與 `translation_pending`。管理者的譯文固定為 `null`，待完成狀態固定為 `false`。
+- 按需翻譯時，瀏覽器 `Translator` 可在頁面上預覽譯文。無法使用或翻譯失敗時，呼叫無本文的 `POST /api/summaries/{conversation_id}/translation`。後端依序嘗試 Google Cloud Translation 與既有 AI，翻成教師帳號的語言，回 `{ language, stance, reasons }` 並保存該語言的第一筆成功結果。外部翻譯只接收經個資遮蔽的 `stance` 與 `reasons`。只限建立該教室的教師，其他教師回 `404`，學生、名單外帳號與管理者回 `403`。所有可用備援都失敗或輸出無效時回 `502 ai_unavailable`。原文已是教師語言時直接回原文。
 
 - `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依總結完成時間新到舊（`completed_at DESC, conversation_id ASC`）回 `{ items, next_cursor }`：翻頁期間才完成（或重試成功）的總結一定排在第一頁最上面，已列出的項目不會重複或被跳過，重新開啟列表就看得到；項目的 `ended_at` 仍是對話結束時間。`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
 - 每筆另有：

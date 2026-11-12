@@ -21,6 +21,23 @@ function browserLanguage(lang: Lang): string {
   return lang === 'es' ? 'es-ES' : lang
 }
 
+const placeholder = /(\[(?:EMAIL|PHONE|NATIONAL_ID|STUDENT_ID)\])/
+
+async function translateText(translator: BrowserTranslator, text: string): Promise<string> {
+  if (!text.trim()) return ''
+  if (text.trim() === 'message') return text
+
+  const parts = await Promise.all(text.split(placeholder).map(async (part, index) => {
+    if (index % 2 === 1 || !part.trim()) return part
+    const prefix = part.match(/^\s*/)?.[0] ?? ''
+    const suffix = part.match(/\s*$/)?.[0] ?? ''
+    const translated = (await translator.translate(part.trim())).trim()
+    if (!translated) throw new Error('Empty browser translation')
+    return prefix + translated + suffix
+  }))
+  return parts.join('')
+}
+
 /**
  * Uses the browser's on-device Translator API when the requested pair is installed.
  * Returns `null` when the API is missing, the pair is unavailable or its language pack is not
@@ -51,7 +68,7 @@ export async function translateInBrowser(source: Lang, target: Lang, texts: stri
     if (availability !== 'available') return null
     const translator = await factory.create(options)
     try {
-      return await Promise.all(texts.map((text) => (text.trim() ? translator.translate(text) : '')))
+      return await Promise.all(texts.map((text) => translateText(translator, text)))
     } finally {
       translator.destroy?.()
     }

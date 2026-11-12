@@ -236,8 +236,10 @@ pub(crate) async fn class(
         );
     }
     let mut participants = std::collections::HashSet::new();
+    let mut completed_by_activity: BTreeMap<Uuid, i64> = BTreeMap::new();
     for r in &rows {
         participants.insert(r.user_id);
+        *completed_by_activity.entry(r.activity_id).or_default() += 1;
         let Some(topic) = r
             .topic_id
             .and_then(|id| by_topic.get_mut(&(r.activity_id, id)))
@@ -267,10 +269,9 @@ pub(crate) async fn class(
             .or_insert_with(|| ActivityDistribution {
                 activity_id: id,
                 title,
-                completed: 0,
+                completed: completed_by_activity.get(&id).copied().unwrap_or(0),
                 topics: vec![],
             });
-        activity.completed += topic.completed;
         activity.topics.push(topic);
     }
     let mut activities: Vec<_> = by_activity.into_values().collect();
