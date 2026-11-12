@@ -31,7 +31,7 @@ export function ProfileForm() {
   )
 }
 
-/** 後端連結流程結束後導回 `/dashboard?link=ok` 或 `?link_error=<code>`。 */
+/** 後端連結流程結束後導回 `/account?link=ok` 或 `?link_error=<code>`。 */
 function linkResultKey(params: URLSearchParams): MessageKey | null {
   if (params.get('link') === 'ok') return 'profile.google.linked'
   const code = params.get('link_error')
