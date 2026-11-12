@@ -102,6 +102,7 @@ pub fn test_config() -> Config {
         ai_total_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
         demo_mode: false,
+        smtp: None,
     }
 }
 
