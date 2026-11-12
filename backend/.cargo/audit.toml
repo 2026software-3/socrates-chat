@@ -12,4 +12,10 @@ ignore = [
     # 用途同上（以公鑰驗證 ID token），不處理本系統持有的祕密；需等 openidconnect 升級相依才能修。
     # 重新檢視：openidconnect 釋出使用 crypto-bigint >= 0.7.6 的版本時。
     "RUSTSEC-2026-0387",
+    # libsqlite3-sys 0.37.0 — C SQLite 的 CVE。只因 Cargo.lock 記錄了 sqlx 的選用相依 sqlx-sqlite 才出現；
+    # 本專案只啟用 sqlx 的 postgres，`cargo tree -i libsqlite3-sys --target all --all-features` 為空，
+    # 不會被編進後端。sqlx-sqlite 0.9.0（目前最新版）限制 libsqlite3-sys < 0.38，無法靠更新 Cargo.lock 升到修復版 0.39；
+    # sqlx 上游已在 main 放寬上限（launchbadge/sqlx#4502，2026-11-08），但尚未發佈。
+    # 重新檢視：sqlx 發佈含 #4502 的版本（升級後即可移除此項），或專案開始啟用 sqlx 的 sqlite 功能時。
+    "RUSTSEC-2026-0459",
 ]

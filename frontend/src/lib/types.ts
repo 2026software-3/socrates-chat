@@ -12,6 +12,8 @@ export type Me = {
   is_admin: boolean
   /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
   must_change_password: boolean
+  /** 有內建密碼且不是示範帳號：個人設定才顯示「更改密碼」（S-18） */
+  can_change_password: boolean
   roles: Roles
 }
 
@@ -47,6 +49,8 @@ export type ConversationStatus = 'active' | 'ended'
 export type Conversation = {
   id: string
   activity_id: string | null
+  /** 活動對話所屬活動目前的名稱；個人練習為 null */
+  activity_title: string | null
   topic_id: string | null
   title: string
   description: string
@@ -57,6 +61,7 @@ export type Conversation = {
   turn_count: number
   converge_ready: boolean
   created_at: string
+  updated_at: string
   ended_at: string | null
   /** 學生已封存：只從自己的清單隱藏，可復原 */
   is_archived: boolean

@@ -15,7 +15,7 @@
 - **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
 - **學生識別欄位命名**（#446）：`student_number` 一律是學號（8 位數字加 1 個大寫英文字母，個資，可見範圍見 S-01.4）；學生的使用者 UUID 在學生列表是 `id`，在總結列表與對話原文是 `student_user_id`。API 不使用 `student_id` 這個名稱（包含重設密碼請求）。資料庫欄位 `users.student_id`、`enrollments.student_id` 仍存學號，不對外。
-- **權限分層**：管理者專用的在 `/api/admin`；教師或管理者；只有修課名單內的學生。對話內容只有擁有者讀得到，別人（含教師、管理者）一律 `404`。
+- **權限分層**：管理者專用的在 `/api/admin`；其他端點依教師、管理者或修課名單內學生的權限區分。學生的對話端點僅擁有者可讀，其他人回 `404`；教師可透過教師檢視端點唯讀查看自己教室已結束的活動對話原文，管理者不可見原文（S-02.1）。
 
 ## 登入
 
@@ -26,6 +26,7 @@
 - 用臨時密碼登入時 `must_change_password` 為 `true`：前端導向改密碼頁，除了 `GET /api/me`、改密碼與登出，其他 API 都回 `password_change_required`。旗標在 session 上，不在使用者上。
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
 - `GET /api/me` 回傳 `student_number`：帳號本身有學號就回傳（大寫，只會是登入者自己的），沒有學號的帳號（教師、管理者等）為 `null`；與角色無關，同時具備教師身分的學生帳號一樣看得到自己的學號。其他人的學號不會出現在學生可用的任何端點（S-01.4）。
+- `GET /api/me` 回傳 `can_change_password`：帳號有內建密碼且不是示範模式的示範帳號時為 `true`，前端依此決定是否在個人設定顯示「更改密碼」。`POST /api/auth/change-password` 對示範模式的示範帳號回 `403 demo_account`；目前密碼連續輸錯 5 次回 `429 too_many_attempts`（鎖定 15 分鐘，只針對更改密碼，不影響登入），成功更改會記稽核 `change_password`（S-18）。
 - `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生另可用同一 PATCH 修改 `display_name`；其他角色送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
 
 ## 管理（管理者）
@@ -94,10 +95,10 @@
 
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
-- `GET /api/conversations?limit=&cursor=` 依 `created_at DESC, id ASC` 回 `{ items, next_cursor }`；預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
-- 開始活動對話時在 `POST /api/conversations` 同時傳 `activity_id` 與 `topic_id`；題目必須屬於該活動，對話保存所選題目的標題和說明。只傳 `topic_id` 建立個人練習。為相容現有前端，只傳 `activity_id` 時暫時使用活動的第一個題目，並沿用活動標題與說明。活動必須已發布、在開放期間、未封存且屬於未封存教室，學生也須在該教室名單內；個人練習題目須啟用。來源不可用（包含題目不屬於活動）一律回 `400 invalid_conversation_source`，不外露原因。
+- `GET /api/conversations?limit=&cursor=` 依 `updated_at DESC, id ASC` 回 `{ items, next_cursor }`；`updated_at` 表示最後一則訊息的時間，尚無訊息時以 `created_at` 替代。預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
+- 開始活動對話時在 `POST /api/conversations` 同時傳 `activity_id` 與 `topic_id`；題目必須屬於該活動，對話保存所選題目的標題和說明。只傳 `topic_id` 建立個人練習。為相容現有前端，只傳 `activity_id` 時暫時使用活動的第一個題目，對話標題一樣是該題目的標題（不是活動名稱），說明則沿用活動說明。活動必須已發布、在開放期間、未封存且屬於未封存教室，學生也須在該教室名單內；個人練習題目須啟用。來源不可用（包含題目不屬於活動）一律回 `400 invalid_conversation_source`，不外露原因。
 - 新對話會把帳號目前的 `language` 複製到對話；之後切換帳號語言不會改變既有對話。AI 回覆、總結、主張分組與語音都依對話語言執行，提示／規則版本以 `vN/<language>` 保存。
-- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。
+- 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。對話回應（建立、單場、列表）帶 `activity_title`：活動對話所屬活動**目前**的名稱（教師改名後跟著變），個人練習為 `null`；題目名稱仍是 `title`。「我的對話」來源欄用這兩個欄位顯示活動名稱與題目。
 - 每位學生在每個活動的每個題目至多一場對話，進行中或已結束都算（S-04.7）：該題已有對話時回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個；同一活動的其他題目仍可各自開始。刪除該場對話後該題可重新開始；個人練習不受限。
 - 對話封存（S-14）：`POST /api/conversations/{id}/archive`、`/unarchive` 只改變本人清單的顯示（回 `204`，他人的對話回 `404`），不受教室封存限制，不影響教師端總結、彙整、點數，也不解除「一人一活動每題一場」；封存的活動對話要重開必須先刪除。`DELETE /api/conversations/{id}` 不受教室封存限制。教室或活動被刪除時其中的對話一併刪除。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。

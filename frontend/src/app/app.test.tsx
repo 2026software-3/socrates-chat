@@ -178,6 +178,8 @@ describe('app shell', () => {
       '執行日誌',
       '任務設定',
       '部件設定',
+      '公告與維護',
+      '客訴',
     ])
     expect(await screen.findByText('2')).toBeInTheDocument()
   })
