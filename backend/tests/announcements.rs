@@ -341,6 +341,52 @@ async fn invalid_announcements_are_rejected(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn nul_characters_in_announcement_text_are_rejected_without_writing(pool: PgPool) {
+    // Postgres 的 text 欄位不能存 NUL；要在驗證時就回 400，而不是寫入失敗變 500
+    let app = test_app_with_ai(pool.clone(), FakeAi::with(translated()));
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "原文"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+    let (_, before) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    let audit_before = audit_actions(&pool, "announcement_").await;
+
+    for body in [
+        json!({"kind": "general", "text_zh_tw": "a\u{0}b"}),
+        json!({"kind": "general", "text_zh_tw": "\u{0}"}),
+    ] {
+        let (s, v) = call(&app, "POST", ADMIN_LIST, Some(&a.admin), Some(body)).await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid_text")),
+            "{v}"
+        );
+    }
+    for body in [
+        json!({"text_zh_tw": "改\u{0}了"}),
+        json!({"text_zh_tw": "\u{0}"}),
+        json!({"text_en": "a\u{0}b"}),
+        json!({"text_es": "\u{0}"}),
+    ] {
+        let (s, v) = call(&app, "PATCH", &path, Some(&a.admin), Some(body)).await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid_text")),
+            "{v}"
+        );
+    }
+
+    // 什麼都沒寫：公告內容與稽核日誌都和之前一樣
+    let (_, after) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(after, before);
+    assert_eq!(audit_actions(&pool, "announcement_").await, audit_before);
+}
+
+#[sqlx::test]
 async fn announcements_can_be_disabled_rescheduled_cleared_and_deleted(pool: PgPool) {
     let app = test_app_with_ai(pool, FakeAi::with(translated()));
     let a = seed_actors(&app).await;
