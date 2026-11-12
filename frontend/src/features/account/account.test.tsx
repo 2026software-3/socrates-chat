@@ -29,24 +29,48 @@ async function openDialog() {
   return within(await screen.findByRole('dialog', { name: '更改密碼' }))
 }
 
+const settingsCard = () => screen.getByRole('region', { name: '個人設定' })
+
 describe('the account page', () => {
+  it.each<[string, Partial<Roles>, string]>([
+    ['a teacher', { teacher: true }, '教師'],
+    ['an admin-only account', { admin: true }, '管理者'],
+    ['a teacher who is also an admin', { teacher: true, admin: true }, '管理者 / 教師'],
+  ])('gives %s the same 個人設定 card as students, with read-only account info', async (_label, roles, roleText) => {
+    await open(roles)
+    const card = within(settingsCard())
+    // 與學生同一個版型：同一個標題，更改密碼按鈕在卡片裡
+    expect(card.getByRole('heading', { level: 2, name: '個人設定' })).toBeInTheDocument()
+    expect(card.getByRole('button', { name: '更改密碼' })).toBeInTheDocument()
+    // 教師與管理者能看到自己的帳號資訊，但不能在這裡修改（顯示名稱只有學生能改，後端也拒絕）
+    expect(card.getByText('顯示名稱')).toBeInTheDocument()
+    expect(card.getByText('Test User')).toBeInTheDocument()
+    expect(card.getByText('電子郵件')).toBeInTheDocument()
+    expect(card.getByText('user@example.com')).toBeInTheDocument()
+    expect(card.getByText('角色')).toBeInTheDocument()
+    expect(card.getByText(roleText)).toBeInTheDocument()
+    expect(card.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(card.queryByRole('button', { name: '儲存' })).not.toBeInTheDocument()
+    // 沒有學生才有的內容
+    expect(screen.queryByRole('heading', { name: 'Google 帳號' })).not.toBeInTheDocument()
+    expect(screen.queryByText('已完成對話')).not.toBeInTheDocument()
+  })
+
+  it('shows a dash when a teacher has no display name', async () => {
+    await open({ teacher: true }, { display_name: null })
+    expect(within(settingsCard()).getByText('—')).toBeInTheDocument()
+  })
+
   it.each<[string, Partial<Roles>]>([
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
-    ['a teacher who is also an admin', { teacher: true, admin: true }],
-  ])('offers only the change-password form to %s', async (_label, roles) => {
+  ])('keeps the change-password form out of the page for %s until the button is pressed', async (_label, roles) => {
     await open(roles)
-    // 平常只有一個按鈕，不攤開表單，也沒有另外的標題列
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '密碼' })).not.toBeInTheDocument()
     const form = await openDialog()
     expect(form.getByLabelText('目前密碼')).toHaveAttribute('autocomplete', 'current-password')
     expect(form.getByLabelText('新密碼')).toBeInTheDocument()
     expect(form.getByLabelText('確認新密碼')).toBeInTheDocument()
-    // 教師與管理者的帳號頁只放更改密碼：顯示名稱、Google 連結與儀表板內容是學生的
-    expect(screen.queryByLabelText('顯示名稱')).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Google 帳號' })).not.toBeInTheDocument()
-    expect(screen.queryByText('已完成對話')).not.toBeInTheDocument()
   })
 
   it('does not send an admin-only account back to the operations home', async () => {
@@ -89,9 +113,11 @@ describe('the account page', () => {
   it.each<[string, Partial<Roles>]>([
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
-  ])('only explains that %s without a built-in password cannot change it here', async (_label, roles) => {
+  ])('explains inside the card that %s without a built-in password cannot change it here', async (_label, roles) => {
     await open(roles, { can_change_password: false })
-    expect(screen.getByText('這個帳號不能在這裡更改密碼。')).toBeInTheDocument()
+    // 卡片照常顯示帳號資訊，按鈕本來的位置改為說明（與學生同一句）
+    expect(within(settingsCard()).getByText('這個帳號不能在這裡更改密碼。')).toBeInTheDocument()
+    expect(within(settingsCard()).getByText('user@example.com')).toBeInTheDocument()
     noChangeButton()
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -136,7 +162,7 @@ describe('the avatar at the top right', () => {
     ['an admin-only account', { admin: true }],
   ])('does not link the avatar of %s when the account cannot change its password', async (_label, roles) => {
     await open(roles, { can_change_password: false })
-    expect(screen.getByText('Test User')).toBeInTheDocument()
+    expect(within(screen.getByRole('complementary')).getByText('Test User')).toBeInTheDocument()
     expect(screen.getByRole('img', { name: 'Test User' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Test User' })).not.toBeInTheDocument()
   })
@@ -144,7 +170,7 @@ describe('the avatar at the top right', () => {
   it('keeps the name in the sidebar as plain text: the avatar is the only way in', async () => {
     await open({ teacher: true })
     expect(screen.getAllByRole('link', { name: 'Test User' })).toHaveLength(1)
-    expect(screen.getByText('Test User')).not.toHaveAttribute('href')
+    expect(within(screen.getByRole('complementary')).getByText('Test User')).not.toHaveAttribute('href')
   })
 
   it.each<[string, Partial<Roles>]>([

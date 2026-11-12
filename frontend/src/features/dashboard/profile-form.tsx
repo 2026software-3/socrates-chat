@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { dictionaries, errorText, useT, type MessageKey } from '@/i18n'
 import { api } from '@/lib/api'
-import { ChangePasswordDialog } from '@/features/dashboard/change-password-section'
+import { usePasswordChange } from '@/features/dashboard/use-password-change'
 import type { Me } from '@/lib/types'
 
 /** 顯示名稱的長度上限；後端才是準則（S-08.2），這裡只是方便使用者。 */
@@ -23,8 +23,7 @@ const nameLength = (value: string) => Array.from(value.trim()).length
  */
 export function ProfileForm() {
   const auth = useAuth()
-  const [passwordOpen, setPasswordOpen] = useState(false)
-  const [passwordSaved, setPasswordSaved] = useState(false)
+  const password = usePasswordChange()
   // 登入者載入完成前不顯示（外框保證實際使用時一定已登入）
   if (auth.status !== 'authed') return null
   const canChangePassword = auth.me.can_change_password
@@ -33,20 +32,10 @@ export function ProfileForm() {
       <Form
         me={auth.me}
         update={auth.update}
-        password={
-          canChangePassword
-            ? {
-                saved: passwordSaved,
-                open: () => {
-                  setPasswordSaved(false)
-                  setPasswordOpen(true)
-                },
-              }
-            : null
-        }
+        password={canChangePassword ? { saved: password.saved, open: password.start } : null}
       />
       {auth.me.roles.student ? <GoogleLink me={auth.me} update={auth.update} /> : null}
-      {canChangePassword ? <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} onSaved={() => setPasswordSaved(true)} /> : null}
+      {canChangePassword ? password.dialog : null}
     </>
   )
 }
