@@ -53,7 +53,7 @@
 - 活動屬於教室（F-28.3、S-14）：`POST /api/activities` 本文必須帶 `classroom_id`（沒帶回 `400 invalid_classroom`），建立後不可更改（`PATCH` 沒有這個欄位）。教室不存在與不是自己管理的教室一律回相同的 `404 not_found`；教師只能建立、讀取、修改、發布與停止自己建立的教室內的活動（其他教師的活動回 `404`），管理者可管理所有教室。題目是全域的：兩個教室可以引用同一題目，各教室的活動互不影響。
 - `GET /api/activities?classroom_id=` 列出自己管理的教室內的活動（管理者為全部），回應每筆都有 `classroom_id`；帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。
 - 活動封存與刪除（S-14）：活動回應帶 `is_archived`（預設 `false`）。`POST /api/activities/{id}/archive`、`/unarchive`（選填 `?reason=` 寫入稽核日誌）封存與復原；教室已封存時回 `409 classroom_archived`。封存的活動不出現在學生清單、不能開始新對話（`400 invalid_conversation_source`），既有對話照舊；`GET /api/activities` 預設只列未封存的，`?archived=true` 只列已封存的；`archived` 只接受 `true` 或 `false`，其他值回 `400 invalid_archived`。已封存的活動不能發布或停止開放（`409 activity_archived`），需先復原；重複封存同一活動不會重複寫稽核。`DELETE /api/activities/{id}` 永久刪除活動與其所有對話、總結，JSON body 的 `confirm_title` 必須等於活動標題（`400 confirmation_mismatch`），選填 `reason`；封存的活動與封存教室內的活動都可直接刪除，成功回 `204`；缺少 body 與名稱不符都回 `400 confirmation_mismatch`（不存在的活動先回 `404`）。封存、復原、刪除都寫入稽核日誌（`activity_archived`／`activity_restored`／`activity_deleted`，對象為活動標題；刪除另記 `item_count`＝一併刪除的對話數）。
-- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、未封存、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目；舊的 `/api/available` 已移除。
+- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、未封存、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目。每個活動除活動欄位外，另帶 `topics`（依教師排定順序，每題 `topic_id`、`title`、該學生此題的 `conversation_id` 與 `conversation_status`（`active`／`ended`，未開始為 null）、`summary_ready`）與 `completed`（每題都有已產生總結的對話才為 true；F-29.6、S-04.7）；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生（F-28.2）
 
@@ -127,7 +127,11 @@
 - 按需翻譯：前端先以瀏覽器內建 `Translator` API 翻譯；API 不存在、語言配對不支援、語言包下載或翻譯失敗時，才呼叫 AI 備援 `POST /api/summaries/{conversation_id}/translation`。備援端點不帶本文，後端只把該總結的 `stance`、`reasons` 送給 AI，翻成教師帳號目前的語言，回 `{ language, stance, reasons }`。不會讀取或送出對話原文、姓名、電子郵件（教師雖然看得到原文，翻譯請求仍只含總結兩個欄位）；結果不保存、不快取。只限建立該教室的教師，其他教師回 `404`；學生、名單外帳號與管理者回 `403`；AI 失敗或輸出不完整回 `502 ai_unavailable`。若原文已是教師語言，直接回原文且不呼叫 AI。
 
 - `GET /api/summaries?limit=&cursor=&classroom_id=&student=&activity=&topic=&q=`（#285，取代已移除的 `/api/teacher/summaries`）：教師與管理者可用，學生與名單外帳號 `403`（學生看自己的總結仍用 `GET /api/conversations/{id}/summary`）。只列 `ready` 的總結，依總結完成時間新到舊（`completed_at DESC, conversation_id ASC`）回 `{ items, next_cursor }`：翻頁期間才完成（或重試成功）的總結一定排在第一頁最上面，已列出的項目不會重複或被跳過，重新開啟列表就看得到；項目的 `ended_at` 仍是對話結束時間。`limit`／`cursor` 規則與對話列表相同（`invalid_limit`、`invalid_cursor`）。游標綁定產生它時的篩選條件（`classroom_id`、`student`、`activity`、`topic`、`q`，正規化後比較：`topic`、`q` 不分大小寫，`q` 忽略前後空白）；換了條件還沿用舊游標回 `400 invalid_cursor`，要從第一頁開始。游標只帶條件的雜湊，不含姓名或電子郵件。管理者的每一頁都遮蔽。
-- 每筆另有 `student_number`：學生的學號（大寫）。管理者也看得到、不遮蔽（S-02.2，2026-10 需求方決定）；其他教室的教師本來就列不到這些總結。
+- 每筆另有：
+  - `student_number`：學生的學號（大寫）。管理者也看得到、不遮蔽（S-02.2，2026-10 需求方決定）；其他教室的教師本來就列不到這些總結。
+  - `activity_id`：對話所屬的活動 ID（個人練習為 `null`）。
+  - `topic_id`：對話所屬的題目 ID（S-04.7、F-29.3）；個人練習為 `null`，題目被刪除後也會變成 `null`。
+  - `activity_completed`：布林值（S-04.7、F-29.3）。代表該學生是否已完成該活動內的所有題目（每個題目皆有一場已產生 `ready` 總結的對話；活動新增題目時自動回退為 `false`；非活動對話為 `false`）。多題目活動中每位學生每個題目各有一列，每列各有自己的 `conversation_id` 作為入口可查看該題總結或完整對話。
 
 - `student`：學生的使用者 UUID（列表項目的 `student_user_id`，也是學生列表的 `id`；不是學號，傳學號回 `400 invalid_filter`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
 - `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。

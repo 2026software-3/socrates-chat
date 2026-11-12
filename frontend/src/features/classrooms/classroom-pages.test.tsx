@@ -55,6 +55,9 @@ const activity: Activity = {
 const summary: TeacherSummary = {
   conversation_id: 'c1',
   classroom_id: ROOM_A,
+  activity_id: null,
+  topic_id: null,
+  activity_completed: false,
   title: '電車難題',
   ended_at: '2026-03-05T10:00:00Z',
   student_user_id: STUDENT,
