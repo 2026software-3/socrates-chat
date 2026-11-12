@@ -292,3 +292,47 @@ async fn removed_students_still_see_the_source_of_their_own_conversations(pool: 
             .contains("測試教室")
     );
 }
+
+#[sqlx::test]
+async fn the_create_response_matches_the_conversation_read_back(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let second = classroom_with_description(&app, &a, "B 班", "教室說明").await;
+    enroll_student(&app, &a, &second).await;
+    let act = published_in(&app, &a, &second, "說謊").await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/conversations",
+            Some(&a.student),
+            Some(json!({"activity_id": act})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let created = json_body(res).await;
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["classroom_name"], "B 班");
+    assert_eq!(created["classroom_archived"], false);
+
+    // 建立回應與稍後讀回的對話使用同一份欄位定義，兩者完全一致
+    let res = send(
+        &app,
+        get(&format!("/api/conversations/{id}"), Some(&a.student)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let read = json_body(res).await;
+    for field in [
+        "classroom_id",
+        "classroom_name",
+        "classroom_archived",
+        "activity_title",
+        "updated_at",
+        "title",
+    ] {
+        assert_eq!(created[field], read[field], "{field}");
+    }
+}
