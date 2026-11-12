@@ -20,8 +20,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState, achievements,
-    ai::{AiRequest, ChatRole, ChatTurn, collect_background},
+    ai::{AiError, AiRequest, ChatRole, ChatTurn, collect_background},
     auth::RequireAdmin,
+    diagnostics::AiActivity,
     error::ApiError,
 };
 
@@ -454,6 +455,7 @@ pub(crate) async fn create(
                     let name = &name;
                     let description = &description;
                     let browser = b.browser_translations.get(language);
+                    let user = cu.user.id;
                     async move {
                         if language == source {
                             Some((name.clone(), description.clone()))
@@ -471,6 +473,7 @@ pub(crate) async fn create(
                                 None => {
                                     translate_achievement(
                                         state,
+                                        user,
                                         source,
                                         language,
                                         name,
@@ -582,6 +585,7 @@ pub(crate) async fn create(
 /// 翻譯成就名稱及說明；失敗時由呼叫端保留原文並標記待完成。
 async fn translate_achievement(
     state: &AppState,
+    user: Uuid,
     source: &str,
     target: &str,
     name: &str,
@@ -602,11 +606,32 @@ async fn translate_achievement(
             content: serde_json::json!({"name": name, "description": description}).to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), request, state.config.ai_total_timeout)
+    AiActivity::new("achievement_translation", Some(user), None)
+        .statuses(201, 201)
+        .run(state, Some(&state.config.openai_model), 0, async {
+            let raw = collect_background(state.ai.as_ref(), request, state.config.ai_total_timeout)
+                .await?;
+            let translated: Translation =
+                serde_json::from_str(&raw).map_err(|_| AiError::invalid_output())?;
+            if name.matches("{n}").count() != translated.name.matches("{n}").count()
+                || description.matches("{n}").count()
+                    != translated.description.matches("{n}").count()
+            {
+                return Err(AiError::invalid_output());
+            }
+            Ok((
+                clean_text(&translated.name, MAX_NAME_CHARS, "invalid_name")
+                    .map_err(|_| AiError::invalid_output())?,
+                clean_text(
+                    &translated.description,
+                    MAX_DESCRIPTION_CHARS,
+                    "invalid_description",
+                )
+                .map_err(|_| AiError::invalid_output())?,
+            ))
+        })
         .await
-        .ok()?;
-    let translated: Translation = serde_json::from_str(&raw).ok()?;
-    validate_translation(name, description, &translated.name, &translated.description)
+        .ok()
 }
 
 fn validate_translation(

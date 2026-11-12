@@ -7,9 +7,9 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, achievement_admin, ai_usage, auth, cascade, catalog, chat, claims, classroom_store,
-    classrooms, dashboard, demo, error::ErrorBody, points, purchase, reply, request_logs, roster,
-    roster_store, summary, tasks, voice,
+    accounts, achievement_admin, ai_usage, announcements, auth, cascade, catalog, chat, claims,
+    classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody, points, purchase,
+    reply, request_logs, roster, roster_store, summary, tasks, voice,
 };
 
 struct SessionCookie;
@@ -129,6 +129,8 @@ impl Modify for SessionCookie {
         chat::create, chat::list, chat::detail, chat::remove, chat::archive, chat::unarchive, chat::send_message,
         reply::stream,
         request_logs::list,
+        crate::diagnostics::status,
+        crate::diagnostics::list,
         summary::end, summary::get_summary, summary::retry, summary::list, summary::transcript, summary::translate,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech, cascade::socket,
@@ -136,6 +138,9 @@ impl Modify for SessionCookie {
         tasks::list, tasks::claim, tasks::admin_list, tasks::update,
         purchase::list, purchase::buy, purchase::admin_list, purchase::update,
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
+        announcements::public_list, announcements::list, announcements::create, announcements::update,
+        announcements::remove, announcements::get_maintenance, announcements::set_maintenance,
+        complaints::submit, complaints::list, complaints::update, complaints::resend,
     ),
     components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
     modifiers(&SessionCookie, &CommonErrorResponses),

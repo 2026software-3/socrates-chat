@@ -221,7 +221,7 @@ pub(crate) struct NewActivity {
     title: String,
     #[serde(default)]
     description: String,
-    /// 題目清單（S-04.7、F-29.1）：必填且至少一個；沒帶、為空或題目不存在都回 `invalid_topic`
+    /// 題目清單（S-04.7、F-29.1）：必填且至少一個；沒帶、為空、題目不存在或已停用都回 `invalid_topic`
     topic_ids: Option<Vec<Uuid>>,
     /// 相容舊欄位（單一題目）
     topic_id: Option<Uuid>,
@@ -317,17 +317,27 @@ fn topic_change_locked(current: &[Uuid], new: &[Uuid], locked: &[Uuid]) -> bool 
     })
 }
 
-/// 一次查詢確認所有題目都存在；`ids` 須已通過 `validate_topic_list`（不重複）。
-async fn ensure_topics_exist<'e>(
+/// 一次查詢確認所有題目都存在，且新選用的題目都已啟用（F-03.2、Issue #43）；
+/// `ids` 須已通過 `validate_topic_list`（不重複）。`already_selected` 是活動目前已有的題目：
+/// 它們之後才被停用也照舊沿用，不因此讓整個更新失敗，只有新加入的題目要求啟用。建立活動時傳空陣列。
+async fn ensure_topics_selectable<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     ids: &[Uuid],
+    already_selected: &[Uuid],
 ) -> Result<(), ApiError> {
-    let found: i64 = sqlx::query_scalar("SELECT count(*) FROM topics WHERE id = ANY($1)")
-        .bind(ids)
-        .fetch_one(executor)
-        .await?;
-    if found != ids.len() as i64 {
+    let found: Vec<(Uuid, bool)> =
+        sqlx::query_as("SELECT id, is_active FROM topics WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(executor)
+            .await?;
+    if found.len() != ids.len() {
         return Err(ApiError::bad_request("invalid_topic", "題目不存在"));
+    }
+    if found
+        .iter()
+        .any(|(id, active)| !active && !already_selected.contains(id))
+    {
+        return Err(ApiError::bad_request("invalid_topic", "題目已停用"));
     }
     Ok(())
 }
@@ -412,7 +422,7 @@ pub(crate) async fn get_activity(
     tag = "activities",
     summary = "在教室內建立活動（草稿）",
     request_body = NewActivity,
-    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_schedule / schedule_in_past / invalid_title / invalid_topic / invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = Activity), (status = 400, description = "invalid_schedule / schedule_in_past / invalid_title / invalid_topic（題目不存在或已停用）/ invalid_classroom", body = crate::error::ErrorBody), (status = 404, description = "not_found：教室不存在或不是自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -432,7 +442,7 @@ pub(crate) async fn create_activity(
     };
     // 不是自己管理的教室與不存在的教室回應相同
     let classroom = visible_classroom(&state, &cu, &classroom_id.to_string()).await?;
-    ensure_topics_exist(&state.pool, &topic_ids).await?;
+    ensure_topics_selectable(&state.pool, &topic_ids, &[]).await?;
     validate_not_past((b.opens_at, b.closes_at), (None, None))?;
     validate_schedule(b.opens_at, b.closes_at)?;
     let mut tx = state.pool.begin().await?;
@@ -458,7 +468,7 @@ pub(crate) async fn create_activity(
     summary = "修改活動（merge-patch）",
     params(("id" = Uuid, Path, description = "活動 ID")),
     request_body = ActivityPatch,
-    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_schedule / schedule_in_past / invalid_title / invalid_topic", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked / classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "更新後的活動", body = Activity), (status = 400, description = "invalid_schedule / schedule_in_past / invalid_title / invalid_topic（新加入的題目不存在或已停用；活動本來就有的題目不受影響）", body = crate::error::ErrorBody), (status = 409, description = "activity_topic_locked / classroom_archived", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_activity(
     RequireTeacher(cu): RequireTeacher,
@@ -526,7 +536,7 @@ pub(crate) async fn update_activity(
         };
 
         if new_ids != current_topics {
-            ensure_topics_exist(&mut *tx, &new_ids).await?;
+            ensure_topics_selectable(&mut *tx, &new_ids, &current_topics).await?;
 
             // 對話的 topic_id 為 NULL（題目已被刪除）時不知道鎖的是哪一題，整份清單都視為已鎖
             let conv_topics: Vec<Option<Uuid>> = sqlx::query_scalar(
@@ -769,7 +779,7 @@ pub(crate) async fn delete_activity(
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Available {
     /// 教師指定的活動：已發布，且在學生所屬教室的名單內
-    activities: Vec<Activity>,
+    activities: Vec<activity_store::StudentActivity>,
     /// 題目庫中已啟用的題目
     topics: Vec<Topic>,
 }
@@ -786,7 +796,7 @@ pub(crate) async fn available(
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {
     let (activities, topics) = tokio::try_join!(
-        activity_store::list_published_for_student(&state.pool, cu.user.id),
+        activity_store::list_published_with_progress(&state.pool, cu.user.id),
         sqlx::query_as(
             "SELECT id, title, description, category, is_active FROM topics
              WHERE is_active ORDER BY created_at, id",

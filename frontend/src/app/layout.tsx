@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useAuth } from '@/auth/auth-context'
 import { canAccess, type NavItem } from '@/app/feature'
 import { LangSwitcher } from '@/components/lang-switcher'
+import { AnnouncementBar } from '@/features/announcements/announcement-banner'
 import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
 import { WorkspaceContext } from '@/components/page'
 import { Button } from '@/components/ui/button'
@@ -52,6 +53,11 @@ function Account({ me }: { me: Me }) {
         <Link to="/dashboard" className="text-sm font-medium underline-offset-4 hover:underline">
           {me.display_name ?? me.email}
         </Link>
+      ) : me.can_change_password ? (
+        // 教師與管理者沒有個人設定頁，更改密碼放在帳號頁（S-18）
+        <Link to="/account" className="text-sm font-medium underline-offset-4 hover:underline">
+          {me.display_name ?? me.email}
+        </Link>
       ) : (
         <span className="text-sm font-medium">{me.display_name ?? me.email}</span>
       )}
@@ -83,6 +89,10 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
   const content = (
     <WorkspaceContext.Provider value={workspace}>
       <div className={cn('flex min-w-0 flex-1 flex-col', fullBleed && 'min-h-0 overflow-y-auto')}>
+        {/* 公告橫幅（S-15）：每一頁最上方；沒有公告時不佔位 */}
+        <div className={cn('w-full empty:hidden', fullBleed ? 'shrink-0 px-4 pt-3' : 'mx-auto max-w-5xl px-4 pt-4 md:px-8 md:pt-8')}>
+          <AnnouncementBar />
+        </div>
         {fullBleed ? <main className="flex min-h-0 flex-1 flex-col">{children}</main> : <main className="mx-auto w-full max-w-5xl p-4 md:p-8">{children}</main>}
       </div>
     </WorkspaceContext.Provider>

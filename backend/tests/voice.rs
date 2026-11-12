@@ -168,14 +168,23 @@ async fn transcribe_returns_text_and_passes_language_and_mime(pool: PgPool) {
     );
 }
 
+/// 被拒絕的上傳內容不得出現在錯誤回應裡。
+const UNAUTHORIZED_AUDIO: &[u8] = b"UNAUTHORIZED_AUDIO_PAYLOAD";
+
 #[sqlx::test]
 async fn voice_endpoints_require_a_member(pool: PgPool) {
     let voice = Arc::new(FakeVoice::default());
     let app = app_with_voice(pool, voice.clone());
     let a = seed_actors(&app).await;
-    for (cookie, status) in [
-        (Some(a.outsider.as_str()), StatusCode::FORBIDDEN),
-        (None, StatusCode::UNAUTHORIZED),
+    for (cookie, status, code) in [
+        (
+            Some(a.outsider.as_str()),
+            StatusCode::FORBIDDEN,
+            "not_enrolled",
+        ),
+        (Some(a.teacher.as_str()), StatusCode::FORBIDDEN, "forbidden"),
+        (Some(a.admin.as_str()), StatusCode::FORBIDDEN, "forbidden"),
+        (None, StatusCode::UNAUTHORIZED, "unauthorized"),
     ] {
         let res = send(
             &app,
@@ -183,11 +192,17 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
                 "/api/voice/transcribe?language=en",
                 cookie,
                 "audio/webm",
-                vec![1],
+                UNAUTHORIZED_AUDIO.to_vec(),
             ),
         )
         .await;
         assert_eq!(res.status(), status);
+        let text = text_body(res).await;
+        assert!(!text.contains(std::str::from_utf8(UNAUTHORIZED_AUDIO).unwrap()));
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["error"]["code"], code);
+        assert!(body["error"]["request_id"].is_string());
+
         let res = send(
             &app,
             json_req(
@@ -199,6 +214,9 @@ async fn voice_endpoints_require_a_member(pool: PgPool) {
         )
         .await;
         assert_eq!(res.status(), status);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], code);
+        assert!(body["error"]["request_id"].is_string());
     }
     assert!(
         voice.calls.lock().unwrap().is_empty(),
@@ -613,17 +631,23 @@ async fn speech_stays_metered_without_a_tts_base_url() {
 async fn openai_voice_reports_failure_when_the_service_is_unreachable() {
     // 預設假位址 127.0.0.1:1 連不上
     let v = openai_voice("http://127.0.0.1:1");
+    let expected =
+        VoiceError::Classified(socrates_chat_backend::diagnostics::Failure::ConnectionFailed);
     assert_eq!(
         v.transcribe(vec![1], "audio/webm", "en").await,
-        Err(VoiceError::Failed)
+        Err(expected)
     );
-    assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+    assert_eq!(v.speak("hi", "en").await, Err(expected));
 }
 
 #[tokio::test]
 async fn openai_voice_failures_never_change_the_shared_key_state() {
     use axum::http::StatusCode;
-    for status in [StatusCode::FORBIDDEN, StatusCode::TOO_MANY_REQUESTS] {
+    use socrates_chat_backend::diagnostics::Failure;
+    for (status, class) in [
+        (StatusCode::FORBIDDEN, Failure::InvalidKey),
+        (StatusCode::TOO_MANY_REQUESTS, Failure::RateLimited),
+    ] {
         let app = Router::new()
             .route("/audio/transcriptions", post(move || async move { status }))
             .route("/audio/speech", post(move || async move { status }));
@@ -637,9 +661,12 @@ async fn openai_voice_failures_never_change_the_shared_key_state() {
         let v = OpenAiVoice::from_config(&c);
         assert_eq!(
             v.transcribe(vec![1], "audio/webm", "en").await,
-            Err(VoiceError::Failed)
+            Err(VoiceError::Classified(class))
         );
-        assert_eq!(v.speak("hi", "en").await, Err(VoiceError::Failed));
+        assert_eq!(
+            v.speak("hi", "en").await,
+            Err(VoiceError::Classified(class))
+        );
         // 語音端點的錯誤（例如模型沒開放）不能讓對話用的 key 被冷卻或停用
         assert_eq!(c.openai_keys.usable_count(), 1, "{status}");
         assert!(c.openai_keys.acquire().is_some(), "{status}");

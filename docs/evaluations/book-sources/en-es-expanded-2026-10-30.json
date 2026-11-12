@@ -1,0 +1,61 @@
+{
+  "retrieved_on": "2026-10-30",
+  "selection_basis": "擴充樣本：英西各三本，增加當代倫理、女性作者、西文原著及近年出版版本；非排行榜，仍非隨機或完整代表性樣本。先固定樣本再查 API。",
+  "query_policy": "沿用書名、書名加作者、ISBN 三種查法；書名去副標、保留重音；不輪試別名。",
+  "books": [
+    {
+      "position": 1,
+      "language": "en",
+      "display_title": "The Right to Sex",
+      "query_title": "The Right to Sex",
+      "author": "Amia Srinivasan",
+      "isbn": "9781526612540",
+      "metadata_source": "https://www.bloomsbury.com/uk/right-to-sex-9781526612540/"
+    },
+    {
+      "position": 2,
+      "language": "en",
+      "display_title": "How to Be Perfect",
+      "query_title": "How to Be Perfect",
+      "author": "Michael Schur",
+      "isbn": "9781982159320",
+      "metadata_source": "https://www.simonandschuster.com/books/How-to-Be-Perfect/Michael-Schur/9781982159320"
+    },
+    {
+      "position": 3,
+      "language": "en",
+      "display_title": "The Life Inside",
+      "query_title": "The Life Inside",
+      "author": "Andy West",
+      "isbn": "9781529032024",
+      "metadata_source": "https://www.panmacmillan.com.au/9781529032024/"
+    },
+    {
+      "position": 4,
+      "language": "es",
+      "display_title": "Ética mínima",
+      "query_title": "Ética mínima",
+      "author": "Adela Cortina Orts",
+      "isbn": "9788430980994",
+      "metadata_source": "https://www.tecnos.es/libro/los-esenciales-de-la-filosofia/etica-minima-adela-cortina-orts-9788430980994/"
+    },
+    {
+      "position": 5,
+      "language": "es",
+      "display_title": "Ética para Amador",
+      "query_title": "Ética para Amador",
+      "author": "Fernando Savater",
+      "isbn": "9788434435186",
+      "metadata_source": "https://www.planetadelibros.com/libro-etica-para-amador/346900"
+    },
+    {
+      "position": 6,
+      "language": "es",
+      "display_title": "La sociedad del cansancio",
+      "query_title": "La sociedad del cansancio",
+      "author": "Byung-Chul Han",
+      "isbn": "9788425451447",
+      "metadata_source": "https://herdereditorial.com/la-sociedad-del-cansancio-9788425451447"
+    }
+  ]
+}
