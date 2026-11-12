@@ -58,6 +58,18 @@ pub enum VoiceError {
     Unavailable,
     /// 外部服務失敗或逾時
     Failed,
+    /// Safe category for diagnostics. Provider text is discarded.
+    Classified(crate::diagnostics::Failure),
+}
+
+impl VoiceError {
+    fn classified(error: crate::ai::AiError) -> Self {
+        if error.class == crate::diagnostics::Failure::ServiceError {
+            Self::Failed
+        } else {
+            Self::Classified(error.class)
+        }
+    }
 }
 
 #[async_trait]
@@ -181,10 +193,12 @@ impl VoiceProvider for OpenAiVoice {
             .multipart(form)
             .send()
             .await
-            .map_err(|_| VoiceError::Failed)?;
+            .map_err(|error| VoiceError::classified(crate::ai::AiError::transport(&error)))?;
         if !res.status().is_success() {
             tracing::warn!(status = %res.status(), key = lease.index + 1, "speech-to-text returned an error status");
-            return Err(VoiceError::Failed);
+            return Err(VoiceError::classified(
+                crate::ai::AiError::response(res).await,
+            ));
         }
         let v: serde_json::Value = res.json().await.map_err(|_| VoiceError::Failed)?;
         v["text"]
@@ -216,11 +230,16 @@ impl VoiceProvider for OpenAiVoice {
         if let Some(lease) = &lease {
             req = req.bearer_auth(&lease.key);
         }
-        let res = req.send().await.map_err(|_| VoiceError::Failed)?;
+        let res = req
+            .send()
+            .await
+            .map_err(|error| VoiceError::classified(crate::ai::AiError::transport(&error)))?;
         if !res.status().is_success() {
             let key = lease.as_ref().map(|lease| lease.index + 1);
             tracing::warn!(status = %res.status(), key, "text-to-speech returned an error status");
-            return Err(VoiceError::Failed);
+            return Err(VoiceError::classified(
+                crate::ai::AiError::response(res).await,
+            ));
         }
         res.bytes()
             .await
@@ -240,12 +259,40 @@ fn voice_error(e: VoiceError) -> ApiError {
             "voice_unavailable",
             "語音服務尚未啟用",
         ),
-        VoiceError::Failed => ApiError::new(
+        VoiceError::Failed | VoiceError::Classified(_) => ApiError::new(
             StatusCode::BAD_GATEWAY,
             "voice_failed",
             "語音服務暫時無法使用",
         ),
     }
+}
+
+async fn observe_voice<T>(
+    state: &AppState,
+    user: Uuid,
+    function: &'static str,
+    model: Option<&str>,
+    call: impl std::future::Future<Output = Result<T, VoiceError>>,
+) -> Result<T, VoiceError> {
+    let started = std::time::Instant::now();
+    let result = call.await;
+    let error = match result.as_ref().err() {
+        Some(VoiceError::Unavailable) => return result,
+        Some(VoiceError::Failed) => Some(crate::ai::AiError::unclassified()),
+        Some(VoiceError::Classified(class)) => Some(crate::ai::AiError::classified(*class)),
+        None => None,
+    };
+    crate::diagnostics::AiActivity::new(function, Some(user), None)
+        .failure_code("voice_failed")
+        .record(
+            state,
+            model,
+            0,
+            started,
+            error.as_ref(),
+            &crate::diagnostics::AiSnapshot::default(),
+        );
+    result
 }
 
 /// 對話語言（S-12.1）對應的 ISO 639-1 代碼。
@@ -336,15 +383,19 @@ pub(crate) async fn transcribe(
     }
     // 驗證通過才扣 AI 用量；沒有得到結果就退回
     let slot = state.charge_ai(cu.user.id)?;
-    let text = state
-        .voice
+    let text = observe_voice(
+        &state,
+        cu.user.id,
+        "voice_transcription",
+        state.config.openai_stt_model.as_deref(),
         // 請求本體獨占時直接取得緩衝，不複製（最多 10 MB）
-        .transcribe(Vec::from(body.0), mime, language)
-        .await
-        .map_err(|e| {
-            state.refund_ai(cu.user.id, slot);
-            voice_error(e)
-        })?;
+        state.voice.transcribe(Vec::from(body.0), mime, language),
+    )
+    .await
+    .map_err(|e| {
+        state.refund_ai(cu.user.id, slot);
+        voice_error(e)
+    })?;
     Ok(Json(Transcript { text }))
 }
 
@@ -382,11 +433,15 @@ pub(crate) async fn speech(
     }
     if state.voice.self_hosted_speech() {
         let _slot = state.speech_slots.acquire(cu.user.id).ok_or(SPEECH_BUSY)?;
-        let audio = state
-            .voice
-            .speak(text, language)
-            .await
-            .map_err(voice_error)?;
+        let audio = observe_voice(
+            &state,
+            cu.user.id,
+            "voice_synthesis",
+            state.config.openai_tts_model.as_deref(),
+            state.voice.speak(text, language),
+        )
+        .await
+        .map_err(voice_error)?;
         return Ok((
             [
                 (header::CONTENT_TYPE, "audio/mpeg"),
@@ -397,7 +452,15 @@ pub(crate) async fn speech(
             .into_response());
     }
     let slot = state.charge_ai(cu.user.id)?;
-    let audio = state.voice.speak(text, language).await.map_err(|e| {
+    let audio = observe_voice(
+        &state,
+        cu.user.id,
+        "voice_synthesis",
+        state.config.openai_tts_model.as_deref(),
+        state.voice.speak(text, language),
+    )
+    .await
+    .map_err(|e| {
         state.refund_ai(cu.user.id, slot);
         voice_error(e)
     })?;

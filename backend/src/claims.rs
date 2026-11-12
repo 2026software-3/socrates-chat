@@ -18,10 +18,11 @@ use uuid::Uuid;
 use crate::{
     AppState, activity_store,
     ai::{
-        AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
+        AiError, AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
         collect_background, parse_group_name, parse_regroup, regroup_user_message,
     },
     auth::RequireTeacher,
+    diagnostics::AiActivity,
     error::{ApiError, db_error_class},
 };
 
@@ -50,6 +51,13 @@ pub async fn assign_group(
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct AssignSource {
+    language: String,
+    user_id: Option<Uuid>,
+    classroom_id: Uuid,
+}
+
 async fn try_assign(
     state: &AppState,
     conversation: Uuid,
@@ -57,15 +65,18 @@ async fn try_assign(
     topic: &str,
     claim: &str,
 ) -> Result<(), sqlx::Error> {
-    let (language, existing): (Option<String>, Vec<(String,)>) = tokio::try_join!(
-        sqlx::query_scalar(
-            "SELECT u.language
+    // 活動或對話在回覆與背景任務之間被刪除時仍照舊退回 zh-TW 繼續；診斷用的使用者與教室缺值時記為空
+    let (source, existing): (Option<AssignSource>, Vec<(String,)>) = tokio::try_join!(
+        sqlx::query_as(
+            "SELECT u.language, c.user_id, a.classroom_id
              FROM activities a
              JOIN classrooms cl ON cl.id = a.classroom_id
              JOIN users u ON u.id = cl.created_by
+             LEFT JOIN conversations c ON c.activity_id = a.id AND c.id = $2
              WHERE a.id = $1",
         )
         .bind(activity)
+        .bind(conversation)
         .fetch_optional(&state.pool),
         sqlx::query_as(
             "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
@@ -73,17 +84,27 @@ async fn try_assign(
         .bind(activity)
         .fetch_all(&state.pool),
     )?;
-    let language = language.as_deref().unwrap_or("zh-TW");
+    let (language, user, classroom) = match source {
+        Some(source) => (source.language, source.user_id, Some(source.classroom_id)),
+        None => ("zh-TW".to_owned(), None, None),
+    };
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
     let req = AiRequest {
-        system: build_group_assign_prompt(topic, &existing, language),
+        system: build_group_assign_prompt(topic, &existing, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: claim.to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
-    let Some(name) = raw.ok().and_then(|r| parse_group_name(&r, &existing)) else {
+    let grouped = AiActivity::new("claim_group", user, classroom)
+        .statuses(202, 202)
+        .run(state, Some(&state.config.openai_model), 0, async {
+            let raw =
+                collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+            parse_group_name(&raw, &existing).ok_or(AiError::invalid_output())
+        })
+        .await;
+    let Ok(name) = grouped else {
         return Ok(()); // 分組失敗：這場暫時沒有群組
     };
     let group = upsert_group(&state.pool, activity, &name).await?;
@@ -171,14 +192,21 @@ pub(crate) async fn regroup(
     };
     // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
     let usage_slot = state.charge_ai(cu.user.id)?;
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
-    let groups = raw
-        .ok()
-        .and_then(|r| parse_regroup(&r, claims.len()))
-        .ok_or_else(|| {
-            state.refund_ai(cu.user.id, usage_slot);
-            ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
-        })?;
+    let groups = AiActivity::new(
+        "claim_regroup",
+        Some(cu.user.id),
+        Some(activity.classroom_id),
+    )
+    .statuses(204, 502)
+    .run(&state, Some(&state.config.openai_model), 0, async {
+        let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+        parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
+    })
+    .await
+    .map_err(|_| {
+        state.refund_ai(cu.user.id, usage_slot);
+        ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
+    })?;
     let mut tx = state.pool.begin().await?;
     // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
     crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;

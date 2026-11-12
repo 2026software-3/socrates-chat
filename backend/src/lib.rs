@@ -57,6 +57,7 @@ pub mod complaints;
 pub mod config;
 pub mod dashboard;
 pub mod demo;
+pub mod diagnostics;
 pub mod error;
 pub mod identity;
 pub mod key_pool;
@@ -202,6 +203,7 @@ pub fn app(state: AppState) -> Router {
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(request_logs::routes())
+        .merge(diagnostics::routes())
         .merge(summary::routes())
         .merge(voice::routes())
         .merge(cascade::routes())
@@ -330,7 +332,8 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
 async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let id = uuid::Uuid::new_v4().to_string();
+    let request_uuid = uuid::Uuid::new_v4();
+    let id = request_uuid.to_string();
     let method = req.method().clone();
     // 只記錄路由模板；原始 URL 可能含 email 等個資。
     let route = req
@@ -347,7 +350,14 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
     );
     let started = Instant::now();
     let mut res = error::REQUEST_ID
-        .scope(id.clone(), next.run(req).instrument(span.clone()))
+        .scope(
+            id.clone(),
+            diagnostics::scope_request(
+                request_uuid,
+                &route,
+                next.run(req).instrument(span.clone()),
+            ),
+        )
         .await;
     if let Ok(v) = HeaderValue::from_str(&id) {
         res.headers_mut().insert("x-request-id", v);

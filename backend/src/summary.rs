@@ -24,13 +24,14 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, build_summary_prompt, build_summary_translation_prompt,
-        collect_background, format_transcript, parse_summary, parse_summary_translation,
-        rules_version,
+        AiError, AiRequest, ChatRole, ChatTurn, build_summary_prompt,
+        build_summary_translation_prompt, collect_background, format_transcript, parse_summary,
+        parse_summary_translation, rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::{Message, load_messages, owned_conversation},
     classrooms::{ClassroomFilter, filtered_classroom},
+    diagnostics::{self, AiActivity},
     error::{ApiError, db_error_class},
     pagination::{self, Page, Pagination},
     points,
@@ -89,7 +90,7 @@ pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
 
 /// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
 pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
-    tokio::spawn(
+    tokio::spawn(diagnostics::inherit_request(
         async move {
             if let Err(e) = generate(&state, id, attempt).await {
                 // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
@@ -106,7 +107,7 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
             }
         }
         .in_current_span(),
-    );
+    ));
 }
 
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
@@ -134,13 +135,20 @@ async fn on_conversation_completed(
     Ok(())
 }
 
+#[derive(FromRow)]
+struct SummarySource {
+    owner: Uuid,
+    title: String,
+    description: String,
+    activity_id: Option<Uuid>,
+    language: String,
+    classroom: Option<Uuid>,
+}
+
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let ((owner, title, description, activity_id, language), turns): (
-        (Uuid, String, String, Option<Uuid>, String),
-        _,
-    ) = tokio::try_join!(
-        sqlx::query_as(
-            "SELECT user_id, title, description, activity_id, language
+    let (SummarySource { owner, title, description, activity_id, language, classroom }, turns) = tokio::try_join!(
+        sqlx::query_as::<_, SummarySource>(
+            "SELECT user_id AS owner, title, description, activity_id, language, classroom_id AS classroom
              FROM conversations WHERE id = $1"
         )
         .bind(id)
@@ -156,14 +164,20 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     };
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
-    for _ in 0..2 {
-        let raw = collect_background(
-            state.ai.as_ref(),
-            req.clone(),
-            state.config.ai_total_timeout,
-        )
-        .await;
-        if let Some(s) = raw.ok().and_then(|raw| parse_summary(&raw)) {
+    let activity = AiActivity::new("summary", Some(owner), classroom).statuses(202, 202);
+    for retry in 0..2 {
+        let generated = activity
+            .run(state, Some(&state.config.openai_model), retry, async {
+                let raw = collect_background(
+                    state.ai.as_ref(),
+                    req.clone(),
+                    state.config.ai_total_timeout,
+                )
+                .await?;
+                parse_summary(&raw).ok_or(AiError::invalid_output())
+            })
+            .await;
+        if let Ok(s) = generated {
             summary = Some(s);
             break;
         }
@@ -411,8 +425,8 @@ pub(crate) async fn translate(
     if cu.roles.admin {
         return Err(ApiError::forbidden("forbidden", "沒有權限"));
     }
-    let source: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT s.stance, s.reasons, c.language
+    let source: Option<(String, String, String, Uuid)> = sqlx::query_as(
+        "SELECT s.stance, s.reasons, c.language, cl.id
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND cl.created_by = $2
@@ -422,7 +436,7 @@ pub(crate) async fn translate(
     .bind(cu.user.id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((stance, reasons, source_language)) = source else {
+    let Some((stance, reasons, source_language, classroom)) = source else {
         return Err(ApiError::not_found());
     };
     let language = cu.user.language;
@@ -456,11 +470,14 @@ pub(crate) async fn translate(
             content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
         }],
     };
-    let translated = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
-        .await
-        .ok()
-        .and_then(|raw| parse_summary_translation(&raw));
-    let Some(translated) = translated else {
+    let translated = AiActivity::new("summary_translation", Some(cu.user.id), Some(classroom))
+        .run(&state, Some(&state.config.openai_model), 0, async {
+            let raw =
+                collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+            parse_summary_translation(&raw).ok_or(AiError::invalid_output())
+        })
+        .await;
+    let Ok(translated) = translated else {
         // 沒有得到譯文就不扣額度：AI 當機時的重試不該把教師鎖在外面
         state.translation_limit.refund(cu.user.id, slot);
         state.refund_ai(cu.user.id, usage_slot);

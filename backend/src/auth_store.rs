@@ -508,21 +508,40 @@ pub async fn is_locked(
 
 /// 記錄一次登入失敗：（登入帳號輸入, 來源 IP）累計達 `MAX_LOGIN_FAILURES` 次就鎖定 `LOGIN_LOCK_DURATION`；
 /// 同時累計這個登入帳號輸入在所有 IP 的總數，達 `MAX_EMAIL_LOGIN_FAILURES` 次就在所有 IP 鎖定。
-/// 鎖定已過期的紀錄會從 0 重新計。
+/// 鎖定已過期的紀錄會從 0 重新計。回傳這一次失敗剛觸發了哪一層鎖定。
 pub async fn record_login_failure(
     pool: &PgPool,
     account: &str,
     ip_key: &str,
     now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
+) -> Result<NewLocks, sqlx::Error> {
+    let mut tx = pool.begin().await?;
     // 順便清掉很久以前的紀錄，避免用大量不存在的信箱讓資料表無限成長
     sqlx::query("DELETE FROM login_failures WHERE last_failed_at < $1")
         .bind(now - Duration::days(1))
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     let key = login_key(account);
-    bump_failures(pool, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
-    bump_failures(pool, &key, ACCOUNT_TOTAL_KEY, MAX_EMAIL_LOGIN_FAILURES, now).await
+    let ip = bump_failures(&mut *tx, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
+    let account = bump_failures(
+        &mut *tx,
+        &key,
+        ACCOUNT_TOTAL_KEY,
+        MAX_EMAIL_LOGIN_FAILURES,
+        now,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(NewLocks { ip, account })
+}
+
+/// 一次登入失敗剛觸發的鎖定。校園共用 IP 下 IP 層級的鎖定不代表針對某個帳號，要分開看。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewLocks {
+    /// 這個（登入帳號輸入, 來源 IP）剛達到鎖定門檻
+    pub ip: bool,
+    /// 這個登入帳號輸入在所有 IP 的總數剛達到鎖定門檻
+    pub account: bool,
 }
 
 async fn bump_failures(
@@ -531,8 +550,8 @@ async fn bump_failures(
     key: &str,
     max_failures: i32,
     now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
         "INSERT INTO login_failures (login_key, ip, failures, locked_until, last_failed_at)
          VALUES ($1, $2, 1, NULL, $3)
          ON CONFLICT (login_key, ip) DO UPDATE SET
@@ -544,16 +563,16 @@ async fn bump_failures(
                     THEN NULL
                 WHEN login_failures.failures + 1 >= $4 THEN $5
                 ELSE login_failures.locked_until END,
-            last_failed_at = $3",
+            last_failed_at = $3
+         RETURNING failures = $4 AND locked_until IS NOT NULL",
     )
     .bind(login_key)
     .bind(key)
     .bind(now)
     .bind(max_failures)
     .bind(now + LOGIN_LOCK_DURATION)
-    .execute(conn)
-    .await?;
-    Ok(())
+    .fetch_one(conn)
+    .await
 }
 
 /// 成功登入：清掉這個（登入帳號輸入, 來源 IP）的計數與這個登入帳號輸入的跨 IP 總量；別的 IP
