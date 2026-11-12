@@ -19,6 +19,7 @@ type Dimensions = {
   dimensions: Dimension[] | null
   locked: boolean
   prompt_version: string | null
+  rubric_language: Language | null
   pending_languages: Language[]
 }
 const keys = { 'zh-TW': 'zh_tw', en: 'en', es: 'es' } as const
@@ -86,7 +87,7 @@ export function TopicDimensionsDialog({ topic, close }: { topic: Topic; close: (
               key={`${language}:${view.locked}`}
               language={language}
               dimensions={view.dimensions}
-              locked={view.locked}
+              rubricEditable={!view.locked && view.rubric_language === language}
               pending={pending}
               onSave={async (dimensions) => {
                 setPending(true)
@@ -118,10 +119,10 @@ export function TopicDimensionsDialog({ topic, close }: { topic: Topic; close: (
 
 type Edit = { id: string; name: string; description: string; rubric?: string[] }
 
-function DimensionsEditor({ language, dimensions, locked, pending, onSave }: {
+function DimensionsEditor({ language, dimensions, rubricEditable, pending, onSave }: {
   language: Language
   dimensions: Dimension[]
-  locked: boolean
+  rubricEditable: boolean
   pending: boolean
   onSave: (dimensions: Edit[]) => Promise<boolean>
 }) {
@@ -134,7 +135,7 @@ function DimensionsEditor({ language, dimensions, locked, pending, onSave }: {
   })))
   const [saved, setSaved] = useState(false)
   const valid = drafts.every((draft) => draft.name.trim() && draft.description.trim() &&
-    (locked || draft.rubric.every((value) => value.trim())))
+    (!rubricEditable || draft.rubric.every((value) => value.trim())))
 
   function change(id: string, patch: Partial<(typeof drafts)[number]>) {
     setSaved(false)
@@ -145,7 +146,7 @@ function DimensionsEditor({ language, dimensions, locked, pending, onSave }: {
     event.preventDefault()
     if (pending || !valid) return
     const body = drafts.map(({ id, name, description, rubric }) => ({
-      id, name, description, ...(locked ? {} : { rubric }),
+      id, name, description, ...(rubricEditable ? { rubric } : {}),
     }))
     setSaved(await onSave(body))
   }
@@ -163,12 +164,13 @@ function DimensionsEditor({ language, dimensions, locked, pending, onSave }: {
             onChange={(event) => change(draft.id, { description: event.target.value })} />
           <details className="space-y-2">
             <summary className="cursor-pointer text-sm">{t('admin.dimensions.rubric')}</summary>
+            {rubricEditable ? null : <p className="text-sm">{t('admin.dimensions.rubricSourceOnly')}</p>}
             {draft.rubric.map((text, index) => {
               const id = `dimension-rubric-${draft.id}-${index}`
               return (
                 <div key={id} className="space-y-1">
                   <Label htmlFor={id}>{t('admin.dimensions.score', { score: index + 1 })}</Label>
-                  <Textarea id={id} readOnly={locked} maxLength={500} rows={2} value={text}
+                  <Textarea id={id} readOnly={!rubricEditable} maxLength={500} rows={2} value={text}
                     onChange={(event) => change(draft.id, { rubric: draft.rubric.map((value, i) =>
                       i === index ? event.target.value : value) })} />
                 </div>

@@ -130,13 +130,7 @@ pub(crate) async fn create_topic_for_teacher(
     Json(b): Json<NewTopic>,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
     let created = insert_topic(&state, b).await?;
-    let id = created.1.0.id;
-    if crate::topic_dimensions::generate(&state, id, &user.user.language)
-        .await
-        .is_err()
-    {
-        tracing::warn!(topic_id = %id, "failed to persist topic dimensions");
-    }
+    crate::topic_dimensions::spawn(&state, created.1.0.id, &user.user.language);
     Ok(created)
 }
 
@@ -169,12 +163,18 @@ async fn insert_topic(
     responses((status = 200, description = "更新後的題目", body = Topic))
 )]
 pub(crate) async fn update_topic_for_teacher(
-    _: RequireTeacher,
+    RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(p): Json<TopicPatch>,
 ) -> Result<Json<Topic>, ApiError> {
-    patch_topic(&state, id, p).await
+    let text_changed = p.title.is_some() || p.description.is_some();
+    let updated = patch_topic(&state, id, p).await?;
+    if text_changed {
+        // 題目文字改了而維度還沒鎖定時，舊維度已被清掉，重新產生。
+        crate::topic_dimensions::spawn(&state, id, &user.user.language);
+    }
+    Ok(updated)
 }
 
 async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<Topic>, ApiError> {
@@ -185,6 +185,19 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
                 category = CASE WHEN $4 THEN $5::text ELSE category END,
                 is_active = COALESCE($6, is_active),
+                -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
+                dimensions = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions END,
+                dimensions_prompt_version = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions_prompt_version END,
+                dimensions_language = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions_language END,
+                dimensions_pending_languages = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
          RETURNING id, title, description, category, is_active",

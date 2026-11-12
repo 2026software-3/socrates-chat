@@ -98,6 +98,40 @@ describe('teacher topic bank', () => {
     })
   })
 
+  it('edits the rubric only in the language it was written in', async () => {
+    const dimension = {
+      id: 'd1',
+      name: { zh_tw: '謹慎', en: 'Caution', es: 'Cautela' },
+      description: { zh_tw: '先衡量風險', en: 'Consider risks', es: 'Considera los riesgos' },
+      rubric: ['一', '二', '三', '四', '五'],
+    }
+    const view = {
+      dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
+      locked: false, prompt_version: 'topic-dimensions-v1', rubric_language: 'zh-TW', pending_languages: [],
+    }
+    const submitted: { language: string; dimensions: { rubric?: string[] }[] }[] = []
+    server.use(
+      http.get('/api/topics', () => HttpResponse.json([trolley])),
+      http.get('/api/topics/t1/dimensions', () => HttpResponse.json(view)),
+      http.patch('/api/topics/t1/dimensions', async ({ request }) => {
+        submitted.push((await request.json()) as (typeof submitted)[number])
+        return HttpResponse.json(view)
+      }),
+    )
+    renderTeacherPage(<TopicsPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '雷達維度' }))
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByLabelText('編輯語言')
+    expect(within(dialog).getAllByLabelText('1 分')[0]).not.toHaveAttribute('readonly')
+    await user.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await user.selectOptions(within(dialog).getByLabelText('編輯語言'), 'en')
+    expect(within(dialog).getAllByLabelText('1 分')[0]).toHaveAttribute('readonly')
+    await user.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await within(dialog).findByText('已儲存維度。')
+    expect(submitted.map((body) => body.dimensions[0].rubric)).toEqual([dimension.rubric, undefined])
+  })
+
   it('shows a recoverable error when dimension loading fails', async () => {
     let attempts = 0
     server.use(

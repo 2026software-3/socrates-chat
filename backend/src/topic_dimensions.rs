@@ -1,5 +1,10 @@
 //! F-03.4: generate and maintain the six topic-specific radar dimensions.
 
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
+
 use axum::{
     Json, Router,
     extract::{Path, State, rejection::JsonRejection},
@@ -20,6 +25,33 @@ use crate::{
 pub const PROMPT_VERSION: &str = "topic-dimensions-v1";
 const LANGUAGES: [&str; 3] = ["zh-TW", "en", "es"];
 const IDS: [&str; 6] = ["d1", "d2", "d3", "d4", "d5", "d6"];
+
+/// 正在產生維度的題目；同一題目同時只跑一個產生工作，避免重複呼叫 AI。
+#[derive(Default)]
+pub struct Jobs(Mutex<HashSet<Uuid>>);
+
+struct JobGuard(Arc<Jobs>, Uuid);
+
+impl Jobs {
+    fn start(self: &Arc<Self>, id: Uuid) -> Option<JobGuard> {
+        let mut running = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        running.insert(id).then(|| JobGuard(Arc::clone(self), id))
+    }
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        let mut running = self
+            .0
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        running.remove(&self.1);
+    }
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -58,6 +90,8 @@ pub(crate) struct DimensionsView {
     dimensions: Option<[Dimension; 6]>,
     locked: bool,
     prompt_version: Option<String>,
+    /// The only language in which the rubric is written and may be edited.
+    rubric_language: Option<String>,
     pending_languages: Vec<String>,
 }
 
@@ -83,6 +117,7 @@ struct TopicDimensions {
     description: String,
     dimensions: Option<SqlJson<[Dimension; 6]>>,
     dimensions_prompt_version: Option<String>,
+    dimensions_language: Option<String>,
     dimensions_pending_languages: Vec<String>,
     has_had_conversation: bool,
 }
@@ -93,13 +128,14 @@ impl TopicDimensions {
             locked: self.has_had_conversation && self.dimensions.is_some(),
             dimensions: self.dimensions.map(|value| value.0),
             prompt_version: self.dimensions_prompt_version,
+            rubric_language: self.dimensions_language,
             pending_languages: self.dimensions_pending_languages,
         }
     }
 }
 
 const SELECT: &str = "SELECT title, description, dimensions, dimensions_prompt_version,
-    dimensions_pending_languages, has_had_conversation FROM topics WHERE id = $1";
+    dimensions_language, dimensions_pending_languages, has_had_conversation FROM topics WHERE id = $1";
 
 async fn load(conn: &mut PgConnection, id: Uuid) -> Result<TopicDimensions, ApiError> {
     sqlx::query_as(SELECT)
@@ -156,29 +192,40 @@ pub(crate) async fn update(
     let mut tx = state.pool.begin().await?;
     let mut topic: TopicDimensions = sqlx::query_as(
         "SELECT title, description, dimensions, dimensions_prompt_version,
-                dimensions_pending_languages, has_had_conversation FROM topics
+                dimensions_language, dimensions_pending_languages, has_had_conversation FROM topics
          WHERE id = $1 FOR NO KEY UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(ApiError::not_found)?;
+    let rubric_language = topic.dimensions_language.clone();
     let dimensions = topic
         .dimensions
         .as_mut()
         .ok_or_else(|| ApiError::conflict("dimensions_pending", "維度尚未完成"))?;
+    let mut changed = false;
     for (stored, edit) in dimensions.iter_mut().zip(body.dimensions) {
         if stored.id != edit.id {
             return Err(invalid());
         }
-        stored
-            .name
-            .set(language, clean(edit.name, 100).ok_or_else(invalid)?);
-        stored
-            .description
-            .set(language, clean(edit.description, 500).ok_or_else(invalid)?);
+        let name = clean(edit.name, 100).ok_or_else(invalid)?;
+        let description = clean(edit.description, 500).ok_or_else(invalid)?;
+        let slot = |text: &Localized| match language {
+            0 => text.zh_tw.clone(),
+            1 => text.en.clone(),
+            _ => text.es.clone(),
+        };
+        changed |= slot(&stored.name) != name || slot(&stored.description) != description;
+        stored.name.set(language, name);
+        stored.description.set(language, description);
         if let Some(rubric) = edit.rubric {
             let rubric = clean_rubric(rubric).ok_or_else(invalid)?;
+            if rubric != stored.rubric && rubric_language.as_deref() != Some(&body.language) {
+                // The rubric exists in one language only; editing it from another
+                // language view would overwrite it with text in the wrong language.
+                return Err(invalid());
+            }
             if topic.has_had_conversation && rubric != stored.rubric {
                 return Err(ApiError::conflict(
                     "dimensions_locked",
@@ -188,9 +235,11 @@ pub(crate) async fn update(
             stored.rubric = rubric;
         }
     }
-    topic
-        .dimensions_pending_languages
-        .retain(|lang| lang != &body.language);
+    if changed {
+        topic
+            .dimensions_pending_languages
+            .retain(|lang| lang != &body.language);
+    }
     sqlx::query(
         "UPDATE topics SET dimensions = $2, dimensions_pending_languages = $3 WHERE id = $1",
     )
@@ -236,32 +285,66 @@ pub fn parse_generation(raw: &str) -> Option<[Draft; 6]> {
     Some(drafts)
 }
 
+/// Starts generation in the background so creating or editing a topic does not
+/// wait for the AI. Failures are logged and left for the teacher to retry.
+pub fn spawn(state: &AppState, id: Uuid, source: &str) {
+    let state = state.clone();
+    let source = source.to_owned();
+    tokio::spawn(async move {
+        if let Err(error) = generate(&state, id, &source).await {
+            tracing::warn!(topic_id = %id, ?error, "failed to generate topic dimensions");
+        }
+    });
+}
+
+/// Rubric text is written in the topic author's language; fall back to
+/// zh-TW when the account language is not one of the supported three.
+fn source_language(language: &str) -> &'static str {
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|supported| *supported == language)
+        .unwrap_or(LANGUAGES[0])
+}
+
 /// Also used by startup for the built-in trolley topic. A completed set is
-/// immutable to generation, even if another request already filled it.
+/// immutable to generation, even if another request already filled it. Only one
+/// generation per topic runs at a time; a concurrent call returns immediately.
 pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), ApiError> {
-    let topic = {
-        let mut conn = state.pool.acquire().await?;
-        load(&mut conn, id).await?
-    };
-    if topic.dimensions.is_some() {
+    let source = source_language(source);
+    let Some(_job) = state.dimension_jobs.start(id) else {
         return Ok(());
-    }
-    if let Some((dimensions, pending)) = prepare(state, &topic, source).await {
-        // The teacher may edit the prompt text during generation. Discard a
-        // stale result instead of attaching it to a different question.
-        sqlx::query(
+    };
+    // A second pass picks up a title or description edited while the first ran.
+    for _ in 0..2 {
+        let topic = {
+            let mut conn = state.pool.acquire().await?;
+            load(&mut conn, id).await?
+        };
+        if topic.dimensions.is_some() {
+            return Ok(());
+        }
+        let Some((dimensions, pending)) = prepare(state, &topic, source).await else {
+            return Ok(());
+        };
+        // Discard a stale result instead of attaching it to a different question.
+        let stored = sqlx::query(
             "UPDATE topics SET dimensions = $2, dimensions_prompt_version = $3,
-                        dimensions_pending_languages = $4
-                     WHERE id = $1 AND dimensions IS NULL AND title = $5 AND description = $6",
+                        dimensions_language = $4, dimensions_pending_languages = $5
+                     WHERE id = $1 AND dimensions IS NULL AND title = $6 AND description = $7",
         )
         .bind(id)
         .bind(SqlJson(dimensions))
         .bind(PROMPT_VERSION)
+        .bind(source)
         .bind(pending)
         .bind(topic.title)
         .bind(topic.description)
         .execute(&state.pool)
         .await?;
+        if stored.rows_affected() > 0 {
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -413,4 +496,17 @@ pub fn build_translation_request(source: &str, target: &str, text: [&str; 12]) -
 
 pub fn parse_translation(raw: &str) -> Option<[String; 12]> {
     clean_translation(serde_json::from_str(raw).ok()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_language;
+
+    #[test]
+    fn unsupported_account_languages_fall_back_to_traditional_chinese() {
+        assert_eq!(source_language("en"), "en");
+        assert_eq!(source_language("es"), "es");
+        assert_eq!(source_language("ja"), "zh-TW");
+        assert_eq!(source_language(""), "zh-TW");
+    }
 }

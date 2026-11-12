@@ -1,12 +1,14 @@
 ALTER TABLE topics
     ADD COLUMN dimensions jsonb,
     ADD COLUMN dimensions_prompt_version text,
+    ADD COLUMN dimensions_language text,
     ADD COLUMN dimensions_pending_languages text[] NOT NULL DEFAULT '{}',
     ADD COLUMN has_had_conversation boolean NOT NULL DEFAULT false,
     ADD CONSTRAINT topic_dimensions_complete CHECK (
-        (dimensions IS NULL AND dimensions_prompt_version IS NULL)
+        (dimensions IS NULL AND dimensions_prompt_version IS NULL AND dimensions_language IS NULL)
         OR (
             dimensions IS NOT NULL AND dimensions_prompt_version IS NOT NULL
+            AND dimensions_language IN ('zh-TW', 'en', 'es')
             AND jsonb_typeof(dimensions) = 'array'
             AND CASE WHEN jsonb_typeof(dimensions) = 'array' THEN
                 jsonb_array_length(dimensions) = 6

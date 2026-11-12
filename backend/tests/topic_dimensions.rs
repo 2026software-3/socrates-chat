@@ -10,6 +10,18 @@ const GENERATED: &str = r#"[{"name":"Conservation","description":"How a decision
 const EN: &str = r#"["Conservation","Conserve water","Fairness","Share fairly","Urgency","Act now","Consultation","Ask affected people","Planning","Plan ahead","Transparency","Explain decisions"]"#;
 const ES: &str = r#"["Conservación","Conservar agua","Equidad","Distribuir con equidad","Urgencia","Actuar ya","Consulta","Escuchar a los afectados","Planificación","Planificar a largo plazo","Transparencia","Explicar las decisiones"]"#;
 
+/// Creation generates in the background: wait until the scripted AI calls were
+/// consumed, then give the task time to finish writing its result.
+async fn settle(ai: &FakeAi, requests: usize) {
+    for _ in 0..300 {
+        if ai.requests.lock().unwrap().len() >= requests {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+}
+
 async fn create(app: &axum::Router, cookie: &str) -> String {
     let response = send(
         app,
@@ -31,7 +43,8 @@ async fn creating_a_topic_attempts_generation_and_keeps_the_topic_when_ai_fails(
     let app = test_app_with_ai(pool, ai.clone());
     let actors = seed_actors(&app).await;
     let id = create(&app, &actors.teacher).await;
-    assert!(!ai.requests.lock().unwrap().is_empty());
+    settle(&ai, 2).await;
+    assert_eq!(ai.requests.lock().unwrap().len(), 2);
     let result = json_body(
         send(
             &app,
@@ -58,6 +71,7 @@ async fn retry_persists_a_complete_translated_set_and_cannot_replace_it(pool: Pg
     let app = test_app_with_ai(pool.clone(), ai.clone());
     let actors = seed_actors(&app).await;
     let id = create(&app, &actors.teacher).await;
+    settle(&ai, 2).await;
     let path = format!("/api/topics/{id}/dimensions");
     let retry = format!("{path}/retry");
     let result = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
@@ -102,6 +116,7 @@ async fn edits_are_localized_and_a_conversation_permanently_locks_the_rubric(poo
     let app = test_app_with_ai(pool.clone(), ai.clone());
     let actors = seed_actors(&app).await;
     let id = create(&app, &actors.teacher).await;
+    settle(&ai, 3).await;
     let path = format!("/api/topics/{id}/dimensions");
     let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
     let mut edits = view["dimensions"].as_array().unwrap().iter().map(|item| json!({
@@ -115,7 +130,7 @@ async fn edits_are_localized_and_a_conversation_permanently_locks_the_rubric(poo
             .contains(&json!("en"))
     );
     edits[0]["name"] = json!("Water conservation");
-    edits[0]["rubric"][0] = json!("Mentions reducing waste");
+    assert_eq!(view["rubric_language"], "zh-TW");
     let patch = |edits: &[Value]| {
         json_req(
             "PATCH",
@@ -134,6 +149,52 @@ async fn edits_are_localized_and_a_conversation_permanently_locks_the_rubric(poo
     );
     assert_eq!(updated["pending_languages"], json!(["es"]));
 
+    // The rubric exists in the source language only: another language cannot rewrite it.
+    let mut foreign = edits.clone();
+    foreign[0]["rubric"][0] = json!("Mentions reducing waste");
+    assert_eq!(
+        send(&app, patch(&foreign)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    // Saving a language without changing its text does not mark it as reviewed.
+    let unchanged = updated["dimensions"].as_array().unwrap().iter().map(|item| json!({
+        "id": item["id"], "name": item["name"]["es"], "description": item["description"]["es"],
+    })).collect::<Vec<_>>();
+    let kept = json_body(
+        send(
+            &app,
+            json_req(
+                "PATCH",
+                &path,
+                Some(&actors.teacher),
+                Some(json!({"language":"es", "dimensions": unchanged})),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(kept["pending_languages"], json!(["es"]));
+    let source_edits = |rubric: &str| -> Vec<Value> {
+        updated["dimensions"].as_array().unwrap().iter().enumerate().map(|(i, item)| json!({
+            "id": item["id"], "name": item["name"]["zh_tw"], "description": item["description"]["zh_tw"],
+            "rubric": if i == 0 { json!([rubric, item["rubric"][1], item["rubric"][2], item["rubric"][3], item["rubric"][4]]) } else { item["rubric"].clone() },
+        })).collect()
+    };
+    let source = |edits: &[Value]| {
+        json_req(
+            "PATCH",
+            &path,
+            Some(&actors.teacher),
+            Some(json!({"language":"zh-TW", "dimensions": edits})),
+        )
+    };
+    assert_eq!(
+        send(&app, source(&source_edits("Mentions reducing waste")))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
     let student = seed_user(&pool, "dimension-lock@example.com").await;
     let conversation: Uuid = sqlx::query_scalar(
         "INSERT INTO conversations (user_id, topic_id, title) VALUES ($1, $2, 'Test') RETURNING id",
@@ -148,9 +209,10 @@ async fn edits_are_localized_and_a_conversation_permanently_locks_the_rubric(poo
         .execute(&pool)
         .await
         .unwrap();
-    edits[0]["rubric"][0] = json!("A changed criterion");
     assert_eq!(
-        send(&app, patch(&edits)).await.status(),
+        send(&app, source(&source_edits("A changed criterion")))
+            .await
+            .status(),
         StatusCode::CONFLICT
     );
     edits.pop();
@@ -200,4 +262,53 @@ async fn only_teachers_and_administrators_can_manage_topic_dimensions(pool: PgPo
     let doc = json_body(send(&app, get("/api/openapi.json", None)).await).await;
     assert!(doc["paths"]["/api/topics/{id}/dimensions"]["patch"]["requestBody"].is_object());
     assert!(doc["paths"]["/api/topics/{id}/dimensions"]["patch"]["responses"]["409"].is_object());
+}
+
+#[sqlx::test]
+async fn changing_the_topic_text_discards_unlocked_dimensions_only(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Script::Reply(vec![GENERATED]),
+        Script::Fail,
+        Script::Fail,
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let actors = seed_actors(&app).await;
+    let id = create(&app, &actors.teacher).await;
+    settle(&ai, 3).await;
+    let path = format!("/api/topics/{id}/dimensions");
+    let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
+    assert!(view["dimensions"].is_array());
+    let rename = |title: &str| {
+        json_req(
+            "PATCH",
+            &format!("/api/topics/{id}"),
+            Some(&actors.teacher),
+            Some(json!({"title": title})),
+        )
+    };
+    assert_eq!(
+        send(&app, rename("A different question")).await.status(),
+        StatusCode::OK
+    );
+    settle(&ai, 5).await;
+    let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
+    assert!(view["dimensions"].is_null());
+    assert_eq!(view["pending_languages"], json!([]));
+
+    sqlx::query("UPDATE topics SET dimensions = (SELECT jsonb_agg(jsonb_build_object('id', 'd' || n,
+            'name', jsonb_build_object('zh_tw','a','en','a','es','a'),
+            'description', jsonb_build_object('zh_tw','a','en','a','es','a'),
+            'rubric', jsonb_build_array('1','2','3','4','5')) ORDER BY n) FROM generate_series(1, 6) n),
+            dimensions_prompt_version = 'v', dimensions_language = 'zh-TW', has_had_conversation = true
+         WHERE id = $1")
+        .bind(Uuid::parse_str(&id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(&app, rename("Another title")).await.status(),
+        StatusCode::OK
+    );
+    let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
+    assert!(view["dimensions"].is_array());
 }

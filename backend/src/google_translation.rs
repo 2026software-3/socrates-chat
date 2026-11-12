@@ -80,7 +80,7 @@ impl GoogleTranslation {
             .collect::<Vec<_>>()
             .try_into()
             .ok()?;
-        let placeholders = ["{n}", "[EMAIL]", "[NATIONAL_ID]", "[STUDENT_ID]", "[PHONE]"];
+        let placeholders = ["[EMAIL]", "[NATIONAL_ID]", "[STUDENT_ID]", "[PHONE]"];
         text.iter()
             .zip(&translations)
             .all(|(original, translated)| {
@@ -107,26 +107,26 @@ mod tests {
             "/translate",
             post(|headers: HeaderMap, Json(body): Json<Value>| async move {
                 assert_eq!(headers["x-goog-api-key"], "synthetic-key");
-                assert_eq!(body["q"], json!(["完成 {n} 場", "聯絡 [EMAIL]"]));
+                assert_eq!(body["q"], json!(["完成活動", "聯絡 [EMAIL]"]));
                 assert_eq!(body["source"], "zh-TW");
                 assert_eq!(body["format"], "text");
-                let title = if body["target"] == "en" {
-                    "Finish {n} dialogues"
+                let (title, contact) = if body["target"] == "en" {
+                    ("Finish activities", "Contact [EMAIL]")
                 } else {
-                    "Completa diálogos"
+                    ("Completa actividades", "Contactar")
                 };
                 Json(json!({"data": {"translations": [
                     {"translatedText": title},
-                    {"translatedText": "Contact [EMAIL]"}
+                    {"translatedText": contact}
                 ]}}))
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let client = GoogleTranslation::new("synthetic-key").unwrap();
-        let input = ["完成 {n} 場", "聯絡 student@example.com"];
+        let input = ["完成活動", "聯絡 student@example.com"];
         assert_eq!(
             client.translate_at(&endpoint, "zh-TW", "en", input).await,
-            Some(["Finish {n} dialogues".into(), "Contact [EMAIL]".into()])
+            Some(["Finish activities".into(), "Contact [EMAIL]".into()])
         );
         assert_eq!(
             client.translate_at(&endpoint, "zh-TW", "es", input).await,
