@@ -2,21 +2,22 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
+import type { Lang } from '@/i18n/define'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 /** `/api/me` 的 GET 與 PATCH 共用一份可變的使用者，模擬後端保存名稱。 */
-function mockProfileApi(initial: string | null) {
+function mockProfileApi(initial: string | null, language: Lang = 'zh-TW') {
   let name = initial
   const patches: unknown[] = []
   server.use(
     http.get('/api/dashboard/me', () => HttpResponse.json({ total_conversations: 0, completed: 0, total_turns: 0, recent: [] })),
-    http.get('/api/me', () => HttpResponse.json(makeMe({ student: true }, { display_name: name }))),
+    http.get('/api/me', () => HttpResponse.json(makeMe({ student: true }, { display_name: name, language }))),
     http.patch('/api/me', async ({ request }) => {
       const body = (await request.json()) as { display_name: string | null }
       patches.push(body)
-      name = body.display_name?.trim() || null
-      return HttpResponse.json(makeMe({ student: true }, { display_name: name }))
+      name = body.display_name?.trim() || '匯入姓名'
+      return HttpResponse.json(makeMe({ student: true }, { display_name: name, language }))
     }),
   )
   return patches
@@ -47,6 +48,7 @@ describe('profile form on the personal dashboard', () => {
     await userEvent.type(input, '😀')
     expect((input as HTMLInputElement).value).toBe('😀'.repeat(31))
     expect(screen.getByText('31 / 30')).toBeInTheDocument()
+    expect(screen.getByText('顯示名稱最多 30 個字元，請縮短後再儲存。')).toBeInTheDocument()
     expect(input).toBeInvalid()
     expect(screen.getByRole('button', { name: '儲存' })).toBeDisabled()
   })
@@ -89,14 +91,25 @@ describe('profile form on the personal dashboard', () => {
     expect(screen.getByRole('link', { name: '阿華' })).toBeInTheDocument()
   })
 
-  it('clearing the field sends null and the header falls back to the email', async () => {
+  it.each([
+    ['zh-TW', '最多 30 個字元。留空會顯示匯入名單時的姓名。'],
+    ['en', 'Up to 30 characters. Leave blank to show the name from the imported roster.'],
+    ['es', 'Hasta 30 caracteres. Deja el campo vacío para mostrar el nombre de la lista importada.'],
+  ] as const)('explains the imported-name fallback in %s', async (language, hint) => {
+    mockProfileApi('小明', language)
+    renderApp(null, { route: '/dashboard', lang: language })
+    expect(await screen.findByText(hint, { exact: false })).toBeInTheDocument()
+  })
+
+  it('clearing the field sends null and displays the imported name returned by the API', async () => {
     const patches = mockProfileApi('小明')
     renderApp(null, { route: '/account' })
     await userEvent.clear(await screen.findByLabelText('顯示名稱'))
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
     expect(patches).toEqual([{ display_name: null }])
-    expect(screen.getByRole('link', { name: 'user@example.com' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '匯入姓名' })).toBeInTheDocument()
+    expect(screen.getByLabelText('顯示名稱')).toHaveValue('匯入姓名')
   })
 
   it('shows a translated message when the server rejects the name', async () => {

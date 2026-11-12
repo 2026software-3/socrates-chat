@@ -60,6 +60,7 @@ pub mod dashboard;
 pub mod demo;
 pub mod diagnostics;
 pub mod error;
+mod google_translation;
 pub mod identity;
 pub mod key_pool;
 pub mod logging;
@@ -76,6 +77,7 @@ pub mod reply;
 pub mod roster;
 pub mod roster_store;
 pub mod summary;
+pub mod summary_translation;
 pub mod tasks;
 pub(crate) mod user_limit;
 pub mod voice;
@@ -112,6 +114,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
     /// 自架語音同時進行中的使用者（S-05.5）。
@@ -120,8 +123,9 @@ pub struct AppState {
     pub voice_sessions: Arc<cascade::VoiceSessions>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
-    /// 教師按需翻譯總結的每人頻率限制（每次都會呼叫 AI 且不快取）。
+    /// 教師按需翻譯總結的每人頻率限制。
     pub(crate) translation_limit: Arc<user_limit::UserLimiter>,
+    pub(crate) summary_translation_wake: Arc<tokio::sync::Notify>,
     /// 每位使用者的 AI 用量上限（`ai_usage`）；放在記憶體，重啟後歸零，多個實例各自計算。
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
     /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
@@ -136,6 +140,10 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let google_translation = config
+            .google_translation_api_key
+            .as_deref()
+            .and_then(google_translation::GoogleTranslation::new);
         let ai_usage = Arc::new(user_limit::UserLimiter::new(
             config.ai_usage_max,
             config.ai_usage_window,
@@ -146,11 +154,13 @@ impl AppState {
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
+            google_translation,
             voice,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
             live: Arc::default(),
             translation_limit: Arc::default(),
+            summary_translation_wake: Arc::default(),
             ai_usage,
             maintenance: Arc::default(),
         }
@@ -158,6 +168,11 @@ impl AppState {
 
     pub fn with_voice(mut self, voice: Arc<dyn VoiceProvider>) -> Self {
         self.voice = voice;
+        self
+    }
+
+    pub fn with_google_translation(mut self, key: &str) -> Self {
+        self.google_translation = google_translation::GoogleTranslation::new(key);
         self
     }
 

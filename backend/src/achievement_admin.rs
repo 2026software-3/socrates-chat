@@ -3,7 +3,7 @@
 //! 只有管理者能新增與修改；成就只能停用，不提供刪除。新增、降低門檻與重新啟用會在同一個
 //! 交易內對所有學生做一次性追溯（冪等），並寫入稽核日誌（操作者、時間、項目、舊值、新值）。
 //!
-//! 管理者可輸入單語名稱與說明；AI 翻譯失敗時保留原文並標示待完成。
+//! 管理者可輸入單語名稱與說明；翻譯失敗時保留原文並標示待完成。
 //! 管理者可新增多級成就，且同一成就各級門檻必須嚴格遞增。
 
 use std::collections::BTreeMap;
@@ -118,6 +118,12 @@ pub(crate) struct NewLevel {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct Translation {
+    name: String,
+    description: String,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewAchievement {
     /// 語言中立的識別碼：小寫英文字母開頭，其後為小寫英文字母、數字或底線，最長 64 字元
@@ -133,6 +139,9 @@ pub(crate) struct NewAchievement {
     source_language: Option<String>,
     name: NewText,
     description: NewText,
+    /// 單語輸入時可附上瀏覽器已翻譯的語言；缺少的語言由後端翻譯
+    #[serde(default)]
+    browser_translations: BTreeMap<String, Translation>,
     /// 顯示排序，預設排在最後
     sort_order: Option<i32>,
 }
@@ -402,44 +411,77 @@ pub(crate) async fn create(
     }
     let (name_zh_tw, name_en, name_es, desc_zh_tw, desc_en, desc_es, pending_languages) =
         match (b.name, b.description, b.source_language.as_deref()) {
-            (NewText::Localized(name), NewText::Localized(description), None) => (
-                clean_text(&name.zh_tw, MAX_NAME_CHARS, "invalid_name")?,
-                clean_text(&name.en, MAX_NAME_CHARS, "invalid_name")?,
-                clean_text(&name.es, MAX_NAME_CHARS, "invalid_name")?,
-                clean_text(
-                    &description.zh_tw,
-                    MAX_DESCRIPTION_CHARS,
-                    "invalid_description",
-                )?,
-                clean_text(
-                    &description.en,
-                    MAX_DESCRIPTION_CHARS,
-                    "invalid_description",
-                )?,
-                clean_text(
-                    &description.es,
-                    MAX_DESCRIPTION_CHARS,
-                    "invalid_description",
-                )?,
-                Vec::new(),
-            ),
+            (NewText::Localized(name), NewText::Localized(description), None)
+                if b.browser_translations.is_empty() =>
+            {
+                (
+                    clean_text(&name.zh_tw, MAX_NAME_CHARS, "invalid_name")?,
+                    clean_text(&name.en, MAX_NAME_CHARS, "invalid_name")?,
+                    clean_text(&name.es, MAX_NAME_CHARS, "invalid_name")?,
+                    clean_text(
+                        &description.zh_tw,
+                        MAX_DESCRIPTION_CHARS,
+                        "invalid_description",
+                    )?,
+                    clean_text(
+                        &description.en,
+                        MAX_DESCRIPTION_CHARS,
+                        "invalid_description",
+                    )?,
+                    clean_text(
+                        &description.es,
+                        MAX_DESCRIPTION_CHARS,
+                        "invalid_description",
+                    )?,
+                    Vec::new(),
+                )
+            }
             (NewText::Single(name), NewText::Single(description), Some(source))
                 if ["zh-TW", "en", "es"].contains(&source) =>
             {
                 let name = clean_text(&name, MAX_NAME_CHARS, "invalid_name")?;
                 let description =
                     clean_text(&description, MAX_DESCRIPTION_CHARS, "invalid_description")?;
+                if b.browser_translations.keys().any(|language| {
+                    language == source || !["zh-TW", "en", "es"].contains(&language.as_str())
+                }) {
+                    return Err(ApiError::bad_request(
+                        "invalid_request",
+                        "瀏覽器譯文必須使用其他支援的語言",
+                    ));
+                }
                 let translate = |language| {
                     let state = &state;
                     let name = &name;
                     let description = &description;
+                    let browser = b.browser_translations.get(language);
                     let user = cu.user.id;
                     async move {
                         if language == source {
                             Some((name.clone(), description.clone()))
                         } else {
-                            translate_achievement(state, user, source, language, name, description)
-                                .await
+                            let browser = browser.and_then(|text| {
+                                validate_translation(
+                                    name,
+                                    description,
+                                    &text.name,
+                                    &text.description,
+                                )
+                            });
+                            match browser {
+                                Some(text) => Some(text),
+                                None => {
+                                    translate_achievement(
+                                        state,
+                                        user,
+                                        source,
+                                        language,
+                                        name,
+                                        description,
+                                    )
+                                    .await
+                                }
+                            }
                         }
                     }
                 };
@@ -473,6 +515,7 @@ pub(crate) async fn create(
         };
 
     let mut tx = state.pool.begin().await?;
+    achievements::lock_catalog_for_update(&mut tx).await?;
     let sort_order = match b.sort_order {
         Some(v) => v,
         None => {
@@ -548,10 +591,11 @@ async fn translate_achievement(
     name: &str,
     description: &str,
 ) -> Option<(String, String)> {
-    #[derive(Deserialize)]
-    struct Translation {
-        name: String,
-        description: String,
+    if let Some(google) = &state.google_translation
+        && let Some([title, detail]) = google.translate(source, target, [name, description]).await
+        && let Some(translated) = validate_translation(name, description, &title, &detail)
+    {
+        return Some(translated);
     }
     let request = AiRequest {
         system: format!(
@@ -588,6 +632,28 @@ async fn translate_achievement(
         })
         .await
         .ok()
+}
+
+fn validate_translation(
+    name: &str,
+    description: &str,
+    translated_name: &str,
+    translated_description: &str,
+) -> Option<(String, String)> {
+    if name.matches("{n}").count() != translated_name.matches("{n}").count()
+        || description.matches("{n}").count() != translated_description.matches("{n}").count()
+    {
+        return None;
+    }
+    Some((
+        clean_text(translated_name, MAX_NAME_CHARS, "invalid_name").ok()?,
+        clean_text(
+            translated_description,
+            MAX_DESCRIPTION_CHARS,
+            "invalid_description",
+        )
+        .ok()?,
+    ))
 }
 
 /// 管理者修改成就：文字、啟用狀態、排序與各級門檻、點數。條件型別不可改，也沒有刪除。
@@ -644,6 +710,7 @@ pub(crate) async fn update(
     .filter_map(|(language, complete)| complete.then_some(language))
     .collect();
     let mut tx = state.pool.begin().await?;
+    achievements::lock_catalog_for_update(&mut tx).await?;
     let before = load(&mut tx, &id, true)
         .await?
         .ok_or(ApiError::not_found())?;
