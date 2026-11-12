@@ -5,6 +5,7 @@ export function makeConversation(overrides: Partial<Conversation> = {}): Convers
   return {
     id: 'c1',
     activity_id: null,
+    activity_title: null,
     topic_id: 't1',
     title: '合成題目：電車難題',
     description: '合成描述：該不該扳動拉桿？',
@@ -14,6 +15,7 @@ export function makeConversation(overrides: Partial<Conversation> = {}): Convers
     turn_count: 3,
     converge_ready: false,
     created_at: '2026-03-05T08:00:00Z',
+    updated_at: '2026-03-05T08:00:00Z',
     ended_at: null,
     is_archived: false,
     ...overrides,

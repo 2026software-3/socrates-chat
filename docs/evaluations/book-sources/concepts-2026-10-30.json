@@ -1,0 +1,71 @@
+{
+  "created_on": "2026-10-30",
+  "selection_basis": "三組一般哲學概念，三語語意對應；固定查詞，不含學生資料、不由 LLM 產生查詞。未測同義詞或廣義網路搜尋。",
+  "language_limits": "zh/chi 不區分繁簡；Open Library 同時保存作品與所選版本的語言，不能混用。",
+  "assessment": "僅檢查候選可用性、語言欄位及明顯離題；未設定通過門檻，不以書名判定完整內容或推薦品質。",
+  "cases": [
+    {
+      "id": "justice-zh-TW",
+      "language": "zh-TW",
+      "query": "分配正義",
+      "google_language": "zh",
+      "openlibrary_language": "chi"
+    },
+    {
+      "id": "justice-en",
+      "language": "en",
+      "query": "distributive justice",
+      "google_language": "en",
+      "openlibrary_language": "eng"
+    },
+    {
+      "id": "justice-es",
+      "language": "es",
+      "query": "justicia distributiva",
+      "google_language": "es",
+      "openlibrary_language": "spa"
+    },
+    {
+      "id": "autonomy-zh-TW",
+      "language": "zh-TW",
+      "query": "個人自主",
+      "google_language": "zh",
+      "openlibrary_language": "chi"
+    },
+    {
+      "id": "autonomy-en",
+      "language": "en",
+      "query": "personal autonomy",
+      "google_language": "en",
+      "openlibrary_language": "eng"
+    },
+    {
+      "id": "autonomy-es",
+      "language": "es",
+      "query": "autonomía personal",
+      "google_language": "es",
+      "openlibrary_language": "spa"
+    },
+    {
+      "id": "responsibility-zh-TW",
+      "language": "zh-TW",
+      "query": "道德責任",
+      "google_language": "zh",
+      "openlibrary_language": "chi"
+    },
+    {
+      "id": "responsibility-en",
+      "language": "en",
+      "query": "moral responsibility",
+      "google_language": "en",
+      "openlibrary_language": "eng"
+    },
+    {
+      "id": "responsibility-es",
+      "language": "es",
+      "query": "responsabilidad moral",
+      "google_language": "es",
+      "openlibrary_language": "spa"
+    }
+  ]
+}

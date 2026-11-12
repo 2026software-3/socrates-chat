@@ -1,5 +1,5 @@
 # cascade 設定（docker 版）。欄位說明見 docs/specs/cascade-voice-spike.md 的「cascade 設定」。
-# ${...} 由 entrypoint.sh 在啟動時代入；密碼不寫在檔案裡，LLM 節點以 api_key_env 讀 CASCADE_LLM_TOKEN。
+# 密碼不寫在檔案裡，LLM 節點以 api_key_env 讀 CASCADE_LLM_TOKEN。
 config_cls: StreamingCascadePipelineConfig
 model_path: /app
 
@@ -49,9 +49,7 @@ session_nodes:
       - "input:session"
       - {kind: control, source: dialog, event: interrupt}
     base_url: "http://cascade-adapter:8103/v1"
-    model: Qwen/Qwen3-TTS-12Hz-0.6B-Base
-    reference_audio_path: /refs/reference.wav
-    reference_text: "${CASCADE_REFERENCE_TEXT}"
+    model: hexgrad/Kokoro-82M
     language: Chinese
   aligner:
     kind: alignment

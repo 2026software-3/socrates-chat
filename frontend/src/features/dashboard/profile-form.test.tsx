@@ -34,12 +34,12 @@ describe('profile form on the personal dashboard', () => {
   it('links the email when there is no name yet', async () => {
     mockProfileApi(null)
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/dashboard')
+    expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/account')
   })
 
   it('counts Unicode characters (an emoji is one) and never rewrites what the user typed', async () => {
     mockProfileApi(null)
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     const input = await screen.findByLabelText('顯示名稱')
     await userEvent.type(input, '😀'.repeat(30))
     expect(screen.getByText('30 / 30')).toBeInTheDocument()
@@ -53,7 +53,7 @@ describe('profile form on the personal dashboard', () => {
 
   it('warns instead of silently truncating a long paste, and recovers once shortened', async () => {
     const patches = mockProfileApi(null)
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     const input = await screen.findByLabelText('顯示名稱')
     await userEvent.click(input)
     await userEvent.paste('字'.repeat(35))
@@ -69,7 +69,7 @@ describe('profile form on the personal dashboard', () => {
 
   it('measures the length after trimming, like the backend', async () => {
     mockProfileApi(null)
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     const input = await screen.findByLabelText('顯示名稱')
     await userEvent.click(input)
     await userEvent.paste(`  ${'字'.repeat(30)}  `)
@@ -79,7 +79,7 @@ describe('profile form on the personal dashboard', () => {
 
   it('saves the new name and updates the header', async () => {
     const patches = mockProfileApi('小明')
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     const input = await screen.findByLabelText('顯示名稱')
     await userEvent.clear(input)
     await userEvent.type(input, '阿華')
@@ -91,7 +91,7 @@ describe('profile form on the personal dashboard', () => {
 
   it('clearing the field sends null and the header falls back to the email', async () => {
     const patches = mockProfileApi('小明')
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     await userEvent.clear(await screen.findByLabelText('顯示名稱'))
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
@@ -102,17 +102,18 @@ describe('profile form on the personal dashboard', () => {
   it('shows a translated message when the server rejects the name', async () => {
     mockProfileApi('小明')
     server.use(http.patch('/api/me', () => apiError(400, 'invalid_display_name')))
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     await userEvent.type(await screen.findByLabelText('顯示名稱'), '1')
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱太長或含有不允許的字元')
   })
 
-  it('does not link the name for teachers, who cannot rename', async () => {
+  it('does not link the name of teachers to the personal settings, which they cannot rename in', async () => {
     mockMe(makeMe({ teacher: true }))
     renderApp(null, { route: '/' })
     expect(await screen.findByText('Test User')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Test User' })).not.toBeInTheDocument()
+    // 教師只有帳號頁（更改密碼，S-18），沒有個人設定；沒有內建密碼的教師則完全不連結（見 features/account）
+    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
   })
 })
 
@@ -134,7 +135,7 @@ describe('Google account link on the profile', () => {
 
   it('offers to link when the student has no email yet', async () => {
     mockStudent(null)
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     expect(await screen.findByText('尚未連結 Google 帳號')).toBeInTheDocument()
     const link = screen.getByRole('link', { name: '連結 Google 帳號' })
     expect(link).toHaveAttribute('href', '/api/auth/google/link')
@@ -143,14 +144,14 @@ describe('Google account link on the profile', () => {
 
   it('shows the linked email and lets the student switch to another Google account', async () => {
     mockStudent('mine@example.com')
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     expect(await screen.findByText('mine@example.com')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '改連結其他 Google 帳號' })).toHaveAttribute('href', '/api/auth/google/link')
   })
 
   it('asks for a second click before unlinking, then shows the unlinked state', async () => {
     const deletes = mockStudent('mine@example.com')
-    renderApp(null, { route: '/dashboard' })
+    renderApp(null, { route: '/account' })
     await userEvent.click(await screen.findByRole('button', { name: '取消連結' }))
     expect(deletes).toHaveLength(0)
     await userEvent.click(screen.getByRole('button', { name: '確定取消連結' }))
@@ -165,7 +166,7 @@ describe('Google account link on the profile', () => {
     ['link_error=unknown_code', '連結失敗，請稍後再試。'],
   ])('reports the result of the redirect (%s)', async (query, text) => {
     mockStudent(null)
-    renderApp(null, { route: `/dashboard?${query}` })
+    renderApp(null, { route: `/account?${query}` })
     expect(await screen.findByText(text)).toBeInTheDocument()
   })
 })
