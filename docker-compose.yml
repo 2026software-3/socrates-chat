@@ -48,8 +48,7 @@ services:
   # ---- 伺服器端語音對話（cascade，docs/specs/cascade-voice-spike.md）----
   # 預設不啟動。啟用：COMPOSE_PROFILES=cascade（或 docker compose --profile app --profile cascade up -d --build），
   # 並在 .env 設 CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime、CASCADE_LLM_TOKEN。
-  # 需要 NVIDIA GPU 與
-  # NVIDIA Container Toolkit。服務之間走 compose 內部網路，不對主機開 port。
+  # 需要 NVIDIA GPU 與 NVIDIA Container Toolkit。服務之間走 compose 內部網路，不對主機開 port。
   cascade-tts:
     profiles: ["cascade"]
     build:

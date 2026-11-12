@@ -15,7 +15,7 @@ case "${1:-}" in
   cascade)
     : "${CASCADE_LLM_TOKEN:?CASCADE_LLM_TOKEN 未設定}"
     python3 /app/patch_dialog.py
-    exec sgl-omni serve --config /app/launch.yaml.tpl --host 0.0.0.0 --port 8110 --enable-realtime
+    exec sgl-omni serve --config /app/launch.yaml --host 0.0.0.0 --port 8110 --enable-realtime
     ;;
   *)
     echo "用法：entrypoint.sh tts|adapter|cascade" >&2
