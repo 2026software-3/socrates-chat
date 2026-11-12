@@ -2,7 +2,7 @@
 
 對應 [Issue #190：收斂判定：AI 提示與行為評估](https://github.com/2026software-3/socrates-chat/issues/190)。規格依據為 `docs/specs/technical-details.md` 的 S-03.3（對話回合上限、主動收尾）與 `docs/specs/decisions.md` 的 S-03.4（AI 行為評分準則與情境集）；本文記錄目前評估實作，不新增或取代產品規格。
 
-> **狀態：尚未實際跑過評估，沒有通過率數字。** 目前只有離線測試通過（版本欄位與結果結構、情境檔可解析、格式檢查）；沒有任何一輪真實模型的結果可以引用，也沒有人工複核紀錄。第一輪真實評估跑完後，請把 Run ID、模型與結果補到下方「評估紀錄」。
+> **狀態：只跑過一輪真實評估（Run `1794149101`，8 題通過 7 題），尚無人工複核。** 這一輪每題只跑一次，受測與評審是同一個模型，不能當作穩定的通過率，也不是團隊約定的驗收門檻。完整紀錄放在 [Discussion #485](https://github.com/2026software-3/socrates-chat/discussions/485)。
 
 ## 要解決的問題
 
@@ -49,7 +49,7 @@ cargo run --example try_f08    # 真實模型評估：受測 12 題（格式錯�
 | `CASE` | 未設定 | 只跑指定題號，例如 `CASE=CONV_01` |
 | `OPENAI_REASONING_EFFORT` | 未設定 | 與正式環境一致時才設（例如 `high`）；受測與評審共用，沒設就不送 |
 
-結果寫在 `backend/eval/results/f08_<run-id>/`（`<run-id>` 是執行時的 Unix 秒數）。該目錄被 `.gitignore` 排除，不會進版本控制；要保留的紀錄請整理進本文件的「評估紀錄」。
+結果寫在 `backend/eval/results/f08_<run-id>/`（`<run-id>` 是執行時的 Unix 秒數）。該目錄被 `.gitignore` 排除，不會進版本控制；要保留的紀錄請整理後發到 Discussions，並登記在本文件的「評估紀錄」。
 
 ## 固定情境集
 

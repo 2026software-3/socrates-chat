@@ -522,9 +522,9 @@ pub async fn record_login_failure(
         .execute(&mut *tx)
         .await?;
     let key = login_key(account);
-    let ip = bump_failures(&mut tx, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
+    let ip = bump_failures(&mut *tx, &key, ip_key, MAX_LOGIN_FAILURES, now).await?;
     let account = bump_failures(
-        &mut tx,
+        &mut *tx,
         &key,
         ACCOUNT_TOTAL_KEY,
         MAX_EMAIL_LOGIN_FAILURES,
@@ -545,7 +545,7 @@ pub struct NewLocks {
 }
 
 async fn bump_failures(
-    conn: &mut sqlx::PgConnection,
+    conn: impl sqlx::PgExecutor<'_>,
     login_key: &str,
     key: &str,
     max_failures: i32,
@@ -660,7 +660,7 @@ pub async fn try_charge_change_password_attempt(
     if locked {
         return Ok(false);
     }
-    bump_failures(&mut tx, &key, ACCOUNT_TOTAL_KEY, MAX_LOGIN_FAILURES, now).await?;
+    bump_failures(&mut *tx, &key, ACCOUNT_TOTAL_KEY, MAX_LOGIN_FAILURES, now).await?;
     tx.commit().await?;
     Ok(true)
 }

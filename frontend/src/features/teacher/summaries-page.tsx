@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
-import { api } from '@/lib/api'
+import { api, isInvalidCursor } from '@/lib/api'
 import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
@@ -147,6 +147,7 @@ export function SummariesPage() {
         cursor={cursor}
         onNext={(next) => setCursors((previous) => [...previous, next])}
         onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
+        onRestart={() => setCursors([null])}
       />
     </Page>
   )
@@ -165,11 +166,13 @@ function SummaryList({
   cursor,
   onNext,
   onPrevious,
+  onRestart,
 }: {
   search: string
   cursor: string | null
   onNext: (cursor: string) => void
   onPrevious?: () => void
+  onRestart: () => void
 }) {
   const t = useT()
   const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor))
@@ -179,7 +182,8 @@ function SummaryList({
   return (
     <>
       {summaries.loading && !data ? <LoadingBlock /> : null}
-      {summaries.error ? <ErrorBlock error={summaries.error} onRetry={summaries.reload} /> : null}
+      {/* 失效的游標（例如部署後游標版本改變）重試也不會成功，改從第一頁開始 */}
+      {summaries.error ? <ErrorBlock error={summaries.error} onRetry={isInvalidCursor(summaries.error) ? onRestart : summaries.reload} /> : null}
       {data && data.length === 0 ? <EmptyBlock>{search ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
       {data && data.length > 0 ? (
         <ul className="space-y-3">

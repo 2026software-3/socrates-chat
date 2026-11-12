@@ -9,7 +9,7 @@ use utoipa::{
 use crate::{
     accounts, achievement_admin, ai_usage, announcements, auth, cascade, catalog, chat, claims,
     classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody, points, purchase,
-    reply, request_logs, roster, roster_store, summary, tasks, voice,
+    reply, roster, roster_store, summary, tasks, voice,
 };
 
 struct SessionCookie;
@@ -128,7 +128,6 @@ impl Modify for SessionCookie {
         catalog::delete_activity, catalog::available,
         chat::create, chat::list, chat::detail, chat::remove, chat::archive, chat::unarchive, chat::send_message,
         reply::stream,
-        request_logs::list,
         crate::diagnostics::status,
         crate::diagnostics::list,
         summary::end, summary::get_summary, summary::retry, summary::list, summary::transcript, summary::translate,

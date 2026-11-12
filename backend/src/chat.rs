@@ -53,6 +53,7 @@ pub struct Conversation {
     pub turn_count: i32,
     pub converge_ready: bool,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     /// 學生已封存：只從自己的清單隱藏（S-14）
     pub is_archived: bool,
@@ -64,7 +65,9 @@ macro_rules! conversation_select {
             "SELECT id, activity_id, topic_id, classroom_id,
                     (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                     title, description, language, status, stage,
-                    turn_count, converge_ready, created_at, ended_at,
+                    turn_count, converge_ready, created_at,
+                    COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
+                    ended_at,
                     archived_at IS NOT NULL AS is_archived FROM conversations ",
             $tail
         )
@@ -180,7 +183,8 @@ pub(crate) async fn create(
          RETURNING id, activity_id, topic_id, classroom_id,
                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                    title, description, language, status,
-                   stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived",
+                   stage, turn_count, converge_ready, created_at, created_at AS updated_at, ended_at,
+                   archived_at IS NOT NULL AS is_archived",
     )
     .bind(cu.user.id)
     .bind(activity_id)
@@ -213,7 +217,7 @@ pub(crate) async fn create(
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
     params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的"), ("activity_id" = Option<Uuid>, Query, description = "只列這個活動的對話")),
-    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
+    responses((status = 200, description = "對話分頁，依 updated_at DESC, id ASC（無訊息時以 created_at 代替）", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
@@ -236,8 +240,12 @@ pub(crate) async fn list(
     let rows = sqlx::query_as(conversation_select!(
         "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $2
            AND ($3::uuid IS NULL OR activity_id = $3)
-           AND ($4::timestamptz IS NULL OR created_at < $4 OR (created_at = $4 AND id > $5))
-         ORDER BY created_at DESC, id ASC LIMIT $6"
+           AND (
+                $4::timestamptz IS NULL OR
+                COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) < $4 OR
+                (COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) = $4 AND id > $5)
+           )
+         ORDER BY updated_at DESC, id ASC LIMIT $6"
     ))
     .bind(cu.user.id)
     .bind(archived)
@@ -251,7 +259,7 @@ pub(crate) async fn list(
         rows,
         limit,
         "conversations",
-        |row: &Conversation| (row.created_at, row.id),
+        |row: &Conversation| (row.updated_at, row.id),
     )?))
 }
 
