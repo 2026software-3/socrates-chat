@@ -20,7 +20,7 @@
 
 ## cascade 設定
 
-本機設定範本為 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)，複製後修改路徑；Docker 使用 [`docker/cascade/launch.yaml.tpl`](../../docker/cascade/launch.yaml.tpl)。必要的欄位：
+本機設定範本為 [`scripts/cascade-launch.example.yaml`](../../scripts/cascade-launch.example.yaml)，複製後修改路徑；Docker 使用 [`docker/cascade/launch.yaml`](../../docker/cascade/launch.yaml)。必要的欄位：
 
 | 欄位 | 值 | 說明 |
 | --- | --- | --- |
@@ -35,7 +35,7 @@
 
 其餘節點與連線（`inputs`、`session_publish`）照範本，不要改。後端這一端要設 `CASCADE_REALTIME_URL`（cascade 的 `/v1/realtime`）與 `CASCADE_LLM_TOKEN`。
 
-轉接層是 [`docker/cascade/tts_adapter.py`](../../docker/cascade/tts_adapter.py)（本機評估是 `127.0.0.1:8103`）：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並將 TTS 文字繁轉簡。Kokoro 端點輸出 24 kHz、16-bit 小端 PCM，帶 `X-Sample-Rate`；目前每句全部合成完才回傳，不提供句內增量串流。
+轉接層是 [`docker/cascade/tts_adapter.py`](../../docker/cascade/tts_adapter.py)（本機評估是 `127.0.0.1:8103`）：它把 `/v1/audio/transcriptions` 轉給 Whisper 服務、把 `/v1/audio/speech` 轉給 TTS 服務，並將 TTS 文字繁轉簡。Kokoro 端點輸出 24 kHz、16-bit 小端 PCM，帶 `X-Sample-Rate`；目前每句全部合成完才回傳，不提供句內增量串流。沒有可唸內容的句子（只有標點、符號或表情）回傳約 50 ms 靜音，不回錯誤，因為 TTS 回 500 時 cascade 會關閉整場會話；服務啟動時先預熱模型，`/health` 通過才代表第一句不會再付冷啟動成本。
 
 ## 用 docker compose 啟動整套 cascade
 
@@ -46,7 +46,7 @@
 | 啟用 | `COMPOSE_PROFILES=cascade`，或 `docker compose --profile app --profile cascade up -d --build` |
 | 後端環境變數 | `CASCADE_REALTIME_URL=ws://cascade:8110/v1/realtime`、`CASCADE_LLM_TOKEN`（與 cascade 容器同一個值，compose 會從 `.env` 帶入） |
 | 模型快取 | 預設存在 `cascade_hf` volume（首次啟動下載）；`CASCADE_HF_CACHE=~/.cache/huggingface` 可重用主機已下載的模型 |
-| 需求 | NVIDIA GPU與 NVIDIA Container Toolkit；服務之間走 compose 內部網路，不對主機開 port |
+| 需求 | NVIDIA GPU 與 NVIDIA Container Toolkit；服務之間走 compose 內部網路，不對主機開 port |
 
 映像固定 `sglang-omni==0.2.0`（實測版本），CUDA 13 開發版基底。cascade 與 TTS 沒有 GPU 時無法啟動，所以不要在沒有 GPU 的環境啟用這個 profile。
 
@@ -73,7 +73,7 @@
 
 ## Kokoro 替換驗證
 
-Kokoro 的 GPU 單請求評估見 [`scripts/voice-benchmark/RESULTS.md`](../../scripts/voice-benchmark/RESULTS.md)。隔離容器以 RTX 4050 測試中文，Kokoro API 與 `sglang-omni` 原生 TTS 客戶端經轉接層均可取得 24 kHz PCM。這不代表 Rust／WebSocket／ASR 的完整語音鏈路已用 Kokoro 重測，或已確認多人容量。
+Kokoro 的 GPU 單請求評估見 [`scripts/voice-benchmark/RESULTS.md`](../../scripts/voice-benchmark/RESULTS.md)。隔離容器以 RTX 4050 測試中文，Kokoro API 與 `sglang-omni` 原生 TTS 客戶端經轉接層均可取得 24 kHz PCM。該評估用 `zf_xiaobei` 與繁體原文，部署則是 `zm_yunjian` 與轉接層轉成的簡體文字，數字只能當量級參考。這不代表 Rust／WebSocket／ASR 的完整語音鏈路已用 Kokoro 重測，或已確認多人容量；部署前須以部署設定重測。
 
 ## 先前 Qwen 實測結果
 
@@ -99,7 +99,7 @@ Kokoro 的 GPU 單請求評估見 [`scripts/voice-benchmark/RESULTS.md`](../../s
 - **容錯：** ASR 回 500 時 cascade 直接關閉整個會話，沒有重試。
 - **啟動順序：** cascade 啟動時探測 LLM，Rust 要先就緒。
 - **繁簡：** `whisper-server.py` 把中文轉成臺灣繁體（OpenCC `s2tw`）。轉換只是字詞對應，不校正辨識錯字；改用其他 ASR 服務時要各自處理。
-- **容量：** Kokoro TTS 合成以單一鎖序列化，併發請求會等待；整體多人容量、取消合成與長時間穩定性尚未驗證。
+- **容量：** Kokoro TTS 合成以單一鎖序列化，併發請求會排隊。打斷造成連線中斷時，排隊中的請求直接放棄，合成中的在下一個音訊區塊之間停止（單一區塊內無法中斷，cascade 逐句送出時多半就是一個區塊）。整體多人容量與長時間穩定性尚未驗證。
 - **聲音：** Kokoro 預設使用 `zm_yunjian`；聲音自然度、授權及正式使用仍需確認。
 - **其他語言：** 即時對話目前只開放中文；英文、西文雖曾單獨測試模型，尚未接入此服務。
 

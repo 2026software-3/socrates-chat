@@ -13,7 +13,20 @@
 
 文字：`什麼理由會讓你改變對這個問題的看法？`、`What reasons might lead you to change your mind about this question?`、`¿Qué razones podrían hacerte cambiar de opinión sobre esta pregunta?`。語音檔在 Windows `D:\socrates-voice-tts-test-20261112`。聲線、音訊秒數不同；未評分自然度與正確性，中文使用繁體原文。
 
-GPU 未測：RTX 4050 6141 MiB 當時已有運行中的 cascade TTS 佔約 4837 MiB。未停止現有服務，也未測併發或長時間運作。既有 Qwen 5512 MiB 紀錄未標明是裝置使用量或程序峰值，不能直接與 CPU RSS 比較。
+這個 CPU 測試進行時 GPU 未測：RTX 4050 6141 MiB 當時已有運行中的 cascade TTS 佔約 4837 MiB，未停止現有服務。GPU 數字是之後暫停該服務才補測的，見下一節。兩項測試都未測併發或長時間運作。既有 Qwen 5512 MiB 紀錄未標明是裝置使用量或程序峰值，不能直接與 CPU RSS 比較。
+
+## 與實際部署設定的差異
+
+本檔的表格**不是**實際上線設定的量測，只能當量級參考：
+
+| 項目 | 本檔量測 | 部署（`docker/cascade`） |
+| --- | --- | --- |
+| 中文聲線 | `zf_xiaobei` | `zm_yunjian`（`KOKORO_VOICE`） |
+| 中文文字 | 繁體原文 | 轉接層以 OpenCC `t2s` 轉成簡體後才送入；Kokoro 的中文 G2P 以簡體為主，音節數、時長與發音可能不同 |
+| 執行方式 | 單一腳本直接呼叫 `KPipeline` | HTTP 服務，單一鎖序列化，整句合成完才回傳；啟動時預熱 |
+| 預熱 | 首輪未暖機 | 啟動時先推論一次 |
+
+`zm_yunjian` 與簡體文字的延遲、RTF、發音正確性尚未量測；部署決策前請以部署設定重測（單句、預熱後多次、2／4 併發），並由人聽過成品。語音檔放在作業者本機（Windows `D:\socrates-voice-tts-test-20261112`），不在 repo 內，無法由他人重現或稽核。
 
 `kokoro_cpu.py` 和 `melo_cpu.py` 為量測用腳本，依序接受語言代碼、（Kokoro 的聲線）、文字；`VOICE_OUTPUT` 可指定 WAV 檔案，`HF_HOME` 指定權重快取。MeloTTS 原始碼需在 `PYTHONPATH`；須先另行安裝各自依賴及下載模型。峰值與延遲受快取、競爭負載、版本與語音長度影響，部署決策前應重新測試。
 

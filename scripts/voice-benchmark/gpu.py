@@ -62,7 +62,10 @@ else:
     first = time.perf_counter()
     sample_rate = pipeline.hps.data.sampling_rate
 end = time.perf_counter()
-samples.append(device_memory_mib())
+try:
+    samples.append(device_memory_mib())
+except (OSError, subprocess.SubprocessError, ValueError):
+    pass  # 與監看執行緒一致：nvidia-smi 偶發失敗不該讓整次量測的結果遺失
 stop.set()
 thread.join()
 sf.write(output, audio, sample_rate)

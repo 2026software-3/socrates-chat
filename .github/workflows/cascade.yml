@@ -1,0 +1,35 @@
+name: Cascade voice services
+
+# docker/cascade 的 Python 服務（Kokoro TTS 端點、轉接層）的契約測試。
+# 這些測試只用假的合成函式，不需要 GPU、模型或 sglang-omni；patch_dialog 的測試需要 sglang-omni，不在這裡跑。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/cascade/**"
+      - ".github/workflows/cascade.yml"
+  pull_request:
+    paths:
+      - "docker/cascade/**"
+      - ".github/workflows/cascade.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cascade-python:
+    name: Cascade (kokoro_server, tts_adapter tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m venv "$RUNNER_TEMP/venv"
+      - run: >-
+          "$RUNNER_TEMP/venv/bin/pip" install
+          fastapi httpx numpy pydantic uvicorn opencc-python-reimplemented
+      - run: >-
+          PYTHONPATH=docker/cascade "$RUNNER_TEMP/venv/bin/python" -m unittest -v
+          test_kokoro_server test_tts_adapter

@@ -24,7 +24,7 @@ dist/
 /backend/eval/followup.gbnf
 /backend/examples/docs_preview.rs
 
-# 伺服器端語音（cascade）的參考音，只限本機評估
+# 舊版伺服器端語音（cascade，Qwen）的參考音目錄；Kokoro 已不使用，保留忽略規則避免誤把聲音檔提交
 cascade-refs/
 
 # Python 直譯器產生的快取（docker/cascade 的補丁測試會產生）
