@@ -8,8 +8,9 @@ import type { Roles } from '@/lib/types'
  * - `teacher`：教師或管理者
  * - `reporter`：學生或教師（可回報問題；純管理者與名單外帳號不行，S-17）
  * - `admin`：管理者
+ * - `any`：任何已開通（至少有一個角色）的帳號，不因角色被導去別的首頁（`/account`，S-18）
  */
-export type Access = 'member' | 'teacher' | 'reporter' | 'admin'
+export type Access = 'member' | 'teacher' | 'reporter' | 'admin' | 'any'
 
 export type AppRoute = { path: string; element: ReactNode; access: Access }
 export type NavItem = { to: string; labelKey: MessageKey; access: Access }
@@ -27,5 +28,7 @@ export function canAccess(access: Access, roles: Roles): boolean {
       return roles.teacher || roles.student
     case 'admin':
       return roles.admin
+    case 'any':
+      return roles.admin || roles.teacher || roles.student
   }
 }
