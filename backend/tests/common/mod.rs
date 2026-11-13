@@ -150,7 +150,8 @@ impl AiProvider for FakeAi {
                 system: req.system,
                 messages: vec![socrates_chat_backend::ai::ChatTurn {
                     role: socrates_chat_backend::ai::ChatRole::User,
-                    content: serde_json::to_string(&req.input).map_err(|_| AiError)?,
+                    content: serde_json::to_string(&req.input)
+                        .map_err(|_| AiError::unclassified())?,
                 }],
             },
             Duration::from_secs(30),

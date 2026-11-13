@@ -206,7 +206,7 @@ pub trait AiProvider: Send + Sync {
         &self,
         _req: StructuredRequest,
     ) -> Result<StructuredCompletion, AiError> {
-        Err(AiError)
+        Err(AiError::unclassified())
     }
 }
 
@@ -1318,38 +1318,58 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
 #[async_trait]
 impl AiProvider for OpenAiProvider {
     async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        let input = serde_json::to_string(&req.input).map_err(|_| AiError::unclassified())?;
+        let trace = crate::diagnostics::current_trace();
+        let last = self.targets.len() - 1;
+        // 與 first_available 相同：只在限流（429）時換下一個模型，嘗試次數跨模型累計
+        let mut attempts = 0;
         for (index, target) in self.targets.iter().enumerate() {
             let mut body = serde_json::json!({
                 "model":target.model, "stream":false, "store":false,
                 "instructions":req.system,
-                "input":[{"role":"user","content":serde_json::to_string(&req.input).map_err(|_| AiError)?}],
+                "input":[{"role":"user","content":input}],
                 "text":{"format":{"type":"json_schema","name":req.name,"strict":true,"schema":req.schema}}
             });
             if let Some(effort) = &self.reasoning_effort {
                 body["reasoning"] = serde_json::json!({"effort":effort});
             }
-            let response = match self
-                .send_with_failover(
-                    &target.keys,
-                    "responses",
-                    &body,
-                    index + 1 == self.targets.len(),
-                )
+            let (response, current_attempts) = match self
+                .send_with_failover(&target.keys, "responses", &body, index == last)
                 .await
             {
-                Ok(response) => response,
-                Err(SendFailure::RateLimited) if index + 1 < self.targets.len() => continue,
-                Err(_) => return Err(AiError),
+                Ok(sent) => sent,
+                Err(SendFailure::RateLimited(error)) if index < last => {
+                    attempts += error.provider_attempts;
+                    continue;
+                }
+                Err(SendFailure::RateLimited(error) | SendFailure::Failed(error)) => {
+                    return Err(error.with_model(&target.model).add_attempts(attempts));
+                }
             };
-            let answer: serde_json::Value = response.json().await.map_err(|_| AiError)?;
+            attempts += current_attempts;
+            let answer: serde_json::Value = response.json().await.map_err(|error| {
+                AiError::transport(&error)
+                    .with_model(&target.model)
+                    .add_attempts(attempts)
+            })?;
             let result = crate::main_argument_tree::parse_response(&answer, &target.model, None)
-                .map_err(|_| AiError)?;
+                .map_err(|_| {
+                    AiError::invalid_output()
+                        .with_model(&target.model)
+                        .add_attempts(attempts)
+                })?;
+            if let Some(trace) = &trace {
+                trace.note(attempts, &target.model);
+            }
             return Ok(StructuredCompletion {
                 content: result.content,
                 model: result.model,
             });
         }
-        Err(AiError)
+        Err(
+            AiError::classified(crate::diagnostics::Failure::RateLimited)
+                .with_model(&self.targets[last].model),
+        )
     }
 
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
