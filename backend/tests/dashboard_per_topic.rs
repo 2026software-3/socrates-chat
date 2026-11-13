@@ -54,8 +54,9 @@ async fn groups_regroup_and_deletion_are_scoped_to_one_activity_topic(pool: PgPo
     ]);
     let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "第一題").await;
-    let t2 = create_topic(&app, &a, "第二題").await;
+    // Keep scripted AI replies for summaries and grouping, not topic dimension generation.
+    let t1 = seed_topic("第一題").await;
+    let t2 = seed_topic("第二題").await;
     let res = send(
         &app,
         json_req(
