@@ -12,6 +12,8 @@ export type Me = {
   is_admin: boolean
   /** 用臨時密碼登入、尚未改密碼；其他 API 會回 403 `password_change_required` */
   must_change_password: boolean
+  /** 有內建密碼且不是示範帳號：個人設定才顯示「更改密碼」（S-18） */
+  can_change_password: boolean
   roles: Roles
 }
 
@@ -40,13 +42,29 @@ export type Activity = {
   created_at: string
 }
 
-export type Available = { activities: Activity[]; topics: Topic[] }
+/** 學生在活動中某一題的進度（F-29.6）。 */
+export type TopicProgress = {
+  topic_id: string
+  title: string
+  /** 這位學生在此題的對話；還沒開始為 null */
+  conversation_id: string | null
+  conversation_status: ConversationStatus | null
+  /** 此題總結已產生（S-04.7：完成一題的條件） */
+  summary_ready: boolean
+}
+
+/** 學生看到的活動：每題進度與整體完成度（每題都有總結才算完成）。 */
+export type StudentActivity = Activity & { topics: TopicProgress[]; completed: boolean }
+
+export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
 export type ConversationStatus = 'active' | 'ended'
 
 export type Conversation = {
   id: string
   activity_id: string | null
+  /** 活動對話所屬活動目前的名稱；個人練習為 null */
+  activity_title: string | null
   topic_id: string | null
   title: string
   description: string
@@ -57,6 +75,7 @@ export type Conversation = {
   turn_count: number
   converge_ready: boolean
   created_at: string
+  updated_at: string
   ended_at: string | null
   /** 學生已封存：只從自己的清單隱藏，可復原 */
   is_archived: boolean
@@ -94,6 +113,8 @@ export type SummaryView = {
   /** 學生最終主張的一句短句（AI 寫的）；沒有時為 null；管理者看到的是固定字串 `message` */
   claim?: string | null
   completed_at: string | null
+  translation?: SummaryTranslation | null
+  translation_pending?: boolean
 }
 
 /** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
@@ -101,6 +122,12 @@ export type TeacherSummary = {
   conversation_id: string
   /** 對話所屬的教室 */
   classroom_id: string
+  /** 對話所屬的活動 ID；個人練習為 null */
+  activity_id: string | null
+  /** 對話所屬的題目 ID；個人練習為 null，題目被刪除後也會變成 null */
+  topic_id: string | null
+  /** 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3） */
+  activity_completed: boolean
   title: string
   ended_at: string
   /** 學生的使用者 UUID（`?student=` 篩選與學生頁連結用這個），不是學號 */
@@ -112,6 +139,8 @@ export type TeacherSummary = {
   stance: string | null
   reasons: string | null
   claim?: string | null
+  translation?: SummaryTranslation | null
+  translation_pending?: boolean
 }
 
 /** 教師唯讀檢視的一場已結束活動對話（GET /api/summaries/{id}/messages）；管理者的 content 一律是 `message`。 */
@@ -127,7 +156,7 @@ export type Transcript = {
   messages: Message[]
 }
 
-/** 教師明確觸發、僅保留在目前頁面的總結翻譯。 */
+/** 已保存或按需產生的總結譯文。 */
 export type SummaryTranslation = {
   language: Lang
   stance: string

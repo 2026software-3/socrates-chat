@@ -132,7 +132,7 @@ async fn spanish_conversation_uses_spanish_summary_prompt_transcript_and_version
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, "v1.23/es");
+    assert_eq!(version, "v1.24/es");
 }
 
 #[sqlx::test]
@@ -445,6 +445,11 @@ async fn teacher_translates_a_summary_into_their_account_language_without_conver
     .await;
     assert_eq!(updated.status(), StatusCode::OK);
 
+    let list = all_items(&app, "/api/summaries", &a.teacher).await;
+    assert_eq!(list[0]["translation_pending"], true);
+    assert!(list[0]["translation"].is_null());
+    assert_eq!(list[0]["stance"], "會拉桿");
+
     let response = send(
         &app,
         json_req(
@@ -465,6 +470,31 @@ async fn teacher_translates_a_summary_into_their_account_language_without_conver
         })
     );
 
+    let list = all_items(&app, "/api/summaries", &a.teacher).await;
+    assert_eq!(list[0]["translation"]["language"], "en");
+    assert_eq!(list[0]["translation"]["stance"], "Would pull the lever");
+    assert_eq!(list[0]["translation_pending"], false);
+    assert_eq!(list[0]["stance"], "會拉桿");
+
+    let admin = all_items(&app, "/api/summaries", &a.admin).await;
+    assert!(admin[0]["translation"].is_null());
+    assert_eq!(admin[0]["stance"], "message");
+
+    let updated = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/me",
+            Some(&a.student),
+            Some(json!({"language": "en"})),
+        ),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let student = settled_summary(&app, &a.student, &conv).await;
+    assert_eq!(student["translation"]["reasons"], "Save more people");
+    assert_eq!(student["reasons"], "救五人優先");
+
     let requests = ai.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     let translation = &requests[1];
@@ -477,6 +507,96 @@ async fn teacher_translates_a_summary_into_their_account_language_without_conver
     assert!(translation.messages[0].content.contains("救五人優先"));
     for private in ["這句是私密的對話原文", "student@example.com", "學生"] {
         assert!(!translation.messages[0].content.contains(private));
+    }
+}
+
+#[sqlx::test]
+async fn backfill_saves_each_language_independently_and_retries_only_missing_versions(
+    pool: PgPool,
+) {
+    let english = r#"{"stance":"Pull the lever","reasons":"Save more people [EMAIL]"}"#;
+    let bad_spanish = r#"{"stance":"Mover la palanca","reasons":"Salvar a más personas"}"#;
+    let spanish = r#"{"stance":"Mover la palanca","reasons":"Salvar a más personas [EMAIL]"}"#;
+    let ai = FakeAi::with(vec![
+        Reply(vec![GOOD]),
+        Reply(vec![english]),
+        Reply(vec![bad_spanish]),
+        Reply(vec![spanish]),
+    ]);
+    register_fixture_pool(&pool);
+    let state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        test_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    let app = socrates_chat_backend::app(state.clone());
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "這句是私密的對話原文").await;
+    end(&app, &a.student, &conv).await;
+    settled_summary(&app, &a.student, &conv).await;
+    let id = uuid::Uuid::parse_str(&conv).unwrap();
+    sqlx::query("UPDATE summaries SET reasons = $2 WHERE conversation_id = $1")
+        .bind(id)
+        .bind("救五人優先 synthetic@example.com")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let delay = Duration::from_secs(60);
+    let pass = || socrates_chat_backend::summary_translation::process_batch(&state, delay);
+    assert_eq!(pass().await.unwrap(), 2);
+    let versions = || {
+        sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT language, stance FROM summary_translations WHERE conversation_id = $1 ORDER BY language",
+    ).bind(id).fetch_all(&pool)
+    };
+    assert_eq!(
+        versions().await.unwrap(),
+        vec![
+            ("en".into(), Some("Pull the lever".into())),
+            ("es".into(), None)
+        ]
+    );
+    assert_eq!(pass().await.unwrap(), 0);
+
+    sqlx::query("UPDATE summary_translations SET available_at = now() WHERE stance IS NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(pass(), pass());
+    assert_eq!(first.unwrap() + second.unwrap(), 1);
+    assert_eq!(pass().await.unwrap(), 0);
+    assert_eq!(
+        versions().await.unwrap(),
+        vec![
+            ("en".into(), Some("Pull the lever".into())),
+            ("es".into(), Some("Mover la palanca".into())),
+        ]
+    );
+    let original = settled_summary(&app, &a.student, &conv).await;
+    assert_eq!(original["reasons"], "救五人優先 synthetic@example.com");
+    let deleted = send(
+        &app,
+        json_req(
+            "DELETE",
+            &format!("/api/conversations/{conv}"),
+            Some(&a.student),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(versions().await.unwrap().is_empty());
+    let requests = ai.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in &requests[1..] {
+        let fields: Value = serde_json::from_str(&request.messages[0].content).unwrap();
+        assert_eq!(
+            fields,
+            json!({"stance": "會拉桿", "reasons": "救五人優先 [EMAIL]"})
+        );
     }
 }
 

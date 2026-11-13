@@ -84,6 +84,46 @@ async fn all_ledger_rows(pool: &PgPool) -> i64 {
 }
 
 #[sqlx::test]
+async fn creating_an_achievement_does_not_miss_an_in_flight_completion(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let user_id = student(&pool, 1).await;
+    let mut completion = pool.begin().await.unwrap();
+    achievements::record_completed_conversation_in_tx(
+        &mut completion,
+        user_id,
+        Uuid::new_v4(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+
+    let id = "concurrent_creation";
+    let create = call(
+        &app,
+        "POST",
+        LIST,
+        &actors.admin,
+        new_achievement(id, "completed_conversations", 1),
+    );
+    tokio::pin!(create);
+    let early = tokio::time::timeout(std::time::Duration::from_secs(1), &mut create).await;
+    completion.commit().await.unwrap();
+    let (status, body) = match early {
+        Ok(result) => result,
+        Err(_) => create.await,
+    };
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["retroactive_unlocks"], 1);
+    assert!(unlocked(&pool, user_id, id, 1).await);
+    assert_eq!(
+        ledger_rows(&pool, user_id, id).await,
+        [(10, format!("{id}:1"))]
+    );
+}
+
+#[sqlx::test]
 async fn only_admins_can_read_or_change_achievements(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
@@ -830,6 +870,30 @@ async fn creating_in_one_language_translates_and_records_completion_status(pool:
             .iter()
             .all(|request| request.system.contains("achievement-translation-v1"))
     );
+}
+
+#[sqlx::test]
+async fn browser_translations_take_precedence_and_missing_languages_use_fallback(pool: PgPool) {
+    let ai = FakeAi::with(vec![Script::Reply(vec![
+        r#"{"name":"Nueva idea","description":"Completa un diálogo"}"#,
+    ])]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let actors = seed_actors(&app).await;
+    let body = json!({
+        "id": "browser_translated", "condition_type": "completed_conversations", "threshold": 1,
+        "source_language": "zh-TW", "name": "新見解", "description": "完成一場對話",
+        "browser_translations": {"en": {"name": "New insight", "description": "Complete a dialogue"}}
+    });
+    let (status, result) = call(&app, "POST", LIST, &actors.admin, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(
+        result["achievement"]["name"],
+        json!({"zh_tw": "新見解", "en": "New insight", "es": "Nueva idea"})
+    );
+    assert_eq!(result["achievement"]["pending_languages"], json!([]));
+    let requests = ai.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].system.contains("to es"));
 }
 
 #[sqlx::test]

@@ -2,24 +2,50 @@
   {
     "id": "CONV_01",
     "stage": 3,
-    "turn": 6,
+    "turn": 5,
     "title": "電車難題",
     "description": "失控的電車即將撞上五人，你是否會拉下轉轍器讓電車轉向撞上一人？",
     "conversation": [
       {
         "role": "assistant",
-        "content": "你支持拉下轉轍器犧牲一人拯救五人，但如果情境變成：你必須親手把身旁一位無辜的路人推下天橋來擋住電車，你仍會做出同樣的選擇嗎？"
+        "content": "你說你會拉下轉轍器犧牲一人來救五人，在你心裡，這樣做的理由是什麼？"
+      },
+      {
+        "role": "user",
+        "content": "我會拉。五條命比一條命多，如果能少死四個人，我覺得就該這麼做。"
+      },
+      {
+        "role": "assistant",
+        "content": "你的理由是「死的人越少越好」。這個說法是不是假設了每個人的命可以直接相加來比較？"
+      },
+      {
+        "role": "user",
+        "content": "對，我預設每條生命的價值相等，所以可以用人數來比較。"
+      },
+      {
+        "role": "assistant",
+        "content": "如果情境變成：你必須親手把身旁一位無辜的路人推下天橋來擋住電車，你仍會做出同樣的選擇嗎？"
       },
       {
         "role": "user",
         "content": "我不會推他下去。因為拉轉轍器是改變失控列車的方向，雖然造成一人死亡但目的是救五人；但親手推人則是把無辜的人當作達成目的的工具，這跨越了道德底線。"
+      },
+      {
+        "role": "assistant",
+        "content": "換個角度想：如果被犧牲的那一個人是你的家人或摯友，而另外五人都是陌生人，你還會認為「人數越多越重要」這個原則適用嗎？"
+      },
+      {
+        "role": "user",
+        "content": "這很難，但我想我還是會拉，只是會非常痛苦。因為如果我因為關係親疏就偏袒，等於承認別人家人的命比我家人輕；我覺得公平對待每個人比保護自己在乎的人更重要，不過我也承認這種堅持在現實中很少人做得到。"
       }
     ],
     "expected_advance": true,
     "expected_type": "wrap_up",
-    "acceptable_types": ["wrap_up"],
-    "learning_goal": "學生已針對天橋反例做出明確且有理由的區分（手段與目的），符合收斂條件，AI 應提議收尾。",
-    "annotation_reason": "學生已在第 3 階段充分回應反例，展現對義務論與效益論衝突的省思，應收斂並引導整理結論。"
+    "acceptable_types": [
+      "wrap_up"
+    ],
+    "learning_goal": "學生先後面對天橋與親疏關係兩個角度不同的反例，都做出有理由的判斷並承認堅持的代價，符合收斂條件；AI 應直接說結束語並結束。",
+    "annotation_reason": "兩個角度不同的反例都已得到實質回應，應直接收尾並回顧學生面對不同反例時的思考，不再提出第三個反例。"
   },
   {
     "id": "CONV_02",
@@ -30,6 +56,207 @@
     "conversation": [
       {
         "role": "assistant",
+        "content": "你支持全面禁止學生上課使用手機，你所說的「使用手機」包含哪些情況？"
+      },
+      {
+        "role": "user",
+        "content": "我指的是上課時滑社群、玩遊戲、傳訊息這些跟課堂無關的使用。"
+      },
+      {
+        "role": "assistant",
+        "content": "你認為應該禁止的理由是什麼？"
+      },
+      {
+        "role": "user",
+        "content": "因為手機會分散注意力，不只影響自己，也會影響附近的同學，所以學習效果會變差。"
+      },
+      {
+        "role": "assistant",
+        "content": "若課堂上有即時查閱資料的需求，或學生家中發生緊急事故需要聯繫，全面禁止是否反而阻礙學習或造成危險？"
+      },
+      {
+        "role": "user",
+        "content": "這確實是個好問題。我想我可以修正原本的看法：原則上課堂禁止個人娛樂使用，但若老師規劃了數位教學活動，或有預先通報的緊急狀況，則應允許例外使用。這樣既維持課堂專注，又兼顧彈性。"
+      },
+      {
+        "role": "assistant",
+        "content": "另一種對立的看法是：與其由學校禁止，不如讓學生學會自己管理手機，因為出了社會沒有人會替他們收手機。照這個看法，禁止本身是不是剝奪了練習自我控制的機會？"
+      },
+      {
+        "role": "user",
+        "content": "這點我有想過。我覺得自我管理要循序漸進，國中以下自制力還在發展，所以需要規範；高中以上可以放寬為把手機收進書包但不收走，讓學生練習。所以我會依年齡調整，而不是一律全面禁止或完全放任。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": [
+      "wrap_up"
+    ],
+    "learning_goal": "學生先後回應教學緊急需求與自我管理兩個角度不同的反例／對立觀點，並依年齡階段調整原則，符合收斂條件。",
+    "annotation_reason": "兩個角度不同的反例／對立觀點都已實質回應並完成立場調適，應收尾，不再追問例外細節。"
+  },
+  {
+    "id": "CONV_03",
+    "stage": 3,
+    "turn": 5,
+    "title": "說謊與誠實",
+    "description": "在任何情況下說謊都是錯誤的嗎？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你認為說謊總是錯的，這裡的「說謊」指的是什麼？包含隱瞞或不說出全部事實嗎？"
+      },
+      {
+        "role": "user",
+        "content": "我指的是明知是假的卻說成是真的，故意讓別人相信。隱瞞不一定算。"
+      },
+      {
+        "role": "assistant",
+        "content": "你為什麼認為這種說謊總是錯的？"
+      },
+      {
+        "role": "user",
+        "content": "因為說謊破壞信任，如果大家都可以隨時說謊，人與人之間就沒辦法合作了。"
+      },
+      {
+        "role": "assistant",
+        "content": "如果你堅持任何時候都不能說謊，那麼在一個極端情境下：有殺人兇手追問你朋友的藏身處，如果你說實話朋友就會喪命，你依然認為不能說謊嗎？"
+      },
+      {
+        "role": "user",
+        "content": "在這種情況下我會選擇說謊。我認為保護無辜者的生命價值，優先於遵守絕對不說謊的規則。道德規則是為了維護人的善，當規則與生命直接衝突時，拯救生命是更高的責任。"
+      },
+      {
+        "role": "assistant",
+        "content": "反過來看，有人主張只要開了例外，信任就會一點一點被侵蝕。比方你為了安慰重病的朋友，告訴他病情很樂觀。照你「保護生命優先」的標準，這種善意的謊言也算例外嗎？"
+      },
+      {
+        "role": "user",
+        "content": "我覺得這兩種不一樣。兇手的例子是為了阻止嚴重傷害，而安慰病人只是讓對方心情好一點，卻讓他失去面對真相、安排後事的機會。所以我會說善意謊言通常不算例外，除非對方明確表示不想知道。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": [
+      "wrap_up"
+    ],
+    "learning_goal": "學生先後回應極端情境與善意謊言兩個角度不同的反例，並說明例外與非例外的區分標準，符合收斂條件。",
+    "annotation_reason": "兩個角度不同的反例都已得到有理由的回應，學生的例外標準已清楚，應直接收尾。"
+  },
+  {
+    "id": "CONV_04",
+    "stage": 3,
+    "turn": 5,
+    "title": "資源分配",
+    "description": "有限的獎學金應該完全依據成績還是依據家庭經濟需求發放？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你主張獎學金完全依據經濟需求，你所說的「經濟需求」是怎麼認定的？"
+      },
+      {
+        "role": "user",
+        "content": "我指的是家庭收入較低、需要靠獎學金才能繼續念書的學生。"
+      },
+      {
+        "role": "assistant",
+        "content": "為什麼你認為需求比成績更應該優先？"
+      },
+      {
+        "role": "user",
+        "content": "因為獎學金的目的是讓人有機會受教育，成績好的學生通常資源本來就比較多，把錢給真正缺的人效益更大。"
+      },
+      {
+        "role": "assistant",
+        "content": "你主張完全看經濟需求，但如果完全不考慮學業表現，是否會削弱學生努力學習的誘因，甚至對成績優異但家境普通的學生不公平？"
+      },
+      {
+        "role": "user",
+        "content": "我明白這層考量。我認為獎學金可以分為兩類：基本助學金以需求為主，保障經濟弱勢的受教權；另外設立小額的學業優良獎，提供誘因。兩者並行就能兼顧公平與激勵。"
+      },
+      {
+        "role": "assistant",
+        "content": "再換一個面向：要證明家境需要幫助，學生得公開自己的家庭收入，甚至可能被同學知道；有人覺得這樣的程序本身就讓人感到羞辱，所以寧可用成績這種客觀標準。你怎麼看這個代價？"
+      },
+      {
+        "role": "user",
+        "content": "這個代價確實存在。我認為申請可以由輔導室保密審核，不公開名單，也不要求提交過多證明，只用既有的低收入戶等行政資料。這樣可以降低羞辱感，仍然能照顧到需要的人；如果程序做不到保密，我就會同意應該降低需求比重。"
+      }
+    ],
+    "expected_advance": true,
+    "expected_type": "wrap_up",
+    "acceptable_types": [
+      "wrap_up"
+    ],
+    "learning_goal": "學生先後回應誘因公平與申請程序羞辱感兩個角度不同的反例，各自提出方案並說明前提，符合收斂條件。",
+    "annotation_reason": "兩個角度不同的反例都已被實質消化並提出兼顧方案，應引導收尾，不再追問審核細節。"
+  },
+  {
+    "id": "ONE_01",
+    "stage": 3,
+    "turn": 4,
+    "title": "電車難題",
+    "description": "失控的電車即將撞上五人，你是否會拉下轉轍器讓電車轉向撞上一人？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你說你會拉下轉轍器犧牲一人來救五人，在你心裡，這樣做的理由是什麼？"
+      },
+      {
+        "role": "user",
+        "content": "我會拉。五條命比一條命多，如果能少死四個人，我覺得就該這麼做。"
+      },
+      {
+        "role": "assistant",
+        "content": "你的理由是「死的人越少越好」。這個說法是不是假設了每個人的命可以直接相加來比較？"
+      },
+      {
+        "role": "user",
+        "content": "對，我預設每條生命的價值相等，所以可以用人數來比較。"
+      },
+      {
+        "role": "assistant",
+        "content": "如果情境變成：你必須親手把身旁一位無辜的路人推下天橋來擋住電車，你仍會做出同樣的選擇嗎？"
+      },
+      {
+        "role": "user",
+        "content": "我不會推他下去。因為拉轉轍器是改變失控列車的方向，雖然造成一人死亡但目的是救五人；但親手推人則是把無辜的人當作達成目的的工具，這跨越了道德底線。"
+      }
+    ],
+    "expected_advance": false,
+    "expected_type": "counterexample",
+    "acceptable_types": [
+      "counterexample",
+      "perspective"
+    ],
+    "learning_goal": "學生已針對天橋反例做出明確且有理由的區分（手段與目的），但只回應了一個反例；AI 不得收尾，應具體回應後提出第二個角度不同的反例（例如親疏關係或其他面向）。",
+    "annotation_reason": "目前只有第一個反例（天橋）得到實質回應，要看出學生的原則是否一致，還需要第二個角度不同的反例；advance 必須為 false、不得說結束語。"
+  },
+  {
+    "id": "ONE_02",
+    "stage": 3,
+    "turn": 4,
+    "title": "校園手機管理",
+    "description": "學校是否應全面禁止學生在上課時使用手機？",
+    "conversation": [
+      {
+        "role": "assistant",
+        "content": "你支持全面禁止學生上課使用手機，你所說的「使用手機」包含哪些情況？"
+      },
+      {
+        "role": "user",
+        "content": "我指的是上課時滑社群、玩遊戲、傳訊息這些跟課堂無關的使用。"
+      },
+      {
+        "role": "assistant",
+        "content": "你認為應該禁止的理由是什麼？"
+      },
+      {
+        "role": "user",
+        "content": "因為手機會分散注意力，不只影響自己，也會影響附近的同學，所以學習效果會變差。"
+      },
+      {
+        "role": "assistant",
         "content": "若課堂上有即時查閱資料的需求，或學生家中發生緊急事故需要聯繫，全面禁止是否反而阻礙學習或造成危險？"
       },
       {
@@ -37,19 +264,38 @@
         "content": "這確實是個好問題。我想我可以修正原本的看法：原則上課堂禁止個人娛樂使用，但若老師規劃了數位教學活動，或有預先通報的緊急狀況，則應允許例外使用。這樣既維持課堂專注，又兼顧彈性。"
       }
     ],
-    "expected_advance": true,
-    "expected_type": "wrap_up",
-    "acceptable_types": ["wrap_up"],
-    "learning_goal": "學生面對教學與緊急聯繫之反例，主動修正原則並提出合理的例外界線，符合收斂條件。",
-    "annotation_reason": "學生已回應反例並完成立場調適，此時應收尾整理學生思考轉折，不宜無休止提出新反例。"
+    "expected_advance": false,
+    "expected_type": "counterexample",
+    "acceptable_types": [
+      "counterexample",
+      "perspective"
+    ],
+    "learning_goal": "學生面對教學與緊急聯繫之反例，主動修正原則並劃出例外界線，但只回應了一個反例；AI 不得收尾，應具體回應後提出第二個角度不同的對立觀點（例如自我管理能力的培養）。",
+    "annotation_reason": "只有第一個反例（教學與緊急需求）得到實質回應；尚未檢驗另一個面向（禁止是否剝奪自我管理的練習），advance 必須為 false。"
   },
   {
-    "id": "CONV_03",
+    "id": "ONE_03",
     "stage": 3,
-    "turn": 6,
+    "turn": 4,
     "title": "說謊與誠實",
     "description": "在任何情況下說謊都是錯誤的嗎？",
     "conversation": [
+      {
+        "role": "assistant",
+        "content": "你認為說謊總是錯的，這裡的「說謊」指的是什麼？包含隱瞞或不說出全部事實嗎？"
+      },
+      {
+        "role": "user",
+        "content": "我指的是明知是假的卻說成是真的，故意讓別人相信。隱瞞不一定算。"
+      },
+      {
+        "role": "assistant",
+        "content": "你為什麼認為這種說謊總是錯的？"
+      },
+      {
+        "role": "user",
+        "content": "因為說謊破壞信任，如果大家都可以隨時說謊，人與人之間就沒辦法合作了。"
+      },
       {
         "role": "assistant",
         "content": "如果你堅持任何時候都不能說謊，那麼在一個極端情境下：有殺人兇手追問你朋友的藏身處，如果你說實話朋友就會喪命，你依然認為不能說謊嗎？"
@@ -59,19 +305,38 @@
         "content": "在這種情況下我會選擇說謊。我認為保護無辜者的生命價值，優先於遵守絕對不說謊的規則。道德規則是為了維護人的善，當規則與生命直接衝突時，拯救生命是更高的責任。"
       }
     ],
-    "expected_advance": true,
-    "expected_type": "wrap_up",
-    "acceptable_types": ["wrap_up"],
-    "learning_goal": "學生明確權衡了「保護生命」與「不說謊」的價值順序，成功回應極端反例，符合收斂條件。",
-    "annotation_reason": "學生已給出清晰的價值優先順序判斷，第 3 階段任務達成，AI 應適時收斂。"
+    "expected_advance": false,
+    "expected_type": "counterexample",
+    "acceptable_types": [
+      "counterexample",
+      "perspective"
+    ],
+    "learning_goal": "學生明確權衡了「保護生命」與「不說謊」的價值順序，但只回應了一個反例（兇手）；AI 不得收尾，應具體回應後提出第二個角度不同的情境（例如善意謊言）。",
+    "annotation_reason": "只有第一個反例（兇手追問）得到實質回應；學生的例外標準是否一致還沒被檢驗，advance 必須為 false。"
   },
   {
-    "id": "CONV_04",
+    "id": "ONE_04",
     "stage": 3,
-    "turn": 7,
+    "turn": 4,
     "title": "資源分配",
     "description": "有限的獎學金應該完全依據成績還是依據家庭經濟需求發放？",
     "conversation": [
+      {
+        "role": "assistant",
+        "content": "你主張獎學金完全依據經濟需求，你所說的「經濟需求」是怎麼認定的？"
+      },
+      {
+        "role": "user",
+        "content": "我指的是家庭收入較低、需要靠獎學金才能繼續念書的學生。"
+      },
+      {
+        "role": "assistant",
+        "content": "為什麼你認為需求比成績更應該優先？"
+      },
+      {
+        "role": "user",
+        "content": "因為獎學金的目的是讓人有機會受教育，成績好的學生通常資源本來就比較多，把錢給真正缺的人效益更大。"
+      },
       {
         "role": "assistant",
         "content": "你主張完全看經濟需求，但如果完全不考慮學業表現，是否會削弱學生努力學習的誘因，甚至對成績優異但家境普通的學生不公平？"
@@ -81,11 +346,14 @@
         "content": "我明白這層考量。我認為獎學金可以分為兩類：基本助學金以需求為主，保障經濟弱勢的受教權；另外設立小額的學業優良獎，提供誘因。兩者並行就能兼顧公平與激勵。"
       }
     ],
-    "expected_advance": true,
-    "expected_type": "wrap_up",
-    "acceptable_types": ["wrap_up"],
-    "learning_goal": "學生面對不同價值的衝突反例，提出結構性的整合解決方案，達成收斂條件。",
-    "annotation_reason": "反例已被實質消化並提出兼顧方案，應引導收尾總結。"
+    "expected_advance": false,
+    "expected_type": "counterexample",
+    "acceptable_types": [
+      "counterexample",
+      "perspective"
+    ],
+    "learning_goal": "學生面對誘因不公平的反例，提出雙軌的整合方案，但只回應了一個反例；AI 不得收尾，應具體回應後提出第二個角度不同的對立觀點（例如認定需求的程序與尊嚴）。",
+    "annotation_reason": "只有第一個反例（誘因與公平）得到實質回應；以需求為準的程序代價還沒被檢驗，advance 必須為 false。"
   },
   {
     "id": "NOT_CONV_01",
@@ -105,7 +373,11 @@
     ],
     "expected_advance": false,
     "expected_type": "perspective",
-    "acceptable_types": ["perspective", "counterexample", "clarify"],
+    "acceptable_types": [
+      "perspective",
+      "counterexample",
+      "clarify"
+    ],
     "learning_goal": "學生逃避面對反例與對立觀點，未提出實質考量，不可判為收斂，應繼續追問。",
     "annotation_reason": "學生以情緒性字眼迴避核心道德衝突，未達成第 3 階段挑戰，advance 必須為 false。"
   },
@@ -127,7 +399,10 @@
     ],
     "expected_advance": false,
     "expected_type": "perspective",
-    "acceptable_types": ["perspective", "clarify"],
+    "acceptable_types": [
+      "perspective",
+      "clarify"
+    ],
     "learning_goal": "學生坦承未曾思考該反例，尚未做出立場檢驗，不可收斂，應引導其思考該代價。",
     "annotation_reason": "學生尚未給出實質回應，反例檢視尚未完成，不可過早結束對話。"
   },
@@ -149,7 +424,10 @@
     ],
     "expected_advance": false,
     "expected_type": "assumption",
-    "acceptable_types": ["assumption", "perspective"],
+    "acceptable_types": [
+      "assumption",
+      "perspective"
+    ],
     "learning_goal": "學生訴諸從眾原則（國際趨勢）而避開了正義與被害人家屬權益的反例，尚未達成挑戰階段。",
     "annotation_reason": "學生未針對反例進行論證性回應，僅訴諸外在權威，不得判為收斂。"
   },
@@ -171,7 +449,9 @@
     ],
     "expected_advance": true,
     "expected_type": "wrap_up",
-    "acceptable_types": ["wrap_up"],
+    "acceptable_types": [
+      "wrap_up"
+    ],
     "learning_goal": "回合數已達 15 回合（wrap_up_turn），即使處於第 2 階段，依規格亦必須開始引導學生結論並提議收尾。",
     "annotation_reason": "S-03.3 規定第 15 回合起 AI 開始引導學生整理結論並提議收尾，不可再引入新一輪探究。"
   }

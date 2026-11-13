@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router'
+import { useAccountLanguage } from '@/auth/auth-context'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { LoadMore } from '@/components/load-more'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -43,6 +44,7 @@ export function ClassroomPage() {
 function ClassroomBody({ classroom }: { classroom: Classroom }) {
   const t = useT()
   const base = useClassroomsBase()
+  const isAdmin = base.startsWith('/admin')
   const stats = useFetch<ClassDashboard>(`/api/dashboard/class?classroom_id=${classroom.id}`)
   return (
     <Page
@@ -50,9 +52,18 @@ function ClassroomBody({ classroom }: { classroom: Classroom }) {
       crumbs={[{ label: t('classrooms.nav'), to: base }, { label: classroom.name }]}
       description={[classroom.year_label, classroom.description].filter(Boolean).join(' · ') || undefined}
       actions={
-        <Button asChild variant="outline">
-          <Link to={`${base}/${classroom.id}/students`}>{t('classrooms.students')}</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link to={`${base}/${classroom.id}/students`}>{t('classrooms.students')}</Link>
+          </Button>
+          {isAdmin ? (
+            <Button asChild variant="outline">
+              <Link to={`/admin/diagnostics?classroom_id=${encodeURIComponent(classroom.id)}`}>
+                {t('admin.diag.viewRelated')}
+              </Link>
+            </Button>
+          ) : null}
+        </div>
       }
     >
       {classroom.is_archived ? (
@@ -98,7 +109,9 @@ export function ClassroomStudentsPage() {
 /** 單一活動：論點分布，以及每位學生的總結（可點進學生）。 */
 export function ClassroomActivityPage() {
   const { activityId } = useParams()
-  return <WithClassroom>{(classroom) => <ActivityBody classroom={classroom} activityId={activityId ?? ''} />}</WithClassroom>
+  const accountLanguage = useAccountLanguage()
+  if (!accountLanguage) return <LoadingBlock />
+  return <WithClassroom>{(classroom) => <ActivityBody key={accountLanguage} classroom={classroom} activityId={activityId ?? ''} />}</WithClassroom>
 }
 
 function ActivityBody({ classroom, activityId }: { classroom: Classroom; activityId: string }) {
@@ -179,12 +192,15 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
 /** 單一學生在這間教室的討論情形：他完成的每場對話總結（不含原文）。 */
 export function ClassroomStudentPage() {
   const { studentId } = useParams()
-  return <WithClassroom>{(classroom) => <StudentBody classroom={classroom} studentId={studentId ?? ''} />}</WithClassroom>
+  const accountLanguage = useAccountLanguage()
+  if (!accountLanguage) return <LoadingBlock />
+  return <WithClassroom>{(classroom) => <StudentBody key={accountLanguage} classroom={classroom} studentId={studentId ?? ''} />}</WithClassroom>
 }
 
 function StudentBody({ classroom, studentId }: { classroom: Classroom; studentId: string }) {
   const t = useT()
   const base = useClassroomsBase()
+  const isAdmin = base.startsWith('/admin')
   const summaries = usePagedFetch<TeacherSummary>(
     `/api/summaries?classroom_id=${encodeURIComponent(classroom.id)}&student=${encodeURIComponent(studentId)}`,
   )
@@ -194,6 +210,15 @@ function StudentBody({ classroom, studentId }: { classroom: Classroom; studentId
     <Page
       title={name}
       description={first?.student_name ? first.student_email : undefined}
+      actions={
+        isAdmin ? (
+          <Button asChild variant="outline">
+            <Link to={`/admin/diagnostics?user_id=${encodeURIComponent(studentId)}`}>
+              {t('admin.diag.viewRelated')}
+            </Link>
+          </Button>
+        ) : undefined
+      }
       crumbs={[
         { label: t('classrooms.nav'), to: base },
         { label: classroom.name, to: `${base}/${classroom.id}` },

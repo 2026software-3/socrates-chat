@@ -572,6 +572,45 @@ describe('ConversationPage: ending', () => {
 describe('ConversationPage: summary states', () => {
   const failed = makeSummary({ status: 'failed', stance: null, reasons: null, completed_at: null })
 
+  it('keeps the original visible while the saved translation is pending', async () => {
+    mockDetail(makeDetail({ status: 'ended' }))
+    server.use(http.get('/api/conversations/c1/summary', () => HttpResponse.json({
+      ...makeSummary(), translation: null, translation_pending: true,
+    })))
+    renderPage({ lang: 'en' })
+
+    expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
+    expect(screen.getByText('Translation pending. Showing the original summary.')).toBeInTheDocument()
+  })
+
+  it('updates the open summary when its pending translation finishes', async () => {
+    const translation = { language: 'en' as const, stance: 'Pull the lever', reasons: 'Save more people' }
+    mockDetail(makeDetail({ status: 'ended' }))
+    mockSummaries(
+      { ...makeSummary(), translation: null, translation_pending: true },
+      { ...makeSummary(), translation, translation_pending: false },
+    )
+    renderPage({ lang: 'en' })
+
+    expect(await screen.findByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
+    expect(await screen.findByText(translation.stance)).toBeInTheDocument()
+    expect(screen.getByText(translation.reasons)).toBeInTheDocument()
+    expect(screen.queryByText('Translation pending. Showing the original summary.')).not.toBeInTheDocument()
+  })
+
+  it('shows the saved stance and reasons in the student account language', async () => {
+    const translation = { language: 'en', stance: 'Pull the lever', reasons: 'Save more people' }
+    mockDetail(makeDetail({ status: 'ended' }))
+    server.use(http.get('/api/conversations/c1/summary', () => HttpResponse.json({
+      ...makeSummary(), translation, translation_pending: false,
+    })))
+    renderPage({ lang: 'en' })
+
+    expect(await screen.findByText(translation.stance)).toBeInTheDocument()
+    expect(screen.getByText(translation.reasons)).toBeInTheDocument()
+    expect(screen.queryByText('合成立場：支持扳動拉桿')).not.toBeInTheDocument()
+  })
+
   it('failed summary offers retry, which POSTs summary/retry and polls again', async () => {
     mockDetail(makeDetail({ status: 'ended' }))
     mockSummaries(failed, makeSummary())

@@ -24,16 +24,17 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiRequest, ChatRole, ChatTurn, build_summary_prompt, build_summary_translation_prompt,
-        collect_background, format_transcript, parse_summary, parse_summary_translation,
-        rules_version,
+        AiError, AiRequest, ChatRole, ChatTurn, build_summary_prompt, collect_background,
+        format_transcript, parse_summary, rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
     chat::{Message, load_messages, owned_conversation},
     classrooms::{ClassroomFilter, filtered_classroom},
+    diagnostics::{self, AiActivity},
     error::{ApiError, db_error_class},
     pagination::{self, Page, Pagination},
     points,
+    summary_translation::{via_ai, via_google},
 };
 
 /// 管理者介面看到的固定替代字串（S-02.2）。
@@ -89,7 +90,7 @@ pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
 
 /// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
 pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
-    tokio::spawn(
+    tokio::spawn(diagnostics::inherit_request(
         async move {
             if let Err(e) = generate(&state, id, attempt).await {
                 // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
@@ -106,7 +107,7 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
             }
         }
         .in_current_span(),
-    );
+    ));
 }
 
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
@@ -134,13 +135,20 @@ async fn on_conversation_completed(
     Ok(())
 }
 
+#[derive(FromRow)]
+struct SummarySource {
+    owner: Uuid,
+    title: String,
+    description: String,
+    activity_id: Option<Uuid>,
+    language: String,
+    classroom: Option<Uuid>,
+}
+
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let ((owner, title, description, activity_id, language), turns): (
-        (Uuid, String, String, Option<Uuid>, String),
-        _,
-    ) = tokio::try_join!(
-        sqlx::query_as(
-            "SELECT user_id, title, description, activity_id, language
+    let (SummarySource { owner, title, description, activity_id, language, classroom }, turns) = tokio::try_join!(
+        sqlx::query_as::<_, SummarySource>(
+            "SELECT user_id AS owner, title, description, activity_id, language, classroom_id AS classroom
              FROM conversations WHERE id = $1"
         )
         .bind(id)
@@ -156,14 +164,20 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     };
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
-    for _ in 0..2 {
-        let raw = collect_background(
-            state.ai.as_ref(),
-            req.clone(),
-            state.config.ai_total_timeout,
-        )
-        .await;
-        if let Some(s) = raw.ok().and_then(|raw| parse_summary(&raw)) {
+    let activity = AiActivity::new("summary", Some(owner), classroom).statuses(202, 202);
+    for retry in 0..2 {
+        let generated = activity
+            .run(state, Some(&state.config.openai_model), retry, async {
+                let raw = collect_background(
+                    state.ai.as_ref(),
+                    req.clone(),
+                    state.config.ai_total_timeout,
+                )
+                .await?;
+                parse_summary(&raw).ok_or(AiError::invalid_output())
+            })
+            .await;
+        if let Ok(s) = generated {
             summary = Some(s);
             break;
         }
@@ -190,6 +204,9 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
                 on_conversation_completed(&mut tx, id, owner).await?;
             }
             tx.commit().await?;
+            if updated > 0 {
+                state.summary_translation_wake.notify_one();
+            }
             // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
                 crate::claims::assign_group(state, id, activity, &title, claim).await;
@@ -237,14 +254,25 @@ pub struct SummaryView {
     /// 學生最終主張的一句短句（暫定）
     pub claim: Option<String>,
     pub completed_at: Option<DateTime<Utc>>,
+    #[sqlx(json(nullable))]
+    pub translation: Option<SummaryTranslation>,
+    pub translation_pending: bool,
 }
 
-const SUMMARY_VIEW: &str = "SELECT status, stance, reasons, claim, completed_at
-                            FROM summaries WHERE conversation_id = $1";
-
-async fn view(state: &AppState, id: Uuid) -> Result<SummaryView, ApiError> {
-    sqlx::query_as(SUMMARY_VIEW)
+async fn view(state: &AppState, id: Uuid, language: &str) -> Result<SummaryView, ApiError> {
+    sqlx::query_as(
+        "SELECT s.status, s.stance, s.reasons, s.claim, s.completed_at,
+                CASE WHEN t.stance IS NOT NULL THEN
+                    jsonb_build_object('language', t.language, 'stance', t.stance, 'reasons', t.reasons)
+                END AS translation,
+                (s.status = 'ready' AND c.language <> $2 AND t.stance IS NULL) AS translation_pending
+         FROM summaries s
+         JOIN conversations c ON c.id = s.conversation_id
+         LEFT JOIN summary_translations t ON t.conversation_id = s.conversation_id AND t.language = $2
+         WHERE s.conversation_id = $1",
+    )
         .bind(id)
+        .bind(language)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(ApiError::not_found)
@@ -268,7 +296,10 @@ pub(crate) async fn end(
     let conv = crate::classrooms::writable_conversation(&mut tx, cu.user.id, id).await?;
     if conv.status == "ended" {
         // 重複結束不會再產生一次總結
-        return Ok((StatusCode::OK, Json(view(&state, id).await?)));
+        return Ok((
+            StatusCode::OK,
+            Json(view(&state, id, &cu.user.language).await?),
+        ));
     }
     if conv.turn_count == 0 {
         return Err(ApiError::conflict("empty_conversation", "還沒有討論內容"));
@@ -281,11 +312,14 @@ pub(crate) async fn end(
         if now.status == "active" {
             return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
         }
-        return Ok((StatusCode::OK, Json(view(&state, id).await?)));
+        return Ok((
+            StatusCode::OK,
+            Json(view(&state, id, &cu.user.language).await?),
+        ));
     }
     // Capture the accepted response before the background task can finish; a fast AI provider
     // must not turn the initial 202 body into `ready` nondeterministically.
-    let pending = view(&state, id).await?;
+    let pending = view(&state, id, &cu.user.language).await?;
     spawn_generation(state.clone(), id, 1);
     Ok((StatusCode::ACCEPTED, Json(pending)))
 }
@@ -304,7 +338,7 @@ pub(crate) async fn get_summary(
     Path(id): Path<Uuid>,
 ) -> Result<Json<SummaryView>, ApiError> {
     owned_conversation(&state, cu.user.id, id).await?;
-    Ok(Json(view(&state, id).await?))
+    Ok(Json(view(&state, id, &cu.user.language).await?))
 }
 
 #[utoipa::path(
@@ -340,14 +374,17 @@ pub(crate) async fn retry(
     tx.commit().await?;
     let Some((attempt,)) = next else {
         // 沒有總結列代表對話還沒結束
-        view(&state, id).await?;
+        view(&state, id, &cu.user.language).await?;
         return Err(ApiError::conflict(
             "summary_not_retryable",
             "目前無法重新產生總結",
         ));
     };
     spawn_generation(state.clone(), id, attempt);
-    Ok((StatusCode::ACCEPTED, Json(view(&state, id).await?)))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(view(&state, id, &cu.user.language).await?),
+    ))
 }
 
 // ---- 教師與管理者檢視（F-26、#285）----
@@ -357,6 +394,12 @@ pub(crate) struct SummaryRow {
     conversation_id: Uuid,
     /// 對話所屬的教室
     classroom_id: Uuid,
+    /// 對話所屬的活動 ID（個人練習為 None）
+    activity_id: Option<Uuid>,
+    /// 對話所屬的題目 ID；個人練習為 None，題目被刪除後也會變成 None
+    topic_id: Option<Uuid>,
+    /// 該學生是否已完成該活動內的全部題目（S-04.7、F-29.3）；非活動對話為 false
+    activity_completed: bool,
     title: String,
     ended_at: DateTime<Utc>,
     /// 排序與游標用，不輸出
@@ -373,10 +416,13 @@ pub(crate) struct SummaryRow {
     stance: Option<String>,
     reasons: Option<String>,
     claim: Option<String>,
+    #[sqlx(json(nullable))]
+    translation: Option<SummaryTranslation>,
+    translation_pending: bool,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct SummaryTranslation {
+#[derive(Debug, Deserialize, Serialize, FromRow, utoipa::ToSchema)]
+pub struct SummaryTranslation {
     language: String,
     stance: String,
     reasons: String,
@@ -391,7 +437,7 @@ pub(crate) struct SummaryTranslation {
     summary = "按需翻譯一筆學生總結（不含對話原文）",
     params(("id" = Uuid, Path, description = "對話 ID")),
     responses(
-        (status = 200, description = "未保存的翻譯結果", body = SummaryTranslation),
+        (status = 200, description = "翻譯結果", body = SummaryTranslation),
         (status = 429, description = "翻譯太頻繁（too_many_translations）", body = crate::error::ErrorBody),
         (status = 502, description = "AI 無法翻譯，或譯文過長（ai_unavailable）", body = crate::error::ErrorBody),
         crate::error::CommonErrors
@@ -405,8 +451,8 @@ pub(crate) async fn translate(
     if cu.roles.admin {
         return Err(ApiError::forbidden("forbidden", "沒有權限"));
     }
-    let source: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT s.stance, s.reasons, c.language
+    let source: Option<(String, String, String, Uuid)> = sqlx::query_as(
+        "SELECT s.stance, s.reasons, c.language, cl.id
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND cl.created_by = $2
@@ -416,7 +462,7 @@ pub(crate) async fn translate(
     .bind(cu.user.id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((stance, reasons, source_language)) = source else {
+    let Some((stance, reasons, source_language, classroom)) = source else {
         return Err(ApiError::not_found());
     };
     let language = cu.user.language;
@@ -427,7 +473,7 @@ pub(crate) async fn translate(
             reasons,
         }));
     }
-    // 翻譯不保存也不快取，每次都是一次 AI 呼叫：每位教師限量
+    // 只有教師明確觸發的翻譯才扣使用者額度。
     let Some(slot) = state.translation_limit.try_acquire(cu.user.id) else {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -435,40 +481,61 @@ pub(crate) async fn translate(
             "翻譯太頻繁，請稍後再試",
         ));
     };
-    // 同時計入每位使用者的 AI 用量；翻譯頻率限制先擋，這裡超過才回 ai_usage_exceeded
-    let usage_slot = match state.charge_ai(cu.user.id) {
-        Ok(slot) => slot,
-        Err(e) => {
+    let [stance, reasons] = [stance, reasons].map(crate::pii::mask);
+    let fields = [&*stance, &*reasons];
+    let translated = if let Some(translation) =
+        via_google(&state, &source_language, &language, fields).await
+    {
+        translation
+    } else {
+        let usage_slot = state.charge_ai(cu.user.id).inspect_err(|_| {
             state.translation_limit.refund(cu.user.id, slot);
-            return Err(e);
-        }
+        })?;
+        let translation = AiActivity::new("summary_translation", Some(cu.user.id), Some(classroom))
+            .run(&state, Some(&state.config.openai_model), 0, async {
+                via_ai(&state, &language, fields).await
+            })
+            .await;
+        let Ok(translation) = translation else {
+            state.translation_limit.refund(cu.user.id, slot);
+            state.refund_ai(cu.user.id, usage_slot);
+            return Err(ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "ai_unavailable",
+                "暫時無法完成翻譯",
+            ));
+        };
+        translation
     };
-    let req = AiRequest {
-        system: build_summary_translation_prompt(&language),
-        messages: vec![ChatTurn {
-            role: ChatRole::User,
-            content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
-        }],
-    };
-    let translated = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout)
-        .await
-        .ok()
-        .and_then(|raw| parse_summary_translation(&raw));
-    let Some(translated) = translated else {
-        // 沒有得到譯文就不扣額度：AI 當機時的重試不該把教師鎖在外面
-        state.translation_limit.refund(cu.user.id, slot);
-        state.refund_ai(cu.user.id, usage_slot);
-        return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "ai_unavailable",
-            "AI 暫時無法回覆",
-        ));
-    };
-    Ok(Json(SummaryTranslation {
-        language,
-        stance: translated.stance,
-        reasons: translated.reasons,
-    }))
+    let stored: Option<SummaryTranslation> = sqlx::query_as(
+        "INSERT INTO summary_translations (conversation_id, language, stance, reasons)
+         SELECT conversation_id, $2, $3, $4 FROM summaries
+         WHERE conversation_id = $1 AND status = 'ready'
+         ON CONFLICT (conversation_id, language) DO UPDATE
+         SET stance = EXCLUDED.stance, reasons = EXCLUDED.reasons, attempt_token = NULL
+         WHERE summary_translations.stance IS NULL
+         RETURNING language, stance, reasons",
+    )
+    .bind(id)
+    .bind(&language)
+    .bind(translated.stance)
+    .bind(translated.reasons)
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(stored) = stored {
+        return Ok(Json(stored));
+    }
+    // A concurrent job may already have saved this version, or the summary was deleted.
+    let existing = sqlx::query_as(
+        "SELECT language, stance, reasons FROM summary_translations
+         WHERE conversation_id = $1 AND language = $2 AND stance IS NOT NULL",
+    )
+    .bind(id)
+    .bind(language)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    Ok(Json(existing))
 }
 
 /// 教師唯讀檢視的對話原文：對話本身的識別資訊加上全部訊息。
@@ -694,15 +761,43 @@ pub(crate) async fn list(
     // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let mut rows: Vec<SummaryRow> = sqlx::query_as(
-        "SELECT s.conversation_id, c.classroom_id, c.title, c.ended_at, s.completed_at,
+        "SELECT s.conversation_id, c.classroom_id, c.activity_id, c.topic_id,
+                (
+                    c.activity_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM activity_topics at
+                        WHERE at.activity_id = c.activity_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM activity_topics at
+                        WHERE at.activity_id = c.activity_id
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM conversations conv
+                              JOIN summaries sm
+                                ON sm.conversation_id = conv.id
+                               AND sm.status = 'ready'
+                              WHERE conv.activity_id = at.activity_id
+                                AND conv.topic_id = at.topic_id
+                                AND conv.user_id = c.user_id
+                          )
+                    )
+                ) AS activity_completed,
+                c.title, c.ended_at, s.completed_at,
                 u.id AS student_user_id, u.student_id AS student_number,
                 u.display_name AS student_name, u.email AS student_email,
                 c.language,
-                s.stance, s.reasons, s.claim
+                s.stance, s.reasons, s.claim,
+                CASE WHEN t.stance IS NOT NULL THEN
+                    jsonb_build_object('language', t.language, 'stance', t.stance, 'reasons', t.reasons)
+                END AS translation,
+                (NOT $1 AND c.language <> $11 AND t.stance IS NULL) AS translation_pending
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN users u ON u.id = c.user_id
+         LEFT JOIN summary_translations t ON NOT $1 AND t.conversation_id = s.conversation_id
+                                         AND t.language = $11
          WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
            AND ($3::uuid IS NULL OR c.classroom_id = $3)
            AND ($4::uuid IS NULL OR u.id = $4)
@@ -727,6 +822,7 @@ pub(crate) async fn list(
     .bind(after_id)
     .bind(activity)
     .bind((limit + 1) as i64)
+    .bind(&cu.user.language)
     .fetch_all(&state.pool)
     .await?;
     // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），
