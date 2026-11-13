@@ -105,7 +105,7 @@ async fn seeded(pool: PgPool) -> Seeded {
     finished_conversation(&app, &a.student, json!({"activity_id": act1}), &pool).await;
     finished_conversation(&app, &student2, json!({"activity_id": act1}), &pool).await;
     finished_conversation(&app, &a.student, json!({"activity_id": act2}), &pool).await;
-    let practice = create_topic(&app, &a.teacher, "自由意志").await;
+    let practice = seed_topic("自由意志").await;
     finished_conversation(&app, &a.student, json!({"topic_id": practice}), &pool).await;
     Seeded {
         app,

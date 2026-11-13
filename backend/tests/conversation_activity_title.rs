@@ -21,7 +21,7 @@ async fn start(app: &axum::Router, cookie: &str, body: Value) -> Value {
 async fn activity_conversation_carries_the_activity_title_next_to_the_topic_title(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let topic = create_topic(&app, &a, "電車難題").await;
+    let topic = seed_topic("電車難題").await;
     let activity = publish_activity(&app, &a, "倫理學第一週", &topic).await;
 
     // 建立回應
@@ -53,7 +53,7 @@ async fn activity_conversation_carries_the_activity_title_next_to_the_topic_titl
 async fn personal_practice_has_no_activity_title(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let topic = create_topic(&app, &a, "自由意志").await;
+    let topic = seed_topic("自由意志").await;
 
     let created = start(&app, &a.student, json!({"topic_id": topic})).await;
     assert!(created["activity_title"].is_null());
@@ -66,7 +66,7 @@ async fn personal_practice_has_no_activity_title(pool: PgPool) {
 async fn renaming_the_activity_updates_the_title_on_existing_conversations(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let topic = create_topic(&app, &a, "電車難題").await;
+    let topic = seed_topic("電車難題").await;
     let activity = publish_activity(&app, &a, "舊名稱", &topic).await;
     let created = start(
         &app,

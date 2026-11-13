@@ -79,6 +79,7 @@ pub mod roster_store;
 pub mod summary;
 pub mod summary_translation;
 pub mod tasks;
+pub mod topic_dimensions;
 pub(crate) mod user_limit;
 pub mod voice;
 
@@ -89,7 +90,8 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 8] = [
+pub const LONG_RUNNING_ROUTES: [&str; 9] = [
+    "/api/topics/{id}/dimensions/retry",
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
     // 管理者新增、修改公告時同步翻譯內文
@@ -115,6 +117,8 @@ pub struct AppState {
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
     pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
+    /// 正在產生維度的題目，避免同一題目重複呼叫 AI（F-03.4）。
+    pub(crate) dimension_jobs: Arc<topic_dimensions::Jobs>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
     /// 自架語音同時進行中的使用者（S-05.5）。
@@ -155,6 +159,7 @@ impl AppState {
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
             google_translation,
+            dimension_jobs: Arc::default(),
             voice,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
@@ -212,6 +217,7 @@ pub fn app(state: AppState) -> Router {
         .merge(dashboard::routes())
         .merge(claims::routes())
         .merge(catalog::routes())
+        .merge(topic_dimensions::routes())
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(diagnostics::routes())
