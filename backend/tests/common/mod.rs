@@ -101,6 +101,7 @@ pub fn test_config() -> Config {
         // 縮短逾時讓逾時測試很快跑完
         ai_first_token_timeout: Duration::from_millis(200),
         ai_total_timeout: Duration::from_millis(1000),
+        argument_tree_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
         demo_mode: false,
         smtp: None,
