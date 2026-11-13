@@ -86,6 +86,7 @@ async fn main() {
             Duration::from_secs(u64::from(seconds.get())),
         );
     }
+    socrates_chat_backend::topic_dimensions::spawn(&state, catalog::TROLLEY_TOPIC_ID, "zh-TW");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind listener");

@@ -26,29 +26,29 @@ impl GoogleTranslation {
         })
     }
 
-    pub(crate) async fn translate(
+    pub(crate) async fn translate<const N: usize>(
         &self,
         source: &str,
         target: &str,
-        text: [&str; 2],
-    ) -> Option<[String; 2]> {
+        text: [&str; N],
+    ) -> Option<[String; N]> {
         self.translate_at(ENDPOINT, source, target, text).await
     }
 
-    async fn translate_at(
+    async fn translate_at<const N: usize>(
         &self,
         endpoint: &str,
         source: &str,
         target: &str,
-        text: [&str; 2],
-    ) -> Option<[String; 2]> {
+        text: [&str; N],
+    ) -> Option<[String; N]> {
         #[derive(Deserialize)]
         struct Response {
             data: Data,
         }
         #[derive(Deserialize)]
         struct Data {
-            translations: [Translation; 2],
+            translations: Vec<Translation>,
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -63,7 +63,7 @@ impl GoogleTranslation {
             .header("x-goog-api-key", self.key.clone())
             .timeout(TIMEOUT)
             .json(&serde_json::json!({
-                "q": text,
+                "q": text.as_slice(),
                 "source": source,
                 "target": target,
                 "format": "text",
@@ -76,7 +76,14 @@ impl GoogleTranslation {
             .json()
             .await
             .ok()?;
-        let translations = response.data.translations.map(|item| item.translated_text);
+        let translations: [String; N] = response
+            .data
+            .translations
+            .into_iter()
+            .map(|item| item.translated_text)
+            .collect::<Vec<_>>()
+            .try_into()
+            .ok()?;
         let placeholders = ["{n}", "[EMAIL]", "[NATIONAL_ID]", "[STUDENT_ID]", "[PHONE]"];
         text.iter()
             .zip(&translations)

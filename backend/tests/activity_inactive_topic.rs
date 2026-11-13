@@ -89,7 +89,7 @@ fn uuids(ids: &[&str]) -> Vec<Uuid> {
 async fn create_rejects_inactive_topic(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t = create_topic(&app, &a, "已停用的題目").await;
+    let t = seed_topic("已停用的題目").await;
     set_topic_active(&app, &a, &t, false).await;
 
     let (status, body) = post_activity(&app, &a, "活動", json!([t])).await;
@@ -102,8 +102,8 @@ async fn create_rejects_inactive_topic(pool: PgPool) {
 async fn create_rejects_when_any_topic_is_inactive(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let ok = create_topic(&app, &a, "啟用中").await;
-    let off = create_topic(&app, &a, "已停用").await;
+    let ok = seed_topic("啟用中").await;
+    let off = seed_topic("已停用").await;
     set_topic_active(&app, &a, &off, false).await;
 
     let (status, body) = post_activity(&app, &a, "活動", json!([ok, off])).await;
@@ -116,7 +116,7 @@ async fn create_rejects_when_any_topic_is_inactive(pool: PgPool) {
 async fn create_rejects_inactive_topic_via_legacy_topic_id(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t = create_topic(&app, &a, "已停用的題目").await;
+    let t = seed_topic("已停用的題目").await;
     set_topic_active(&app, &a, &t, false).await;
 
     let res = send(
@@ -138,8 +138,8 @@ async fn create_rejects_inactive_topic_via_legacy_topic_id(pool: PgPool) {
 async fn create_accepts_active_and_reactivated_topics(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "一直啟用").await;
-    let t2 = create_topic(&app, &a, "停用後重新啟用").await;
+    let t1 = seed_topic("一直啟用").await;
+    let t2 = seed_topic("停用後重新啟用").await;
     set_topic_active(&app, &a, &t2, false).await;
     set_topic_active(&app, &a, &t2, true).await;
 
@@ -163,7 +163,7 @@ async fn create_nonexistent_topic_still_invalid_topic(pool: PgPool) {
 async fn inactive_topic_error_does_not_leak_internals(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let t = create_topic(&app, &a, "已停用的題目").await;
+    let t = seed_topic("已停用的題目").await;
     set_topic_active(&app, &a, &t, false).await;
 
     let (status, body) = post_activity(&app, &a, "活動", json!([t])).await;
@@ -178,8 +178,8 @@ async fn inactive_topic_error_does_not_leak_internals(pool: PgPool) {
 async fn patch_rejects_switching_to_inactive_topic(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "原題目").await;
-    let off = create_topic(&app, &a, "已停用").await;
+    let t1 = seed_topic("原題目").await;
+    let off = seed_topic("已停用").await;
     let act = create_activity(&app, &a, "活動", &t1).await;
     set_topic_active(&app, &a, &off, false).await;
 
@@ -193,8 +193,8 @@ async fn patch_rejects_switching_to_inactive_topic(pool: PgPool) {
 async fn patch_rejects_appending_inactive_topic(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "原題目").await;
-    let off = create_topic(&app, &a, "已停用").await;
+    let t1 = seed_topic("原題目").await;
+    let off = seed_topic("已停用").await;
     let act = create_activity(&app, &a, "活動", &t1).await;
     set_topic_active(&app, &a, &off, false).await;
 
@@ -220,8 +220,8 @@ async fn patch_rejects_appending_inactive_topic(pool: PgPool) {
 async fn patch_rejects_inactive_topic_via_legacy_topic_id(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "原題目").await;
-    let off = create_topic(&app, &a, "已停用").await;
+    let t1 = seed_topic("原題目").await;
+    let off = seed_topic("已停用").await;
     let act = create_activity(&app, &a, "活動", &t1).await;
     set_topic_active(&app, &a, &off, false).await;
 
@@ -235,8 +235,8 @@ async fn patch_rejects_inactive_topic_via_legacy_topic_id(pool: PgPool) {
 async fn patch_accepts_active_topic(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "原題目").await;
-    let t2 = create_topic(&app, &a, "新題目").await;
+    let t1 = seed_topic("原題目").await;
+    let t2 = seed_topic("新題目").await;
     let act = create_activity(&app, &a, "活動", &t1).await;
 
     let (status, body) = patch_activity(&app, &a, &act, json!({"topic_ids": [t1, t2]})).await;
@@ -249,7 +249,7 @@ async fn patch_accepts_active_topic(pool: PgPool) {
 async fn patch_nonexistent_topic_still_invalid_topic(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "原題目").await;
+    let t1 = seed_topic("原題目").await;
     let act = create_activity(&app, &a, "活動", &t1).await;
 
     let (status, body) =
@@ -263,7 +263,7 @@ async fn patch_nonexistent_topic_still_invalid_topic(pool: PgPool) {
 async fn deactivating_topic_keeps_existing_activity_and_conversation(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t = create_topic(&app, &a, "之後才停用").await;
+    let t = seed_topic("之後才停用").await;
     let act = publish_activity(&app, &a, "活動", &t).await;
     let conv = start_from_activity(&app, &a.student, &act).await;
 
@@ -292,8 +292,8 @@ async fn deactivating_topic_keeps_existing_activity_and_conversation(pool: PgPoo
 async fn patch_keeps_existing_topic_that_was_deactivated_later(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let old = create_topic(&app, &a, "之後才停用").await;
-    let fresh = create_topic(&app, &a, "新加入且啟用").await;
+    let old = seed_topic("之後才停用").await;
+    let fresh = seed_topic("新加入且啟用").await;
     let act = create_activity(&app, &a, "活動", &old).await;
     set_topic_active(&app, &a, &old, false).await;
 
@@ -317,8 +317,8 @@ async fn patch_keeps_existing_topic_that_was_deactivated_later(pool: PgPool) {
 async fn patch_only_new_topics_are_checked_for_active(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let old = create_topic(&app, &a, "既有但已停用").await;
-    let new_off = create_topic(&app, &a, "新加入但已停用").await;
+    let old = seed_topic("既有但已停用").await;
+    let new_off = seed_topic("新加入但已停用").await;
     let act = create_activity(&app, &a, "活動", &old).await;
     set_topic_active(&app, &a, &old, false).await;
     set_topic_active(&app, &a, &new_off, false).await;

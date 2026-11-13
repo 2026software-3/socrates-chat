@@ -168,7 +168,7 @@ impl AiError {
         Self::classified(class)
     }
 
-    fn with_model(mut self, model: &str) -> Self {
+    pub(crate) fn with_model(mut self, model: &str) -> Self {
         self.model = Some(model.to_owned());
         self
     }

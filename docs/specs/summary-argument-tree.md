@@ -32,7 +32,9 @@
 - 沿用 v7 解析、連續學生訊息合併、逐欄遮蔽、輸入白名單、結構與逐字引文驗證。來源訊息位置不傳模型；分析輪次不是資料庫回合數。
 - API 節點 ID 使用結果內的 TREE 前綴；對話識別由授權 URL 與資料庫外鍵維持，不把使用者或對話識別資料送給模型。
 - 拒答、部分回應、逾時、非法 JSON、結構或引文錯誤均為 failed，不保存無效結果，可重試。錯誤、日誌不帶逐字稿或供應商診斷。
-- 工作只能更新自己的嘗試代次。超過 AI 回覆上限再加 30 秒仍 pending 的孤兒工作，下次讀取標為 failed，可重試；舊工作不得覆蓋新代次。
+- 單次產生的時間上限是 `ARGUMENT_TREE_TIMEOUT_SECS`（預設 300 秒），與一般 AI 回覆的 `AI_TOTAL_TIMEOUT_SECS` 分開：推理強度維持 `OPENAI_REASONING_EFFORT`（high），在合成逐字稿（5／10／15 輪）上單次呼叫實測 36–208 秒（14 次，其中 7 次超過 120 秒、沒有超過 300 秒），曾在正式環境因 120 秒上限而失敗。把強度降到 medium 可縮短到 12–74 秒，但開場立場較常被省略（B、C 兩份較長的逐字稿中，第 1 輪保留 4/11 對 6/10），所以選擇保留 high、放寬逾時。
+- 失敗會寫一筆 `diagnostic_events`（`function=argument_tree`，`failure_class` 為 timeout／供應商錯誤分類／invalid_output，`error_code` 區分 `argument_tree_input_failed`、`argument_tree_ai_failed`、`argument_tree_validation_failed`）並以 `tracing` 記錄相同的分類；兩者都不含逐字稿或模型輸出。
+- 工作只能更新自己的嘗試代次。超過 `ARGUMENT_TREE_TIMEOUT_SECS` 再加 30 秒仍 pending 的孤兒工作，下次讀取標為 failed，可重試；舊工作不得覆蓋新代次。
 - 瀏覽器只接收 JSON，由 React 當成文字與元件呈現，不插入模型 HTML；回應 no-store。
 
 ## Given / When / Then

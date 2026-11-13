@@ -206,7 +206,7 @@ async fn concurrent_clicks_start_only_one_generation(pool: PgPool) {
 async fn tree_generation_timeout_and_quota_are_safe(pool: PgPool) {
     let ai = FakeAi::with(vec![Hang]);
     let mut config = test_config();
-    config.ai_total_timeout = Duration::from_millis(35);
+    config.argument_tree_timeout = Duration::from_millis(35);
     config.ai_usage_max = 1;
     let app = test_app_with_config(pool.clone(), ai.clone(), config);
     let a = seed_actors(&app).await;
@@ -247,6 +247,151 @@ async fn stale_generation_can_be_retried_and_deleting_conversation_cascades(pool
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+
+/// 產生一次摘要論證樹並等它結束；回傳（對話 ID、讀回的結果、診斷事件）。
+async fn generate_with(
+    pool: &PgPool,
+    ai: Arc<FakeAi>,
+    config: socrates_chat_backend::config::Config,
+) -> (String, Value, Vec<DiagnosticRow>) {
+    let app = test_app_with_config(pool.clone(), ai, config);
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(pool, &conv, "我支持工具。").await;
+    seed_student_message(pool, &conv, "可以省時。").await;
+    sqlx::query("UPDATE conversations SET status = 'ended', ended_at = now() WHERE id = $1")
+        .bind(conv.parse::<uuid::Uuid>().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    request(&app, "POST", Some(&a.student), &conv).await;
+    let view = settled(&app, &a.student, &conv).await;
+    socrates_chat_backend::diagnostics::flush().await;
+    let rows = diagnostic_rows(pool).await;
+    (conv, view, rows)
+}
+
+type DiagnosticRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<uuid::Uuid>,
+    Option<uuid::Uuid>,
+    Option<String>,
+);
+
+async fn diagnostic_rows(pool: &PgPool) -> Vec<DiagnosticRow> {
+    sqlx::query_as(
+        "SELECT function, failure_class, error_code, user_id, classroom_id, model
+         FROM diagnostic_events WHERE kind = 'ai' AND function = 'argument_tree'
+         ORDER BY occurred_at",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+async fn a_timed_out_generation_records_a_timeout_diagnostic_event(pool: PgPool) {
+    let mut config = test_config();
+    config.argument_tree_timeout = Duration::from_millis(35);
+    let (conv, view, rows) = generate_with(&pool, FakeAi::with(vec![Hang]), config).await;
+    assert_eq!(view["status"], "failed");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let (function, class, code, user, classroom, _model) = &rows[0];
+    assert_eq!(function, "argument_tree");
+    assert_eq!(class.as_deref(), Some("timeout"));
+    assert_eq!(code.as_deref(), Some("argument_tree_ai_failed"));
+    let owner: uuid::Uuid = sqlx::query_scalar("SELECT user_id FROM conversations WHERE id = $1")
+        .bind(conv.parse::<uuid::Uuid>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(*user, Some(owner));
+    assert!(classroom.is_some());
+}
+
+#[sqlx::test]
+async fn a_provider_error_records_its_failure_class(pool: PgPool) {
+    let (_, view, rows) = generate_with(&pool, FakeAi::with(vec![Fail]), test_config()).await;
+    assert_eq!(view["status"], "failed");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1.as_deref(), Some("service_error"));
+    assert_eq!(rows[0].2.as_deref(), Some("argument_tree_ai_failed"));
+}
+
+#[sqlx::test]
+async fn output_that_fails_validation_records_a_validation_event_with_the_model(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![r#"{"private":"never expose this"}"#])]);
+    let (_, view, rows) = generate_with(&pool, ai, test_config()).await;
+    assert_eq!(view["status"], "failed");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1.as_deref(), Some("invalid_output"));
+    assert_eq!(
+        rows[0].2.as_deref(),
+        Some("argument_tree_validation_failed")
+    );
+    // 失敗事件仍記得是哪個模型產生了無法使用的輸出
+    assert_eq!(rows[0].5.as_deref(), Some("test-model"));
+    assert!(!format!("{rows:?}").contains("never expose"));
+}
+
+#[sqlx::test]
+async fn a_successful_generation_records_a_success_event(pool: PgPool) {
+    let (_, view, rows) =
+        generate_with(&pool, FakeAi::with(vec![Reply(vec![GOOD])]), test_config()).await;
+    assert_eq!(view["status"], "ready");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1, None);
+    assert_eq!(rows[0].2, None);
+    assert_eq!(rows[0].5.as_deref(), Some("test-model"));
+}
+
+/// 一次 high 推理的呼叫可超過一般 AI 逾時（正式環境曾在 120 秒被截斷），
+/// 所以摘要論證樹用自己的上限，不受 `ai_total_timeout` 限制。
+#[sqlx::test]
+async fn generation_may_outlast_the_general_ai_timeout(pool: PgPool) {
+    let mut config = test_config();
+    config.ai_total_timeout = Duration::from_millis(35);
+    config.argument_tree_timeout = Duration::from_secs(5);
+    let ai = FakeAi::with(vec![Paced(vec![GOOD], Duration::from_millis(150))]);
+    let (_, view, rows) = generate_with(&pool, ai, config).await;
+    assert_eq!(view["status"], "ready");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1, None);
+}
+
+/// 還在自己期限內的產生中工作，不能被當成殘留而提前標成失敗；超過期限才會。
+#[sqlx::test]
+async fn a_slow_job_is_not_expired_before_its_own_deadline(pool: PgPool) {
+    let mut config = test_config();
+    config.ai_total_timeout = Duration::from_secs(1);
+    config.argument_tree_timeout = Duration::from_secs(100);
+    let ai = FakeAi::with(vec![]);
+    let app = test_app_with_config(pool.clone(), ai, config);
+    let a = seed_actors(&app).await;
+    let conv = start_conversation(&app, &a).await;
+    seed_student_message(&pool, &conv, "我支持工具。").await;
+    sqlx::query("UPDATE conversations SET status = 'ended', ended_at = now() WHERE id = $1")
+        .bind(conv.parse::<uuid::Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id = conv.parse::<uuid::Uuid>().unwrap();
+    sqlx::query("INSERT INTO conversation_argument_trees (conversation_id, status, attempt, prompt_version, updated_at) VALUES ($1, 'pending', 1, 'v', now() - interval '60 seconds')")
+        .bind(id).execute(&pool).await.unwrap();
+    // 60 秒 < 100 + 30 秒：仍在產生中（舊的一般逾時 1 + 30 秒會把它判成殘留）
+    assert_eq!(
+        request(&app, "GET", Some(&a.student), &conv).await.1["status"],
+        "pending"
+    );
+    sqlx::query("UPDATE conversation_argument_trees SET updated_at = now() - interval '200 seconds' WHERE conversation_id = $1")
+        .bind(id).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(&app, "GET", Some(&a.student), &conv).await.1["status"],
+        "failed"
+    );
 }
 
 #[test]

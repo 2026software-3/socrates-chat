@@ -20,9 +20,10 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    ai::StructuredRequest,
+    ai::{AiError, StructuredRequest},
     auth::RequireStudent,
     chat::{load_messages, owned_conversation},
+    diagnostics::{self, AiActivity, Failure},
     error::{ApiError, db_error_class},
     main_argument_tree::{
         OUTPUT_SCHEMA, PROMPT_VERSION, SYSTEM_PROMPT, Transcript, model_input, parse_and_build,
@@ -58,7 +59,7 @@ pub struct ArgumentTreeView {
 
 async fn view(state: &AppState, id: Uuid) -> Result<ArgumentTreeView, ApiError> {
     // A process may have restarted while a job was pending. Expire only after its full deadline + grace.
-    let stale_secs = state.config.ai_total_timeout.as_secs_f64() + 30.0;
+    let stale_secs = state.config.argument_tree_timeout.as_secs_f64() + 30.0;
     sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', completed_at = now(), updated_at = now()
                  WHERE conversation_id = $1 AND status = 'pending'
                    AND updated_at < now() - make_interval(secs => $2)")
@@ -165,8 +166,11 @@ pub(crate) async fn create(
     };
     tx.commit().await?;
     let language = conversation.language;
+    let classroom = conversation.classroom_id;
     tokio::spawn(async move {
-        if let Err(error) = generate(&state, id, attempt, input, language, &mut charge).await {
+        if let Err(error) =
+            generate(&state, id, attempt, input, language, classroom, &mut charge).await
+        {
             tracing::error!(class = %db_error_class(&error), "argument tree generation bookkeeping failed");
             let _ = sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
                                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
@@ -209,44 +213,111 @@ impl Drop for AiCharge {
     }
 }
 
+/// 失敗發生在哪一步；寫進診斷事件的 `error_code`，不含任何對話內容。
+#[derive(Clone, Copy)]
+enum Stage {
+    /// 組不出送給模型的請求
+    Input,
+    /// 呼叫模型：逾時、供應商錯誤、供應商回傳的格式無法解析
+    Provider,
+    /// 模型輸出可解析，但沒通過樹的驗證（例如引文不是逐字出自對應輪次）
+    Validation,
+}
+
+impl Stage {
+    fn error_code(self) -> &'static str {
+        match self {
+            Self::Input => "argument_tree_input_failed",
+            Self::Provider => "argument_tree_ai_failed",
+            Self::Validation => "argument_tree_validation_failed",
+        }
+    }
+}
+
+struct GenerationFailure {
+    stage: Stage,
+    error: AiError,
+}
+
+/// 呼叫模型並驗證結果；回傳（模型、可保存的樹）。
+async fn produce(
+    state: &AppState,
+    input: &Transcript,
+    language: &str,
+) -> Result<(String, Value), GenerationFailure> {
+    let fail = |stage, error| GenerationFailure { stage, error };
+    let model_input =
+        model_input(input).map_err(|_| fail(Stage::Input, AiError::unclassified()))?;
+    let schema = serde_json::from_str(OUTPUT_SCHEMA)
+        .map_err(|_| fail(Stage::Input, AiError::unclassified()))?;
+    let request = StructuredRequest {
+        system: format!(
+            "{SYSTEM_PROMPT}\n請以對話語言 {language} 撰寫 title 與 label；evidence 仍須逐字引用，不翻譯。"
+        ),
+        input: model_input,
+        schema,
+        name: "main_argument_tree".into(),
+    };
+    let completion = tokio::time::timeout(
+        state.config.argument_tree_timeout,
+        state.ai.complete_json(request),
+    )
+    .await
+    .map_err(|_| fail(Stage::Provider, AiError::classified(Failure::Timeout)))?
+    .map_err(|error| fail(Stage::Provider, error))?;
+    let invalid = || {
+        fail(
+            Stage::Validation,
+            AiError::invalid_output().with_model(&completion.model),
+        )
+    };
+    let (_, tree) = parse_and_build(input, &completion.content).map_err(|_| invalid())?;
+    let tree = serde_json::to_value(tree).map_err(|_| invalid())?;
+    Ok((completion.model, tree))
+}
+
 async fn generate(
     state: &AppState,
     id: Uuid,
     attempt: i32,
     input: Transcript,
     language: String,
+    classroom: Option<Uuid>,
     charge: &mut AiCharge,
 ) -> Result<(), sqlx::Error> {
-    let request = model_input(&input).ok().and_then(|input| serde_json::from_str(OUTPUT_SCHEMA).ok().map(|schema| StructuredRequest {
-        system: format!("{SYSTEM_PROMPT}\n請以對話語言 {language} 撰寫 title 與 label；evidence 仍須逐字引用，不翻譯。"),
-        input, schema, name: "main_argument_tree".into(),
-    }));
-    let completion = if let Some(request) = request {
-        tokio::time::timeout(
-            state.config.ai_total_timeout,
-            state.ai.complete_json(request),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-    } else {
-        None
-    };
-    if let Some(completion) = completion
-        && let Ok((_, tree)) = parse_and_build(&input, &completion.content)
-        && let Ok(tree) = serde_json::to_value(tree)
-    {
-        let updated = sqlx::query(
-            "UPDATE conversation_argument_trees SET status = 'ready', tree = $3, model = $4, updated_at = now(), completed_at = now()
-             WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
-            .bind(id).bind(attempt).bind(tree).bind(completion.model).execute(&state.pool).await?;
-        if updated.rows_affected() > 0 {
-            charge.slot = None;
+    let activity = AiActivity::new("argument_tree", Some(charge.user), classroom);
+    let started = Instant::now();
+    let (outcome, trace) = diagnostics::traced(produce(state, &input, &language)).await;
+    match outcome {
+        Ok((model, tree)) => {
+            activity.record(state, Some(&model), 0, started, None, &trace);
+            let updated = sqlx::query(
+                "UPDATE conversation_argument_trees SET status = 'ready', tree = $3, model = $4, updated_at = now(), completed_at = now()
+                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
+                .bind(id).bind(attempt).bind(tree).bind(model).execute(&state.pool).await?;
+            if updated.rows_affected() > 0 {
+                charge.slot = None;
+            }
         }
-    } else {
-        sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
-                     WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
-            .bind(id).bind(attempt).execute(&state.pool).await?;
+        Err(failure) => {
+            // 只記分類與階段，不記任何對話或模型輸出的內容
+            tracing::warn!(
+                class = failure.error.class.code(),
+                code = failure.stage.error_code(),
+                "argument tree generation failed"
+            );
+            activity.failure_code(failure.stage.error_code()).record(
+                state,
+                None,
+                0,
+                started,
+                Some(&failure.error),
+                &trace,
+            );
+            sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
+                         WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
+                .bind(id).bind(attempt).execute(&state.pool).await?;
+        }
     }
     Ok(())
 }
