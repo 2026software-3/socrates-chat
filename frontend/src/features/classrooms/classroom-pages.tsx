@@ -154,14 +154,19 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
           </Alert>
         ) : dashboard.data ? (
           distribution ? (
-            <Card>
-              <CardContent className="space-y-4">
-                <p className="text-muted-foreground text-sm">
-                  {t('dashboard.class.activityCompleted', { count: distribution.completed })}
-                </p>
-                <ClaimGroups activity={distribution} onChanged={dashboard.reload} canRegroup />
-              </CardContent>
-            </Card>
+            <div className="space-y-4">
+              {distribution.topics.map((topic) => (
+                <Card key={topic.topic_id}>
+                  <CardContent className="space-y-4">
+                    <h3 className="font-medium">{topic.title}</h3>
+                    <p className="text-muted-foreground text-sm">
+                      {t('dashboard.class.activityCompleted', { count: topic.completed })}
+                    </p>
+                    <ClaimGroups topic={topic} activityId={distribution.activity_id} onChanged={dashboard.reload} canRegroup={!classroom.is_archived} />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           ) : (
             <EmptyBlock>{t('dashboard.class.empty')}</EmptyBlock>
           )

@@ -57,13 +57,19 @@ async fn class(app: &Router, cookie: &str) -> Value {
 }
 
 async fn regroup(app: &Router, cookie: Option<&str>, activity: &str) -> (StatusCode, Value) {
+    let data = class(app, cookie.unwrap_or("")).await;
+    let topic = data["activities"]
+        .as_array()
+        .and_then(|xs| xs.iter().find(|x| x["activity_id"] == activity))
+        .map(|x| x["topics"][0]["topic_id"].clone())
+        .unwrap_or_else(|| json!(uuid::Uuid::nil()));
     let res = send(
         app,
         json_req(
             "POST",
             "/api/dashboard/class/regroup",
             cookie,
-            Some(json!({"activity_id": activity})),
+            Some(json!({"activity_id": activity, "topic_id": topic})),
         ),
     )
     .await;
@@ -88,8 +94,9 @@ async fn similar_claims_share_a_group_and_the_second_call_sees_existing_names(po
     finish(&app, &student2, &act, &ai, &pool, 4).await;
 
     let d = class(&app, &a.teacher).await;
-    let topic = &d["activities"][0];
-    assert_eq!(topic["activity_id"], act.as_str());
+    let activity = &d["activities"][0];
+    let topic = &activity["topics"][0];
+    assert_eq!(activity["activity_id"], act.as_str());
     assert_eq!(topic["title"], "電車難題");
     let claims = topic["claims"].as_array().unwrap();
     assert_eq!(claims.len(), 1, "意思相近的主張歸成同一群");
@@ -132,14 +139,19 @@ async fn failed_grouping_leaves_the_claim_ungrouped_until_regroup(pool: PgPool) 
     // 總結不受影響，只是這場暫時沒有群組
     let d = class(&app, &a.teacher).await;
     assert_eq!(d["completed"], 1);
-    assert!(d["activities"][0]["claims"].as_array().unwrap().is_empty());
-    assert_eq!(d["activities"][0]["ungrouped"], 1);
+    assert!(
+        d["activities"][0]["topics"][0]["claims"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(d["activities"][0]["topics"][0]["ungrouped"], 1);
 
     let (status, _) = regroup(&app, Some(&a.teacher), &act).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let d = class(&app, &a.teacher).await;
-    assert_eq!(d["activities"][0]["claims"][0]["name"], "拉桿");
-    assert_eq!(d["activities"][0]["ungrouped"], 0);
+    assert_eq!(d["activities"][0]["topics"][0]["claims"][0]["name"], "拉桿");
+    assert_eq!(d["activities"][0]["topics"][0]["ungrouped"], 0);
     // 重新分組送給 AI 的是編號的主張短句
     let reqs = ai.requests.lock().unwrap();
     assert!(reqs[2].system.contains("1. 該拉桿"));
@@ -217,7 +229,7 @@ async fn regroup_is_for_teachers_and_keeps_old_groups_when_the_ai_fails(pool: Pg
     assert_eq!(body["error"]["code"], "ai_unavailable");
     // AI 失敗時沿用原本的分組
     assert_eq!(
-        class(&app, &a.teacher).await["activities"][0]["claims"][0]["name"],
+        class(&app, &a.teacher).await["activities"][0]["topics"][0]["claims"][0]["name"],
         "拉桿"
     );
 
@@ -240,7 +252,7 @@ async fn the_smallest_groups_are_merged_into_other_and_admins_see_no_claims(pool
     // 每位學生在一個活動至多一場對話，所以每場對話用不同的使用者。
     for n in 1..=8_i32 {
         let (gid,): (uuid::Uuid,) = sqlx::query_as(
-            "INSERT INTO claim_groups (activity_id, name) VALUES ($1, $2) RETURNING id",
+            "INSERT INTO claim_groups (activity_id, topic_id, name) VALUES ($1, (SELECT topic_id FROM activity_topics WHERE activity_id = $1 ORDER BY position LIMIT 1), $2) RETURNING id",
         )
         .bind(act_id)
         .bind(format!("主張{n}"))
@@ -250,8 +262,8 @@ async fn the_smallest_groups_are_merged_into_other_and_admins_see_no_claims(pool
         for i in 0..n {
             sqlx::query(
                 "WITH u AS (INSERT INTO users (email) VALUES ($5) RETURNING id),
-                      c AS (INSERT INTO conversations (user_id, activity_id, classroom_id, title, status, ended_at)
-                            SELECT id, $1, (SELECT classroom_id FROM activities WHERE id = $1),
+                      c AS (INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, status, ended_at)
+                            SELECT id, $1, (SELECT topic_id FROM activity_topics WHERE activity_id = $1 ORDER BY position LIMIT 1), (SELECT classroom_id FROM activities WHERE id = $1),
                                    '電車難題', 'ended', now() FROM u RETURNING id)
                  INSERT INTO summaries (conversation_id, status, stance, reasons, claim,
                                         claim_group_id, completed_at)
@@ -268,7 +280,9 @@ async fn the_smallest_groups_are_merged_into_other_and_admins_see_no_claims(pool
         }
     }
     let d = class(&app, &a.teacher).await;
-    let claims = d["activities"][0]["claims"].as_array().unwrap();
+    let claims = d["activities"][0]["topics"][0]["claims"]
+        .as_array()
+        .unwrap();
     assert_eq!(claims.len(), 7);
     let names: Vec<&str> = claims[..6]
         .iter()
@@ -334,8 +348,8 @@ async fn groups_are_scoped_to_the_activity_not_the_topic(pool: PgPool) {
     assert_eq!(activities.len(), 2, "同一題目的兩個活動分開彙整");
     for act in activities {
         assert_eq!(act["completed"], 1);
-        assert_eq!(act["claims"][0]["name"], "拉桿");
-        assert_eq!(act["claims"][0]["count"], 1);
+        assert_eq!(act["topics"][0]["claims"][0]["name"], "拉桿");
+        assert_eq!(act["topics"][0]["claims"][0]["count"], 1);
     }
     // 第二個活動歸群時，看不到第一個活動的群組
     let reqs = ai.requests.lock().unwrap();

@@ -195,6 +195,13 @@ export type ActivityDistribution = {
   activity_id: string
   title: string
   completed: number
+  topics: TopicDistribution[]
+}
+
+export type TopicDistribution = {
+  topic_id: string
+  title: string
+  completed: number
   claims: ClaimGroup[]
   /** 有主張但還沒歸群的場數 */
   ungrouped: number

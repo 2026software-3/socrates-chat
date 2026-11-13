@@ -403,3 +403,22 @@ mod voice {
         assert!(payload_too_large_description.contains("10 MB"));
     }
 }
+
+#[test]
+fn dashboard_contract_scopes_distributions_and_regroup_to_activity_topics() {
+    let doc = serde_json::to_value(socrates_chat_backend::openapi::document()).unwrap();
+    let schemas = &doc["components"]["schemas"];
+    let activity = &schemas["ActivityDistribution"]["properties"];
+    assert!(activity["topics"].is_object());
+    assert!(activity.get("claims").is_none());
+    let topic = &schemas["TopicDistribution"]["properties"];
+    for field in ["topic_id", "title", "completed", "claims", "ungrouped"] {
+        assert!(
+            topic[field].is_object(),
+            "missing TopicDistribution.{field}"
+        );
+    }
+    let required = schemas["RegroupBody"]["required"].as_array().unwrap();
+    assert!(required.contains(&serde_json::json!("activity_id")));
+    assert!(required.contains(&serde_json::json!("topic_id")));
+}
