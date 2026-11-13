@@ -102,10 +102,7 @@ impl MaintenanceFlag {
                 Err(_) => tracing::warn!("timed out reading maintenance flag"),
             }
         }
-        self.cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .on
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).on
     }
 
     fn begin_refresh(&self) -> Option<u64> {

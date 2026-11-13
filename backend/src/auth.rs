@@ -152,6 +152,7 @@ impl Roles {
 
 /// 目前登入的使用者；沒有有效 session 時回 401，
 /// 用臨時密碼登入、尚未更改密碼時回 403 `password_change_required`。
+#[derive(Clone)]
 pub struct CurrentUser {
     pub user: auth_store::User,
     pub roles: Roles,
@@ -160,8 +161,10 @@ pub struct CurrentUser {
 }
 
 /// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
+#[derive(Clone)]
 pub struct AnyCurrentUser(pub CurrentUser);
 
+#[derive(Clone)]
 pub(crate) struct MaintenanceAuthenticatedUser(pub AnyCurrentUser);
 
 fn take_maintenance_authenticated_user(parts: &mut Parts) -> Option<AnyCurrentUser> {
