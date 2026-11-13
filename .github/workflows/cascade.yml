@@ -8,11 +8,15 @@ on:
     paths:
       - "docker/cascade/**"
       - "scripts/cascade-macos/**"
+      - "scripts/whisper_text.py"
+      - "scripts/whisper_echo.py"
       - ".github/workflows/cascade.yml"
   pull_request:
     paths:
       - "docker/cascade/**"
       - "scripts/cascade-macos/**"
+      - "scripts/whisper_text.py"
+      - "scripts/whisper_echo.py"
       - ".github/workflows/cascade.yml"
 
 permissions:
@@ -31,10 +35,14 @@ jobs:
       - run: python3 -m venv "$RUNNER_TEMP/venv"
       - run: >-
           "$RUNNER_TEMP/venv/bin/pip" install
-          fastapi httpx numpy pydantic uvicorn opencc-python-reimplemented
+          fastapi httpx numpy pydantic uvicorn opencc-python-reimplemented python-multipart
       - run: >-
           PYTHONPATH=docker/cascade "$RUNNER_TEMP/venv/bin/python" -m unittest -v
           test_kokoro_server test_tts_adapter
+      # macOS 的 MLX 語音辨識服務：只測轉接與文字整理（假的辨識函式），不需要 MLX 或 Apple Silicon
+      - run: >-
+          PYTHONPATH=scripts/cascade-macos:scripts "$RUNNER_TEMP/venv/bin/python" -m unittest -v
+          test_whisper_mlx_server
       # macOS 原生啟動腳本的靜態檢查（只用標準函式庫；腳本本身只能在 Apple Silicon 上實際執行）
       - run: >-
           PYTHONPATH=scripts/cascade-macos python3 -m unittest -v

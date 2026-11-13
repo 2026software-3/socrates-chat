@@ -1,5 +1,7 @@
 """macOS 啟動腳本的靜態檢查：語法，以及 bash 會把全形字元吃進變數名稱的陷阱。"""
+import os
 import pathlib
+import platform
 import re
 import shutil
 import subprocess
@@ -37,6 +39,48 @@ class ShellScriptsTest(unittest.TestCase):
         # 密碼只能從環境變數來；腳本裡不能出現給它賦值的字面值
         for path in SCRIPTS:
             self.assertNotRegex(path.read_text(), r'CASCADE_LLM_TOKEN=["\']?[A-Za-z0-9]{8,}')
+
+
+@unittest.skipUnless(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'start.sh 只在 Apple Silicon 上執行')
+class StartOptionsTest(unittest.TestCase):
+    """推論後端打錯字時要在啟動任何服務之前就失敗，不能默默用別的後端。"""
+
+    def run_start(self, **env):
+        return subprocess.run(
+            [str(HERE / 'start.sh')], capture_output=True, text=True, timeout=30,
+            env={'PATH': os.environ['PATH'], 'HOME': os.environ['HOME'], 'CASCADE_LLM_TOKEN': 'x',
+                 'CASCADE_MACOS_HOME': '/nonexistent/cascade-macos-test', **env})
+
+    def test_unknown_whisper_backend_is_rejected(self):
+        result = self.run_start(WHISPER_BACKEND='whisper.cpp')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('WHISPER_BACKEND', result.stderr)
+
+    def test_unknown_kokoro_backend_is_rejected(self):
+        result = self.run_start(KOKORO_BACKEND='coreml')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('KOKORO_BACKEND', result.stderr)
+
+    def test_valid_backends_get_past_validation(self):
+        # 沒有虛擬環境，所以停在下一步的檢查；重點是不會被後端檢查擋下
+        for env in ({}, {'WHISPER_BACKEND': 'faster-whisper', 'KOKORO_BACKEND': 'torch'}):
+            result = self.run_start(**env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('install.sh', result.stderr)
+
+
+class DefaultsTest(unittest.TestCase):
+    def test_start_passes_the_backends_and_lead_silence_to_the_services(self):
+        text = (HERE / 'start.sh').read_text()
+        for needle in ['WHISPER_BACKEND="${WHISPER_BACKEND:-mlx}"', 'KOKORO_BACKEND="${KOKORO_BACKEND:-mlx}"',
+                       'KOKORO_LEAD_SILENCE_MS="${KOKORO_LEAD_SILENCE_MS-50}"', 'whisper_mlx_server.py',
+                       'scripts/whisper-server.py', 'KOKORO_LEAD_SILENCE_MS="$KOKORO_LEAD_SILENCE_MS"']:
+            self.assertIn(needle, text)
+
+    def test_install_provides_both_the_mlx_and_fallback_packages(self):
+        text = (HERE / 'install.sh').read_text()
+        for needle in ['mlx-whisper', 'mlx-audio', 'faster-whisper', 'kokoro==0.9.4']:
+            self.assertIn(needle, text)
 
 
 if __name__ == '__main__':

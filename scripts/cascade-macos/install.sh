@@ -3,7 +3,7 @@
 # 不裝任何 CUDA 套件；所有東西都放在 CASCADE_MACOS_HOME（預設 ~/.cache/socrates-cascade-macos）。
 #
 #   venv-cascade  sglang-omni 0.2.0（與 NVIDIA 部署同版本）＋ sglang（上游的 Apple 安裝方式）＋ 轉接層
-#   venv-voice    Whisper（faster-whisper）與 Kokoro-82M（PyTorch MPS）
+#   venv-voice    Whisper 與 Kokoro-82M：預設用 MLX（mlx-whisper、mlx-audio）；faster-whisper 與 PyTorch 版也裝，作為退路
 #
 # 用法：scripts/cascade-macos/install.sh [--skip-models]
 # 需要：uv（pip install uv 或 brew install uv）、git、Python 3.12（uv 會自行取得）。
@@ -78,21 +78,30 @@ log "建立 venv-voice"
 make_venv "$VOICE_VENV"
 uv pip install --python "$VOICE_VENV/bin/python" \
   faster-whisper fastapi uvicorn python-multipart numpy 'av>=14,<16' opencc-python-reimplemented \
-  'kokoro==0.9.4' 'misaki[zh]==0.9.4'
+  'kokoro==0.9.4' 'misaki[zh]==0.9.4' \
+  'mlx-whisper==0.4.3' 'mlx-audio==0.6.5'   # 實測過的版本；見 README 的量測
 
 log "驗證"
 "$CASCADE_VENV/bin/sgl-omni" --help >/dev/null
 "$CASCADE_VENV/bin/python" -c "import sglang, sglang_omni; print('sglang', sglang.__version__, '| sglang_omni', sglang_omni.__version__)"
 "$VOICE_VENV/bin/python" -c "import torch; assert torch.backends.mps.is_available(), 'PyTorch MPS 不可用'; print('torch', torch.__version__, '| MPS 可用')"
+"$VOICE_VENV/bin/python" -c "import mlx.core as mx, mlx_whisper, mlx_audio; assert mx.metal.is_available(), 'MLX Metal 不可用'; print('mlx', mx.__version__, '| Metal 可用')"
 
 if [ "$SKIP_MODELS" -eq 0 ]; then
-  log "預先下載模型（Whisper ${WHISPER_MODEL:-small}、Kokoro-82M）到 Hugging Face 快取"
+  log "預先下載模型（Whisper ${WHISPER_MODEL:-small}、Kokoro-82M；MLX 版與退路用的版本）到 Hugging Face 快取"
   "$VOICE_VENV/bin/python" - <<'PY'
 import os
 from faster_whisper import WhisperModel
+from huggingface_hub import snapshot_download
 from kokoro import KPipeline
 
-WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device="cpu", compute_type="int8")
+name = os.environ.get("WHISPER_MODEL", "small")
+snapshot_download(os.environ.get("WHISPER_MLX_MODEL") or f"mlx-community/whisper-{name}-mlx")
+from mlx_audio.tts.utils import load_model
+# 用實際載入的方式下載（只抓需要的檔案與聲線），並確認合成得出聲音
+kokoro = load_model(os.environ.get("KOKORO_MLX_MODEL", "mlx-community/Kokoro-82M-bf16"))
+assert list(kokoro.generate("你好", voice="zm_yunjian", lang_code="z", speed=1.0)), "MLX Kokoro produced no audio"
+WhisperModel(name, device="cpu", compute_type="int8")
 KPipeline(lang_code="z", device="cpu").load_voice("zm_yunjian")
 print("models ready")
 PY

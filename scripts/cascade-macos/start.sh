@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# 在 macOS（Apple Silicon）上原生啟動語音 cascade：Whisper → Kokoro（MPS）→ 轉接層 → cascade。
+# 在 macOS（Apple Silicon）上原生啟動語音 cascade：Whisper → Kokoro → 轉接層 → cascade。預設兩個模型都用 MLX（GPU）。
 # 必須先設 CASCADE_LLM_TOKEN（與後端的同一個值，不要寫進任何檔案）。見 README.md。
 #
 # 環境變數（皆可省略）：
 #   APP_URL              後端位址，cascade 用它呼叫內部 LLM 端點（預設 http://127.0.0.1:3000）
-#   KOKORO_DEVICE        mps（預設）｜cpu｜auto
-#   WHISPER_MODEL        預設 small（與 docker-compose 相同）
+#   WHISPER_BACKEND      mlx（預設，mlx-whisper）｜faster-whisper（CPU int8，與 NVIDIA 部署同一支 scripts/whisper-server.py）
+#   KOKORO_BACKEND       mlx（預設，mlx-audio）｜torch（PyTorch，裝置由 KOKORO_DEVICE 決定）
+#   KOKORO_DEVICE        只在 KOKORO_BACKEND=torch 時有用：mps（預設）｜cpu｜auto
+#   KOKORO_LEAD_SILENCE_MS  每句語音開頭最多保留幾毫秒靜音（預設 50；Kokoro 原本約 400）。設成空字串就不裁
+#   WHISPER_MODEL        預設 small（與 docker-compose 相同）；mlx 時對應 mlx-community/whisper-<名稱>-mlx，
+#                        其他命名的模型用 WHISPER_MLX_MODEL 指定完整名稱
 #   CASCADE_MACOS_HOME   狀態目錄（預設 ~/.cache/socrates-cascade-macos）
 #   START_TIMEOUT        每個服務等待就緒的秒數（預設 240；第一次要編譯 Metal／載入模型較久）
 set -euo pipefail
@@ -14,14 +18,20 @@ set -euo pipefail
 
 require_apple_silicon
 [ -n "${CASCADE_LLM_TOKEN:-}" ] || die "請先設定 CASCADE_LLM_TOKEN（與後端的 CASCADE_LLM_TOKEN 相同；例如 export CASCADE_LLM_TOKEN=\$(openssl rand -hex 32)）"
-for venv in "$CASCADE_VENV" "$VOICE_VENV"; do
-  [ -x "$venv/bin/python" ] || die "找不到虛擬環境 ${venv}；先執行 scripts/cascade-macos/install.sh"
-done
-
 APP_URL="${APP_URL:-http://127.0.0.1:3000}"
 START_TIMEOUT="${START_TIMEOUT:-240}"
 KOKORO_DEVICE="${KOKORO_DEVICE:-mps}"
 WHISPER_MODEL="${WHISPER_MODEL:-small}"
+WHISPER_BACKEND="${WHISPER_BACKEND:-mlx}"
+KOKORO_BACKEND="${KOKORO_BACKEND:-mlx}"
+KOKORO_LEAD_SILENCE_MS="${KOKORO_LEAD_SILENCE_MS-50}"   # 沒設定才用 50；明確設成空字串代表不裁
+WHISPER_MLX_MODEL="${WHISPER_MLX_MODEL:-mlx-community/whisper-${WHISPER_MODEL}-mlx}"
+case "$WHISPER_BACKEND" in mlx|faster-whisper) ;; *) die "WHISPER_BACKEND 只能是 mlx 或 faster-whisper（目前是 ${WHISPER_BACKEND}）" ;; esac
+case "$KOKORO_BACKEND" in mlx|torch) ;; *) die "KOKORO_BACKEND 只能是 mlx 或 torch（目前是 ${KOKORO_BACKEND}）" ;; esac
+
+for venv in "$CASCADE_VENV" "$VOICE_VENV"; do
+  [ -x "$venv/bin/python" ] || die "找不到虛擬環境 ${venv}；先執行 scripts/cascade-macos/install.sh"
+done
 
 mkdir -p "$RUN_DIR"
 chmod 700 "$RUN_DIR"
@@ -76,14 +86,26 @@ unset DYLD_LIBRARY_PATH
 export PYTORCH_ENABLE_MPS_FALLBACK=1
 SAFE_ENV="env -u CASCADE_LLM_TOKEN"
 
-log "啟動 whisper（${WHISPER_MODEL}，CPU int8）"
-launch whisper $SAFE_ENV WHISPER_MODEL="$WHISPER_MODEL" WHISPER_DEVICE=cpu WHISPER_COMPUTE=int8 \
-  WHISPER_HOST=127.0.0.1 WHISPER_PORT="$WHISPER_PORT" PYTHONPATH="$REPO_ROOT/scripts" \
-  "$VOICE_VENV/bin/python" "$REPO_ROOT/scripts/whisper-server.py"
+if [ "$WHISPER_BACKEND" = "mlx" ]; then
+  log "啟動 whisper（${WHISPER_MLX_MODEL}，MLX）"
+  launch whisper $SAFE_ENV WHISPER_MLX_MODEL="$WHISPER_MLX_MODEL" \
+    WHISPER_HOST=127.0.0.1 WHISPER_PORT="$WHISPER_PORT" PYTHONPATH="$REPO_ROOT/scripts" \
+    "$VOICE_VENV/bin/python" "$REPO_ROOT/scripts/cascade-macos/whisper_mlx_server.py"
+else
+  log "啟動 whisper（${WHISPER_MODEL}，faster-whisper CPU int8）"
+  launch whisper $SAFE_ENV WHISPER_MODEL="$WHISPER_MODEL" WHISPER_DEVICE=cpu WHISPER_COMPUTE=int8 \
+    WHISPER_HOST=127.0.0.1 WHISPER_PORT="$WHISPER_PORT" PYTHONPATH="$REPO_ROOT/scripts" \
+    "$VOICE_VENV/bin/python" "$REPO_ROOT/scripts/whisper-server.py"
+fi
 wait_healthy whisper
 
-log "啟動 tts（Kokoro，${KOKORO_DEVICE}）"
-launch tts $SAFE_ENV KOKORO_DEVICE="$KOKORO_DEVICE" KOKORO_HOST=127.0.0.1 \
+if [ "$KOKORO_BACKEND" = "mlx" ]; then
+  log "啟動 tts（Kokoro，MLX）"
+else
+  log "啟動 tts（Kokoro，PyTorch ${KOKORO_DEVICE}）"
+fi
+launch tts $SAFE_ENV KOKORO_BACKEND="$KOKORO_BACKEND" KOKORO_DEVICE="$KOKORO_DEVICE" KOKORO_HOST=127.0.0.1 \
+  KOKORO_LEAD_SILENCE_MS="$KOKORO_LEAD_SILENCE_MS" \
   "$VOICE_VENV/bin/python" "$REPO_ROOT/docker/cascade/kokoro_server.py"
 wait_healthy tts
 
