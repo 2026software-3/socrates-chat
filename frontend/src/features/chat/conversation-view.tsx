@@ -12,6 +12,7 @@ import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { ChatThread } from '@/features/chat/chat-thread'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
+import { ArgumentTreePanel } from '@/features/chat/argument-tree-panel'
 import { SummaryPanel } from '@/features/chat/summary-panel'
 import { useT } from '@/i18n'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
@@ -169,6 +170,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           <div className="space-y-4 px-4 pb-6 md:px-8">
             <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p>
             <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} />
+            <ArgumentTreePanel conversationId={detail.id} />
           </div>
         ) : null}
       </div>

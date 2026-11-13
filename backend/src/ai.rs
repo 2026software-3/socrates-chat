@@ -182,10 +182,32 @@ impl AiError {
 /// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
 
+/// A structured Responses request; input remains typed JSON until masking is complete.
+#[derive(Debug, Clone)]
+pub struct StructuredRequest {
+    pub system: String,
+    pub input: serde_json::Value,
+    pub schema: serde_json::Value,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub struct StructuredCompletion {
+    pub content: String,
+    pub model: String,
+}
+
 #[async_trait]
 pub trait AiProvider: Send + Sync {
     /// 開始串流回覆；回傳的串流依序給出文字片段（見 `AiStream`）。
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError>;
+    /// Providers without structured-output support fail explicitly.
+    async fn complete_json(
+        &self,
+        _req: StructuredRequest,
+    ) -> Result<StructuredCompletion, AiError> {
+        Err(AiError)
+    }
 }
 
 // ---- 每回合的結構化結果 ----
@@ -908,6 +930,7 @@ impl OpenAiProvider {
     async fn send_with_failover(
         &self,
         keys: &KeyPool,
+        endpoint: &str,
         body: &(impl Serialize + Sync),
         may_wait: bool,
     ) -> Result<(reqwest::Response, i32), SendFailure> {
@@ -941,7 +964,7 @@ impl OpenAiProvider {
             attempts += 1;
             let res = self
                 .http
-                .post(format!("{}/chat/completions", self.base_url))
+                .post(format!("{}/{}", self.base_url, endpoint))
                 .bearer_auth(&lease.key)
                 .json(body)
                 .send()
@@ -1125,8 +1148,13 @@ impl OpenAiProvider {
             stream: true,
         };
         // 後面還有備援模型時不等 key 冷卻，直接換
-        self.send_with_failover(&target.keys, &body, index + 1 == self.targets.len())
-            .await
+        self.send_with_failover(
+            &target.keys,
+            "chat/completions",
+            &body,
+            index + 1 == self.targets.len(),
+        )
+        .await
     }
 
     /// 從第 `start` 個模型起，找第一個能送出請求的；只在限流（429）時往下一個找，
@@ -1289,6 +1317,41 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
 
 #[async_trait]
 impl AiProvider for OpenAiProvider {
+    async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        for (index, target) in self.targets.iter().enumerate() {
+            let mut body = serde_json::json!({
+                "model":target.model, "stream":false, "store":false,
+                "instructions":req.system,
+                "input":[{"role":"user","content":serde_json::to_string(&req.input).map_err(|_| AiError)?}],
+                "text":{"format":{"type":"json_schema","name":req.name,"strict":true,"schema":req.schema}}
+            });
+            if let Some(effort) = &self.reasoning_effort {
+                body["reasoning"] = serde_json::json!({"effort":effort});
+            }
+            let response = match self
+                .send_with_failover(
+                    &target.keys,
+                    "responses",
+                    &body,
+                    index + 1 == self.targets.len(),
+                )
+                .await
+            {
+                Ok(response) => response,
+                Err(SendFailure::RateLimited) if index + 1 < self.targets.len() => continue,
+                Err(_) => return Err(AiError),
+            };
+            let answer: serde_json::Value = response.json().await.map_err(|_| AiError)?;
+            let result = crate::main_argument_tree::parse_response(&answer, &target.model, None)
+                .map_err(|_| AiError)?;
+            return Ok(StructuredCompletion {
+                content: result.content,
+                model: result.model,
+            });
+        }
+        Err(AiError)
+    }
+
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
         // 串流在另一個工作中讀取，先取得這次呼叫的診斷追蹤，成功時也能回報嘗試次數與模型
         let trace = crate::diagnostics::current_trace();

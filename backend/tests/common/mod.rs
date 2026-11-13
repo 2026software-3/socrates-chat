@@ -18,7 +18,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use socrates_chat_backend::{
     AppState,
-    ai::{AiError, AiProvider, AiRequest, AiStream},
+    ai::{AiError, AiProvider, AiRequest, AiStream, StructuredCompletion, StructuredRequest},
     app,
     config::Config,
     identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
@@ -143,6 +143,25 @@ impl FakeAi {
 
 #[async_trait]
 impl AiProvider for FakeAi {
+    async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        let content = socrates_chat_backend::ai::collect_background(
+            self,
+            AiRequest {
+                system: req.system,
+                messages: vec![socrates_chat_backend::ai::ChatTurn {
+                    role: socrates_chat_backend::ai::ChatRole::User,
+                    content: serde_json::to_string(&req.input).map_err(|_| AiError)?,
+                }],
+            },
+            Duration::from_secs(30),
+        )
+        .await?;
+        Ok(StructuredCompletion {
+            content,
+            model: "test-model".into(),
+        })
+    }
+
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
         self.requests.lock().unwrap().push(req);
         let script = self.scripts.lock().unwrap().pop_front();
