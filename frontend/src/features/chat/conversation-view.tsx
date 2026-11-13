@@ -1,5 +1,6 @@
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -142,14 +143,19 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
               <StageIndicator stage={stage} />
             </div>
           </div>
-          <EndDiscussion
-            ended={ended}
-            suggestEnd={suggestEnd}
-            pending={ending}
-            error={endError}
-            onClearError={() => setEndError(undefined)}
-            onConfirm={endDiscussion}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to={`/complaint?conversation=${encodeURIComponent(detail.id)}`}>{t('complaints.report')}</Link>
+            </Button>
+            <EndDiscussion
+              ended={ended}
+              suggestEnd={suggestEnd}
+              pending={ending}
+              error={endError}
+              onClearError={() => setEndError(undefined)}
+              onConfirm={endDiscussion}
+            />
+          </div>
         </header>
 
         <ChatThread

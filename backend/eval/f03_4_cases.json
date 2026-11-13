@@ -1,0 +1,23 @@
+[
+  {
+    "id": "trolley-zh",
+    "language": "zh-TW",
+    "title": "電車難題",
+    "description": "失控的電車將撞上五人。拉桿能讓電車改走另一條軌道，但會撞上一人。你會怎麼做？",
+    "coverage": ["衡量生命損失", "是否主動介入", "對未知後果的態度", "對個人責任的看法"]
+  },
+  {
+    "id": "water-en",
+    "language": "en",
+    "title": "A town with too little water",
+    "description": "A drought leaves only enough water for some needs. A hospital, households and farms all need a share. How should the council decide?",
+    "coverage": ["immediate needs", "fair distribution", "long-term conservation", "participation of affected groups"]
+  },
+  {
+    "id": "disclosure-es",
+    "language": "es",
+    "title": "Un error en el periódico escolar",
+    "description": "Un periódico escolar publicó una acusación que luego resultó falsa. La rectificación podría identificar a alguien que colaboró de forma confidencial. ¿Qué publicarías?",
+    "coverage": ["corregir el daño", "proteger la confidencialidad", "asumir responsabilidad", "decidir cuándo y cómo comunicar"]
+  }
+]

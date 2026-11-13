@@ -18,6 +18,8 @@ pub struct Config {
     pub google_client_id: String,
     pub google_client_secret: String,
     pub google_redirect_url: String,
+    /// 選填的後端 Cloud Translation API 金鑰（與 Google 登入憑證分開）。
+    pub google_translation_api_key: Option<String>,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
     /// 首位管理者內建登入的初始密碼（S-01.3）；沒設定就不建立內建管理者帳號，只能用 Google 登入。
@@ -74,6 +76,8 @@ pub struct Config {
     /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
     /// 讓登入頁一鍵填入。密碼公開，只能用在展示環境；示範帳號不含管理者。
     pub demo_mode: bool,
+    /// 客訴通知信的 SMTP 設定（S-17.3）；沒設定（缺主機、寄件人或收件信箱）就是 `None`，客訴照常保存、寄信狀態為 `skipped`。
+    pub smtp: Option<crate::mail::SmtpConfig>,
 }
 
 #[derive(Debug)]
@@ -257,6 +261,9 @@ impl Config {
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
+            google_translation_api_key: env::var("GOOGLE_TRANSLATION_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty()),
             admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
             admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
                 .ok()
@@ -315,6 +322,7 @@ impl Config {
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
             request_timeout: Duration::from_secs(request_timeout_secs),
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
+            smtp: crate::mail::SmtpConfig::from_env()?,
             app_base_url,
         })
     }

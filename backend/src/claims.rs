@@ -1,9 +1,9 @@
 //! 主張分組（F-15，暫定；對應 S-04.7）。
 //!
-//! 每場對話的總結有一句「最終主張」。同一個活動下，AI 把意思相近的主張歸成一群並命名，
+//! 每場對話的總結有一句「最終主張」。同一個活動的同一題目下，AI 把意思相近的主張歸成一群並命名，
 //! 分組結果存在資料庫（不在每次看儀表板時重算）：
-//! - 新總結進來時，把該活動既有群組名稱一併交給 AI，要求優先歸入既有群組，歸不進去才開新群；
-//! - 教師可按「重新分組」，由 AI 把該活動的全部主張重新分一次。
+//! - 新總結進來時，把該活動該題目既有群組名稱一併交給 AI，要求優先歸入既有群組，歸不進去才開新群；
+//! - 教師可按「重新分組」，由 AI 把該活動該題目的全部主張重新分一次。
 //!
 //! 從題目庫開始的個人練習沒有活動，不分組。
 //!
@@ -18,10 +18,11 @@ use uuid::Uuid;
 use crate::{
     AppState, activity_store,
     ai::{
-        AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
+        AiError, AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
         collect_background, parse_group_name, parse_regroup, regroup_user_message,
     },
     auth::RequireTeacher,
+    diagnostics::AiActivity,
     error::{ApiError, db_error_class},
 };
 
@@ -50,6 +51,13 @@ pub async fn assign_group(
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct AssignSource {
+    language: String,
+    user_id: Option<Uuid>,
+    classroom_id: Uuid,
+}
+
 async fn try_assign(
     state: &AppState,
     conversation: Uuid,
@@ -57,36 +65,59 @@ async fn try_assign(
     topic: &str,
     claim: &str,
 ) -> Result<(), sqlx::Error> {
-    let (language, existing): (Option<String>, Vec<(String,)>) = tokio::try_join!(
-        sqlx::query_scalar(
-            "SELECT u.language
+    let topic_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT topic_id FROM conversations WHERE id = $1 AND activity_id = $2")
+            .bind(conversation)
+            .bind(activity)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
+    let Some(topic_id) = topic_id else {
+        return Ok(());
+    };
+    let (source, existing): (Option<AssignSource>, Vec<(String,)>) = tokio::try_join!(
+        sqlx::query_as(
+            "SELECT u.language, c.user_id, a.classroom_id
              FROM activities a
              JOIN classrooms cl ON cl.id = a.classroom_id
              JOIN users u ON u.id = cl.created_by
+             LEFT JOIN conversations c ON c.activity_id = a.id AND c.id = $2
              WHERE a.id = $1",
         )
         .bind(activity)
+        .bind(conversation)
         .fetch_optional(&state.pool),
         sqlx::query_as(
-            "SELECT name FROM claim_groups WHERE activity_id = $1 ORDER BY created_at, name",
+            "SELECT name FROM claim_groups WHERE activity_id = $1 AND topic_id = $2 ORDER BY created_at, name",
         )
         .bind(activity)
+        .bind(topic_id)
         .fetch_all(&state.pool),
     )?;
-    let language = language.as_deref().unwrap_or("zh-TW");
+    let (language, user, classroom) = match source {
+        Some(source) => (source.language, source.user_id, Some(source.classroom_id)),
+        None => ("zh-TW".to_owned(), None, None),
+    };
     let existing: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
     let req = AiRequest {
-        system: build_group_assign_prompt(topic, &existing, language),
+        system: build_group_assign_prompt(topic, &existing, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: claim.to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
-    let Some(name) = raw.ok().and_then(|r| parse_group_name(&r, &existing)) else {
+    let grouped = AiActivity::new("claim_group", user, classroom)
+        .statuses(202, 202)
+        .run(state, Some(&state.config.openai_model), 0, async {
+            let raw =
+                collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+            parse_group_name(&raw, &existing).ok_or(AiError::invalid_output())
+        })
+        .await;
+    let Ok(name) = grouped else {
         return Ok(()); // 分組失敗：這場暫時沒有群組
     };
-    let group = upsert_group(&state.pool, activity, &name).await?;
+    let group = upsert_group(&state.pool, activity, topic_id, &name).await?;
     sqlx::query("UPDATE summaries SET claim_group_id = $2 WHERE conversation_id = $1")
         .bind(conversation)
         .bind(group)
@@ -95,21 +126,29 @@ async fn try_assign(
     Ok(())
 }
 
-async fn upsert_group(pool: &PgPool, activity: Uuid, name: &str) -> Result<Uuid, sqlx::Error> {
+async fn upsert_group(
+    pool: &PgPool,
+    activity: Uuid,
+    topic_id: Uuid,
+    name: &str,
+) -> Result<Uuid, sqlx::Error> {
     // 同時進來的兩場對話可能搶著建立同名群組：靠唯一約束，輸的人改讀現有的
     sqlx::query(
-        "INSERT INTO claim_groups (activity_id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "INSERT INTO claim_groups (activity_id, topic_id, name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
     )
     .bind(activity)
+    .bind(topic_id)
     .bind(name)
     .execute(pool)
     .await?;
-    let (id,): (Uuid,) =
-        sqlx::query_as("SELECT id FROM claim_groups WHERE activity_id = $1 AND name = $2")
-            .bind(activity)
-            .bind(name)
-            .fetch_one(pool)
-            .await?;
+    let (id,): (Uuid,) = sqlx::query_as(
+        "SELECT id FROM claim_groups WHERE activity_id = $1 AND topic_id = $2 AND name = $3",
+    )
+    .bind(activity)
+    .bind(topic_id)
+    .bind(name)
+    .fetch_one(pool)
+    .await?;
     Ok(id)
 }
 
@@ -117,16 +156,18 @@ async fn upsert_group(pool: &PgPool, activity: Uuid, name: &str) -> Result<Uuid,
 pub(crate) struct RegroupBody {
     /// 要重新分組的活動（儀表板上顯示的那個）
     activity_id: Uuid,
+    /// 活動內要重新分組的題目
+    topic_id: Uuid,
 }
 
-/// 教師按「重新分組」：由 AI 把該活動下全部主張重新分一次。管理者看不到分析結果（S-02.2），不能操作。
+/// 教師按「重新分組」：由 AI 把該活動指定題目的全部主張重新分一次。管理者看不到分析結果（S-02.2），不能操作。
 #[utoipa::path(
     post,
     path = "/api/dashboard/class/regroup",
     tag = "dashboard",
-    summary = "請 AI 重新分組某活動的主張",
+    summary = "請 AI 重新分組某活動題目的主張",
     request_body = RegroupBody,
-    responses((status = 204, description = "已重新分組"), (status = 404, description = "not_found：活動不存在或不在自己管理的教室", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
+    responses((status = 204, description = "已重新分組"), (status = 404, description = "not_found：活動不存在、不在自己管理的教室，或題目不屬於活動", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn regroup(
     RequireTeacher(cu): RequireTeacher,
@@ -140,22 +181,26 @@ pub(crate) async fn regroup(
     let activity = activity_store::get_visible(&state.pool, body.activity_id, cu.user.id, false)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    if !activity.topic_ids.contains(&body.topic_id) {
+        return Err(ApiError::not_found());
+    }
     crate::classrooms::ensure_writable(&state.pool, activity.classroom_id).await?;
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT s.conversation_id, s.claim, a.title
+        "SELECT s.conversation_id, s.claim, t.title
          FROM summaries s
          JOIN conversations c ON c.id = s.conversation_id
-         JOIN activities a ON a.id = c.activity_id
-         WHERE s.status = 'ready' AND c.activity_id = $1 AND s.claim IS NOT NULL
+         JOIN topics t ON t.id = c.topic_id
+         WHERE s.status = 'ready' AND c.activity_id = $1 AND c.topic_id = $2 AND s.claim IS NOT NULL
          ORDER BY c.ended_at, s.conversation_id",
     )
     .bind(body.activity_id)
+    .bind(body.topic_id)
     .fetch_all(&state.pool)
     .await?;
     let Some((_, _, title)) = rows.first() else {
         return Err(ApiError::conflict(
             "no_claims",
-            "這個活動還沒有可分組的主張",
+            "這道題目還沒有可分組的主張",
         ));
     };
     let title = title.clone();
@@ -171,27 +216,36 @@ pub(crate) async fn regroup(
     };
     // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
     let usage_slot = state.charge_ai(cu.user.id)?;
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await;
-    let groups = raw
-        .ok()
-        .and_then(|r| parse_regroup(&r, claims.len()))
-        .ok_or_else(|| {
-            state.refund_ai(cu.user.id, usage_slot);
-            ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
-        })?;
+    let groups = AiActivity::new(
+        "claim_regroup",
+        Some(cu.user.id),
+        Some(activity.classroom_id),
+    )
+    .statuses(204, 502)
+    .run(&state, Some(&state.config.openai_model), 0, async {
+        let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+        parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
+    })
+    .await
+    .map_err(|_| {
+        state.refund_ai(cu.user.id, usage_slot);
+        ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
+    })?;
     let mut tx = state.pool.begin().await?;
     // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
     crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;
     // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定
-    sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1")
+    sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1 AND topic_id = $2")
         .bind(body.activity_id)
+        .bind(body.topic_id)
         .execute(&mut *tx)
         .await?;
     for (name, members) in groups {
         let (gid,): (Uuid,) = sqlx::query_as(
-            "INSERT INTO claim_groups (activity_id, name) VALUES ($1, $2) RETURNING id",
+            "INSERT INTO claim_groups (activity_id, topic_id, name) VALUES ($1, $2, $3) RETURNING id",
         )
         .bind(body.activity_id)
+        .bind(body.topic_id)
         .bind(&name)
         .fetch_one(&mut *tx)
         .await?;

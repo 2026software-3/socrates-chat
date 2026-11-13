@@ -53,9 +53,24 @@ pub struct Conversation {
     pub turn_count: i32,
     pub converge_ready: bool,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     /// 學生已封存：只從自己的清單隱藏（S-14）
     pub is_archived: bool,
+    /// 來源教室名稱；個人練習為 null。學生看得到的教室資訊只有名稱（S-14）
+    pub classroom_name: Option<String>,
+    /// 來源教室已封存（顯示「已封存」）；個人練習為 false（S-14）
+    pub classroom_archived: bool,
+}
+
+/// 來源教室名稱與封存旗標：以一次 LATERAL JOIN 取同一列教室。子查詢只輸出這兩欄，
+/// 所以各處 `$tail` 裡未加表名的欄位（`id`、`created_at` 等）不會有歧義；個人練習沒有教室，
+/// 名稱為 NULL、封存為 false。
+macro_rules! classroom_join {
+    () => {
+        " LEFT JOIN LATERAL (SELECT cl.name AS classroom_name, cl.is_archived AS classroom_archived
+                             FROM classrooms cl WHERE cl.id = conversations.classroom_id) src ON true "
+    };
 }
 
 macro_rules! conversation_select {
@@ -64,8 +79,13 @@ macro_rules! conversation_select {
             "SELECT id, activity_id, topic_id, classroom_id,
                     (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                     title, description, language, status, stage,
-                    turn_count, converge_ready, created_at, ended_at,
-                    archived_at IS NOT NULL AS is_archived FROM conversations ",
+                    turn_count, converge_ready, created_at,
+                    COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
+                    ended_at,
+                    archived_at IS NOT NULL AS is_archived,
+                    src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived
+             FROM conversations",
+            classroom_join!(),
             $tail
         )
     };
@@ -174,14 +194,15 @@ pub(crate) async fn create(
         ));
     };
     // 每位學生在每個活動的每個題目至多一場對話；唯一索引也涵蓋並行請求。
-    let created = sqlx::query_as(
-        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, activity_id, topic_id, classroom_id,
-                   (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
-                   title, description, language, status,
-                   stage, turn_count, converge_ready, created_at, ended_at, archived_at IS NOT NULL AS is_archived",
-    )
+    // 新列經由與列表、單場相同的 SELECT 讀回，輸出欄位只有一份定義。
+    let created = sqlx::query_as(concat!(
+        "WITH conversations AS (
+            INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *
+         ) ",
+        conversation_select!("")
+    ))
     .bind(cu.user.id)
     .bind(activity_id)
     .bind(topic_id)
@@ -213,7 +234,7 @@ pub(crate) async fn create(
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
     params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的"), ("activity_id" = Option<Uuid>, Query, description = "只列這個活動的對話")),
-    responses((status = 200, description = "對話分頁，依 created_at DESC, id ASC", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
+    responses((status = 200, description = "對話分頁，依 updated_at DESC, id ASC（無訊息時以 created_at 代替）", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
@@ -236,8 +257,12 @@ pub(crate) async fn list(
     let rows = sqlx::query_as(conversation_select!(
         "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $2
            AND ($3::uuid IS NULL OR activity_id = $3)
-           AND ($4::timestamptz IS NULL OR created_at < $4 OR (created_at = $4 AND id > $5))
-         ORDER BY created_at DESC, id ASC LIMIT $6"
+           AND (
+                $4::timestamptz IS NULL OR
+                COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) < $4 OR
+                (COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) = $4 AND id > $5)
+           )
+         ORDER BY updated_at DESC, id ASC LIMIT $6"
     ))
     .bind(cu.user.id)
     .bind(archived)
@@ -251,7 +276,7 @@ pub(crate) async fn list(
         rows,
         limit,
         "conversations",
-        |row: &Conversation| (row.created_at, row.id),
+        |row: &Conversation| (row.updated_at, row.id),
     )?))
 }
 

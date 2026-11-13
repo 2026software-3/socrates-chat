@@ -5,7 +5,6 @@ mod common;
 use axum::http::StatusCode;
 use common::*;
 use serde_json::{Value, json};
-use socrates_chat_backend::auth_store::upsert_user;
 use sqlx::PgPool;
 
 async fn rename(app: &axum::Router, cookie: Option<&str>, body: Value) -> (StatusCode, Value) {
@@ -46,6 +45,9 @@ async fn non_students_are_403(pool: PgPool) {
     for cookie in [&a.teacher, &a.admin, &a.outsider] {
         let (status, _) = rename(&app, Some(cookie), json!({"display_name": "小明"})).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, body) = rename(&app, Some(cookie), json!({"display_name": null})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "forbidden");
     }
     assert_eq!(me_name(&app, &a.teacher).await, "User sub-teacher");
 }
@@ -121,15 +123,47 @@ async fn name_is_trimmed(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn null_and_blank_clear_the_name(pool: PgPool) {
+async fn google_student_clear_restores_imported_name_on_patch_and_relogin(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     for cleared in [json!(null), json!(""), json!("   ")] {
-        rename(&app, Some(&a.student), json!({"display_name": "小明"})).await;
+        let (status, _) = rename(&app, Some(&a.student), json!({"display_name": "小明"})).await;
+        assert_eq!(status, StatusCode::OK);
         let (status, body) = rename(&app, Some(&a.student), json!({"display_name": cleared})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["display_name"], "學生");
         assert_eq!(me_name(&app, &a.student).await, "學生");
+    }
+    let cookie = login_as(&app, "sub-student", "student@example.com").await;
+    assert_eq!(me_name(&app, &cookie).await, "學生");
+}
+
+#[sqlx::test]
+async fn password_student_clear_restores_imported_name(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let res = import_roster(&app, &a.teacher, &a.classroom, "匯入姓名,11234567A").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let password = json_body(res).await["credentials"][0]["temporary_password"].clone();
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(json!({"account": "11234567A", "password": password})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookie = session_cookie(&res).unwrap();
+    for cleared in [json!(null), json!("")] {
+        let (status, _) = rename(&app, Some(&cookie), json!({"display_name": "小明"})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = rename(&app, Some(&cookie), json!({"display_name": cleared})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["display_name"], "匯入姓名");
+        assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
     }
 }
 
@@ -212,20 +246,95 @@ async fn google_login_does_not_overwrite_a_custom_name(pool: PgPool) {
     assert_eq!(me_name(&app, &cookie).await, "小明");
 }
 
-#[sqlx::test]
-async fn google_login_fills_the_name_when_it_was_cleared(pool: PgPool) {
-    let u = upsert_user(&pool, "sub-1", "a@example.com", Some("Old"), false)
+async fn google_sub_of(pool: &PgPool, student_number: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT google_sub FROM users WHERE student_id = $1")
+        .bind(student_number)
+        .fetch_one(pool)
         .await
-        .unwrap();
-    sqlx::query("UPDATE users SET display_name = NULL WHERE id = $1")
-        .bind(u.id)
+        .unwrap()
+}
+
+async fn import_unbound_student(app: &axum::Router, a: &Actors) {
+    let res = import_roster(
+        app,
+        &a.teacher,
+        &a.classroom,
+        "匯入姓名,11234567A,another-student@example.com",
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn first_google_binding_uses_imported_name_when_display_name_is_missing(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    sqlx::query("UPDATE users SET display_name = NULL WHERE student_id = '11234567A'")
         .execute(&pool)
         .await
         .unwrap();
-    let again = upsert_user(&pool, "sub-1", "a@example.com", Some("New"), false)
+    assert_eq!(google_sub_of(&pool, "11234567A").await, None);
+
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert_eq!(
+        google_sub_of(&pool, "11234567A").await.as_deref(),
+        Some("sub-another-student")
+    );
+    assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
+}
+
+#[sqlx::test]
+async fn later_google_login_uses_imported_name_when_display_name_is_missing(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert!(google_sub_of(&pool, "11234567A").await.is_some());
+
+    sqlx::query("UPDATE users SET display_name = NULL WHERE student_id = '11234567A'")
+        .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(again.display_name.as_deref(), Some("New"));
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
+}
+
+#[sqlx::test]
+async fn first_google_binding_keeps_a_custom_name_over_the_imported_name(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    sqlx::query("UPDATE users SET display_name = '自訂名稱' WHERE student_id = '11234567A'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(google_sub_of(&pool, "11234567A").await, None);
+
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    assert_eq!(me_name(&app, &cookie).await, "自訂名稱");
+}
+
+#[sqlx::test]
+async fn google_login_fills_a_missing_staff_display_name(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    for (cookie, sub, email) in [
+        (&a.teacher, "sub-teacher", "teacher@example.com"),
+        (&a.admin, "sub-admin", "admin@example.com"),
+    ] {
+        sqlx::query("UPDATE users SET display_name = NULL WHERE email = $1")
+            .bind(email)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let before = json_body(send(&app, get("/api/me", Some(cookie))).await).await;
+        assert!(before["display_name"].is_null());
+        assert_eq!(before["email"], email);
+
+        let cookie = login_as(&app, sub, email).await;
+        assert_eq!(me_name(&app, &cookie).await, format!("User {sub}"));
+    }
 }
 
 #[sqlx::test]

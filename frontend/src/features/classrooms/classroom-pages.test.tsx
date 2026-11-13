@@ -18,17 +18,18 @@ const group = (name: string, count: number, over: Partial<ClaimGroup> = {}): Cla
   ...over,
 })
 
-const distribution = (over: Partial<ActivityDistribution> = {}): ActivityDistribution => ({
+const distribution = (over: Partial<ActivityDistribution['topics'][number]> = {}): ActivityDistribution => ({
   activity_id: ACT,
   title: '第一週討論',
   completed: 20,
-  claims: [
+  topics: [{ topic_id: 't1', title: '電車難題', completed: 20, claims: [
     group('拉桿', 12, { reasons: ['救五人比救一人重要', '結果最重要'] }),
     group('不拉桿', 6, { reasons: ['不能把人當工具'] }),
     { ...group('', 2), name: null, other: true },
   ],
   ungrouped: 0,
   ...over,
+  }],
 })
 
 const dashboard: ClassDashboard = {
@@ -55,6 +56,9 @@ const activity: Activity = {
 const summary: TeacherSummary = {
   conversation_id: 'c1',
   classroom_id: ROOM_A,
+  activity_id: null,
+  topic_id: null,
+  activity_completed: false,
   title: '電車難題',
   ended_at: '2026-03-05T10:00:00Z',
   student_user_id: STUDENT,
@@ -161,6 +165,32 @@ describe('classroom → activity → student navigation', () => {
     renderAt(`/teacher/classrooms/${ROOM_A}/students/${STUDENT}`)
     expect(await screen.findByText(/還沒有完成的對話/u)).toBeInTheDocument()
   })
+
+  it('lets admins open the related diagnostics from a classroom and from a student', async () => {
+    mockApi()
+    renderAt(`/admin/classrooms/${ROOM_A}`, { admin: true })
+    const classroomLink = await screen.findByRole('link', { name: '查看診斷紀錄' })
+    expect(classroomLink).toHaveAttribute('href', `/admin/diagnostics?classroom_id=${ROOM_A}`)
+  })
+
+  it('links a student page to the diagnostics of that account for admins only', async () => {
+    mockApi()
+    const admin = renderAt(`/admin/classrooms/${ROOM_A}/students/${STUDENT}`, { admin: true })
+    const link = await screen.findByRole('link', { name: '查看診斷紀錄' })
+    expect(link).toHaveAttribute('href', `/admin/diagnostics?user_id=${STUDENT}`)
+    admin.unmount()
+
+    renderAt(`/teacher/classrooms/${ROOM_A}/students/${STUDENT}`)
+    await screen.findByText('應該拉桿')
+    expect(screen.queryByRole('link', { name: '查看診斷紀錄' })).not.toBeInTheDocument()
+  })
+
+  it('does not show the diagnostics link on a teacher classroom page', async () => {
+    mockApi()
+    renderAt(`/teacher/classrooms/${ROOM_A}`)
+    await screen.findByRole('heading', { level: 1, name: '2026 春季班' })
+    expect(screen.queryByRole('link', { name: '查看診斷紀錄' })).not.toBeInTheDocument()
+  })
 })
 
 describe('activity claim distribution', () => {
@@ -173,7 +203,7 @@ describe('activity claim distribution', () => {
     expect(groups[0]).toHaveTextContent('拉桿12(60%)')
     expect(groups[1]).toHaveTextContent('不拉桿6(30%)')
     expect(groups[2]).toHaveTextContent('其他2(10%)')
-    expect(screen.getByText('20 場完成')).toBeInTheDocument()
+    expect(screen.getByText('本題已完成 20 場對話')).toBeInTheDocument()
   })
 
   it('opens a claim group to show its core reasons', async () => {
@@ -192,7 +222,40 @@ describe('activity claim distribution', () => {
     expect(screen.queryByText(/效益主義|義務論|德行倫理|契約論|關懷倫理|存在主義|論證傾向/)).not.toBeInTheDocument()
   })
 
-  it('regroups by activity_id on request and reloads', async () => {
+  it('shows separate ordered sections for every topic, including an empty topic', async () => {
+    mockApi({ ...dashboard, activities: [{ activity_id: ACT, title: '第一週討論', completed: 2, topics: [
+      { topic_id: 't2', title: '第二題', completed: 2, claims: [group('第二題主張', 2)], ungrouped: 0 },
+      { topic_id: 't1', title: '第一題', completed: 0, claims: [], ungrouped: 0 },
+    ] }] })
+    renderAt(path)
+    await screen.findByRole('heading', { name: '第二題' })
+    expect(screen.getByRole('heading', { name: '第一題' })).toBeInTheDocument()
+    expect(screen.getByText('第二題主張')).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['第二題', '第一題'])
+  })
+
+  it('confirms and regroups only the selected topic when several topics have claims', async () => {
+    let body: unknown
+    mockApi({ ...dashboard, activities: [{ activity_id: ACT, title: '第一週討論', completed: 2, topics: [
+      { topic_id: 't1', title: '第一題', completed: 1, claims: [group('甲', 1)], ungrouped: 0 },
+      { topic_id: 't2', title: '第二題', completed: 1, claims: [group('乙', 1)], ungrouped: 0 },
+    ] }] })
+    server.use(http.post('/api/dashboard/class/regroup', async ({ request }) => {
+      body = await request.json()
+      return new HttpResponse(null, { status: 204 })
+    }))
+    renderAt(path)
+    const buttons = await screen.findAllByRole('button', { name: '重新分組' })
+    expect(buttons).toHaveLength(2)
+    await userEvent.click(buttons[1])
+    expect(body).toBeUndefined()
+    const confirm = await screen.findByRole('alertdialog')
+    await userEvent.click(within(confirm).getByRole('button', { name: '重新分組' }))
+    await waitFor(() => expect(body).toEqual({ activity_id: ACT, topic_id: 't2' }))
+    expect(screen.getByText('甲')).toBeInTheDocument()
+  })
+
+  it('regroups by activity_id and topic_id on request and reloads', async () => {
     let body: unknown
     let loads = 0
     mockApi()
@@ -215,7 +278,7 @@ describe('activity claim distribution', () => {
     expect(body).toBeUndefined()
     await userEvent.click(within(confirm).getByRole('button', { name: '重新分組' }))
     await waitFor(() => expect(screen.queryByText('2 場的主張還沒有歸群。')).not.toBeInTheDocument())
-    expect(body).toEqual({ activity_id: ACT })
+    expect(body).toEqual({ activity_id: ACT, topic_id: 't1' })
   })
 
   it('keeps the groups and shows a translated message when regrouping fails', async () => {

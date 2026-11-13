@@ -7,9 +7,9 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, achievement_admin, ai_usage, argument_tree, auth, cascade, catalog, chat, claims,
-    classroom_store, classrooms, dashboard, demo, error::ErrorBody, points, purchase, reply,
-    request_logs, roster, roster_store, summary, tasks, voice,
+    accounts, achievement_admin, ai_usage, announcements, argument_tree, auth, cascade, catalog,
+    chat, claims, classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody,
+    points, purchase, reply, roster, roster_store, summary, tasks, voice,
 };
 
 struct SessionCookie;
@@ -122,13 +122,17 @@ impl Modify for SessionCookie {
         accounts::delete_student,
         catalog::list_topics_for_teacher,
         catalog::create_topic_for_teacher,
+        crate::topic_dimensions::read,
+        crate::topic_dimensions::retry,
+        crate::topic_dimensions::update,
         catalog::update_topic_for_teacher, catalog::list_activities, catalog::create_activity,
         catalog::get_activity, catalog::update_activity, catalog::publish_activity,
         catalog::close_activity, catalog::archive_activity, catalog::unarchive_activity,
         catalog::delete_activity, catalog::available,
         chat::create, chat::list, chat::detail, chat::remove, chat::archive, chat::unarchive, chat::send_message,
         reply::stream,
-        request_logs::list,
+        crate::diagnostics::status,
+        crate::diagnostics::list,
         summary::end, summary::get_summary, summary::retry, summary::list, summary::transcript, summary::translate,
         dashboard::personal, dashboard::class, claims::regroup,
         voice::transcribe, voice::speech, cascade::socket,
@@ -136,6 +140,9 @@ impl Modify for SessionCookie {
         tasks::list, tasks::claim, tasks::admin_list, tasks::update,
         purchase::list, purchase::buy, purchase::admin_list, purchase::update,
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
+        announcements::public_list, announcements::list, announcements::create, announcements::update,
+        announcements::remove, announcements::get_maintenance, announcements::set_maintenance,
+        complaints::submit, complaints::list, complaints::update, complaints::resend,
         argument_tree::read,
         argument_tree::create,
     ),
