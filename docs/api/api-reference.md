@@ -58,6 +58,7 @@
 - 教師時間表單依瀏覽器時區輸入及顯示，傳送時轉 UTC；已有人開始對話的活動仍可修改時間。建立活動須選擇未封存的教室。
 
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
+- 題目可附 0 到 5 個引導問題（`guiding_questions` 字串陣列，S-04.8、F-32.1）：建立與修改時選填，建立未帶預設為 `[]`，修改未帶保留原值，修改帶 `[]` 清空；每個問題最多 200 字，超過 5 個或單一超過 200 字回 `400 invalid_guiding_questions`；題目已有對話後仍可修改引導問題（不鎖定），不影響既有總結；學生呼叫 `GET /api/catalog` 的題目清單亦帶有此欄位。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - `GET /api/activities?limit=&cursor=` 依 `created_at DESC, id ASC` 分頁，草稿、已發布、已停止開放都列出；`activities(created_at DESC, id)` 有索引。前端依需要載入（「載入更多」），不先取完所有分頁。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
