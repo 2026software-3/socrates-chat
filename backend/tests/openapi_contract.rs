@@ -33,7 +33,15 @@ mod classroom {
         );
         let response_schema: &Value =
             &create["responses"]["201"]["content"]["application/json"]["schema"];
-        assert_eq!(response_schema["$ref"], "#/components/schemas/Classroom");
+        assert_eq!(
+            response_schema["$ref"],
+            "#/components/schemas/ClassroomDetail"
+        );
+        let update = &paths["/api/classrooms/{id}"]["patch"];
+        assert_eq!(
+            update["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ClassroomDetail"
+        );
 
         let request_schema = &document["components"]["schemas"]["NewClassroom"]["properties"];
         assert_eq!(request_schema["name"]["maxLength"], 255);
