@@ -7,9 +7,9 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, achievement_admin, ai_usage, announcements, auth, cascade, catalog, chat, claims,
-    classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody, points, purchase,
-    reply, roster, roster_store, summary, tasks, voice,
+    accounts, achievement_admin, ai_usage, announcements, argument_tree, auth, cascade, catalog,
+    chat, claims, classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody,
+    points, purchase, reply, roster, roster_store, summary, tasks, voice,
 };
 
 struct SessionCookie;
@@ -140,6 +140,8 @@ impl Modify for SessionCookie {
         announcements::public_list, announcements::list, announcements::create, announcements::update,
         announcements::remove, announcements::get_maintenance, announcements::set_maintenance,
         complaints::submit, complaints::list, complaints::update, complaints::resend,
+        argument_tree::read,
+        argument_tree::create,
     ),
     components(schemas(ErrorBody, classroom_store::Classroom, roster_store::StudentRow)),
     modifiers(&SessionCookie, &CommonErrorResponses),

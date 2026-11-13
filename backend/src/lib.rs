@@ -45,6 +45,7 @@ pub mod activity_store;
 pub mod ai;
 pub mod ai_usage;
 pub mod announcements;
+pub mod argument_tree;
 pub mod auth;
 pub mod auth_store;
 pub mod cascade;
@@ -66,6 +67,7 @@ pub mod key_pool;
 pub mod logging;
 pub mod login_rate_limit;
 pub mod mail;
+pub mod main_argument_tree;
 pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
@@ -216,6 +218,7 @@ pub fn app(state: AppState) -> Router {
         .merge(reply::routes())
         .merge(diagnostics::routes())
         .merge(summary::routes())
+        .merge(argument_tree::routes())
         .merge(voice::routes())
         .merge(cascade::routes())
         .merge(points::routes())

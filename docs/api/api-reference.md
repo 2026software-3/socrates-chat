@@ -242,3 +242,17 @@ cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration
 要連前端一起跑：在 `frontend/` 執行 `npm ci && npm run build`，並設定 `FRONTEND_DIR=../frontend/dist`，後端就會在同一個網域提供前端（找不到的路徑退回 `index.html`，`/api/*` 仍回 JSON 404）。開發前端時改用 `npm run dev`（Vite 會把 `/api` 轉給本機後端）。
 
 具體 OpenAI 模型尚未決定（S-03.1／S-03.4），因此 `OPENAI_MODEL` 沒有預設值。
+
+
+## 按需摘要論證樹
+
+學生自己的已結束對話使用以下端點（sid cookie；POST 遵守既有 Origin／CSRF 檢查）：
+
+| 方法 | 路徑 | 用途 |
+| --- | --- | --- |
+| GET | /api/conversations/{id}/argument-tree | 讀取 missing/pending/ready/failed；不呼叫模型 |
+| POST | /api/conversations/{id}/argument-tree | 生成或重試；已完成直接重用，產生中不重複啟動 |
+
+POST 無需傳送對話內容。200 為已成功，202 為背景產生中，之後查詢 GET。回應包含 status、tree（只有 ready 有值）、prompt_version、completed_at。tree 使用 DisplayTree 的巢狀 root/children 格式。
+
+401／403／404 沿用既有授權規則；進行中或空對話為 409，AI 額度不足為 429。失敗結果不包含模型原始輸出。完整規則見 [摘要論證樹](../specs/summary-argument-tree.md)。

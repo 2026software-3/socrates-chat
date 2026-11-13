@@ -1,0 +1,56 @@
+{
+  "topic_id": "TEST",
+  "title": "是否應允許使用 AI？",
+  "nodes": [
+    {
+      "id": "TEST-C0",
+      "kind": "claim",
+      "label": "應允許使用 AI",
+      "source_round": 1,
+      "evidence": "我認為應該允許使用 AI",
+      "parent": null,
+      "relation": null,
+      "origin": "user"
+    },
+    {
+      "id": "TEST-P1",
+      "kind": "premise",
+      "label": "減少整理時間",
+      "source_round": 1,
+      "evidence": "因為能減少整理時間",
+      "parent": "TEST-C0",
+      "relation": "support",
+      "origin": "user"
+    },
+    {
+      "id": "TEST-B1",
+      "kind": "boundary",
+      "label": "第一次由學生主導",
+      "source_round": 2,
+      "evidence": "第一次寫論點應該自己完成",
+      "parent": "TEST-C0",
+      "relation": "qualify",
+      "origin": "user"
+    },
+    {
+      "id": "TEST-J1",
+      "kind": "independent_judgment",
+      "label": "尚無完整檢查遺漏方法",
+      "source_round": 3,
+      "evidence": "我目前不知道如何完整檢查 AI 遺漏",
+      "parent": "TEST-B1",
+      "relation": "reflect",
+      "origin": "user"
+    },
+    {
+      "id": "TEST-PR1",
+      "kind": "precision",
+      "label": "首次論點組織的具體做法",
+      "source_round": 2,
+      "evidence": "第一次寫論點應該自己完成",
+      "parent": "TEST-B1",
+      "relation": "precision",
+      "origin": "user"
+    }
+  ]
+}
