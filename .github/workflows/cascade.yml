@@ -7,10 +7,12 @@ on:
     branches: [main]
     paths:
       - "docker/cascade/**"
+      - "scripts/cascade-macos/**"
       - ".github/workflows/cascade.yml"
   pull_request:
     paths:
       - "docker/cascade/**"
+      - "scripts/cascade-macos/**"
       - ".github/workflows/cascade.yml"
 
 permissions:
@@ -33,3 +35,7 @@ jobs:
       - run: >-
           PYTHONPATH=docker/cascade "$RUNNER_TEMP/venv/bin/python" -m unittest -v
           test_kokoro_server test_tts_adapter
+      # macOS 原生啟動腳本的靜態檢查（只用標準函式庫；腳本本身只能在 Apple Silicon 上實際執行）
+      - run: >-
+          PYTHONPATH=scripts/cascade-macos python3 -m unittest -v
+          test_render_launch test_scripts
