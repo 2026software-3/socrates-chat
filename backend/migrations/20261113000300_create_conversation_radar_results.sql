@@ -20,7 +20,8 @@ CREATE TABLE conversation_radar_results (
             AND scores <> '{}'::jsonb
             AND NOT jsonb_path_exists(
                 scores,
-                '$.* ? (@.type() != "number" || @ < 0 || @ != @.floor())'
+                -- strict: lax mode would unwrap an array value such as [1] and judge its element.
+                'strict $.* ? (@.type() != "number" || @ < 0 || @ != @.floor())'
             )
         )
     ),
