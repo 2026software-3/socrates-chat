@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 from fastapi.testclient import TestClient
 
-from kokoro_server import SILENCE, create_app, make_synthesizer, render_pcm
+from kokoro_server import SILENCE, create_app, make_synthesizer, render_pcm, resolve_device
 
 
 def post_speech(client, text='你好'):
@@ -164,6 +164,34 @@ class SynthesizerTest(unittest.TestCase):
         chunks = list(make_synthesizer(pipeline, 'zm_yunjian')('你好'))
         self.assertEqual(calls, [('你好', 'zm_yunjian')])
         self.assertEqual([chunk.tolist() for chunk in chunks], [[0.25], [-0.25]])
+
+
+class DeviceSelectionTest(unittest.TestCase):
+    """KOKORO_DEVICE 決定推論裝置；預設維持原本的 cuda，指定的裝置不存在時要明確失敗，不能默默退回 CPU。"""
+
+    def test_default_is_cuda_so_the_nvidia_deployment_is_unchanged(self):
+        self.assertEqual(resolve_device(None, cuda=True, mps=False), 'cuda')
+        self.assertEqual(resolve_device('', cuda=True, mps=True), 'cuda')
+
+    def test_explicit_devices_are_returned_when_available(self):
+        self.assertEqual(resolve_device('mps', cuda=False, mps=True), 'mps')
+        self.assertEqual(resolve_device('CPU', cuda=False, mps=False), 'cpu')
+        self.assertEqual(resolve_device(' cuda ', cuda=True, mps=False), 'cuda')
+
+    def test_auto_prefers_cuda_then_mps_then_cpu(self):
+        self.assertEqual(resolve_device('auto', cuda=True, mps=True), 'cuda')
+        self.assertEqual(resolve_device('auto', cuda=False, mps=True), 'mps')
+        self.assertEqual(resolve_device('auto', cuda=False, mps=False), 'cpu')
+
+    def test_requested_device_that_is_unavailable_fails_loudly(self):
+        with self.assertRaisesRegex(RuntimeError, 'cuda'):
+            resolve_device('cuda', cuda=False, mps=True)
+        with self.assertRaisesRegex(RuntimeError, 'mps'):
+            resolve_device('mps', cuda=True, mps=False)
+
+    def test_unknown_device_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'metal'):
+            resolve_device('metal', cuda=True, mps=True)
 
 
 if __name__ == '__main__':

@@ -96,10 +96,30 @@ def make_synthesizer(pipeline, voice):
     return synthesize
 
 
+DEVICES = ('cuda', 'mps', 'cpu')
+
+
+def resolve_device(requested, cuda, mps):
+    """決定推論裝置。預設 cuda（NVIDIA 部署不變）；auto 依序挑 cuda、mps、cpu。
+    指定的裝置不存在時直接失敗：悄悄退回 CPU 會讓延遲變差卻沒有人發現。"""
+    name = (requested or 'cuda').strip().lower()
+    if name == 'auto':
+        return 'cuda' if cuda else 'mps' if mps else 'cpu'
+    if name not in DEVICES:
+        raise ValueError(f'KOKORO_DEVICE must be one of auto, {", ".join(DEVICES)}; got {name!r}')
+    if name == 'cuda' and not cuda:
+        raise RuntimeError('KOKORO_DEVICE=cuda but CUDA is not available')
+    if name == 'mps' and not mps:
+        raise RuntimeError('KOKORO_DEVICE=mps but the PyTorch MPS backend is not available')
+    return name
+
+
 def main():
+    import torch
     from kokoro import KPipeline
 
-    pipeline = KPipeline(lang_code='z', device='cuda')
+    device = resolve_device(os.environ.get('KOKORO_DEVICE'), torch.cuda.is_available(), torch.backends.mps.is_available())
+    pipeline = KPipeline(lang_code='z', device=device)
     voice = os.environ.get('KOKORO_VOICE', 'zm_yunjian')
     pipeline.load_voice(voice)
     synthesize = make_synthesizer(pipeline, voice)
@@ -107,7 +127,8 @@ def main():
     if not list(synthesize(WARMUP_TEXT)):
         raise RuntimeError('Kokoro warm-up produced no audio')
 
-    uvicorn.run(create_app(synthesize), host='0.0.0.0', port=8100, access_log=False)
+    # 容器內要綁 0.0.0.0 讓 compose 網路連得到；macOS 原生執行時由啟動腳本設成 127.0.0.1。
+    uvicorn.run(create_app(synthesize), host=os.environ.get('KOKORO_HOST', '0.0.0.0'), port=8100, access_log=False)
 
 
 if __name__ == '__main__':
