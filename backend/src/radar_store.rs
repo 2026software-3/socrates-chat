@@ -26,9 +26,11 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<RadarResult>, sqlx::E
         .bind(id).fetch_optional(pool).await
 }
 
-/// Claim an initial attempt or retry a failure. Concurrent requests can claim only once.
-/// Missing/incomplete summaries, active conversations, pending and ready results return None.
-pub async fn claim(pool: &PgPool, id: Uuid) -> Result<Option<i32>, sqlx::Error> {
+/// Claim an initial attempt, retry a failure, or take over a pending attempt that has been
+/// running longer than `stale_secs` (its worker died or hung). Takeover opens a new attempt, so
+/// the old worker's later `complete`/`fail` is ignored. Concurrent requests can claim only once.
+/// Missing/incomplete summaries, active conversations, fresh pending and ready results return None.
+pub async fn claim(pool: &PgPool, id: Uuid, stale_secs: f64) -> Result<Option<i32>, sqlx::Error> {
     sqlx::query_scalar(
         "INSERT INTO conversation_radar_results (conversation_id)
          SELECT c.id FROM conversations c JOIN summaries s ON s.conversation_id=c.id
@@ -37,9 +39,12 @@ pub async fn claim(pool: &PgPool, id: Uuid) -> Result<Option<i32>, sqlx::Error> 
          SET status='pending', attempt=conversation_radar_results.attempt+1,
              scores=NULL, rules_version=NULL, started_at=now(), completed_at=NULL
          WHERE conversation_radar_results.status='failed'
+            OR (conversation_radar_results.status='pending'
+                AND conversation_radar_results.started_at < now() - make_interval(secs => $2))
          RETURNING attempt",
     )
     .bind(id)
+    .bind(stale_secs)
     .fetch_optional(pool)
     .await
 }
@@ -79,9 +84,16 @@ pub async fn fail(pool: &PgPool, id: Uuid, attempt: i32) -> Result<bool, sqlx::E
     Ok(result.rows_affected() == 1)
 }
 
-/// Startup-only recovery hook for future BE wiring; do not call while jobs are running.
-pub async fn recover_orphaned(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("UPDATE conversation_radar_results SET status='failed', completed_at=now() WHERE status='pending'")
-        .execute(pool).await?;
+/// Startup recovery hook for future BE wiring: marks only pending attempts older than
+/// `stale_secs` as failed, so fresh in-flight work (e.g. another instance during a rolling
+/// restart) is left alone. Use the same threshold as `claim`.
+pub async fn recover_orphaned(pool: &PgPool, stale_secs: f64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE conversation_radar_results SET status='failed', completed_at=now()
+         WHERE status='pending' AND started_at < now() - make_interval(secs => $1)",
+    )
+    .bind(stale_secs)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }

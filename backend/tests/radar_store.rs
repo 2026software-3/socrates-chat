@@ -8,6 +8,18 @@ use sqlx::{PgPool, migrate::Migrator};
 use std::borrow::Cow;
 use uuid::Uuid;
 
+/// 一小時內的 pending 都算進行中；測試用 `age_pending` 把 started_at 往前推來模擬殘留。
+const STALE: f64 = 3600.0;
+
+async fn age_pending(pool: &PgPool, id: Uuid, secs: f64) {
+    sqlx::query("UPDATE conversation_radar_results SET started_at = now() - make_interval(secs => $2) WHERE conversation_id=$1")
+        .bind(id)
+        .bind(secs)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 async fn ready_conversation(pool: &PgPool) -> Uuid {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
@@ -66,14 +78,19 @@ fn scores() -> Scores {
 async fn retry_keeps_summary_and_old_generations_cannot_overwrite_results(pool: PgPool) {
     let id = ready_conversation(&pool).await;
     assert!(radar_store::get(&pool, id).await.unwrap().is_none());
-    let first = radar_store::claim(&pool, id).await.unwrap().unwrap();
+    let first = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
     assert_eq!(first, 1);
-    assert!(radar_store::claim(&pool, id).await.unwrap().is_none());
+    assert!(
+        radar_store::claim(&pool, id, STALE)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(radar_store::fail(&pool, id, first).await.unwrap());
     let failed = radar_store::get(&pool, id).await.unwrap().unwrap();
     assert_eq!(failed.status, "failed");
     assert!(failed.scores.is_none());
-    let second = radar_store::claim(&pool, id).await.unwrap().unwrap();
+    let second = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
     assert_eq!(second, 2);
     assert!(
         !radar_store::complete(&pool, id, first, &scores(), "test/v1")
@@ -91,7 +108,12 @@ async fn retry_keeps_summary_and_old_generations_cannot_overwrite_results(pool: 
     assert_eq!(ready.scores.unwrap().0, scores());
     assert_eq!(ready.rules_version.as_deref(), Some("test/v2"));
     assert!(ready.completed_at.is_some());
-    assert!(radar_store::claim(&pool, id).await.unwrap().is_none());
+    assert!(
+        radar_store::claim(&pool, id, STALE)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(!radar_store::fail(&pool, id, second).await.unwrap());
     let summary: (String, String) =
         sqlx::query_as("SELECT status,stance FROM summaries WHERE conversation_id=$1")
@@ -105,7 +127,7 @@ async fn retry_keeps_summary_and_old_generations_cannot_overwrite_results(pool: 
 #[sqlx::test]
 async fn invalid_completion_leaves_no_partial_scores_and_can_be_marked_failed(pool: PgPool) {
     let id = ready_conversation(&pool).await;
-    let attempt = radar_store::claim(&pool, id).await.unwrap().unwrap();
+    let attempt = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
     let mut incomplete = scores();
     incomplete.remove("d6");
     for (value, version) in [(&incomplete, "test/v1"), (&scores(), " \t")] {
@@ -127,12 +149,94 @@ async fn invalid_completion_leaves_no_partial_scores_and_can_be_marked_failed(po
 #[sqlx::test]
 async fn concurrent_claims_only_start_one_attempt_and_startup_recovery_allows_retry(pool: PgPool) {
     let id = ready_conversation(&pool).await;
-    let (one, two) = tokio::join!(radar_store::claim(&pool, id), radar_store::claim(&pool, id));
+    let (one, two) = tokio::join!(
+        radar_store::claim(&pool, id, STALE),
+        radar_store::claim(&pool, id, STALE)
+    );
     let claimed: Vec<i32> = [one.unwrap(), two.unwrap()].into_iter().flatten().collect();
     assert_eq!(claimed, [1]);
-    assert_eq!(radar_store::recover_orphaned(&pool).await.unwrap(), 1);
-    assert_eq!(radar_store::recover_orphaned(&pool).await.unwrap(), 0);
-    assert_eq!(radar_store::claim(&pool, id).await.unwrap(), Some(2));
+    age_pending(&pool, id, STALE + 60.0).await;
+    assert_eq!(
+        radar_store::recover_orphaned(&pool, STALE).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        radar_store::recover_orphaned(&pool, STALE).await.unwrap(),
+        0
+    );
+    assert_eq!(radar_store::claim(&pool, id, STALE).await.unwrap(), Some(2));
+}
+
+#[sqlx::test]
+async fn stale_pending_can_be_reclaimed_and_the_old_worker_is_ignored(pool: PgPool) {
+    let id = ready_conversation(&pool).await;
+    let first = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
+    // 還沒過期：不能重領
+    age_pending(&pool, id, STALE - 60.0).await;
+    assert!(
+        radar_store::claim(&pool, id, STALE)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // 已過期：重領開新的一代，舊 worker 之後寫入或標失敗都被忽略
+    age_pending(&pool, id, STALE + 60.0).await;
+    let second = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
+    assert_eq!(second, first + 1);
+    assert!(
+        !radar_store::complete(&pool, id, first, &scores(), "test/v1")
+            .await
+            .unwrap()
+    );
+    assert!(!radar_store::fail(&pool, id, first).await.unwrap());
+    // 重領後 started_at 重置，立刻再領不會成功
+    assert!(
+        radar_store::claim(&pool, id, STALE)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        radar_store::complete(&pool, id, second, &scores(), "test/v2")
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test]
+async fn recovery_leaves_fresh_pending_and_finished_results_alone(pool: PgPool) {
+    let id = ready_conversation(&pool).await;
+    let attempt = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
+    // 進行中且未過期（例如滾動重啟時另一個實例的工作）：不得被標成失敗
+    assert_eq!(
+        radar_store::recover_orphaned(&pool, STALE).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        radar_store::get(&pool, id).await.unwrap().unwrap().status,
+        "pending"
+    );
+    assert!(
+        radar_store::complete(&pool, id, attempt, &scores(), "test/v1")
+            .await
+            .unwrap()
+    );
+    // 已完成的結果即使 started_at 很舊也不受影響
+    age_pending(&pool, id, STALE + 60.0).await;
+    assert_eq!(
+        radar_store::recover_orphaned(&pool, STALE).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        radar_store::get(&pool, id).await.unwrap().unwrap().status,
+        "ready"
+    );
+    assert!(
+        radar_store::claim(&pool, id, STALE)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[sqlx::test]
@@ -147,7 +251,7 @@ async fn results_are_isolated_by_conversation_and_cascade_on_deletion(pool: PgPo
         .map(|(key, score)| (key, 5 - score))
         .collect();
     for (id, value) in [(first, scores()), (second, other_scores.clone())] {
-        let attempt = radar_store::claim(&pool, id).await.unwrap().unwrap();
+        let attempt = radar_store::claim(&pool, id, STALE).await.unwrap().unwrap();
         assert!(
             radar_store::complete(&pool, id, attempt, &value, "test/v1")
                 .await
@@ -187,7 +291,12 @@ async fn calculation_requires_an_ended_conversation_and_successful_summary(pool:
             .await
             .unwrap();
         sqlx::query("UPDATE summaries SET status=$2, completed_at=CASE WHEN $2='pending' THEN NULL ELSE now() END WHERE conversation_id=$1").bind(id).bind(summary_status).execute(&pool).await.unwrap();
-        assert!(radar_store::claim(&pool, id).await.unwrap().is_none());
+        assert!(
+            radar_store::claim(&pool, id, STALE)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(radar_store::get(&pool, id).await.unwrap().is_none());
     }
     sqlx::query("DELETE FROM summaries WHERE conversation_id=$1")
@@ -195,9 +304,14 @@ async fn calculation_requires_an_ended_conversation_and_successful_summary(pool:
         .execute(&pool)
         .await
         .unwrap();
-    assert!(radar_store::claim(&pool, id).await.unwrap().is_none());
     assert!(
-        radar_store::claim(&pool, Uuid::new_v4())
+        radar_store::claim(&pool, id, STALE)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        radar_store::claim(&pool, Uuid::new_v4(), STALE)
             .await
             .unwrap()
             .is_none()
@@ -210,7 +324,7 @@ async fn forward_migration_preserves_existing_summary_and_is_repeatable(pool: Pg
     let legacy = Migrator {
         migrations: Cow::Owned(
             all.iter()
-                .filter(|m| m.version < 20261112000000)
+                .filter(|m| m.version < 20261113000300)
                 .cloned()
                 .collect(),
         ),
