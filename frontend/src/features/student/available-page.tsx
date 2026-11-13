@@ -1,10 +1,10 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { errorText, useT } from '@/i18n'
+import { errorText, useI18n, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
 import type { Available, Conversation, Page, StudentActivity, TopicProgress } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
@@ -37,6 +37,7 @@ async function hasArchivedConversation(activityId: string): Promise<boolean> {
 /** 學生選擇討論來源：教師活動與題庫分成兩區（F-04.1）。 */
 export function AvailablePage() {
   const t = useT()
+  const { lang } = useI18n()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const { data, error, loading, reload } = useFetch<Available>('/api/catalog')
@@ -79,6 +80,16 @@ export function AvailablePage() {
   const activities = (data?.activities ?? [])
     .map((a): Item => ({ kind: 'activity', key: `a:${a.id}`, activity: a }))
     .filter(matches)
+  // 依教室分組，每組以教室名稱為標題（S-14）；組依教室名稱排序，發布新活動不會讓整組換位置
+  const byClassroom = new Map<string, { id: string; name: string; items: Item[] }>()
+  for (const item of activities) {
+    if (item.kind !== 'activity') continue
+    const { classroom_id: id, classroom_name: name } = item.activity
+    const group = byClassroom.get(id) ?? { id, name, items: [] }
+    group.items.push(item)
+    byClassroom.set(id, group)
+  }
+  const classrooms = [...byClassroom.values()].sort((x, y) => x.name.localeCompare(y.name, lang) || x.id.localeCompare(y.id))
   const topics = (data?.topics ?? [])
     .map(
       (x): Item => ({
@@ -101,14 +112,15 @@ export function AvailablePage() {
     body = (
       <div className="flex flex-col gap-6">
         {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
-        <Section
-          title={t('student.available.activities')}
-          emptyText={needle ? t('student.available.noMatch') : t('student.available.noActivities')}
-          items={activities}
-          startingKey={startingKey}
-          onStart={start}
-          layout="grid"
-        />
+        <Block title={t('student.available.activities')}>
+          {classrooms.length === 0 ? (
+            <EmptyBlock>{needle ? t('student.available.noMatch') : t('student.available.noActivities')}</EmptyBlock>
+          ) : (
+            classrooms.map((c) => (
+              <Section key={c.id} title={c.name} level={3} emptyText="" items={c.items} startingKey={startingKey} onStart={start} layout="grid" />
+            ))
+          )}
+        </Block>
         <Section
           title={t('student.available.topics')}
           emptyText={needle ? t('student.available.noMatch') : t('student.available.noTopics')}
@@ -151,8 +163,35 @@ export function AvailablePage() {
   )
 }
 
+const HEADING = {
+  2: { tag: 'h2', className: 'text-lg leading-7 font-medium' },
+  3: { tag: 'h3', className: 'text-muted-foreground text-sm font-medium' },
+} as const
+
+type BlockProps = {
+  title: string
+  /** 標題層級：獨立區塊為 h2，教室分組巢狀在「教室活動」內為 h3 */
+  level?: 2 | 3
+  children: ReactNode
+}
+
+/** 有標題的區塊。 */
+function Block({ title, level = 2, children }: BlockProps) {
+  const headingId = useId()
+  const { tag: Heading, className } = HEADING[level]
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
+      <Heading id={headingId} className={className}>
+        {title}
+      </Heading>
+      {children}
+    </section>
+  )
+}
+
 type SectionProps = {
   title: string
+  level?: 2 | 3
   emptyText: string
   items: Item[]
   startingKey: string | undefined
@@ -161,14 +200,10 @@ type SectionProps = {
 }
 
 /** 教室活動用兩欄卡片（標題、狀態、說明、主按鈕）；個人練習是單欄卡片（標題、題庫與分類、次按鈕）。 */
-function Section({ title, emptyText, items, startingKey, onStart, layout }: SectionProps) {
+function Section({ title, level, emptyText, items, startingKey, onStart, layout }: SectionProps) {
   const t = useT()
-  const headingId = useId()
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-3">
-      <h2 id={headingId} className="text-lg leading-7 font-medium">
-        {title}
-      </h2>
+    <Block title={title} level={level}>
       {items.length === 0 ? (
         <EmptyBlock>{emptyText}</EmptyBlock>
       ) : (
@@ -201,7 +236,7 @@ function Section({ title, emptyText, items, startingKey, onStart, layout }: Sect
           ))}
         </ul>
       )}
-    </section>
+    </Block>
   )
 }
 

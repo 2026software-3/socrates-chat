@@ -18,6 +18,8 @@ export function makeConversation(overrides: Partial<Conversation> = {}): Convers
     updated_at: '2026-03-05T08:00:00Z',
     ended_at: null,
     is_archived: false,
+    classroom_name: null,
+    classroom_archived: false,
     ...overrides,
   }
 }

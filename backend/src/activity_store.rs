@@ -190,12 +190,18 @@ pub async fn set_status_writable(
 pub async fn list_published_for_student(
     pool: &PgPool,
     user_id: Uuid,
-) -> Result<Vec<Activity>, sqlx::Error> {
-    sqlx::query_as(activity_select!(
-        "WHERE a.status = 'published' AND NOT a.is_archived
+) -> Result<Vec<PublishedActivity>, sqlx::Error> {
+    // 同一個查詢帶出教室名稱：活動都在學生名單內的教室，所以只會有學生自己所在教室的名稱（S-14）
+    sqlx::query_as(concat!(
+        "SELECT a.id, a.title, a.description, ",
+        topic_columns!(),
+        ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at,
+           cl.name AS classroom_name
+         FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id ",
+        topic_join!("a"),
+        "WHERE a.status = 'published' AND NOT a.is_archived AND NOT cl.is_archived
            AND (a.opens_at IS NULL OR statement_timestamp() >= a.opens_at)
            AND (a.closes_at IS NULL OR statement_timestamp() < a.closes_at)
-           AND NOT EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = a.classroom_id AND cl.is_archived)
            AND EXISTS (SELECT 1 FROM enrollments e
                        WHERE e.classroom_id = a.classroom_id AND e.user_id = $1)
          ORDER BY a.created_at DESC, a.id"
@@ -203,6 +209,15 @@ pub async fn list_published_for_student(
     .bind(user_id)
     .fetch_all(pool)
     .await
+}
+
+/// 學生可選的已發布活動，多帶所屬教室名稱（S-14）。
+/// 學生看得到的教室資訊只有名稱，不含教師、教室說明或其他學生。
+#[derive(Debug, FromRow)]
+pub struct PublishedActivity {
+    #[sqlx(flatten)]
+    pub activity: Activity,
+    pub classroom_name: String,
 }
 
 /// 學生在活動中某一題的進度（F-29.6）。
@@ -218,11 +233,13 @@ pub struct TopicProgress {
     pub summary_ready: bool,
 }
 
-/// 學生看到的活動：活動本身加上每題進度與整體完成度。
+/// 學生看到的活動：活動本身加上所屬教室名稱（供前端依教室分組，S-14）、每題進度與整體完成度。
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StudentActivity {
     #[serde(flatten)]
     pub activity: Activity,
+    /// 所屬教室名稱；學生看得到的教室資訊只有名稱
+    pub classroom_name: String,
     /// 依教師排定的順序，每題一筆
     pub topics: Vec<TopicProgress>,
     /// 每一題都有已產生總結的對話才算完成（S-04.7）
@@ -235,7 +252,7 @@ pub async fn list_published_with_progress(
     user_id: Uuid,
 ) -> Result<Vec<StudentActivity>, sqlx::Error> {
     let activities = list_published_for_student(pool, user_id).await?;
-    let ids: Vec<Uuid> = activities.iter().map(|a| a.id).collect();
+    let ids: Vec<Uuid> = activities.iter().map(|a| a.activity.id).collect();
     let rows: Vec<(Uuid, TopicProgress)> = sqlx::query(
         "SELECT at.activity_id, at.topic_id, t.title,
                 conv.id AS conversation_id, conv.status AS conversation_status,
@@ -263,11 +280,14 @@ pub async fn list_published_with_progress(
     }
     Ok(activities
         .into_iter()
-        .map(|activity| {
-            let topics = by_activity.remove(&activity.id).unwrap_or_default();
+        .map(|published| {
+            let topics = by_activity
+                .remove(&published.activity.id)
+                .unwrap_or_default();
             let completed = !topics.is_empty() && topics.iter().all(|t| t.summary_ready);
             StudentActivity {
-                activity,
+                activity: published.activity,
+                classroom_name: published.classroom_name,
                 topics,
                 completed,
             }

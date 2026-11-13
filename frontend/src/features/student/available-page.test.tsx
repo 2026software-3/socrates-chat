@@ -22,6 +22,7 @@ function makeActivity(topics: TopicProgress[], overrides: Partial<StudentActivit
     opens_at: null,
     closes_at: null,
     classroom_id: 'room-a',
+    classroom_name: '合成 A 班',
     status: 'published',
     is_archived: false,
     created_at: '2026-01-01T00:00:00Z',
@@ -72,6 +73,58 @@ describe('student available page', () => {
     expect(within(bank).getByText('Topic One')).toBeInTheDocument()
     expect(within(bank).getByText('題庫・Ethics')).toBeInTheDocument()
     expect(within(bank).queryByText('Activity One')).not.toBeInTheDocument()
+  })
+
+  it('groups activities under the name of each classroom', async () => {
+    mockAvailable({
+      activities: [
+        makeActivity([progress('A')]),
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+        makeActivity([progress('C')], { id: 'act-3', title: 'Activity Three' }),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    const roomA = within(act).getByRole('region', { name: '合成 A 班' })
+    const roomB = within(act).getByRole('region', { name: '合成 B 班' })
+    expect(within(roomA).getByText('Activity One')).toBeInTheDocument()
+    expect(within(roomA).getByText('Activity Three')).toBeInTheDocument()
+    expect(within(roomA).queryByText('Activity Two')).not.toBeInTheDocument()
+    expect(within(roomB).getByText('Activity Two')).toBeInTheDocument()
+    expect(within(roomB).queryByText('Activity One')).not.toBeInTheDocument()
+  })
+
+  it('orders classroom groups by name, not by the newest activity', async () => {
+    mockAvailable({
+      // 後端依建立時間新到舊：B 班的活動最新，但分組仍依教室名稱排序
+      activities: [
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+        makeActivity([progress('A')]),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    const names = within(act)
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent)
+    expect(names).toEqual(['合成 A 班', '合成 B 班'])
+  })
+
+  it('drops a classroom group when search filters out all of its activities', async () => {
+    mockAvailable({
+      activities: [
+        makeActivity([progress('A')]),
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    await userEvent.type(screen.getByRole('searchbox'), 'Two')
+    expect(within(act).queryByRole('region', { name: '合成 A 班' })).not.toBeInTheDocument()
+    expect(within(act).getByRole('region', { name: '合成 B 班' })).toBeInTheDocument()
   })
 
   it('starts a conversation from an activity', async () => {
