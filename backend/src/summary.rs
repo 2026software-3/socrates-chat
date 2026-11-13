@@ -207,7 +207,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             if updated > 0 {
                 state.summary_translation_wake.notify_one();
             }
-            // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
+            // 主張分組以活動內的題目為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
                 crate::claims::assign_group(state, id, activity, &title, claim).await;
             }
