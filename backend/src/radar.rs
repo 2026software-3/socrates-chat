@@ -91,6 +91,20 @@ struct Row {
     rules_version: Option<String>,
     completed_at: Option<DateTime<Utc>>,
     stale: bool,
+    /// 所屬教室已封存：唯讀，不能開始計算（S-14）
+    archived: bool,
+}
+
+/// 給學生看的維度：名稱與白話說明，不含評分準則。
+fn public_dimensions(dimensions: [Dimension; 6]) -> Vec<RadarDimension> {
+    dimensions
+        .into_iter()
+        .map(|dimension| RadarDimension {
+            id: dimension.id,
+            name: dimension.name,
+            description: dimension.description,
+        })
+        .collect()
 }
 
 /// 一次計算需要的輸入：只有這場對話自己的題目文字與題目維度。
@@ -125,22 +139,32 @@ impl Row {
         let ready = status == RadarStatus::Ready;
         RadarView {
             status,
-            retryable: matches!(status, RadarStatus::NotStarted | RadarStatus::Failed)
-                || (status == RadarStatus::Pending && self.stale),
+            // 封存教室的重試一定回 409 classroom_archived，所以不讓畫面顯示重試
+            retryable: !self.archived
+                && (matches!(status, RadarStatus::NotStarted | RadarStatus::Failed)
+                    || (status == RadarStatus::Pending && self.stale)),
             scores: self.scores.filter(|_| ready).map(|scores| scores.0),
-            dimensions: self.dimensions.map(|dimensions| {
-                dimensions
-                    .0
-                    .into_iter()
-                    .map(|dimension| RadarDimension {
-                        id: dimension.id,
-                        name: dimension.name,
-                        description: dimension.description,
-                    })
-                    .collect()
-            }),
+            dimensions: self
+                .dimensions
+                .map(|dimensions| public_dimensions(dimensions.0)),
             rules_version: self.rules_version.filter(|_| ready),
             completed_at: self.completed_at.filter(|_| ready),
+        }
+    }
+
+    /// 剛取得新一代計算時的回應：計算中、不能重試、沒有分數。
+    /// 直接從已讀到的資料組出來，不必在提交後再查一次資料庫。
+    fn pending_view(&self) -> RadarView {
+        RadarView {
+            status: RadarStatus::Pending,
+            retryable: false,
+            scores: None,
+            dimensions: self
+                .dimensions
+                .as_ref()
+                .map(|dimensions| public_dimensions(dimensions.0.clone())),
+            rules_version: None,
+            completed_at: None,
         }
     }
 
@@ -180,8 +204,10 @@ async fn fetch<'e>(
                 t.dimensions, t.dimensions_language,
                 r.status AS radar_status, r.scores, r.rules_version, r.completed_at,
                 COALESCE(r.status = 'pending'
-                         AND r.started_at < now() - make_interval(secs => $2), false) AS stale
+                         AND r.started_at < now() - make_interval(secs => $2), false) AS stale,
+                COALESCE(cl.is_archived, false) AS archived
          FROM conversations c
+         LEFT JOIN classrooms cl ON cl.id = c.classroom_id
          LEFT JOIN summaries s ON s.conversation_id = c.id
          LEFT JOIN topics t ON t.id = c.topic_id
          LEFT JOIN conversation_radar_results r ON r.conversation_id = c.id
@@ -347,15 +373,31 @@ pub(crate) async fn retry(
             "題目的維度尚未完成",
         ));
     }
+    let pending = row.pending_view();
     let job = row.job().ok_or_else(not_retryable)?;
     // 只有失敗、尚未開始，或產生中卻已超過逾時上限才會取得新的一代；
     // 舊的背景任務之後寫入會因代數不符而被忽略
     let attempt = radar_store::claim(&mut *tx, id, stale)
         .await?
         .ok_or_else(not_retryable)?;
-    tx.commit().await?;
-    // 先取回應再啟動背景任務：很快的 AI 不該讓 202 的內容不定地變成 ready
-    let pending = view(&state, id).await?;
-    spawn_claimed(state, id, Claimed { attempt, job });
+    // 提交與執行交給背景任務：請求在提交當下或之後被取消（斷線、請求逾時）時，
+    // 這一代仍會提交並執行，不會停在 pending 卻沒有工作在跑。
+    // 回應用提交前讀到的資料組出，所以很快的 AI 也不會讓 202 的內容變成 ready。
+    let (committed, outcome) = tokio::sync::oneshot::channel();
+    tokio::spawn(diagnostics::inherit_request(
+        async move {
+            match tx.commit().await {
+                Ok(()) => {
+                    let _ = committed.send(Ok(()));
+                    run_claimed(&state, id, attempt, job).await;
+                }
+                Err(e) => {
+                    let _ = committed.send(Err(e));
+                }
+            }
+        }
+        .in_current_span(),
+    ));
+    outcome.await.map_err(|_| ApiError::internal())??;
     Ok((StatusCode::ACCEPTED, Json(pending)))
 }

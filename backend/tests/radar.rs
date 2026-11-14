@@ -380,7 +380,8 @@ async fn only_the_enrolled_owner_can_read_or_trigger_a_radar(pool: PgPool) {
 async fn an_archived_classroom_is_read_only_for_radar_calculation(pool: PgPool) {
     let f = fixture(&pool, vec![Reply(vec![GOOD]), Fail, Fail], true).await;
     end(&f.app, &f.actors.student, &f.conversation).await;
-    radar_until(&f.app, &f.actors.student, &f.conversation, "failed").await;
+    let failed = radar_until(&f.app, &f.actors.student, &f.conversation, "failed").await;
+    assert_eq!(failed["retryable"], true);
     let res = send(
         &f.app,
         json_req(
@@ -395,8 +396,111 @@ async fn an_archived_classroom_is_read_only_for_radar_calculation(pool: PgPool) 
 
     let res = retry(&f.app, Some(&f.actors.student), &f.conversation).await;
     assert_json_error(res, StatusCode::CONFLICT, "classroom_archived").await;
-    // 仍可查看狀態，且沒有呼叫 AI
+    // 仍可查看狀態，但不再標示可重試（畫面依這個欄位決定是否顯示重試），且沒有呼叫 AI
     let still = radar(&f.app, &f.actors.student, &f.conversation).await;
     assert_eq!(still["status"], "failed");
+    assert_eq!(still["retryable"], false);
     assert_eq!(f.ai.request_count(), 3);
+}
+
+#[sqlx::test]
+async fn an_archived_classroom_does_not_offer_to_start_a_missing_radar(pool: PgPool) {
+    let f = fixture(&pool, vec![Reply(vec![GOOD])], false).await;
+    end(&f.app, &f.actors.student, &f.conversation).await;
+    let_background_settle().await;
+    seed_dimensions(&pool, &f.topic).await;
+    let startable = radar(&f.app, &f.actors.student, &f.conversation).await;
+    assert_eq!(startable["status"], "not_started");
+    assert_eq!(startable["retryable"], true);
+
+    let res = send(
+        &f.app,
+        json_req(
+            "PATCH",
+            &format!("/api/classrooms/{}", f.actors.classroom),
+            Some(&f.actors.teacher),
+            Some(json!({"is_archived": true})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let archived = radar(&f.app, &f.actors.student, &f.conversation).await;
+    assert_eq!(archived["status"], "not_started");
+    assert_eq!(archived["retryable"], false);
+    let res = retry(&f.app, Some(&f.actors.student), &f.conversation).await;
+    assert_json_error(res, StatusCode::CONFLICT, "classroom_archived").await;
+}
+
+#[sqlx::test]
+async fn a_retry_cancelled_once_its_attempt_is_committed_still_runs(pool: PgPool) {
+    // 評分兩次都失敗；之後重試的那一代會成功
+    let f = fixture(
+        &pool,
+        vec![Reply(vec![GOOD]), Fail, Fail, Reply(vec![SCORES])],
+        true,
+    )
+    .await;
+    end(&f.app, &f.actors.student, &f.conversation).await;
+    radar_until(&f.app, &f.actors.student, &f.conversation, "failed").await;
+
+    // 測試用的閘門：新一代的提交要等到測試放開 advisory lock 才能完成。
+    // 這樣可以確定請求被丟掉時，正卡在提交這一步
+    const GATE: i64 = 424_242;
+    sqlx::raw_sql(
+        "CREATE FUNCTION wait_radar_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_advisory_xact_lock(424242); RETURN NEW; END $$;
+         CREATE CONSTRAINT TRIGGER wait_radar_gate AFTER UPDATE ON conversation_radar_results
+         DEFERRABLE INITIALLY DEFERRED
+         FOR EACH ROW WHEN (NEW.status = 'pending') EXECUTE FUNCTION wait_radar_gate();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut gate = pool.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(GATE)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+
+    let request = send(
+        &f.app,
+        json_req(
+            "POST",
+            &format!("{}/retry", radar_path(&f.conversation)),
+            Some(&f.actors.student),
+            None,
+        ),
+    );
+    let blocked_at_commit = async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if waiting > 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    // 提交卡住時丟掉請求，模擬用戶端斷線或請求逾時（hyper 與逾時中介層也是直接丟掉 future）
+    tokio::select! {
+        biased;
+        () = blocked_at_commit => {}
+        res = request => panic!("the retry finished before its commit: {}", res.status()),
+    }
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(GATE)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    drop(gate);
+
+    // 這一代仍要執行完，而不是停在 pending 且不能重試
+    let ready = radar_until(&f.app, &f.actors.student, &f.conversation, "ready").await;
+    assert_eq!(ready["scores"]["d1"], 5);
+    assert_eq!(f.ai.request_count(), 4);
 }

@@ -116,7 +116,7 @@
   - 固定學派的 `framework`（主要學派）與 `framework_scores`（6 維分數）已取消（S-04.6）。題目綁定的維度由教師的 `GET`／`PATCH /api/topics/{id}/dimensions`（F-03.4）管理，單場分數見下一點。
 - 單場雷達圖（F-24.1，S-04.3）：`GET /api/conversations/{id}/radar` 回 `{ status, retryable, scores, dimensions, rules_version, completed_at }`，只有對話擁有者（名單內學生）可讀，授權規則與總結相同。總結成功後後端自動開始計算，`pending` 時請輪詢；計算失敗不影響總結。
   - `status`：`summary_not_ready`（對話未結束或總結尚未成功）、`unavailable`（題目已不存在）、`dimensions_pending`（題目的六個維度尚未完成）、`not_started`（可以計算但尚未開始，例如維度在總結之後才完成）、`pending`、`failed`、`ready`。
-  - `retryable`：現在能否呼叫重試。`failed`、`not_started`，以及 `pending` 超過逾時上限（例如服務重啟）時為 `true`；前端依這個欄位決定是否顯示重試，不自行判斷。
+  - `retryable`：現在能否呼叫重試。`failed`、`not_started`，以及 `pending` 超過逾時上限（例如服務重啟）時為 `true`；教室已封存時一律為 `false`（重試會回 `409 classroom_archived`）。前端依這個欄位決定是否顯示重試，不自行判斷。
   - `scores`：只有 `ready` 時有值，以維度識別碼 `d1`～`d6` 為 key、0 到 5 的整數，六個齊全；0 代表證據不足，是有效分數。其他狀態為 `null`，不會有部分分數。
   - `dimensions`：題目的六個維度 `{ id, name, description }`，`name` 與 `description` 各含 `zh_tw`、`en`、`es`，前端依介面語言顯示；不含評分準則。題目沒有維度時為 `null`。
   - `rules_version`（評分提示版本）與 `completed_at` 只有 `ready` 時有值。
