@@ -371,8 +371,7 @@ pub(crate) async fn transcribe(
     headers: HeaderMap,
     body: AudioBody,
 ) -> Result<Json<Transcript>, ApiError> {
-    let language = iso_language(&q.language)
-        .ok_or(ApiError::bad_request("invalid_language", "不支援的語言"))?;
+    let language = iso_language(&q.language).ok_or(ApiError::invalid_language())?;
     let mime = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -425,8 +424,7 @@ pub(crate) async fn speech(
     State(state): State<AppState>,
     Json(b): Json<SpeechBody>,
 ) -> Result<Response, ApiError> {
-    let language = iso_language(&b.language)
-        .ok_or(ApiError::bad_request("invalid_language", "不支援的語言"))?;
+    let language = iso_language(&b.language).ok_or(ApiError::invalid_language())?;
     let text = b.text.trim();
     if text.is_empty() || text.chars().count() > MAX_SPEECH_CHARS {
         return Err(ApiError::bad_request("invalid_text", "文字長度不符"));

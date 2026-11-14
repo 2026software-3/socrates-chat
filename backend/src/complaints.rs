@@ -78,7 +78,7 @@ pub(crate) async fn submit(
     // 只有學生與教師：尚未開通的帳號與純管理者都不能送
     if !cu.roles.student && !cu.roles.teacher {
         return Err(if cu.roles.admin {
-            ApiError::forbidden("forbidden", "沒有權限")
+            ApiError::no_permission()
         } else {
             ApiError::forbidden("not_enrolled", "尚未開通")
         });

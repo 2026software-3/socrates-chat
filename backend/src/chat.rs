@@ -384,7 +384,7 @@ pub(crate) async fn send_message(
 ) -> Result<EventStream, ApiError> {
     let content = b.content.trim();
     if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
-        return Err(ApiError::bad_request("invalid_message", "訊息長度不符"));
+        return Err(ApiError::invalid_message());
     }
     let source = match b.source.as_deref() {
         None | Some("text") => "text",
@@ -428,7 +428,7 @@ pub(crate) async fn submit_message(
     let mut tx = state.pool.begin().await?;
     let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
     if conversation.status != "active" {
-        return Err(ApiError::conflict("conversation_ended", "對話已結束"));
+        return Err(ApiError::conversation_ended());
     }
     let claimed = if answered_only {
         claim_answered_turn(&mut tx, state, id, content, source).await?
@@ -442,7 +442,7 @@ pub(crate) async fn submit_message(
         auto_ended,
     }) = claimed
     else {
-        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+        return Err(ApiError::reply_in_progress());
     };
     tx.commit().await?;
     // 第一個事件是保存好的學生訊息；之後才是 AI 回覆的 delta／done／error
@@ -591,7 +591,7 @@ pub(crate) async fn rejoin_message(
     let mut tx = state.pool.begin().await?;
     let mut conversation = crate::classrooms::writable_conversation(&mut tx, user, id).await?;
     if conversation.status != "active" {
-        return Err(ApiError::conflict("conversation_ended", "對話已結束"));
+        return Err(ApiError::conversation_ended());
     }
     let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
         "UPDATE conversations SET generating_since = now()
@@ -604,7 +604,7 @@ pub(crate) async fn rejoin_message(
     .fetch_optional(&mut *tx)
     .await?;
     let Some((turn, stage)) = turn else {
-        return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+        return Err(ApiError::reply_in_progress());
     };
     let last: Option<(String, Option<i32>)> = sqlx::query_as(
         "SELECT role, heard_chars FROM messages

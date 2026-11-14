@@ -34,7 +34,7 @@ impl Pagination {
         let Some(raw) = &self.cursor else {
             return Ok(None);
         };
-        let invalid = || ApiError::bad_request("invalid_cursor", "分頁游標不正確");
+        let invalid = || ApiError::invalid_cursor();
         if raw.len() > 4096 {
             return Err(invalid());
         }
@@ -79,7 +79,7 @@ pub fn search_term(raw: Option<&str>) -> Result<Option<&str>, ApiError> {
     match raw.map(str::trim) {
         None => Ok(None),
         Some(q) if q.is_empty() || q.chars().count() > MAX_SEARCH_CHARS => {
-            Err(ApiError::bad_request("invalid_filter", "篩選條件不正確"))
+            Err(ApiError::invalid_filter())
         }
         Some(q) => Ok(Some(q)),
     }

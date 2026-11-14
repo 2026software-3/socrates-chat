@@ -300,7 +300,7 @@ pub(crate) async fn update_classroom(
     if was_archived
         && (changes.name.is_some() || changes.year_label.is_some() || changes.description.is_some())
     {
-        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+        return Err(ApiError::classroom_archived());
     }
     let updated =
         classroom_store::update_visible(&mut *tx, id, cu.user.id, cu.roles.admin, changes)
@@ -384,7 +384,7 @@ pub(crate) async fn ensure_writable<'e>(
             .fetch_one(executor)
             .await?;
     if archived {
-        Err(ApiError::conflict("classroom_archived", "教室已封存"))
+        Err(ApiError::classroom_archived())
     } else {
         Ok(())
     }

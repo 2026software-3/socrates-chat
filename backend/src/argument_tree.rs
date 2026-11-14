@@ -76,7 +76,7 @@ async fn check_owner(
     id: Uuid,
 ) -> Result<crate::chat::Conversation, ApiError> {
     if cu.roles.admin {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let conversation = owned_conversation(state, cu.user.id, id).await?;
     if conversation.status != "ended" {

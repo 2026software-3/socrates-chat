@@ -53,6 +53,48 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, code, message)
     }
 
+    // 以下是多個地方共用的錯誤：code 與訊息只在這裡定義一次。
+
+    pub const fn no_permission() -> Self {
+        Self::forbidden("forbidden", "沒有權限")
+    }
+
+    pub const fn reply_in_progress() -> Self {
+        Self::conflict("reply_in_progress", "AI 正在回覆中")
+    }
+
+    pub const fn conversation_ended() -> Self {
+        Self::conflict("conversation_ended", "對話已結束")
+    }
+
+    pub const fn classroom_archived() -> Self {
+        Self::conflict("classroom_archived", "教室已封存")
+    }
+
+    pub const fn invalid_title() -> Self {
+        Self::bad_request("invalid_title", "標題不可為空")
+    }
+
+    pub const fn invalid_cursor() -> Self {
+        Self::bad_request("invalid_cursor", "分頁游標不正確")
+    }
+
+    pub const fn invalid_message() -> Self {
+        Self::bad_request("invalid_message", "訊息長度不符")
+    }
+
+    pub const fn invalid_language() -> Self {
+        Self::bad_request("invalid_language", "不支援的語言")
+    }
+
+    pub const fn invalid_filter() -> Self {
+        Self::bad_request("invalid_filter", "篩選條件不正確")
+    }
+
+    pub const fn invalid_email() -> Self {
+        Self::bad_request("invalid_email", "電子郵件格式不正確")
+    }
+
     pub const fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
