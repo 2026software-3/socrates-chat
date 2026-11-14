@@ -44,6 +44,7 @@ async fn accounts_without_a_role_are_403(pool: PgPool) {
     let a = seed_actors(&app).await;
     let (status, _) = rename(&app, Some(&a.outsider), json!({"display_name": "小明"})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // 清除名稱（null）同樣是修改顯示名稱，也要擋下
     let (status, body) = rename(&app, Some(&a.outsider), json!({"display_name": null})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "forbidden");
