@@ -19,8 +19,6 @@ fn summary(claim: &str, reasons: &str) -> String {
 async fn wait_for_requests(ai: &Arc<FakeAi>, n: usize) {
     for _ in 0..200 {
         if ai.request_count() >= n {
-            // 再給背景任務一點時間把結果寫進資料庫
-            tokio::time::sleep(Duration::from_millis(100)).await;
             return;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -28,7 +26,27 @@ async fn wait_for_requests(ai: &Arc<FakeAi>, n: usize) {
     panic!("AI was not called {n} times");
 }
 
-/// 學生從活動開始並結束一場對話，等 `n` 次 AI 呼叫都完成。
+/// 等背景的歸群把結果寫進資料庫。AI 收到歸群請求之後，後端還要建立群組、再把它寫到總結上；
+/// 只等 AI 被呼叫（或再睡一段固定時間）的話，負載高時會在寫入前就讀到還沒有群組的班級分布。
+async fn wait_for_group(pool: &PgPool, conversation: &str) {
+    let id: uuid::Uuid = conversation.parse().unwrap();
+    for _ in 0..400 {
+        let grouped: Option<bool> = sqlx::query_scalar(
+            "SELECT claim_group_id IS NOT NULL FROM summaries WHERE conversation_id = $1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if grouped == Some(true) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the claim was never assigned to a group");
+}
+
+/// 學生從活動開始並結束一場對話，等 `n` 次 AI 呼叫（總結、歸群）都發出，且歸群結果已寫入。
 async fn finish(
     app: &Router,
     cookie: &str,
@@ -37,6 +55,32 @@ async fn finish(
     pool: &PgPool,
     n: usize,
 ) {
+    let conv = end_conversation(app, cookie, activity, ai, pool, n).await;
+    wait_for_group(pool, &conv).await;
+}
+
+/// 與 `finish` 相同，但這場的歸群請求會失敗（腳本是 `Fail`）：失敗後後端不再寫入任何東西，
+/// 所以等到 AI 呼叫發出就夠了，這場對話維持沒有群組。
+async fn finish_ungrouped(
+    app: &Router,
+    cookie: &str,
+    activity: &str,
+    ai: &Arc<FakeAi>,
+    pool: &PgPool,
+    n: usize,
+) {
+    end_conversation(app, cookie, activity, ai, pool, n).await;
+}
+
+/// 結束一場從活動開始的對話，等 `n` 次 AI 呼叫都發出；回傳對話 ID。
+async fn end_conversation(
+    app: &Router,
+    cookie: &str,
+    activity: &str,
+    ai: &Arc<FakeAi>,
+    pool: &PgPool,
+    n: usize,
+) -> String {
     let conv = start_from_activity(app, cookie, activity).await;
     seed_student_message(pool, &conv, "我的想法").await;
     send(
@@ -50,6 +94,7 @@ async fn finish(
     )
     .await;
     wait_for_requests(ai, n).await;
+    conv
 }
 
 async fn class(app: &Router, cookie: &str) -> Value {
@@ -134,7 +179,7 @@ async fn failed_grouping_leaves_the_claim_ungrouped_until_regroup(pool: PgPool) 
     let app = test_app_with_ai(pool.clone(), ai.clone());
     let a = seed_actors(&app).await;
     let act = published_activity_with_topic(&app, &a, "電車難題").await;
-    finish(&app, &a.student, &act, &ai, &pool, 2).await;
+    finish_ungrouped(&app, &a.student, &act, &ai, &pool, 2).await;
 
     // 總結不受影響，只是這場暫時沒有群組
     let d = class(&app, &a.teacher).await;
@@ -393,7 +438,7 @@ async fn regroup_uses_the_teachers_language_not_the_first_conversations(pool: Pg
     let a = seed_actors(&app).await;
     let act = published_activity_with_topic(&app, &a, "電車難題").await;
     // 學生的對話是繁體中文；教師的介面語言是英文
-    finish(&app, &a.student, &act, &ai, &pool, 2).await;
+    finish_ungrouped(&app, &a.student, &act, &ai, &pool, 2).await;
     let res = send(
         &app,
         json_req(
