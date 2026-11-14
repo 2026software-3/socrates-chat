@@ -93,8 +93,7 @@ pub(crate) async fn add_teacher(
     State(state): State<AppState>,
     Json(body): Json<EmailBody>,
 ) -> Result<StatusCode, ApiError> {
-    let email = normalize_email(&body.email)
-        .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))?;
+    let email = normalize_email(&body.email).ok_or(ApiError::invalid_email())?;
     let mut tx = state.pool.begin().await?;
     let r = sqlx::query("INSERT INTO teachers (email) VALUES ($1) ON CONFLICT DO NOTHING")
         .bind(&email)

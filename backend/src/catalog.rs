@@ -139,7 +139,7 @@ async fn insert_topic(
     b: NewTopic,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
     if !valid_text(&b.title) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
     let t = sqlx::query_as(
         "INSERT INTO topics (title, description, category) VALUES ($1, $2, $3)
@@ -179,7 +179,7 @@ pub(crate) async fn update_topic_for_teacher(
 
 async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<Topic>, ApiError> {
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
@@ -451,7 +451,7 @@ pub(crate) async fn create_activity(
     Json(b): Json<NewActivity>,
 ) -> Result<(StatusCode, Json<Activity>), ApiError> {
     if !valid_text(&b.title) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
     let topic_ids = b
         .topic_ids
@@ -498,7 +498,7 @@ pub(crate) async fn update_activity(
     Json(p): Json<ActivityPatch>,
 ) -> Result<Json<Activity>, ApiError> {
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
     // 活動必須有題目：不能清除，若有傳入必須包含至少一個存在且不重複的題目（最多 5 個）
     // 舊欄位 `topic_id` 只換掉第一個題目，其餘題目與順序不變。
@@ -691,7 +691,7 @@ async fn set_archived(
     .await?;
     let (was_archived, classroom_archived) = current.ok_or_else(ApiError::not_found)?;
     if classroom_archived {
-        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+        return Err(ApiError::classroom_archived());
     }
     let updated = activity_store::set_archived(&mut *tx, id, archived).await?;
     if was_archived != archived {

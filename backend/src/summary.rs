@@ -310,7 +310,7 @@ pub(crate) async fn end(
         // 沒有結束成功：若對話其實已被結束（競態）就回傳目前狀態，否則是 AI 還在回覆
         let now = owned_conversation(&state, cu.user.id, id).await?;
         if now.status == "active" {
-            return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+            return Err(ApiError::reply_in_progress());
         }
         return Ok((
             StatusCode::OK,
@@ -449,7 +449,7 @@ pub(crate) async fn translate(
     Path(id): Path<Uuid>,
 ) -> Result<Json<SummaryTranslation>, ApiError> {
     if cu.roles.admin {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let source: Option<(String, String, String, Uuid)> = sqlx::query_as(
         "SELECT s.stance, s.reasons, c.language, cl.id
@@ -687,7 +687,7 @@ fn fingerprint(
 
 impl SummaryQuery {
     fn filters(&self, classroom: Option<Uuid>) -> Result<Filters<'_>, ApiError> {
-        let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
+        let invalid = || ApiError::invalid_filter();
         let student = self
             .student
             .as_deref()
@@ -755,7 +755,7 @@ pub(crate) async fn list(
     let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor(CURSOR_KIND)?;
     // 游標只對產生它時的篩選條件有效；換條件要從第一頁開始
     if cursor.as_ref().is_some_and(|c| c.2 != fingerprint) {
-        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+        return Err(ApiError::invalid_cursor());
     }
     let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
     // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
