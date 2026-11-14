@@ -112,7 +112,7 @@ async fn a_verified_google_email_is_attached_and_google_login_returns_to_the_sam
     let id = me(&app, &cookie).await["id"].clone();
     let state = start(&app, &cookie).await;
     let res = finish(&app, Some(&cookie), "ok:sub-link:Mine@Example.com", &state).await;
-    assert_eq!(location(&res), format!("{APP_URL}/dashboard?link=ok"));
+    assert_eq!(location(&res), format!("{APP_URL}/account?link=ok"));
     let after = me(&app, &cookie).await;
     assert_eq!(after["email"], "mine@example.com");
     let google = login_as(&app, "sub-link", "mine@example.com").await;
@@ -134,7 +134,7 @@ async fn an_unverified_google_email_is_not_attached(pool: PgPool) {
     .await;
     assert_eq!(
         location(&res),
-        format!("{APP_URL}/dashboard?link_error=email_not_verified")
+        format!("{APP_URL}/account?link_error=email_not_verified")
     );
     assert_eq!(me(&app, &cookie).await["email"], json!(null));
 }
@@ -154,7 +154,7 @@ async fn an_email_that_belongs_to_another_account_is_refused(pool: PgPool) {
         let res = finish(&app, Some(&cookie), &format!("ok:sub-t:{taken}"), &state).await;
         assert_eq!(
             location(&res),
-            format!("{APP_URL}/dashboard?link_error=email_in_use"),
+            format!("{APP_URL}/account?link_error=email_in_use"),
             "{taken}"
         );
     }
@@ -178,7 +178,7 @@ async fn a_google_account_already_bound_elsewhere_is_refused(pool: PgPool) {
     .await;
     assert_eq!(
         location(&res),
-        format!("{APP_URL}/dashboard?link_error=email_in_use")
+        format!("{APP_URL}/account?link_error=email_in_use")
     );
 }
 
@@ -192,7 +192,7 @@ async fn the_callback_must_come_from_the_same_signed_in_student(pool: PgPool) {
         let res = finish(&app, other, "ok:sub-y:y@example.com", &state).await;
         assert_eq!(
             location(&res),
-            format!("{APP_URL}/dashboard?link_error=invalid_state")
+            format!("{APP_URL}/account?link_error=invalid_state")
         );
     }
     assert_eq!(me(&app, &cookie).await["email"], json!(null));
@@ -218,7 +218,7 @@ async fn linking_again_replaces_the_email_and_the_old_google_account_no_longer_s
     finish(&app, Some(&cookie), "ok:sub-old:old@example.com", &state).await;
     let state = start(&app, &cookie).await;
     let res = finish(&app, Some(&cookie), "ok:sub-new:new@example.com", &state).await;
-    assert!(location(&res).ends_with("/dashboard?link=ok"));
+    assert!(location(&res).ends_with("/account?link=ok"));
     assert_eq!(me(&app, &cookie).await["email"], "new@example.com");
     let old = login_as(&app, "sub-old", "old@example.com").await;
     assert_ne!(me(&app, &old).await["id"], id);

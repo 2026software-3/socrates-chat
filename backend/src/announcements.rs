@@ -72,82 +72,82 @@ pub fn routes() -> Router<AppState> {
 
 /// 維護模式旗標的記憶體快取。資料庫是唯一的真相：快取過期就重讀，讀取失敗時沿用上一次的值。
 #[derive(Default)]
-struct MaintenanceCache {
-    on: bool,
-    checked: Option<Instant>,
-    generation: u64,
+pub struct MaintenanceFlag {
+    state: Mutex<FlagState>,
 }
 
 #[derive(Default)]
-pub struct MaintenanceFlag {
-    cache: Mutex<MaintenanceCache>,
+struct FlagState {
+    on: bool,
+    checked: Option<Instant>,
+    /// 每次 `set()` 加一。讀取開始前記下版本，回來時版本變了代表期間有較新的寫入，丟棄這次讀到的舊值。
+    version: u64,
 }
 
 impl MaintenanceFlag {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FlagState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(crate) async fn is_on(&self, pool: &PgPool) -> bool {
-        if let Some(generation) = self.begin_refresh() {
-            // 先記下檢查時間：資料庫讀不到時也只每 MAINTENANCE_CACHE 才再試一次，
-            // 而且最多等 1 秒，不讓資料庫故障拖慢每個請求；讀不到就沿用上一個值。
-            let read = tokio::time::timeout(
+        self.is_on_with(|| async {
+            // 最多等 1 秒，不讓資料庫故障拖慢每個請求
+            match tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 sqlx::query_scalar::<_, bool>("SELECT enabled FROM maintenance_mode")
                     .fetch_one(pool),
             )
-            .await;
-            match read {
-                Ok(Ok(v)) => self.apply_refresh(generation, v),
+            .await
+            {
+                Ok(Ok(v)) => Some(v),
                 Ok(Err(e)) => {
                     tracing::warn!(class = %crate::error::db_error_class(&e), "failed to read maintenance flag");
+                    None
                 }
-                Err(_) => tracing::warn!("timed out reading maintenance flag"),
+                Err(_) => {
+                    tracing::warn!("timed out reading maintenance flag");
+                    None
+                }
             }
-        }
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).on
+        })
+        .await
     }
 
-    fn begin_refresh(&self) -> Option<u64> {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if cache
-            .checked
-            .is_some_and(|at| at.elapsed() < MAINTENANCE_CACHE)
+    /// `read` 回 `None` 表示讀取失敗，沿用上一個值。
+    async fn is_on_with<F, Fut>(&self, read: F) -> bool
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Option<bool>>,
+    {
+        let started_version = {
+            let mut st = self.lock();
+            if st
+                .checked
+                .is_some_and(|at| at.elapsed() < MAINTENANCE_CACHE)
+            {
+                return st.on;
+            }
+            // 先記下檢查時間：資料庫讀不到時也只每 MAINTENANCE_CACHE 才再試一次；讀不到就沿用上一個值
+            st.checked = Some(Instant::now());
+            st.version
+        };
+        let value = read().await;
+        let mut st = self.lock();
+        if let Some(v) = value
+            && st.version == started_version
         {
-            return None;
+            st.on = v;
+            st.checked = Some(Instant::now());
+            st.version += 1;
         }
-        // Mark before querying so concurrent requests do not all refresh at once.
-        cache.checked = Some(Instant::now());
-        Some(cache.generation)
-    }
-
-    fn apply_refresh(&self, generation: u64, value: bool) {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.generation == generation {
-            cache.on = value;
-            cache.checked = Some(Instant::now());
-        }
+        st.on
     }
 
     fn set(&self, value: bool) {
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.generation = cache.generation.wrapping_add(1);
-        cache.on = value;
-        cache.checked = Some(Instant::now());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_older_refresh_cannot_overwrite_a_newer_set() {
-        let flag = MaintenanceFlag::default();
-        let generation = flag.begin_refresh().unwrap();
-
-        flag.set(true);
-        flag.apply_refresh(generation, false);
-
-        let cache = flag.cache.lock().unwrap();
-        assert!(cache.on);
+        let mut st = self.lock();
+        st.on = value;
+        st.checked = Some(Instant::now());
+        st.version += 1;
     }
 }
 
@@ -256,10 +256,11 @@ fn invalid_body(_: JsonRejection) -> ApiError {
 
 fn clean_text(raw: &str) -> Result<String, ApiError> {
     let text = raw.trim();
-    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS {
+    // NUL 字元存不進 Postgres 的 text 欄位，寫入會失敗變成 500，所以在這裡就拒絕
+    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS || text.contains('\0') {
         return Err(ApiError::bad_request(
             "invalid_text",
-            "公告內文不得為空，最多 1000 字",
+            "公告內文不得為空、不可含控制字元 NUL，且最多 1000 字",
         ));
     }
     Ok(text.to_string())
@@ -717,4 +718,31 @@ pub(crate) async fn set_maintenance(
         audit(&state.pool, cu.user.id, action, "maintenance").await?;
     }
     Ok(Json(MaintenanceState { enabled: b.enabled }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 舊讀取（開始於 `set(true)` 之前）晚於 `set` 回來時，不得把旗標蓋回 false。
+    #[tokio::test]
+    async fn stale_read_does_not_overwrite_newer_set() {
+        let flag = MaintenanceFlag::default();
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let read = flag.is_on_with(|| async {
+            started_tx.send(()).unwrap();
+            gate.await.unwrap();
+            Some(false) // 讀取當時資料庫還是 false
+        });
+        let interleave = async {
+            started_rx.await.unwrap(); // 讀取已開始
+            flag.set(true); // 管理者開啟維護模式
+            release.send(()).unwrap(); // 舊讀取才回來
+        };
+        let (_, ()) = tokio::join!(read, interleave);
+
+        assert!(flag.is_on_with(|| async { None }).await);
+    }
 }

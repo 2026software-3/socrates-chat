@@ -226,6 +226,8 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       setNotice((n) => (aboutPlayback(n) ? n : undefined))
       const rec: Recognizer = createRecognizer(pickRecognitionSource(), speechLang(lang), lang, {
         onText: (text, final) => {
+          // 忽略已停止或已被取代的辨識器所回傳的結果
+          if (recRef.current !== rec) return
           const first = spokenRef.current === ''
           spokenRef.current = text
           setNotice((n) => (n === 'bargeIn' ? undefined : n))
@@ -404,6 +406,15 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     setNotice(undefined)
   }, [setMode, setPhase, stopRecognizer])
 
+  /** 使用者手動編輯輸入框時，停止語音輸入。 */
+  const stopDictationForEdit = useCallback(() => {
+    // 只有正在進行語音輸入時才處理
+    if (modeRef.current !== 'dictate' || phaseRef.current !== 'listening') return
+
+    stopRecognizer()
+    setPhase('idle')
+  }, [setPhase, stopRecognizer])
+
   // 離開頁面或對話結束時關掉收音與播放
   useEffect(
     () => () => {
@@ -428,6 +439,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     bargeIn,
     /** 麥克風前處理與開口偵測的狀態，供疑難排解。 */
     audioStatus,
+    stopDictationForEdit,
     /** 語音輸入：開始收音（再按一次停止）；播放中按下會立即停止播放並開始收音（S-05.2 打斷）。 */
     toggleDictate() {
       if (mode === 'dictate' && phase === 'listening') {

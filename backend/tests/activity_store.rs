@@ -113,7 +113,10 @@ async fn a_student_only_gets_published_activities_of_classrooms_they_are_on(pool
     let seen = activity_store::list_published_for_student(&pool, student)
         .await
         .unwrap();
-    assert_eq!(seen.iter().map(|x| x.id).collect::<Vec<_>>(), [in_a.id]);
+    assert_eq!(
+        seen.iter().map(|x| x.activity.id).collect::<Vec<_>>(),
+        [in_a.id]
+    );
     assert!(
         activity_store::find_startable(&mut conn, in_b.id, student)
             .await

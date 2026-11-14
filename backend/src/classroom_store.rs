@@ -143,3 +143,37 @@ pub async fn update_visible<'e>(
     .await
     .map_err(Into::into)
 }
+
+/// 教室學生統計：排除停用帳號與已移出名單的學生。
+#[derive(sqlx::FromRow)]
+pub struct StudentStatistics {
+    pub student_count: i64,
+    pub joined_count: i64,
+}
+
+pub async fn student_statistics(
+    pool: &sqlx::PgPool,
+    classroom_id: uuid::Uuid,
+) -> Result<StudentStatistics, sqlx::Error> {
+    sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*) AS student_count,
+            COUNT(*) FILTER (
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM audit_logs a
+                    WHERE a.actor_id = u.id
+                      AND a.action = 'login'
+                )
+            ) AS joined_count
+        FROM enrollments e
+        JOIN users u ON u.id = e.user_id
+        WHERE e.classroom_id = $1
+          AND u.disabled_at IS NULL
+        "#,
+    )
+    .bind(classroom_id)
+    .fetch_one(pool)
+    .await
+}

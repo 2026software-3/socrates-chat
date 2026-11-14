@@ -125,11 +125,13 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     responses((status = 201, description = "已建立", body = Topic))
 )]
 pub(crate) async fn create_topic_for_teacher(
-    _: RequireTeacher,
+    RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Json(b): Json<NewTopic>,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
-    insert_topic(&state, b).await
+    let created = insert_topic(&state, b).await?;
+    crate::topic_dimensions::spawn(&state, created.1.0.id, &user.user.language);
+    Ok(created)
 }
 
 async fn insert_topic(
@@ -161,12 +163,18 @@ async fn insert_topic(
     responses((status = 200, description = "更新後的題目", body = Topic))
 )]
 pub(crate) async fn update_topic_for_teacher(
-    _: RequireTeacher,
+    RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(p): Json<TopicPatch>,
 ) -> Result<Json<Topic>, ApiError> {
-    patch_topic(&state, id, p).await
+    let text_changed = p.title.is_some() || p.description.is_some();
+    let updated = patch_topic(&state, id, p).await?;
+    if text_changed {
+        // 題目文字改了而維度還沒鎖定時，舊維度已被清掉，重新產生。
+        crate::topic_dimensions::spawn(&state, id, &user.user.language);
+    }
+    Ok(updated)
 }
 
 async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<Topic>, ApiError> {
@@ -177,6 +185,19 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
                 category = CASE WHEN $4 THEN $5::text ELSE category END,
                 is_active = COALESCE($6, is_active),
+                -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
+                dimensions = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions END,
+                dimensions_prompt_version = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions_prompt_version END,
+                dimensions_language = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions_language END,
+                dimensions_pending_languages = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
+                    THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
          RETURNING id, title, description, category, is_active",
@@ -194,7 +215,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
 }
 
 /// 內建題目的固定 ID：重複啟動時不會重複建立，教師改動或停用後也不會被覆寫。
-const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
+pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
 
 /// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -779,7 +800,7 @@ pub(crate) async fn delete_activity(
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Available {
     /// 教師指定的活動：已發布，且在學生所屬教室的名單內
-    activities: Vec<Activity>,
+    activities: Vec<activity_store::StudentActivity>,
     /// 題目庫中已啟用的題目
     topics: Vec<Topic>,
 }
@@ -796,7 +817,7 @@ pub(crate) async fn available(
     State(state): State<AppState>,
 ) -> Result<Json<Available>, ApiError> {
     let (activities, topics) = tokio::try_join!(
-        activity_store::list_published_for_student(&state.pool, cu.user.id),
+        activity_store::list_published_with_progress(&state.pool, cu.user.id),
         sqlx::query_as(
             "SELECT id, title, description, category, is_active FROM topics
              WHERE is_active ORDER BY created_at, id",

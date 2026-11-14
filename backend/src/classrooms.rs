@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -23,6 +23,29 @@ use crate::{
 const MAX_CLASSROOM_NAME_CHARS: usize = 255;
 const MAX_CLASSROOM_YEAR_LABEL_CHARS: usize = 100;
 const MAX_CLASSROOM_DESCRIPTION_CHARS: usize = 2_000;
+
+/// 教室與學生人數統計；建立、查看、編輯教室都回這個形狀。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ClassroomDetail {
+    #[serde(flatten)]
+    classroom: Classroom,
+    student_count: i64,
+    joined_count: i64,
+    never_logged_in_count: i64,
+}
+
+async fn with_statistics(
+    state: &AppState,
+    classroom: Classroom,
+) -> Result<ClassroomDetail, ApiError> {
+    let stats = classroom_store::student_statistics(&state.pool, classroom.id).await?;
+    Ok(ClassroomDetail {
+        classroom,
+        student_count: stats.student_count,
+        joined_count: stats.joined_count,
+        never_logged_in_count: stats.student_count - stats.joined_count,
+    })
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -163,13 +186,13 @@ pub(crate) async fn list_classrooms(
     tag = "classrooms",
     summary = "建立教室",
     request_body = NewClassroom,
-    responses((status = 201, description = "已建立", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 201, description = "已建立", body = ClassroomDetail), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn create_classroom(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Json(body): Json<NewClassroom>,
-) -> Result<(StatusCode, Json<Classroom>), ApiError> {
+) -> Result<(StatusCode, Json<ClassroomDetail>), ApiError> {
     if !cu.roles.teacher {
         return Err(ApiError::forbidden("forbidden", "只有教師可建立教室"));
     }
@@ -195,7 +218,10 @@ pub(crate) async fn create_classroom(
     )
     .await
     .map_err(map_store_error)?;
-    Ok((StatusCode::CREATED, Json(classroom)))
+    Ok((
+        StatusCode::CREATED,
+        Json(with_statistics(&state, classroom).await?),
+    ))
 }
 
 /// 查看教室；不存在與其他教師建立的教室都回相同 404。
@@ -205,14 +231,15 @@ pub(crate) async fn create_classroom(
     tag = "classrooms",
     summary = "查看教室",
     params(("id" = Uuid, Path, description = "教室 ID")),
-    responses((status = 200, description = "教室", body = Classroom), crate::error::CommonErrors)
+    responses((status = 200, description = "教室", body = ClassroomDetail), crate::error::CommonErrors)
 )]
 pub(crate) async fn get_classroom(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
-) -> Result<Json<Classroom>, ApiError> {
-    visible_classroom(&state, &cu, &raw_id).await.map(Json)
+) -> Result<Json<ClassroomDetail>, ApiError> {
+    let classroom = visible_classroom(&state, &cu, &raw_id).await?;
+    with_statistics(&state, classroom).await.map(Json)
 }
 
 /// 編輯教室；管理者可編輯任一教室，教師只能編輯自己建立的教室。
@@ -223,14 +250,14 @@ pub(crate) async fn get_classroom(
     summary = "編輯教室",
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = ClassroomPatch,
-    responses((status = 200, description = "已更新", body = Classroom), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
+    responses((status = 200, description = "已更新", body = ClassroomDetail), (status = 400, description = "invalid_classroom_name、invalid_classroom_year_label、invalid_classroom_description", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / classroom_name_taken", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
 pub(crate) async fn update_classroom(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
     Json(body): Json<ClassroomPatch>,
-) -> Result<Json<Classroom>, ApiError> {
+) -> Result<Json<ClassroomDetail>, ApiError> {
     let id = parse_id(&raw_id)?;
     let name = body.name.map(normalized_name).transpose()?;
     let year_label = body
@@ -296,7 +323,7 @@ pub(crate) async fn update_classroom(
         .await?;
     }
     tx.commit().await?;
-    Ok(Json(updated))
+    with_statistics(&state, updated).await.map(Json)
 }
 
 /// 刪除教室的確認：必須與教室名稱相同（S-14）。

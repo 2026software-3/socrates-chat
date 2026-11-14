@@ -362,7 +362,12 @@ async fn a_student_outside_the_activitys_classroom_is_rejected_like_a_missing_ac
     let catalog = list(&app, "/api/catalog", &a.student).await;
     assert!(catalog["activities"].as_array().unwrap().is_empty());
     let (s1, b1) = start(&app, &a.student, json!({"activity_id": act})).await;
-    let (s2, b2) = start(&app, &a.student, json!({"activity_id": NOPE})).await;
+    let (s2, b2) = start(
+        &app,
+        &a.student,
+        json!({"activity_id": NOPE,"topic_id":NOPE}),
+    )
+    .await;
     assert_eq!((s1, s2), (StatusCode::BAD_REQUEST, StatusCode::BAD_REQUEST));
     assert_eq!(b1["error"]["code"], "invalid_conversation_source");
     assert_eq!(b1["error"]["code"], b2["error"]["code"]);
@@ -720,7 +725,7 @@ async fn teachers_cannot_regroup_another_teachers_activity(pool: PgPool) {
             "POST",
             "/api/dashboard/class/regroup",
             Some(&s.a.teacher),
-            Some(json!({"activity_id": foreign})),
+            Some(json!({"activity_id": foreign,"topic_id":NOPE})),
         ),
     )
     .await;
@@ -731,7 +736,7 @@ async fn teachers_cannot_regroup_another_teachers_activity(pool: PgPool) {
             "POST",
             "/api/dashboard/class/regroup",
             Some(&s.a.teacher),
-            Some(json!({"activity_id": NOPE})),
+            Some(json!({"activity_id": NOPE,"topic_id":NOPE})),
         ),
     )
     .await;
