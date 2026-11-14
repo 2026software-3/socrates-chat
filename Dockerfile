@@ -20,6 +20,8 @@ RUN mkdir src \
     && rm -rf src
 COPY backend/src ./src
 COPY backend/migrations ./migrations
+# 論證樹的提示與輸出 schema 以 include_str!("../eval/main_argument_tree/…") 編進執行檔
+COPY backend/eval/main_argument_tree ./eval/main_argument_tree
 # 確保 cargo 重新編譯真正的原始碼，而非沿用空殼的產物
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 

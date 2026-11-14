@@ -119,7 +119,7 @@ pub enum Failure {
 }
 
 impl Failure {
-    fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::ConnectionFailed => "connection_failed",
             Self::Timeout => "timeout",

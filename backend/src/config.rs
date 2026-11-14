@@ -71,6 +71,8 @@ pub struct Config {
     pub ai_first_token_timeout: Duration,
     /// AI 完整回覆上限（S-03.5）。
     pub ai_total_timeout: Duration,
+    /// 摘要論證樹單次產生的上限：一次 high 推理的 Responses 呼叫可超過一般 AI 逾時，所以獨立設定。
+    pub argument_tree_timeout: Duration,
     /// 一般 API 請求的逾時（#325）：從收到請求到送出回應標頭為止，含讀取 request body。
     pub request_timeout: Duration,
     /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
@@ -320,6 +322,10 @@ impl Config {
                 15,
             )?),
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
+            argument_tree_timeout: Duration::from_secs(parse_or(
+                "ARGUMENT_TREE_TIMEOUT_SECS",
+                300,
+            )?),
             request_timeout: Duration::from_secs(request_timeout_secs),
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             smtp: crate::mail::SmtpConfig::from_env()?,
