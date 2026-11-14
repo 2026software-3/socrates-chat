@@ -429,7 +429,7 @@
 | 框架、語言、建置 | React、TypeScript、Vite；套件管理用 npm | S-11.1 |
 | 路由 | `react-router` | S-11.1 |
 | 樣式與元件 | Tailwind CSS、[shadcn/ui](https://github.com/shadcn-ui/ui)（`components/ui/` 由 shadcn CLI 產生，盡量不手改） | S-11.2 |
-| 對話 UI | [assistant-ui](https://github.com/assistant-ui/assistant-ui)（`components/assistant-ui/`），語音模式在其上擴充 | S-11.2 |
+| 對話 UI | [assistant-ui](https://github.com/assistant-ui/assistant-ui)（`@assistant-ui/react`，對話介面在 `features/chat/`），語音模式在其上擴充 | S-11.2 |
 | 圖表 | 不引入圖表函式庫，雷達圖與長條圖以純 SVG 自行實作；邏輯樹（S-04.4）屆時若需要節點圖再議 | S-11.3 |
 | 測試 | Vitest + Testing Library + MSW（單元與元件測試；MSW 為假後端，未處理的請求讓測試失敗） | S-11.4 |
 | Lint | oxlint | S-11.4 |
