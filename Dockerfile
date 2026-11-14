@@ -6,7 +6,10 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
-RUN npm run build
+# 文字類產物預先壓成 .gz（保留原檔）：後端在瀏覽器接受 gzip 時直接送 .gz，執行期不必壓縮。
+# 字型（woff2）本身已壓縮，不處理
+RUN npm run build \
+    && find dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' \) -exec gzip -9 -k {} +
 
 FROM rust:1-slim-bookworm AS api
 WORKDIR /api
