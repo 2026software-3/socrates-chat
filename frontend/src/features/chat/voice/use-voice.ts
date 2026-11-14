@@ -258,15 +258,26 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
           }
         },
         onEnd: () => {
-          if (recRef.current === rec) recRef.current = undefined
+          if (recRef.current !== rec) return
+          recRef.current = undefined
           // 備援辨識結束（有文字時 onText 已先處理）；沒有收到文字就回到閒置
           if (phaseRef.current === 'transcribing') setPhase('idle')
           else if (modeRef.current === 'dictate' && phaseRef.current === 'listening') setPhase('idle')
         },
         onError: (kind) => {
+          // 已取消的辨識器不能影響目前的辨識狀態
+          if (recRef.current !== rec) return
           if (kind === 'fallback') {
-            // 瀏覽器辨識不可用：改用 OpenAI 備援重新開始（pickRecognitionSource 之後會選到備援）
-            window.setTimeout(() => startRef.current(m), 0)
+            // 舊辨識器已交出控制權，避免後續 onEnd 影響新 session
+            recRef.current = undefined
+
+            window.setTimeout(() => {
+              // 使用者可能已停止，或已經啟動另一個辨識器
+              if (recRef.current !== undefined) return
+              if (modeRef.current !== m || phaseRef.current !== 'listening') return
+
+              startRef.current(m)
+            }, 0)
             return
           }
           stopRecognizer()
