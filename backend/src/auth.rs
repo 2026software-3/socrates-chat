@@ -228,7 +228,7 @@ impl FromRequestParts<AppState> for RequireAdmin {
     ) -> Result<Self, Self::Rejection> {
         let cu = CurrentUser::from_request_parts(parts, state).await?;
         if !cu.roles.admin {
-            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+            return Err(ApiError::no_permission());
         }
         Ok(RequireAdmin(cu))
     }
@@ -246,7 +246,7 @@ impl FromRequestParts<AppState> for RequireTeacher {
     ) -> Result<Self, Self::Rejection> {
         let cu = CurrentUser::from_request_parts(parts, state).await?;
         if !cu.roles.can_teach() {
-            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+            return Err(ApiError::no_permission());
         }
         Ok(RequireTeacher(cu))
     }
@@ -379,7 +379,7 @@ pub(crate) async fn link_start(
             .fetch_one(&state.pool)
             .await?;
     if !is_student {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let req = state.identity.start();
     auth_store::save_link_state(
@@ -479,7 +479,7 @@ pub(crate) async fn unlink_google(
     CurrentUser { user, .. }: CurrentUser,
 ) -> Result<StatusCode, ApiError> {
     if !auth_store::unlink_google(&state.pool, user.id).await? {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let _ = audit(
         &state.pool,
@@ -710,7 +710,7 @@ pub(crate) async fn update_me(
         .as_deref()
         .is_some_and(|language| !matches!(language, "zh-TW" | "en" | "es"))
     {
-        return Err(ApiError::bad_request("invalid_language", "不支援的語言"));
+        return Err(ApiError::invalid_language());
     }
     let name = p
         .display_name
@@ -978,7 +978,7 @@ impl ResetBody {
         match (self.email, self.student_number) {
             (Some(email), None) => crate::roster::normalize_email(&email)
                 .map(ResetTarget::Email)
-                .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確")),
+                .ok_or(ApiError::invalid_email()),
             (None, Some(student_number)) => {
                 Some(auth_store::normalize_login_input(&student_number))
                     .filter(|id| crate::roster::is_valid_student_number(id))

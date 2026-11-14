@@ -175,7 +175,7 @@ pub(crate) async fn regroup(
     Json(body): Json<RegroupBody>,
 ) -> Result<StatusCode, ApiError> {
     if cu.roles.admin {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     // 只能重新分組自己教室內的活動；他人的與不存在的活動回應相同
     let activity = activity_store::get_visible(&state.pool, body.activity_id, cu.user.id, false)

@@ -326,7 +326,7 @@ pub(crate) async fn socket(
         crate::classrooms::writable_conversation(&mut conn, cu.user.id, id).await?
     };
     if conversation.status != "active" {
-        return Err(ApiError::conflict("conversation_ended", "對話已結束"));
+        return Err(ApiError::conversation_ended());
     }
     // WebSocket 升級是 GET，全站的 Origin 檢查不會擋，這裡自己擋跨站連線
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
@@ -566,7 +566,7 @@ async fn chat(
     body: Result<Json<ChatBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     check_secret(&state, &headers)?;
-    let Json(body) = body.map_err(|_| ApiError::bad_request("invalid_message", "訊息長度不符"))?;
+    let Json(body) = body.map_err(|_| ApiError::invalid_message())?;
     let token = body
         .messages
         .iter()
@@ -603,7 +603,7 @@ async fn spoken_turn(
         .map(|m| m.content.trim())
         .unwrap_or_default();
     if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
-        return Err(ApiError::bad_request("invalid_message", "訊息長度不符"));
+        return Err(ApiError::invalid_message());
     }
     let user_turns = messages.iter().filter(|m| m.role == "user").count();
     let turn_lock = state

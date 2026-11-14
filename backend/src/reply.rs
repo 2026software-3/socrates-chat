@@ -246,7 +246,7 @@ pub(crate) async fn stream(
         crate::classrooms::writable_conversation(&mut conn, cu.user.id, id).await?
     };
     if conversation.status != "active" {
-        return Err(ApiError::conflict("conversation_ended", "對話已結束"));
+        return Err(ApiError::conversation_ended());
     }
     if !claim_generation(&state, id).await? {
         // 回覆正在產生：接上同一個回覆
@@ -255,7 +255,7 @@ pub(crate) async fn stream(
         }
         // 回覆可能剛好在 claim 與 join 之間結束：再 claim 一次，由下面決定重新產生或 nothing_to_reply
         if !claim_generation(&state, id).await? {
-            return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+            return Err(ApiError::reply_in_progress());
         }
     }
     // claim 之後再檢查，確保檢查與產生之間不會有另一條串流插入

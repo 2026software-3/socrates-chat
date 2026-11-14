@@ -136,6 +136,31 @@ describe('app shell', () => {
     expect(await screen.findByRole('heading', { name: '你沒有權限執行這個操作。' })).toBeInTheDocument()
   })
 
+  it.each(['/admin/diagnostics', '/admin'])(
+    'blocks a teacher who types the admin URL %s, without asking the backend for diagnostics',
+    async (route) => {
+      mockMe(makeMe({ teacher: true }))
+      const requested: string[] = []
+      server.use(
+        http.get('/api/admin/status', ({ request }) => {
+          requested.push(new URL(request.url).pathname)
+          return HttpResponse.json({})
+        }),
+        http.get('/api/admin/diagnostics', ({ request }) => {
+          requested.push(new URL(request.url).pathname)
+          return HttpResponse.json({ items: [], next_cursor: null })
+        }),
+      )
+      renderApp(null, { route })
+
+      expect(await screen.findByRole('heading', { name: '你沒有權限執行這個操作。' })).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: '系統維運' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: '系統概況' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: '診斷紀錄' })).not.toBeInTheDocument()
+      expect(requested).toEqual([])
+    },
+  )
+
   it('shows teacher links to teachers but not admin links', async () => {
     mockMe(makeMe({ teacher: true }))
     renderApp(null, { route: '/' })

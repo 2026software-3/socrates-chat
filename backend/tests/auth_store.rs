@@ -3,8 +3,8 @@
 
 use chrono::{Duration, Utc};
 use socrates_chat_backend::auth_store::{
-    create_session, delete_session, find_active_session, save_login_state, take_login_state,
-    upsert_user,
+    SESSION_TOUCH_INTERVAL, create_session, delete_session, find_active_session, save_login_state,
+    take_login_state, upsert_user,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -84,6 +84,52 @@ async fn session_lookup_returns_user_and_touches_last_seen(pool: PgPool) {
         .unwrap()
         .unwrap();
     assert!(again.session.last_seen_at >= now - Duration::seconds(1));
+}
+
+/// 每個已登入的請求都會查 session：距上次寫入未滿一分鐘時不再寫 `last_seen_at`（S-08.2）。
+#[sqlx::test]
+async fn last_seen_is_written_at_most_once_per_interval(pool: PgPool) {
+    let u = upsert_user(&pool, "sub-1", "a@example.com", None, false)
+        .await
+        .unwrap();
+    create_session(&pool, u.id, &HASH_A).await.unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, chrono::DateTime<Utc>>(
+            "SELECT last_seen_at FROM sessions WHERE token_hash = $1",
+        )
+        .bind(&HASH_A[..])
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let created = stored().await;
+
+    // 未滿間隔：查得到 session，但不寫入，回傳的也是資料庫裡的值
+    let soon = created + SESSION_TOUCH_INTERVAL - Duration::seconds(1);
+    let found = find_active_session(&pool, &HASH_A, soon)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.user.id, u.id);
+    assert_eq!(found.session.last_seen_at, created);
+    assert_eq!(stored().await, created);
+
+    // 已滿間隔：寫入
+    let later = created + SESSION_TOUCH_INTERVAL;
+    let found = find_active_session(&pool, &HASH_A, later)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored().await, found.session.last_seen_at);
+    assert!(found.session.last_seen_at > created);
+
+    // 寫入後重新起算
+    let found = find_active_session(&pool, &HASH_A, later + Duration::seconds(30))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored().await, found.session.last_seen_at);
+    assert!(found.session.last_seen_at < later + Duration::seconds(1));
 }
 
 #[sqlx::test]

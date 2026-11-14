@@ -335,17 +335,40 @@ fn database_unavailable() -> Response {
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
 /// 找不到的檔案退回 `index.html`（前端路由，S-08.1）。
+///
+/// 建置時預先壓好的 `.gz`（Dockerfile）在瀏覽器接受 gzip 時直接送出，執行期不壓縮；沒有 `.gz` 就送原檔。
+/// `/assets/` 底下是檔名帶內容雜湊的建置產物：可以長期快取，找不到就是 404（重新部署後舊分頁要的 chunk
+/// 已不存在，不能拿 `index.html` 充數）。其餘（`index.html`、前端路由）每次重新驗證，部署後才拿得到新的檔名。
 async fn fallback(State(state): State<AppState>, req: Request) -> Response {
     let path = req.uri().path();
     let is_api = is_api_path(path);
     let Some(dir) = state.config.frontend_dir.as_ref().filter(|_| !is_api) else {
         return ApiError::not_found().into_response();
     };
-    let spa = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
-    match spa.oneshot(req).await {
-        Ok(res) => res.into_response(),
+    let hashed = path.starts_with("/assets/");
+    let files = ServeDir::new(dir).precompressed_gzip();
+    let served = if hashed {
+        files.oneshot(req).await.map(IntoResponse::into_response)
+    } else {
+        files
+            .fallback(ServeFile::new(dir.join("index.html")).precompressed_gzip())
+            .oneshot(req)
+            .await
+            .map(IntoResponse::into_response)
+    };
+    let mut res = match served {
+        Ok(res) => res,
         Err(never) => match never {},
-    }
+    };
+    let found = res.status().is_success() || res.status() == StatusCode::NOT_MODIFIED;
+    let cache = if hashed && found {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    res
 }
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。

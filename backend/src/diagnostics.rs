@@ -649,7 +649,7 @@ pub(crate) async fn list(
         .as_ref()
         .is_some_and(|cursor| cursor.filter != fingerprint)
     {
-        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+        return Err(ApiError::invalid_cursor());
     }
     let rows = match tokio::time::timeout(
         crate::READY_DB_TIMEOUT,
@@ -702,7 +702,7 @@ async fn find(
 }
 
 fn invalid_filter() -> ApiError {
-    ApiError::bad_request("invalid_filter", "篩選條件不正確")
+    ApiError::invalid_filter()
 }
 
 fn diagnostics_unavailable() -> ApiError {
