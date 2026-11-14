@@ -103,6 +103,7 @@ export const FUNCTION_LABEL: Record<string, MessageKey> = {
   claim_group: 'admin.diag.fn.claim_group',
   claim_regroup: 'admin.diag.fn.claim_regroup',
   achievement_translation: 'admin.diag.fn.achievement_translation',
+  radar_scoring: 'admin.diag.fn.radar_scoring',
   voice_transcription: 'admin.diag.fn.voice_transcription',
   voice_synthesis: 'admin.diag.fn.voice_synthesis',
   password_login: 'admin.diag.fn.password_login',
