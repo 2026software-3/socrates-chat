@@ -48,6 +48,37 @@ fn without_request_id(mut body: Value) -> Value {
     body
 }
 
+/// 每個不可用的來源都回同一個 400，內容（除 request_id）完全一致，且不會建立對話。
+async fn assert_uniform_invalid_source(
+    app: &Router,
+    pool: &PgPool,
+    cookie: &str,
+    activity: &str,
+    sources: Vec<Value>,
+) {
+    let mut expected: Option<Value> = None;
+    for source in sources {
+        let res = send(
+            app,
+            json_req("POST", "/api/conversations", Some(cookie), Some(source)),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = without_request_id(json_body(res).await);
+        assert_eq!(body["error"]["code"], "invalid_conversation_source");
+        match &expected {
+            Some(first) => assert_eq!(&body, first),
+            None => expected = Some(body),
+        }
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM conversations WHERE activity_id=$1")
+        .bind(activity.parse::<Uuid>().unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
 #[sqlx::test]
 async fn another_classroom_student_cannot_discover_activities_or_topics(pool: PgPool) {
     let app = test_app(pool.clone());
@@ -69,46 +100,36 @@ async fn another_classroom_student_cannot_discover_activities_or_topics(pool: Pg
     assert!(res.status().is_success());
     let other = login_as(&app, "other-student", "other-student@example.com").await;
     let nonexistent = Uuid::new_v4().to_string();
-    let mut expected = None;
-    for source in [
-        json!({"activity_id":activity,"topic_id":topics[0]}),
-        json!({"activity_id":activity,"topic_id":topics[1]}),
-        json!({"activity_id":activity,"topic_id":extra}),
-        json!({"activity_id":activity,"topic_id":nonexistent}),
-        json!({"activity_id":nonexistent,"topic_id":topics[0]}),
-    ] {
-        let res = send(
-            &app,
-            json_req("POST", "/api/conversations", Some(&other), Some(source)),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = without_request_id(json_body(res).await);
-        assert_eq!(body["error"]["code"], "invalid_conversation_source");
-        if let Some(ref expected) = expected {
-            assert_eq!(&body, expected);
-        } else {
-            expected = Some(body);
-        }
-    }
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM conversations WHERE activity_id=$1")
-        .bind(activity.parse::<Uuid>().unwrap())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
-    // Same published activity and topic work for an enrolled student.
-    let res = send(
+    assert_uniform_invalid_source(
         &app,
-        json_req(
-            "POST",
-            "/api/conversations",
-            Some(&a.student),
-            Some(json!({"activity_id":activity,"topic_id":topics[0]})),
-        ),
+        &pool,
+        &other,
+        &activity,
+        vec![
+            json!({"activity_id":activity,"topic_id":topics[0]}),
+            json!({"activity_id":activity,"topic_id":topics[1]}),
+            json!({"activity_id":activity,"topic_id":extra}),
+            json!({"activity_id":activity,"topic_id":nonexistent}),
+            json!({"activity_id":nonexistent,"topic_id":topics[0]}),
+        ],
     )
     .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
+    // Same published activity: each of the activity's topics works for enrolled students.
+    for (i, topic) in topics.iter().enumerate() {
+        let email = format!("enrolled-{i}@example.com");
+        let cookie = add_student(&app, &a, &format!("enrolled-{i}"), &email).await;
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/conversations",
+                Some(&cookie),
+                Some(json!({"activity_id":activity,"topic_id":topic})),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::CREATED);
+    }
 }
 
 #[sqlx::test]
@@ -129,6 +150,19 @@ async fn topic_ids_patch_requires_the_classroom_owner_and_preserves_data(pool: P
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
     let other = login_as(&app, "other-teacher", "other-teacher@example.com").await;
     let original = topic_rows(&pool, &activity).await;
+    // A teacher who does not own the classroom must see the same 404 as for a missing activity.
+    let res = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/activities/{}", Uuid::new_v4()),
+            Some(&other),
+            Some(json!({"topic_ids":[&topics[0], &topics[1], &extra]})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let missing = without_request_id(json_body(res).await);
     for (cookie, status, code) in [
         (None, StatusCode::UNAUTHORIZED, "unauthorized"),
         (Some(a.student.as_str()), StatusCode::FORBIDDEN, "forbidden"),
@@ -158,25 +192,11 @@ async fn topic_ids_patch_requires_the_classroom_owner_and_preserves_data(pool: P
             assert_eq!(error["error"]["code"], code);
             assert_eq!(topic_rows(&pool, &activity).await, original);
             if cookie == Some(other.as_str()) {
-                let res = send(
-                    &app,
-                    json_req(
-                        "PATCH",
-                        &format!("/api/activities/{}", Uuid::new_v4()),
-                        cookie,
-                        Some(json!({"topic_ids":proposed})),
-                    ),
-                )
-                .await;
-                assert_eq!(res.status(), StatusCode::NOT_FOUND);
-                assert_eq!(
-                    without_request_id(json_body(res).await),
-                    without_request_id(error)
-                );
+                assert_eq!(without_request_id(error), missing);
             }
         }
     }
-    // Positive control: the exact append is allowed for the owner.
+    // Positive control: the owner may append; existing topics keep their positions.
     let res = send(
         &app,
         json_req(
@@ -188,7 +208,9 @@ async fn topic_ids_patch_requires_the_classroom_owner_and_preserves_data(pool: P
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(topic_rows(&pool, &activity).await.len(), 3);
+    let mut appended = original.clone();
+    appended.push((extra.parse().unwrap(), 2));
+    assert_eq!(topic_rows(&pool, &activity).await, appended);
 }
 
 #[sqlx::test]
@@ -253,37 +275,19 @@ async fn archived_activity_sources_hide_topic_existence_and_create_no_conversati
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     // S-14 + F-02.4: unavailable sources share 400, not 409, so resource existence stays private.
-    let mut expected = None;
-    for (id, topic) in [
-        (&activity, topics[0].clone()),
-        (&activity, topics[1].clone()),
-        (&activity, extra),
-        (&activity, Uuid::new_v4().to_string()),
-        (&Uuid::new_v4().to_string(), topics[0].clone()),
-    ] {
-        let res = send(
-            &app,
-            json_req(
-                "POST",
-                "/api/conversations",
-                Some(&a.student),
-                Some(json!({"activity_id":id,"topic_id":topic})),
-            ),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = without_request_id(json_body(res).await);
-        assert_eq!(body["error"]["code"], "invalid_conversation_source");
-        if let Some(ref expected) = expected {
-            assert_eq!(&body, expected);
-        } else {
-            expected = Some(body);
-        }
-    }
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM conversations WHERE activity_id=$1")
-        .bind(activity.parse::<Uuid>().unwrap())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
+    let nonexistent = Uuid::new_v4().to_string();
+    assert_uniform_invalid_source(
+        &app,
+        &pool,
+        &a.student,
+        &activity,
+        vec![
+            json!({"activity_id":activity,"topic_id":topics[0]}),
+            json!({"activity_id":activity,"topic_id":topics[1]}),
+            json!({"activity_id":activity,"topic_id":extra}),
+            json!({"activity_id":activity,"topic_id":Uuid::new_v4()}),
+            json!({"activity_id":nonexistent,"topic_id":topics[0]}),
+        ],
+    )
+    .await;
 }
