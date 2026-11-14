@@ -75,6 +75,7 @@ pub mod password;
 pub mod pii;
 pub mod points;
 pub mod purchase;
+pub mod radar_scoring;
 pub mod radar_store;
 pub mod reply;
 pub mod roster;
