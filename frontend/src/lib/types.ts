@@ -121,6 +121,33 @@ export type SummaryView = {
   translation_pending?: boolean
 }
 
+/** 單場雷達圖的狀態（GET /api/conversations/{id}/radar）；能否重試看 `retryable`，不由前端推斷。 */
+export type RadarStatus =
+  | 'summary_not_ready'
+  | 'unavailable'
+  | 'dimensions_pending'
+  | 'not_started'
+  | 'pending'
+  | 'failed'
+  | 'ready'
+
+/** 後端保存的三語文字。 */
+export type LocalizedText = { zh_tw: string; en: string; es: string }
+
+/** 題目的一個維度：給學生看的名稱與白話說明。 */
+export type RadarDimension = { id: string; name: LocalizedText; description: LocalizedText }
+
+export type RadarView = {
+  status: RadarStatus
+  /** 現在能否呼叫 `radar/retry` */
+  retryable: boolean
+  /** 以維度識別碼為 key 的 0 到 5 整數分；只有 `ready` 時有值，且六個維度齊全 */
+  scores: Record<string, number> | null
+  dimensions: RadarDimension[] | null
+  rules_version: string | null
+  completed_at: string | null
+}
+
 /** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
 export type TeacherSummary = {
   conversation_id: string
