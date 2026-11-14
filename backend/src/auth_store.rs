@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 /// Session 閒置上限。
 pub const SESSION_IDLE_TTL: Duration = Duration::days(7);
+/// `last_seen_at` 距上次寫入未滿這段時間時不再寫入（S-08.2）：每個已登入的請求都會查 session，
+/// 不必每次都多一筆寫入。閒置期限因此最多提早這麼久到期。
+pub const SESSION_TOUCH_INTERVAL: Duration = Duration::minutes(1);
 /// Session 絕對上限。
 pub const SESSION_ABSOLUTE_TTL: Duration = Duration::days(30);
 /// OAuth state 有效時間。
@@ -209,7 +212,8 @@ struct SessionUserRow {
     student: bool,
 }
 
-/// 查詢有效的 session 並更新 `last_seen_at`，連同使用者與角色一起查回。
+/// 查詢有效的 session，連同使用者與角色一起查回；`last_seen_at` 距上次寫入已滿
+/// `SESSION_TOUCH_INTERVAL` 才更新（回傳的 `last_seen_at` 是資料庫裡的值）。
 ///
 /// 閒置超過 7 天或建立超過 30 天視為失效（回傳 `None`）。每個需要登入的請求都會呼叫，
 /// 所以合成一個語句，只需一次資料庫往返。
@@ -220,11 +224,15 @@ pub async fn find_active_session(
 ) -> Result<Option<SessionUser>, sqlx::Error> {
     let row: Option<SessionUserRow> = sqlx::query_as(
         "WITH s AS (
-             UPDATE sessions SET last_seen_at = $2
+             SELECT id, user_id, created_at, last_seen_at, must_change_password FROM sessions
              WHERE token_hash = $1 AND last_seen_at > $3 AND created_at > $4
-             RETURNING id, user_id, created_at, last_seen_at, must_change_password
+         ), touched AS (
+             UPDATE sessions SET last_seen_at = $2 FROM s
+             WHERE sessions.id = s.id AND s.last_seen_at <= $5
+             RETURNING sessions.last_seen_at
          )
-         SELECT s.id AS session_id, s.created_at AS session_created_at, s.last_seen_at,
+         SELECT s.id AS session_id, s.created_at AS session_created_at,
+                COALESCE((SELECT last_seen_at FROM touched), s.last_seen_at) AS last_seen_at,
                 s.must_change_password AS session_must_change_password,
                 u.id, u.google_sub, u.email, u.student_id AS student_number, u.display_name, u.language, u.is_admin,
                 u.must_change_password,
@@ -237,6 +245,7 @@ pub async fn find_active_session(
     .bind(now)
     .bind(now - SESSION_IDLE_TTL)
     .bind(now - SESSION_ABSOLUTE_TTL)
+    .bind(now - SESSION_TOUCH_INTERVAL)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| SessionUser {
