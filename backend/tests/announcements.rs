@@ -544,6 +544,49 @@ async fn maintenance_blocks_everyone_but_admins_and_the_exempt_endpoints(pool: P
 }
 
 #[sqlx::test]
+async fn maintenance_admin_session_must_still_change_password(pool: PgPool) {
+    let app = test_app_with_ai(pool.clone(), FakeAi::with(vec![]));
+    let a = seed_actors(&app).await;
+    set_maintenance(&app, &a.admin, true).await;
+
+    // 管理者通過維護閘門，並且閘門快取的身分不能略過必須改密碼的檢查
+    let (status, _) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    sqlx::query(
+        "UPDATE sessions SET must_change_password = true
+         WHERE user_id = (SELECT id FROM users WHERE email = 'admin@example.com')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let res = send(&app, get(ADMIN_LIST, Some(&a.admin))).await;
+    assert_json_error(res, StatusCode::FORBIDDEN, "password_change_required").await;
+    let res = send(
+        &app,
+        json_req(
+            "PUT",
+            MAINTENANCE,
+            Some(&a.admin),
+            Some(json!({"enabled": false})),
+        ),
+    )
+    .await;
+    assert_json_error(res, StatusCode::FORBIDDEN, "password_change_required").await;
+    // /api/me 仍可呼叫，前端據此導向改密碼頁
+    let res = send(&app, get("/api/me", Some(&a.admin))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["must_change_password"], true);
+    // 維護模式沒有被這個被拒絕的請求改掉
+    assert_eq!(public(&app, None).await["maintenance"], true);
+
+    // 非管理者仍然被維護閘門擋下，而不是得到改密碼提示
+    let res = send(&app, get(ADMIN_LIST, Some(&a.student))).await;
+    assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
+}
+
+#[sqlx::test]
 async fn maintenance_survives_a_restart(pool: PgPool) {
     let app = test_app_with_ai(pool.clone(), FakeAi::with(vec![]));
     let a = seed_actors(&app).await;
