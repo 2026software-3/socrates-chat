@@ -1,4 +1,4 @@
-//! 學生自訂顯示名稱（S-08.2 第 3 節）：PATCH /api/me。使用合成資料。
+//! 自訂顯示名稱（S-08.2 第 3 節）：PATCH /api/me。學生、教師與管理者都能改；沒有任何角色的帳號不行。使用合成資料。
 
 mod common;
 
@@ -39,17 +39,84 @@ async fn unauthenticated_is_401(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn non_students_are_403(pool: PgPool) {
+async fn accounts_without_a_role_are_403(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    for cookie in [&a.teacher, &a.admin, &a.outsider] {
-        let (status, _) = rename(&app, Some(cookie), json!({"display_name": "小明"})).await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, body) = rename(&app, Some(cookie), json!({"display_name": null})).await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["error"]["code"], "forbidden");
+    let (status, _) = rename(&app, Some(&a.outsider), json!({"display_name": "小明"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = rename(&app, Some(&a.outsider), json!({"display_name": null})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "forbidden");
+    assert_eq!(me_name(&app, &a.outsider).await, "User sub-outsider");
+}
+
+#[sqlx::test]
+async fn teachers_and_admins_rename_themselves(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    for (cookie, new_name) in [(&a.teacher, "王老師"), (&a.admin, "維運小幫手")] {
+        let (status, body) = rename(&app, Some(cookie), json!({"display_name": new_name})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["display_name"], new_name);
+        assert_eq!(me_name(&app, cookie).await, new_name);
     }
-    assert_eq!(me_name(&app, &a.teacher).await, "User sub-teacher");
+}
+
+#[sqlx::test]
+async fn a_teacher_renaming_does_not_change_anyone_else(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let (status, _) = rename(&app, Some(&a.teacher), json!({"display_name": "王老師"})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me_name(&app, &a.admin).await, "User sub-admin");
+    assert_eq!(me_name(&app, &a.student).await, "學生");
+}
+
+#[sqlx::test]
+async fn teachers_and_admins_clearing_the_name_fall_back_to_the_email(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    for cookie in [&a.teacher, &a.admin] {
+        for cleared in [json!(null), json!(""), json!("   ")] {
+            rename(&app, Some(cookie), json!({"display_name": "暫時的名稱"})).await;
+            let (status, body) = rename(&app, Some(cookie), json!({"display_name": cleared})).await;
+            assert_eq!(status, StatusCode::OK);
+            // 教師與管理者沒有匯入的姓名可以回復：名稱為空，介面顯示電子郵件
+            assert!(body["display_name"].is_null());
+            assert!(me_name(&app, cookie).await.is_null());
+        }
+    }
+}
+
+#[sqlx::test]
+async fn teachers_and_admins_follow_the_same_name_rules_as_students(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    for cookie in [&a.teacher, &a.admin] {
+        let before = me_name(&app, cookie).await;
+        for bad in [
+            "字".repeat(31),
+            "第一行\n第二行".to_string(),
+            "a\u{2028}b".to_string(),
+        ] {
+            let (status, body) = rename(&app, Some(cookie), json!({"display_name": bad})).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"]["code"], "invalid_display_name");
+        }
+        assert_eq!(me_name(&app, cookie).await, before);
+        let (status, _) =
+            rename(&app, Some(cookie), json!({"display_name": "字".repeat(30)})).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+}
+
+#[sqlx::test]
+async fn google_login_does_not_overwrite_a_custom_teacher_name(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    rename(&app, Some(&a.teacher), json!({"display_name": "王老師"})).await;
+    let cookie = login_as(&app, "sub-teacher", "teacher@example.com").await;
+    assert_eq!(me_name(&app, &cookie).await, "王老師");
 }
 
 #[sqlx::test]
