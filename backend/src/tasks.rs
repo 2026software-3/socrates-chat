@@ -34,7 +34,7 @@ pub(crate) struct Task {
     reward: i32,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
+#[derive(FromRow, Serialize, utoipa::ToSchema)]
 pub(crate) struct TaskView {
     id: String,
     period: String,
@@ -96,20 +96,31 @@ pub(crate) async fn list(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<TaskView>>, ApiError> {
-    let mut conn = state.pool.acquire().await?;
-    let tasks: Vec<Task> =
-        sqlx::query_as("SELECT id, period, goal, reward FROM tasks ORDER BY period")
-            .fetch_all(&mut *conn)
-            .await?;
-    let mut result = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        let start = period_start(&mut conn, &task.period).await?;
-        let progress = progress(&mut conn, cu.user.id, &task, start).await?;
-        let claimed: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM point_ledger WHERE user_id=$1 AND source_type='task' AND source_id=$2)")
-            .bind(cu.user.id).bind(source_id(&task.id, start)).fetch_one(&mut *conn).await?;
-        result.push(TaskView::new(task, start, progress, claimed));
-    }
-    Ok(Json(result))
+    // 週期起點、進度與是否已領取合成一個語句（一次資料庫往返）；週期與進度的算法與 `period_start`、`progress` 相同，
+    // `source_id` 的格式與 `source_id()` 相同（`<id>:<YYYY-MM-DD>`）
+    Ok(Json(
+        sqlx::query_as(
+            "SELECT t.id, t.period, t.goal, t.reward, p.start AS period_start,
+                    (SELECT count(*) FROM achievement_completion_events e
+                     WHERE e.user_id = $1
+                       AND e.completed_at >= (p.start::timestamp AT TIME ZONE 'Asia/Taipei')
+                       AND e.completed_at < ((p.start + CASE WHEN t.period = 'weekly' THEN 7 ELSE 1 END)::timestamp
+                                             AT TIME ZONE 'Asia/Taipei')) AS progress,
+                    EXISTS (SELECT 1 FROM point_ledger l
+                            WHERE l.user_id = $1 AND l.source_type = 'task'
+                              AND l.source_id = t.id || ':' || to_char(p.start, 'YYYY-MM-DD')) AS claimed
+             FROM tasks t
+             CROSS JOIN LATERAL (
+                 SELECT CASE WHEN t.period = 'weekly'
+                             THEN date_trunc('week', clock_timestamp() AT TIME ZONE 'Asia/Taipei')::date
+                             ELSE (clock_timestamp() AT TIME ZONE 'Asia/Taipei')::date END AS start
+             ) p
+             ORDER BY t.period",
+        )
+        .bind(cu.user.id)
+        .fetch_all(&state.pool)
+        .await?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/tasks/{id}/claim", tag = "tasks", summary = "領取任務獎勵", params(("id" = String, Path)), request_body = Claim, responses((status = 200, body = TaskView), (status = 409, body = crate::error::ErrorBody)))]
