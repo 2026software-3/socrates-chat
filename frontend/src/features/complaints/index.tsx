@@ -1,6 +1,6 @@
 import type { Feature } from '@/app/feature'
-import { AdminComplaintsPage } from '@/features/complaints/admin-complaints-page'
 import { ComplaintPage } from '@/features/complaints/complaint-page'
+import { AdminComplaintsPage } from '@/features/staff'
 
 export const complaintsFeature: Feature = {
   routes: [

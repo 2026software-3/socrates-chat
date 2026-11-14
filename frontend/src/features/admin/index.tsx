@@ -1,13 +1,15 @@
 import type { Feature, NavItem } from '@/app/feature'
-import { AdminTasksPage } from '@/features/tasks/admin-tasks-page'
-import { AdminPartsPage } from '@/features/purchase/admin-parts-page'
-import { AdminHome } from '@/features/admin/admin-home'
-import { AdminAnnouncementsPage } from '@/features/announcements/admin-announcements-page'
-import { TeachersPage } from '@/features/admin/teachers-page'
-import { TopicsPage } from '@/features/admin/topics-page'
-import { DiagnosticsPage } from '@/features/admin/diagnostics-page'
-import { RosterPage } from '@/features/teacher/roster-page'
 import { classroomRoutes } from '@/features/classrooms/routes'
+import {
+  AdminAnnouncementsPage,
+  AdminHome,
+  AdminPartsPage,
+  AdminTasksPage,
+  DiagnosticsPage,
+  RosterPage,
+  TeachersPage,
+  TopicsPage,
+} from '@/features/staff'
 
 export const adminFeature: Feature = {
   routes: [
