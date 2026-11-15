@@ -2,7 +2,8 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
     AppState, ai::OpenAiProvider, app, auth_store, catalog, complaints, config::Config, demo,
-    diagnostics, identity::GoogleIdentity, logging, password, summary, summary_translation,
+    diagnostics, identity::GoogleIdentity, logging, password, radar_store, summary,
+    summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
@@ -31,6 +32,12 @@ async fn main() {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
         Err(_) => tracing::error!("failed to recover orphaned summaries"),
+    }
+    // 重啟前卡住的雷達圖計算同樣標記為失敗；還在時限內的留給可能仍在執行的實例
+    match radar_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "marked orphaned radar results as failed"),
+        Err(_) => tracing::error!("failed to recover orphaned radar results"),
     }
     // 內建題目（電車難題）：已存在時不動它
     if catalog::seed_builtin_topics(&pool).await.is_err() {

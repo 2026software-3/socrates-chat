@@ -60,13 +60,22 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-struct Localized {
+pub(crate) struct Localized {
     zh_tw: String,
     en: String,
     es: String,
 }
 
 impl Localized {
+    /// The text in `language`; anything but `en` and `es` reads the zh-TW slot.
+    pub(crate) fn get(&self, language: &str) -> &str {
+        match language {
+            "en" => &self.en,
+            "es" => &self.es,
+            _ => &self.zh_tw,
+        }
+    }
+
     fn set(&mut self, language: usize, value: String) {
         *match language {
             0 => &mut self.zh_tw,
@@ -77,12 +86,12 @@ impl Localized {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-struct Dimension {
-    id: String,
-    name: Localized,
-    description: Localized,
+pub(crate) struct Dimension {
+    pub(crate) id: String,
+    pub(crate) name: Localized,
+    pub(crate) description: Localized,
     /// Definitions for scores 1 through 5, in that order.
-    rubric: [String; 5],
+    pub(crate) rubric: [String; 5],
 }
 
 #[derive(Serialize, ToSchema)]

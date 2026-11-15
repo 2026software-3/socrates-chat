@@ -79,6 +79,18 @@ describe('DiagnosticsPage', () => {
     expect(screen.getByText(/用 request ID 到伺服器的容器日誌查詢/)).toBeInTheDocument()
   })
 
+  it('names radar scoring failures instead of showing the raw function code', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockDiagnostics(() => pageOf([{ ...aiEvent, function: 'radar_scoring', route: '/api/conversations/{id}/radar/retry', status: 202 }]))
+
+    renderApp(<DiagnosticsPage />, { route: '/admin/diagnostics' })
+
+    const table = await screen.findByRole('table', { name: '診斷事件' })
+    const row = within(table).getAllByRole('row')[1]
+    expect(within(row).getByText('雷達圖評分')).toBeInTheDocument()
+    expect(within(row).queryByText('radar_scoring')).not.toBeInTheDocument()
+  })
+
   it('shows every event field in the details and only internal identifiers', async () => {
     mockMe(makeMe({ admin: true }))
     mockDiagnostics()

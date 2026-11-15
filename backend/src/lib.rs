@@ -75,6 +75,7 @@ pub mod password;
 pub mod pii;
 pub mod points;
 pub mod purchase;
+pub mod radar;
 pub mod radar_scoring;
 pub mod radar_store;
 pub mod reply;
@@ -222,6 +223,7 @@ pub fn app(state: AppState) -> Router {
         .merge(claims::routes())
         .merge(catalog::routes())
         .merge(topic_dimensions::routes())
+        .merge(radar::routes())
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(diagnostics::routes())

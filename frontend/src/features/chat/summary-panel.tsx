@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useEffect, useId } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,14 +8,25 @@ import { formatDate } from '@/lib/format'
 import { useSummary } from '@/features/chat/use-summary'
 import { errorText, useI18n, useT } from '@/i18n'
 
-type Props = { conversationId: string; pollMs?: number; maxPollMs?: number }
+type Props = {
+  conversationId: string
+  pollMs?: number
+  maxPollMs?: number
+  /** 總結是否已成功；依賴總結的內容（單場雷達圖）據此決定要不要出現 */
+  onReadyChange?: (ready: boolean) => void
+}
 
 /** 對話結束後的 AI 總結：產生中輪詢、完成顯示（學生不可編輯）、失敗可重試。 */
-export function SummaryPanel({ conversationId, pollMs, maxPollMs }: Props) {
+export function SummaryPanel({ conversationId, pollMs, maxPollMs, onReadyChange }: Props) {
   const t = useT()
   const { lang } = useI18n()
   const titleId = useId()
   const { state, check, retry, retrying, retryError } = useSummary(conversationId, { pollMs, maxPollMs })
+
+  const ready = state.kind === 'ready'
+  useEffect(() => {
+    onReadyChange?.(ready)
+  }, [ready, onReadyChange])
 
   const completed = state.kind === 'ready' && state.summary.completed_at ? formatDate(state.summary.completed_at, lang) : ''
   const translation = state.kind === 'ready' && state.summary.translation?.language === lang ? state.summary.translation : null

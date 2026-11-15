@@ -200,12 +200,25 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .execute(&mut *tx)
             .await?
             .rows_affected();
+            // 總結成功時在同一個交易內登記單場雷達圖的第一次計算（S-04.3）：
+            // 學生看到總結 ready 時，雷達圖已經是計算中，不會短暫顯示成「尚未計算」
+            let mut radar = None;
             if updated > 0 {
                 on_conversation_completed(&mut tx, id, owner).await?;
+                radar = crate::radar::claim_after_summary(
+                    &mut tx,
+                    id,
+                    state.config.generation_stale_secs(),
+                )
+                .await;
             }
             tx.commit().await?;
             if updated > 0 {
                 state.summary_translation_wake.notify_one();
+            }
+            // 計算在背景進行，失敗不影響總結
+            if let Some(claimed) = radar {
+                crate::radar::spawn_claimed(state.clone(), id, claimed);
             }
             // 主張分組以活動內的題目為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
@@ -226,7 +239,10 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     Ok(())
 }
 
-async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, sqlx::Error> {
+pub(crate) async fn load_messages_for(
+    state: &AppState,
+    id: Uuid,
+) -> Result<Vec<ChatTurn>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(concat!(
         "SELECT role, ",
         crate::chat::heard_content!(),
