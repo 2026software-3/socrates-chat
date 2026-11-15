@@ -1,0 +1,53 @@
+# Intel 版 cascade（沒有 NVIDIA 的主機，例如 msi_cubi：Core Ultra，iGPU＋NPU）。疊在 docker-compose.yml 上：
+#   docker compose -f docker-compose.yml -f docker-compose.intel.yml --profile cascade build
+#   docker compose -f docker-compose.yml -f docker-compose.intel.yml --profile app --profile cascade up -d
+# 分工：Whisper 在 NPU（最省 CPU），Kokoro 在 iGPU（torch XPU），cascade 本體與轉接層在 CPU。
+# 映像用獨立的 tag，不會覆蓋 NVIDIA 版的 socrates-cascade:latest；換版時改 CASCADE_INTEL_TAG。
+# 主機需求：核心已載入 xe（iGPU）與 intel_vpu（NPU），/dev/dri/renderD128 與 /dev/accel/accel0 存在；
+# 容器內的使用者要能存取這兩個裝置，RENDER_GID 填主機 render 群組的 gid（`getent group render`，msi_cubi 是 991）。
+# 評測與取捨見 docs/ntnu-ops.md 的 msi_cubi 一節。
+x-intel-device-access: &intel-gid
+  group_add: ["${RENDER_GID:-991}"]
+
+services:
+  cascade-tts:
+    build:
+      context: .
+      dockerfile: docker/cascade-intel/tts.Dockerfile
+    image: socrates-cascade-tts-xpu:${CASCADE_INTEL_TAG:-intel}
+    command: ["python", "/app/kokoro_server.py"]
+    deploy: !reset null
+    <<: *intel-gid
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      KOKORO_DEVICE: xpu
+    # 第一次啟動要載入模型並編譯 SYCL 核心，給足時間
+    healthcheck:
+      start_period: 240s
+
+  cascade-whisper:
+    build:
+      context: .
+      dockerfile: docker/cascade-intel/whisper.Dockerfile
+    image: socrates-cascade-whisper-npu:${CASCADE_INTEL_TAG:-intel}
+    <<: *intel-gid
+    devices:
+      - /dev/accel:/dev/accel
+      - /dev/dri:/dev/dri
+    environment:
+      WHISPER_OV_DEVICE: ${WHISPER_OV_DEVICE:-NPU}
+      WHISPER_OV_REPO: OpenVINO/whisper-small-int8-ov
+      WHISPER_HOST: 0.0.0.0
+      WHISPER_PORT: "8101"
+    healthcheck:
+      start_period: 180s
+
+  cascade-adapter:
+    image: socrates-cascade-core:${CASCADE_INTEL_TAG:-intel}
+
+  cascade:
+    build:
+      context: .
+      dockerfile: docker/cascade-intel/core.Dockerfile
+    image: socrates-cascade-core:${CASCADE_INTEL_TAG:-intel}

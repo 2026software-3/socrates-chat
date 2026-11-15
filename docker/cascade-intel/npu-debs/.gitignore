@@ -1,0 +1,4 @@
+*.deb
+*.ddeb
+*.asc
+!.gitignore

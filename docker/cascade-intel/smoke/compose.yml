@@ -1,0 +1,25 @@
+# Intel 版 cascade 的 smoke 測試：疊在 docker-compose.yml 與 docker-compose.intel.yml 之上，
+# 用假的內部 LLM（網路別名 app）取代 Rust 後端，只驗證 ASR → LLM → TTS 鏈路。
+# 用法（在 repo 根目錄，要用獨立專案名稱，不要帶 --profile app）：
+#   export CASCADE_LLM_TOKEN=smoke-token
+#   F="-p socrates-intel-test -f docker-compose.yml -f docker-compose.intel.yml -f docker/cascade-intel/smoke/compose.yml"
+#   docker compose $F --profile cascade up -d && docker compose $F --profile smoke run --rm smoke-client
+services:
+  llm-stub:
+    profiles: ["cascade"]
+    image: socrates-cascade-core:${CASCADE_INTEL_TAG:-intel}
+    entrypoint: ["python3", "/smoke/stub_app.py"]
+    environment:
+      CASCADE_LLM_TOKEN: ${CASCADE_LLM_TOKEN:?設定 CASCADE_LLM_TOKEN}
+    volumes:
+      - ./docker/cascade-intel/smoke:/smoke:ro
+    networks:
+      default:
+        aliases: [app]
+
+  smoke-client:
+    profiles: ["smoke"]
+    image: socrates-cascade-core:${CASCADE_INTEL_TAG:-intel}
+    entrypoint: ["python3", "/smoke/chain_client.py"]
+    volumes:
+      - ./docker/cascade-intel/smoke:/smoke:ro

@@ -99,7 +99,8 @@ def make_synthesizer(pipeline, voice):
 def main():
     from kokoro import KPipeline
 
-    pipeline = KPipeline(lang_code='z', device='cuda')
+    # 預設 cuda（NVIDIA 部署）；Intel iGPU 版映像設 KOKORO_DEVICE=xpu，見 docker/cascade-intel/。
+    pipeline = KPipeline(lang_code='z', device=os.environ.get('KOKORO_DEVICE', 'cuda'))
     voice = os.environ.get('KOKORO_VOICE', 'zm_yunjian')
     pipeline.load_voice(voice)
     synthesize = make_synthesizer(pipeline, voice)

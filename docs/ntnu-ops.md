@@ -348,6 +348,38 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 重新評估的條件：S-09 決定正式環境的 DB 方案，或需要不依賴這台電腦的可用性。
 
+## Intel 版 cascade（msi_cubi：iGPU＋NPU，2026-11-16）
+
+要把 NTNU 搬到沒有 NVIDIA 的 `msi_cubi`（`ssh msi_cubi`；Core Ultra 5 322、14 GB、Ubuntu 26.04）時，語音 cascade 用 `docker-compose.intel.yml` 疊在 `docker-compose.yml` 上。**目前只完成映像與測試，沒有切換正式環境。**
+
+| 服務 | 裝置 | 映像（tag `intel-20261116`） |
+| --- | --- | --- |
+| `cascade-whisper` | NPU（OpenVINO GenAI，`OpenVINO/whisper-small-int8-ov`） | `socrates-cascade-whisper-npu`（約 2 GB） |
+| `cascade-tts` | iGPU（PyTorch XPU，Kokoro 同一支 `kokoro_server.py`，`KOKORO_DEVICE=xpu`） | `socrates-cascade-tts-xpu`（約 11 GB） |
+| `cascade`、`cascade-adapter` | CPU（本來就沒用 GPU） | `socrates-cascade-core`（約 20 GB，Ubuntu 24.04 底，不含 CUDA 基底） |
+
+不會動到 NVIDIA 版的 `socrates-cascade:latest`。
+
+**建置前提**：NPU 的使用者空間驅動不在 Ubuntu 倉庫。要把 Intel linux-npu-driver 發行檔的 `intel-level-zero-npu`、`intel-driver-compiler-npu`、PPA 的 `libze1` 三個 `.deb`（版本與主機一致，msi_cubi 在 `~/npu_driver`）放進 `docker/cascade-intel/npu-debs/`（`.gitignore` 排除）。主機要能用 `/dev/dri/renderD128`、`/dev/accel/accel0`，`RENDER_GID` 填主機 render 群組（msi_cubi 是 991）。
+
+**驗證（`docker/cascade-intel/smoke/`，假的內部 LLM＋合成語音走真的 realtime WebSocket）**：
+
+| 項目 | 結果 |
+| --- | --- |
+| 單元測試（`test_whisper_ov_server.py`） | 15 項通過，主機與映像內各跑一次 |
+| Whisper NPU，7 秒句 | 約 0.45 秒（CPU 路徑約 2 秒），輸出繁體 |
+| Kokoro iGPU，7 秒句 | 暖機後 0.56／1.1／1.1 秒（首句／中句／長句）；CPU 是 0.8／1.9／2.2 秒 |
+| 鏈路（學生說完 → …） | 辨識文字 0.7 秒、開始出聲 1.3–1.7 秒；單人 3/3、3 人、5 人同時全部通過 |
+| 記憶體 | whisper 1.8 GB、tts 3.7 GB、cascade 2.7 GB，合計約 8.2 GB／14.6 GB |
+| 噪音幻聽 | 無 VAD 時，高於能量門檻的噪音會辨識出 1–4 字；加上與 faster-whisper 版相同的 Silero VAD 後 6 種噪音／靜音全為 0 字 |
+
+**已知差異與風險**：
+- openvino-genai 不回 `no_speech_prob`／`avg_logprob`，沒有 faster-whisper 版的 `keep_segment` 信心過濾；改靠能量門檻＋Silero VAD。真人、多口音、雜訊環境的辨識品質**沒有**用真實語料比過 faster-whisper，只用合成語音驗證了鏈路與噪音。
+- 取不到功耗（RAPL／hwmon 要 root）；「省電」只以 CPU 秒數佐證：Whisper 一句 4.2 → 0.12 CPU 秒（NPU），Kokoro 一句 10.4 → 1.1 CPU 秒（iGPU）。
+- Kokoro 遇到新長度的句子首次會多 0.1–0.7 秒（SYCL 核心編譯，`SYCL_CACHE_PERSISTENT=1`，快取在 `cascade_cache` volume）。
+- cascade 日誌有 mooncake／nixl 的 ERROR：可選的傳輸層沒裝，不影響功能。
+- 尚未用真人從瀏覽器走完整語音（含打斷），也沒有接真的 Rust 後端。
+
 ## 狀態紀錄
 
 | 日期 | 事件 |
@@ -380,6 +412,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 2026-11-12 | 部署 F-38 的第五次調整：教師與管理者也能修改顯示名稱，並與學生共用同一個個人設定表單（可編輯名稱、儲存、更改密碼，另有唯讀的電子郵件與角色兩列；移除先前分開的唯讀卡片）（需求方指示；來源提交 `04725d0`，cherry-pick 為 `f334fbf`，無衝突）。**後端行為變更（無 migration）**：`PATCH /api/me` 的 `display_name` 從只限學生放寬到學生、教師、管理者，沒有任何角色的帳號仍回 403；規則不變（30 字元、不可含控制字元），教師與管理者清除名稱後顯示電子郵件。S-08.2、S-18 與 API 文件隨提交更新。**PR #543 在這次的來源提交產生前已合併（squash `4b36733`）**，所以 `04725d0` 尚未進 `main`，需另開新 PR；整合分支先行部署。部署前的驗證在功能分支完成（後端 811 通過 1 略過、fmt／clippy 通過，前端 750 通過、lint 17 項既有警告）；部署後在部署樹跑完整 sbx-test：後端 fmt／clippy 通過、816 項通過 1 略過，前端 typecheck／test／build 通過、49 個測試檔 777 項通過。`pg_dump` 備份 `~/ntnu-backups/socrates-pre-f38-displayname-20261112-233900.sql.gz`（gzip 檢查通過）；回滾映像 `socrates-ntnu-app:pre-f38-displayname-20261112`。只重建 `app`，本機與公開網址首頁 200、`/health`、`/ready` 200、`/api/me` 未登入 401，使用者／對話／訊息 40／70／647 與 migration 20 筆都不變，新容器沒有 WARN 或 ERROR 日誌（只有未登入探測的 401 存取紀錄）；打包檔確認含個人設定字串。 |
 | 2026-11-14 | 把 `origin/main`（到 #563）整個合進 `deploy/ntnu-integration`（合併提交 `da4ec7d`，需求方指示）並部署。實際新增的行為：#560 前端建置產物在映像建置時預先壓成 `.gz`，瀏覽器接受 gzip 時直接送出；`/assets/`（檔名帶內容雜湊）回 `Cache-Control: public, max-age=31536000, immutable`，找不到的檔案回 404（以前回 `index.html`）；`index.html` 與前端路由回 `no-cache`；教師與管理者頁面延遲載入；`GET /api/tasks` 合成一個語句；#561 移除未使用的 assistant-ui 元件；#562 session 的 `last_seen_at` 最多每分鐘寫入一次（S-08.2，閒置期限最多提早 1 分鐘到期）；#563 只改測試。**沒有新的 migration。** 衝突六個檔案：`backend/src/argument_tree.rs` 與三份文件（`api-reference.md`、`decisions.md`、`summary-argument-tree.md`）以 main 為準；`backend/tests/display_name.rs` 與前端 `account.test.tsx` 保留整合分支（教師的顯示名稱提示 `profile.hintStaff` 尚未進 main）。部署前在部署樹跑 sbx-test：後端 fmt／clippy 通過、920 通過（1 略過），前端 lint／typecheck／build 通過、50 個測試檔 804 項通過；`pg_dump` 備份 `~/ntnu-backups/socrates-pre-asset-delivery-20261114-140310.sql.gz`（29 張表，gzip 檢查通過）；回滾映像 `socrates-ntnu-app:pre-asset-delivery-20261114`。先建好映像再只重建 `app`，約 4 秒後 `/ready` 回 200。驗證：`/health`、`/ready`（本機與公開網址，本文為 JSON）200，`/api/me` 未登入 401；`users` 40、`conversations` 73、`messages` 685、`sessions` 53、`_sqlx_migrations` 27 筆全部 success，與部署前一致；新容器沒有 WARN 或 ERROR 日誌。進入點 JS 的傳輸量（帶 `Accept-Encoding: gzip`）由 722,368 bytes（未壓縮、沒有快取標頭）降為 88,041 bytes，公開網址量到相同的結果；不接受 gzip 的用戶端仍拿到原檔（299,228 bytes）。退回時把 `pre-asset-delivery-20261114` 改標回 `latest` 再以 `--no-build --force-recreate app` 重建，不需要還原資料庫。 |
 | 2026-11-15 | 把 `origin/main`（到 #569）合進 `deploy/ntnu-integration`（合併提交 `f5e090b`，需求方指示）並部署，帶入 F-24 單場對話雷達圖：#568 AI 評分、#569 後端計算與重試 API（`GET /api/conversations/{id}/radar`、`POST .../radar/retry`）與前端計算狀態、雷達圖；另有 #565 只改文件。總結完成後自動計算雷達（失敗自動重試 1 次，仍失敗才標記 failed，不影響總結），學生端可手動重算。**沒有新的 migration**（相關的表在先前部署已建立，`_sqlx_migrations` 仍 27 筆）。合併無衝突；與 main 的差異維持在先前盤點的整合分支專屬內容（示範模式快速回覆、`profile.hintStaff`、本文件）。**這次沒有在部署樹跑 sbx-test**（以 main 上 #568、#569 的 CI 與 #571 分支預覽的人工驗證為準）。預覽驗證（不含正式環境）：個人練習結束後雷達自動算出並顯示；注入 AI 500 後前端顯示失敗訊息與重試按鈕，故障中重試再度失敗，排除後重試成功。部署前 `pg_dump` 備份 `~/ntnu-backups/socrates-pre-f24-radar-20261115-120626.sql.gz`（gzip 檢查通過）；回滾映像 `socrates-ntnu-app:pre-f24-radar-20261115`。先建好映像再只重建 `app`。驗證：`/health`、`/ready`（本機與公開網址）200，openapi 含兩個雷達路由；`users` 40、`conversations` 73、`messages` 685、`_sqlx_migrations` 27、`conversation_radar_results` 0，與部署前一致；新容器沒有 WARN、ERROR 日誌與 5xx。正式環境尚未有人實際跑過雷達，第一場正式對話結束後要看一次 `conversation_radar_results` 與日誌。退回時把 `pre-f24-radar-20261115` 改標回 `latest` 再以 `--no-build --force-recreate app` 重建，不需要還原資料庫。 |
+| 2026-11-16 | 為 msi_cubi 建 Intel 版 cascade 映像（Whisper→NPU、Kokoro→iGPU），在 msi_cubi 以獨立專案 `socrates-intel-test` 與獨立 tag 驗證通過，測試容器已拆除；沒有動現行 NTNU，也沒有切換。細節見上節。公開網址搬遷後沿用 `raynb.tail5fc9fe.ts.net`（需求：使用者 2026-11-16 指示）。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
 | 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |
