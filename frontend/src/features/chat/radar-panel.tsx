@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBlock } from '@/components/page'
+import { RadarResult } from '@/features/chat/radar-chart'
 import { useRadar } from '@/features/chat/use-radar'
 import { errorText, useT } from '@/i18n'
 
@@ -11,7 +12,7 @@ type Props = { conversationId: string; pollMs?: number; maxPollMs?: number }
 
 /**
  * 單場雷達圖的計算狀態與手動重試（F-24.1）。總結成功後才放進畫面，自己一張卡片，
- * 所以計算中或失敗都不影響總結的閱讀。圖形呈現屬於 F-24.2。
+ * 所以計算中或失敗都不影響總結的閱讀。完成後由 `RadarResult` 呈現圖形（F-24.2）。
  */
 export function RadarPanel({ conversationId, pollMs, maxPollMs }: Props) {
   const t = useT()
@@ -86,11 +87,7 @@ export function RadarPanel({ conversationId, pollMs, maxPollMs }: Props) {
   } else if (radar?.status === 'unavailable') {
     body = <p className="text-muted-foreground text-sm">{t('chat.radar.unavailable')}</p>
   } else if (radar?.status === 'ready') {
-    body = (
-      <p role="status" className="text-sm">
-        {t('chat.radar.ready')}
-      </p>
-    )
+    body = <RadarResult radar={radar} />
   }
 
   return (

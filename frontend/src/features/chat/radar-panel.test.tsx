@@ -37,7 +37,7 @@ describe('RadarPanel: calculation status', () => {
     renderPanel()
 
     expect(await screen.findByText('正在計算雷達圖…')).toBeInTheDocument()
-    expect(await screen.findByText('雷達圖已計算完成。')).toBeInTheDocument()
+    expect(await screen.findByTestId('radar-chart')).toBeInTheDocument()
     expect(screen.queryByText('正在計算雷達圖…')).not.toBeInTheDocument()
     // 完成後不再輪詢
     const settled = calls.count
@@ -65,7 +65,7 @@ describe('RadarPanel: calculation status', () => {
 
     mockRadar(makeRadar())
     await userEvent.click(screen.getByRole('button', { name: '再檢查一次' }))
-    expect(await screen.findByText('雷達圖已計算完成。')).toBeInTheDocument()
+    expect(await screen.findByTestId('radar-chart')).toBeInTheDocument()
   })
 
   it('explains that the topic no longer exists', async () => {
@@ -82,7 +82,7 @@ describe('RadarPanel: calculation status', () => {
 
     mockRadar(makeRadar())
     await userEvent.click(screen.getByRole('button', { name: '重試' }))
-    expect(await screen.findByText('雷達圖已計算完成。')).toBeInTheDocument()
+    expect(await screen.findByTestId('radar-chart')).toBeInTheDocument()
   })
 
   it('follows the interface language', async () => {
@@ -112,7 +112,7 @@ describe('RadarPanel: manual retry', () => {
     // 等待中重複點擊不會重複送出
     await userEvent.click(button)
     await userEvent.click(button)
-    expect(await screen.findByText('雷達圖已計算完成。')).toBeInTheDocument()
+    expect(await screen.findByTestId('radar-chart')).toBeInTheDocument()
     expect(posts).toBe(1)
   })
 
@@ -158,7 +158,7 @@ describe('RadarPanel: manual retry', () => {
 
     mockRadar(makeRadar())
     await userEvent.click(screen.getByRole('button', { name: '計算雷達圖' }))
-    expect(await screen.findByText('雷達圖已計算完成。')).toBeInTheDocument()
+    expect(await screen.findByTestId('radar-chart')).toBeInTheDocument()
     expect(posts).toBe(1)
   })
 
@@ -170,7 +170,7 @@ describe('RadarPanel: manual retry', () => {
 
     mockRadar(makeRadar())
     await userEvent.click(screen.getByRole('button', { name: '重新計算雷達圖' }))
-    expect(await screen.findByText('雷達圖已計算完成。')).toBeInTheDocument()
+    expect(await screen.findByTestId('radar-chart')).toBeInTheDocument()
   })
 
   it('does not offer retry when the backend says it is not retryable', async () => {
