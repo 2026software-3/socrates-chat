@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool, types::Json};
+use sqlx::{FromRow, PgExecutor, PgPool, types::Json};
 use uuid::Uuid;
 
 pub type Scores = BTreeMap<String, u8>;
@@ -90,8 +90,12 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<RadarResult>, sqlx::E
 /// running longer than `stale_secs` (its worker died or hung). Takeover opens a new attempt, so
 /// the old worker's later `complete`/`fail` is ignored. Concurrent requests can claim only once.
 /// Missing/incomplete summaries, active conversations, fresh pending and ready results return None.
-pub async fn claim(pool: &PgPool, id: Uuid, stale_secs: f64) -> Result<Option<i32>, sqlx::Error> {
-    start(pool, id, stale_secs, false).await
+pub async fn claim<'e>(
+    conn: impl PgExecutor<'e>,
+    id: Uuid,
+    stale_secs: f64,
+) -> Result<Option<i32>, sqlx::Error> {
+    start(conn, id, stale_secs, false).await
 }
 
 /// Like `claim`, but also restarts a `ready` result (for example after a scoring-rules change).
@@ -106,8 +110,8 @@ pub async fn recompute(
     start(pool, id, stale_secs, true).await
 }
 
-async fn start(
-    pool: &PgPool,
+async fn start<'e>(
+    conn: impl PgExecutor<'e>,
     id: Uuid,
     stale_secs: f64,
     include_ready: bool,
@@ -128,7 +132,7 @@ async fn start(
     .bind(id)
     .bind(stale_secs)
     .bind(include_ready)
-    .fetch_optional(pool)
+    .fetch_optional(conn)
     .await
 }
 
@@ -136,9 +140,10 @@ async fn start(
 /// with a ready summary (the same conditions `claim` requires). Scores are validated against
 /// `rubric` first; invalid scores return an error and leave the attempt pending for the caller
 /// to mark failed. `Ok(false)` means the attempt is no longer current or the summary is not
-/// ready any more; nothing was written. Summaries are never touched.
-pub async fn complete(
-    pool: &PgPool,
+/// ready any more; nothing was written. Summaries are never touched. Pass a transaction to
+/// make follow-up writes (achievements) atomic with the result.
+pub async fn complete<'e>(
+    conn: impl PgExecutor<'e>,
     id: Uuid,
     attempt: i32,
     scores: &Scores,
@@ -157,7 +162,7 @@ pub async fn complete(
     .bind(attempt)
     .bind(Json(scores))
     .bind(rules_version)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(result.rows_affected() == 1)
 }

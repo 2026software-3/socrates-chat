@@ -1,0 +1,492 @@
+{
+  "topics": {
+    "trolley": {
+      "title": "電車難題",
+      "description": "失控的電車將撞上五人。拉桿能讓電車改走另一條軌道，但會撞上一人。你會怎麼做？",
+      "rubric_language": "zh-TW",
+      "dimensions": [
+        {
+          "id": "d1",
+          "name": "看重整體後果",
+          "description": "做決定時以結果好壞、受影響的人數為主要依據。",
+          "rubric": [
+            "提到結果或人數，但沒有把它當成理由。",
+            "把結果當成其中一個考量，但不是主要理由。",
+            "以結果作為主要理由，沒有說明為什麼結果最重要。",
+            "以結果作為主要理由，並說明為什麼要以多數人的利益為重。",
+            "始終以整體後果衡量各種做法，面對反例仍用同一套標準並說明理由。"
+          ]
+        },
+        {
+          "id": "d2",
+          "name": "堅守行為原則",
+          "description": "認為有些行為本身不該做，不因結果較好而改變。",
+          "rubric": [
+            "提到有些事不該做，但沒有用它來下判斷。",
+            "把原則當成其中一個考量，但不是主要理由。",
+            "以「不該主動傷害人」之類的原則作為主要理由，沒有說明原則從何而來。",
+            "以原則作為主要理由，並說明為什麼這條原則不能因結果而讓步。",
+            "始終以原則判斷各種做法，面對更極端的反例仍堅持並說明理由。"
+          ]
+        },
+        {
+          "id": "d3",
+          "name": "承擔個人責任",
+          "description": "把選擇視為自己要負責的決定，願意面對後果。",
+          "rubric": [
+            "提到責任，但把責任歸給別人或情境。",
+            "承認自己有部分責任，但傾向淡化。",
+            "明確表示這是自己的決定，要為結果負責。",
+            "說明自己會如何面對選擇造成的後果或他人的質疑。",
+            "主動比較「做」與「不做」各自要負的責任，並說明自己願意承擔哪一種。"
+          ]
+        },
+        {
+          "id": "d4",
+          "name": "在意當事人感受",
+          "description": "做判斷時把相關的人的處境與感受放進來考慮。",
+          "rubric": [
+            "提到有人會受影響，但沒有進一步描述。",
+            "簡單提到某一方的感受。",
+            "描述至少一方當事人的處境或感受，並用它來支持判斷。",
+            "比較不同當事人的處境或感受，並說明它如何影響自己的判斷。",
+            "始終從當事人的角度思考，包含家屬等間接受影響的人，並據此調整做法。"
+          ]
+        },
+        {
+          "id": "d5",
+          "name": "面對不確定時求證",
+          "description": "資訊不完整時想先確認事實，不急著下結論。",
+          "rubric": [
+            "提到不確定，但仍直接下結論。",
+            "指出一項不確定的資訊，沒有說明它為何重要。",
+            "指出不確定的資訊，並說明它會如何改變自己的判斷。",
+            "提出想先確認的具體問題或做法，再決定怎麼做。",
+            "系統性地列出不確定之處，分別說明各種情況下自己會怎麼做。"
+          ]
+        },
+        {
+          "id": "d6",
+          "name": "願意調整想法",
+          "description": "聽到新的理由或反例時，願意重新檢視並修正自己的看法。",
+          "rubric": [
+            "聽到反例時表示有道理，但看法不變也沒有回應。",
+            "承認原本的說法有漏洞，但沒有修正。",
+            "因為反例而補充或限縮原本的看法。",
+            "因為反例而明確修正立場，並說明是哪個理由讓自己改變。",
+            "多次依新的理由調整，並整理出修正後前後一致的看法。"
+          ]
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "OUTCOME_ZH",
+      "covers": [
+        "clear_evidence",
+        "isolation_pair"
+      ],
+      "language": "zh-TW",
+      "note": "學生始終以人數與結果為理由，並表示願意負責；沒有談到感受、不確定或調整想法。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "如果是你，會拉桿嗎？"
+        },
+        {
+          "role": "student",
+          "content": "會，五個人比一個人多，救比較多人才對。"
+        },
+        {
+          "role": "ai",
+          "content": "為什麼人數多就比較重要？"
+        },
+        {
+          "role": "student",
+          "content": "每個人的命一樣重要，所以能少死幾個就少死幾個，這樣整體的損失最小。"
+        },
+        {
+          "role": "ai",
+          "content": "如果那一個人是因為你拉桿才死的呢？"
+        },
+        {
+          "role": "student",
+          "content": "那是我的決定，我會負責。不拉也是一種選擇，五個人死了我一樣要負責，所以我選損失小的。"
+        },
+        {
+          "role": "ai",
+          "content": "如果改成要親手推一個人下去擋電車呢？"
+        },
+        {
+          "role": "student",
+          "content": "一樣，結果是救五個人，我還是會做，標準不應該因為方式不同就變。"
+        }
+      ],
+      "expected": {
+        "d1": [
+          4,
+          5
+        ],
+        "d2": [
+          0,
+          1
+        ],
+        "d3": [
+          3,
+          5
+        ],
+        "d4": [
+          0,
+          1
+        ],
+        "d5": [
+          0,
+          1
+        ],
+        "d6": [
+          0,
+          1
+        ]
+      },
+      "topic": "trolley"
+    },
+    {
+      "id": "PRINCIPLE_ZH",
+      "covers": [
+        "clear_evidence",
+        "isolation_pair"
+      ],
+      "language": "zh-TW",
+      "note": "與 OUTCOME_ZH 同一題，學生立場相反：堅持不主動傷害人。兩場的分數方向應該相反，不能互相影響。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "如果是你，會拉桿嗎？"
+        },
+        {
+          "role": "student",
+          "content": "不會。拉桿等於是我殺了那個人。"
+        },
+        {
+          "role": "ai",
+          "content": "但不拉會有五個人死，這樣比較好嗎？"
+        },
+        {
+          "role": "student",
+          "content": "結果比較差我知道，可是主動去害死一個無辜的人本身就是錯的，不能因為數字好看就去做。"
+        },
+        {
+          "role": "ai",
+          "content": "為什麼這條原則不能讓步？"
+        },
+        {
+          "role": "student",
+          "content": "如果可以為了多數人犧牲一個人，那任何人都可能被犧牲，這樣沒有人是安全的。"
+        },
+        {
+          "role": "ai",
+          "content": "如果軌道上是五十個人呢？"
+        },
+        {
+          "role": "student",
+          "content": "還是不會。人數變多不會讓殺人變成對的事。"
+        }
+      ],
+      "expected": {
+        "d1": [
+          0,
+          2
+        ],
+        "d2": [
+          4,
+          5
+        ],
+        "d4": [
+          0,
+          1
+        ],
+        "d5": [
+          0,
+          1
+        ],
+        "d6": [
+          0,
+          1
+        ]
+      },
+      "topic": "trolley"
+    },
+    {
+      "id": "NO_EVIDENCE_ZH",
+      "covers": [
+        "insufficient_evidence"
+      ],
+      "language": "zh-TW",
+      "note": "學生幾乎沒有表達內容。六個維度都應該是 0（證據不足），而且六個都要回傳。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "如果是你，會拉桿嗎？"
+        },
+        {
+          "role": "student",
+          "content": "不知道。"
+        },
+        {
+          "role": "ai",
+          "content": "可以說說你猶豫的地方嗎？"
+        },
+        {
+          "role": "student",
+          "content": "都可以吧。"
+        },
+        {
+          "role": "ai",
+          "content": "你覺得救五個人和不主動傷害人，哪一個比較重要？"
+        },
+        {
+          "role": "student",
+          "content": "沒想過。"
+        }
+      ],
+      "expected": {
+        "d1": [
+          0,
+          0
+        ],
+        "d2": [
+          0,
+          0
+        ],
+        "d3": [
+          0,
+          0
+        ],
+        "d4": [
+          0,
+          0
+        ],
+        "d5": [
+          0,
+          0
+        ],
+        "d6": [
+          0,
+          0
+        ]
+      },
+      "topic": "trolley"
+    },
+    {
+      "id": "REVISED_ZH",
+      "covers": [
+        "revised_position"
+      ],
+      "language": "zh-TW",
+      "note": "學生一開始主張拉桿，經追問後明確改成不拉並說明是哪個理由讓他改變。應依修正後的看法評分。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "如果是你，會拉桿嗎？"
+        },
+        {
+          "role": "student",
+          "content": "會，救五個人比較划算。"
+        },
+        {
+          "role": "ai",
+          "content": "如果醫生可以殺一個健康的人，用他的器官救五個病人，你也同意嗎？"
+        },
+        {
+          "role": "student",
+          "content": "這個不行……可是道理好像一樣，都是犧牲一個救五個。"
+        },
+        {
+          "role": "ai",
+          "content": "那你現在怎麼看拉桿這件事？"
+        },
+        {
+          "role": "student",
+          "content": "我想改變想法。醫生的例子讓我發現，主動害死一個無辜的人本身就不對，所以我現在覺得不該拉桿。"
+        },
+        {
+          "role": "ai",
+          "content": "人數不重要了嗎？"
+        },
+        {
+          "role": "student",
+          "content": "人數還是有關係，但不能當成可以殺人的理由。我原本只看數字，現在覺得原則要放在前面。"
+        }
+      ],
+      "expected": {
+        "d1": [
+          0,
+          3
+        ],
+        "d2": [
+          3,
+          5
+        ],
+        "d6": [
+          4,
+          5
+        ]
+      },
+      "topic": "trolley"
+    },
+    {
+      "id": "VERIFY_EN",
+      "covers": [
+        "multilingual",
+        "clear_evidence"
+      ],
+      "language": "en",
+      "note": "英文對話搭配中文評分準則。學生不斷想先確認事實。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "Would you pull the lever?"
+        },
+        {
+          "role": "student",
+          "content": "I'm not sure yet. How do I know the five people can't get off the track in time?"
+        },
+        {
+          "role": "ai",
+          "content": "Suppose you can't be certain. What then?"
+        },
+        {
+          "role": "student",
+          "content": "Then it matters a lot. If there's a real chance they escape, pulling the lever kills one person for nothing. I'd want to shout a warning first and see whether anyone can move."
+        },
+        {
+          "role": "ai",
+          "content": "And if there is no time to check?"
+        },
+        {
+          "role": "student",
+          "content": "Then I'd split it: if I'm sure the five can't escape I would pull it, and if I can't tell I wouldn't, because I'd be causing a certain death to prevent an uncertain one."
+        }
+      ],
+      "expected": {
+        "d5": [
+          4,
+          5
+        ],
+        "d4": [
+          0,
+          1
+        ],
+        "d6": [
+          0,
+          2
+        ]
+      },
+      "topic": "trolley"
+    },
+    {
+      "id": "EMPATHY_ES",
+      "covers": [
+        "multilingual",
+        "clear_evidence"
+      ],
+      "language": "es",
+      "note": "西班牙文對話搭配中文評分準則。學生從當事人與家屬的感受出發。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "¿Accionarías la palanca?"
+        },
+        {
+          "role": "student",
+          "content": "Me cuesta decidir. Pienso en la persona que está sola en la otra vía: no ha hecho nada y de repente alguien decide que debe morir."
+        },
+        {
+          "role": "ai",
+          "content": "¿Y las cinco personas?"
+        },
+        {
+          "role": "student",
+          "content": "También pienso en ellas y en el miedo que sienten. Y en las familias de los seis, que van a preguntarse por qué alguien eligió así."
+        },
+        {
+          "role": "ai",
+          "content": "¿Cómo influye eso en tu decisión?"
+        },
+        {
+          "role": "student",
+          "content": "Creo que accionaría la palanca, pero después intentaría hablar con la familia de esa persona y explicarles lo que pasó, porque merecen saberlo."
+        }
+      ],
+      "expected": {
+        "d4": [
+          4,
+          5
+        ],
+        "d5": [
+          0,
+          1
+        ]
+      },
+      "topic": "trolley"
+    },
+    {
+      "id": "FACILITATOR_ONLY_ZH",
+      "covers": [
+        "facilitator_is_not_evidence"
+      ],
+      "language": "zh-TW",
+      "note": "引導者提到感受、不確定與責任，但學生沒有接續，只重複人數理由。引導者說的話不能算成學生的表現。",
+      "turns": [
+        {
+          "role": "ai",
+          "content": "如果是你，會拉桿嗎？"
+        },
+        {
+          "role": "student",
+          "content": "會，五個比一個多。"
+        },
+        {
+          "role": "ai",
+          "content": "你有想過那一個人和他家人的感受嗎？也有人會想先確認五個人是否真的逃不掉。"
+        },
+        {
+          "role": "student",
+          "content": "沒有，反正五個比一個多。"
+        },
+        {
+          "role": "ai",
+          "content": "拉了桿之後，你覺得誰要為那個人的死負責？"
+        },
+        {
+          "role": "student",
+          "content": "不知道，我只知道救比較多人比較好。"
+        }
+      ],
+      "expected": {
+        "d1": [
+          2,
+          4
+        ],
+        "d3": [
+          0,
+          1
+        ],
+        "d4": [
+          0,
+          1
+        ],
+        "d5": [
+          0,
+          1
+        ],
+        "d6": [
+          0,
+          1
+        ]
+      },
+      "topic": "trolley"
+    }
+  ]
+}
