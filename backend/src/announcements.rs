@@ -573,51 +573,87 @@ pub(crate) async fn update(
     let manual_en = b.text_en.as_deref().map(clean_text).transpose()?;
     let manual_es = b.text_es.as_deref().map(clean_text).transpose()?;
 
-    let mut en = current.text_en.clone();
-    let mut es = current.text_es.clone();
-    let mut pending = current.pending_languages.clone();
+    // 只記下這次請求要改的譯文：`None`＝不動，`Some(None)`＝清掉（翻譯失敗）
+    let mut en: Option<Option<String>> = None;
+    let mut es: Option<Option<String>> = None;
+    // 這次寫過的語言先從待完成移除，翻譯失敗的再加回去
+    let mut touched: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
     for (code, language) in TRANSLATED {
         let manual = if code == "en" { &manual_en } else { &manual_es };
         let value = if let Some(m) = manual {
             // 手動給的譯文優先
-            pending.retain(|p| p != code);
             Some(m.clone())
         } else if zh_changed {
             // 內文改了：重新翻譯並覆蓋舊譯文；失敗時舊譯文已過期，清掉並標示待完成
             let translated = translate(&state, language, &text).await;
-            pending.retain(|p| p != code);
             if translated.is_none() {
-                pending.push(code.to_string());
+                failed.push(code.to_string());
             }
             translated
         } else {
             continue;
         };
+        touched.push(code.to_string());
         if code == "en" {
-            en = value;
+            en = Some(value);
         } else {
-            es = value;
+            es = Some(value);
         }
     }
 
-    let view: AnnouncementView = sqlx::query_as(concat!(
-        "UPDATE announcements SET kind = $2, text_zh_tw = $3, text_en = $4, text_es = $5, pending_languages = $6,
-             starts_at = $7, ends_at = $8, enabled = $9, updated_at = now()
-         WHERE id = $1 RETURNING ",
+    // 翻譯可能等很久，期間其他管理者可能改過這則公告：只寫這次請求真正要改的欄位，
+    // 其餘欄位保留資料庫當下的值，不用一開始讀到的舊快照整列寫回（#527）。
+    // 起訖時間以合併後的結果再檢查一次，衝突時不寫入。
+    let view: Option<AnnouncementView> = sqlx::query_as(concat!(
+        "UPDATE announcements SET
+             kind = COALESCE($2, kind),
+             text_zh_tw = COALESCE($3, text_zh_tw),
+             text_en = CASE WHEN $4 THEN $5 ELSE text_en END,
+             text_es = CASE WHEN $6 THEN $7 ELSE text_es END,
+             pending_languages = ARRAY(
+                 SELECT p FROM unnest(pending_languages) AS p WHERE p <> ALL($8::text[])
+             ) || $9::text[],
+             starts_at = COALESCE($10, starts_at),
+             ends_at = CASE WHEN $11 THEN $12 ELSE ends_at END,
+             enabled = COALESCE($13, enabled),
+             updated_at = now()
+         WHERE id = $1
+           AND (
+               (CASE WHEN $11 THEN $12 ELSE ends_at END) IS NULL
+               OR (CASE WHEN $11 THEN $12 ELSE ends_at END) > COALESCE($10, starts_at)
+           )
+         RETURNING ",
         view_columns!()
     ))
-        .bind(id)
-        .bind(b.kind.as_deref().unwrap_or(&current.kind))
-        .bind(&text)
-        .bind(&en)
-        .bind(&es)
-        .bind(&pending)
-        .bind(starts)
-        .bind(ends)
-        .bind(b.enabled.unwrap_or(current.enabled))
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    .bind(id)
+    .bind(b.kind.as_deref())
+    .bind(zh_changed.then_some(&text))
+    .bind(en.is_some())
+    .bind(en.flatten())
+    .bind(es.is_some())
+    .bind(es.flatten())
+    .bind(&touched)
+    .bind(&failed)
+    .bind(b.starts_at)
+    .bind(b.ends_at.is_some())
+    .bind(b.ends_at.flatten())
+    .bind(b.enabled)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(view) = view else {
+        // 沒寫入：公告已被刪除，或與期間其他修改合併後的起訖時間不合法
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM announcements WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&state.pool)
+                .await?;
+        return Err(if exists {
+            ApiError::bad_request("invalid_period", "結束時間必須晚於開始時間")
+        } else {
+            ApiError::not_found()
+        });
+    };
     audit(
         &state.pool,
         cu.user.id,

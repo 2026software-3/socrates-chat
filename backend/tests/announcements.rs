@@ -280,6 +280,121 @@ async fn editing_zh_tw_translates_again_and_overwrites_manual_translations(pool:
     assert_eq!(v["text_es"], "Adiós");
 }
 
+/// 管理者 A 改內文、等翻譯期間，管理者 B 停用公告並改結束時間；A 完成後不能把 B 的變更蓋回去（#527）。
+#[sqlx::test]
+async fn editing_text_during_translation_keeps_concurrent_changes(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Paced(vec!["Bye"], pace),
+        Paced(vec!["Adiós"], pace),
+    ]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    let slow = {
+        let (app, admin, path) = (app.clone(), a.admin.clone(), path.clone());
+        tokio::spawn(async move {
+            call(
+                &app,
+                "PATCH",
+                &path,
+                Some(&admin),
+                Some(json!({"text_zh_tw": "再見"})),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let ends = at(3600);
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"enabled": false, "ends_at": ends})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let concurrent_ends = v["ends_at"].clone();
+
+    let (s, v) = slow.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text_zh_tw"], "再見");
+    assert_eq!(v["text_en"], "Bye");
+    assert_eq!(v["text_es"], "Adiós");
+    assert_eq!(v["enabled"], false, "停用被舊快照蓋回啟用");
+    assert_eq!(v["ends_at"], concurrent_ends, "結束時間被舊快照蓋回");
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["enabled"], false);
+    assert_eq!(list[0]["ends_at"], concurrent_ends);
+}
+
+/// 合併兩次修改後的起訖時間若互相衝突，回 400 invalid_period，而不是寫入失敗變成 500。
+#[sqlx::test]
+async fn a_period_made_invalid_by_a_concurrent_change_is_rejected(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Paced(vec!["Bye"], pace),
+        Paced(vec!["Adiós"], pace),
+    ]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好", "starts_at": at(-60)}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    // A：開始時間延到兩小時後（當下沒有結束時間，所以合法）
+    let slow = {
+        let (app, admin, path) = (app.clone(), a.admin.clone(), path.clone());
+        tokio::spawn(async move {
+            call(
+                &app,
+                "PATCH",
+                &path,
+                Some(&admin),
+                Some(json!({"text_zh_tw": "再見", "starts_at": at(7200)})),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // B：結束時間設在一小時後，早於 A 要設的開始時間
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"ends_at": at(3600)})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let concurrent_ends = v["ends_at"].clone();
+
+    let (s, v) = slow.await.unwrap();
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["code"], "invalid_period", "{v}");
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["text_zh_tw"], "你好");
+    assert_eq!(list[0]["ends_at"], concurrent_ends);
+}
+
 #[sqlx::test]
 async fn pending_translations_can_be_retried_and_then_clear(pool: PgPool) {
     let ai = FakeAi::with(vec![Fail, Fail, Reply(vec!["Hello"]), Reply(vec!["Hola"])]);
