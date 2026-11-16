@@ -470,13 +470,13 @@ async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Nex
         return next.run(req).await;
     }
     let (mut parts, body) = req.into_parts();
-    let is_admin = auth::AnyCurrentUser::from_request_parts(&mut parts, &state)
-        .await
-        .is_ok_and(|auth::AnyCurrentUser(cu)| cu.roles.admin);
-    if is_admin {
-        next.run(Request::from_parts(parts, body)).await
-    } else {
-        announcements::MAINTENANCE_ERROR.into_response()
+    match auth::AnyCurrentUser::from_request_parts(&mut parts, &state).await {
+        Ok(auth::AnyCurrentUser(cu)) if cu.roles.admin => {
+            // 查好的管理者留給 handler 的 extractor 沿用，不再查一次 session（#529）
+            parts.extensions.insert(auth::ResolvedUser(cu));
+            next.run(Request::from_parts(parts, body)).await
+        }
+        _ => announcements::MAINTENANCE_ERROR.into_response(),
     }
 }
 

@@ -195,6 +195,10 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // middleware 已經查過這個請求的 session（例如維護模式的 gate）就直接沿用，省一次資料庫往返
+        if let Some(ResolvedUser(cu)) = parts.extensions.get::<ResolvedUser>() {
+            return Ok(AnyCurrentUser(cu.clone()));
+        }
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
         // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
         let SessionUser {
