@@ -378,8 +378,24 @@ impl Voice {
     }
 }
 
+impl Voice {
+    async fn turn_count(&self) -> i64 {
+        let path = format!("/api/conversations/{}", self.conv);
+        let res = send(&self.r.app, get(&path, Some(&self.a.student))).await;
+        json_body(res).await["turn_count"].as_i64().unwrap()
+    }
+
+    async fn roles(&self) -> Vec<String> {
+        self.detail()
+            .await
+            .into_iter()
+            .map(|(role, _)| role)
+            .collect()
+    }
+}
+
 #[sqlx::test]
-async fn a_failed_reply_tells_the_browser_and_refuses_the_next_turn(pool: PgPool) {
+async fn a_failed_reply_tells_the_browser_and_the_next_turn_answers_both_sentences(pool: PgPool) {
     let mut v = voice(pool, vec![Fail, Fail, Reply(REPLY.to_vec())]).await;
     let mut notices = v.session.take_notices().unwrap();
 
@@ -394,7 +410,7 @@ async fn a_failed_reply_tells_the_browser_and_refuses_the_next_turn(pool: PgPool
             .contains("socrates.turn.failed")
     );
 
-    // 上一句還沒有回覆：另一個分頁或用戶端也不能再疊上去
+    // 上一句還沒有回覆：接著說的話不再被 409 擋下，存成獨立的一則學生訊息，AI 一次回答兩句
     let res = v
         .say(&[
             ("user", "合成的第一句"),
@@ -402,10 +418,67 @@ async fn a_failed_reply_tells_the_browser_and_refuses_the_next_turn(pool: PgPool
             ("user", "第二句"),
         ])
         .await;
-    assert_eq!(res.status(), StatusCode::CONFLICT);
-    assert_eq!(json_body(res).await["error"]["code"], "unanswered_message");
-    assert_eq!(v.speech().await, ["合成的第一句"]);
-    assert_eq!(v.r.ai.request_count(), 2);
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(!deltas(&text_of(res).await).is_empty());
+    assert_eq!(v.speech().await, ["合成的第一句", "第二句"]);
+    assert_eq!(v.roles().await, ["student", "student", "ai"]);
+    // 第一句已經算過一回合，併進去的這句不多算
+    assert_eq!(v.turn_count().await, 1);
+    assert_eq!(v.r.ai.request_count(), 3);
+    assert!(
+        notices.try_recv().is_err(),
+        "a joined turn is not a failed turn"
+    );
+}
+
+#[sqlx::test]
+async fn a_new_voice_session_after_an_unanswered_turn_joins_it_instead_of_refusing(pool: PgPool) {
+    let mut v = voice(pool, vec![Fail, Fail, Reply(REPLY.to_vec())]).await;
+    let mut notices = v.session.take_notices().unwrap();
+    // 串流要讀完，後端才會跑完這一輪並送出失敗通知
+    text_of(v.say(&[("user", "合成的第一句")]).await).await;
+    assert!(
+        notices
+            .recv()
+            .await
+            .unwrap()
+            .contains("socrates.turn.failed")
+    );
+
+    // 瀏覽器逾時後關掉連線再重連：新的語音會話沒有任何記憶（cascade 歷史只有這一句，後端也沒有記下上一句）
+    drop(notices);
+    let Voice {
+        r,
+        a,
+        conv,
+        id,
+        session,
+        pool,
+        ..
+    } = v;
+    drop(session);
+    let session = r
+        .state
+        .voice_sessions
+        .open(owner(&pool, &conv).await, id)
+        .unwrap();
+    let system = voice_session_prompt(session.token());
+    let v = Voice {
+        r,
+        a,
+        conv,
+        id,
+        session,
+        system,
+        pool,
+    };
+    let res = v.say(&[("user", "重連後的第二句")]).await;
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(!deltas(&text_of(res).await).is_empty());
+    assert_eq!(v.speech().await, ["合成的第一句", "重連後的第二句"]);
+    assert_eq!(v.roles().await, ["student", "student", "ai"]);
+    assert_eq!(v.turn_count().await, 1);
 }
 
 #[sqlx::test]

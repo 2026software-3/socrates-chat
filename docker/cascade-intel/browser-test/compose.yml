@@ -10,7 +10,7 @@ services:
   db:
     ports: !override []
   app:
-    image: socrates-ntnu-app:intel-test
+    image: socrates-ntnu-app:${APP_IMAGE_TAG:-intel-test}
     build: !reset null
     environment:
       APP_BASE_URL: ${TEST_BASE_URL:?設定 TEST_BASE_URL}

@@ -384,6 +384,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 `docker/cascade-intel/browser-test/compose.yml` 疊在上面兩個檔案之上，專案名稱 `socrates-intel-test`（獨立 volume 與網路），用現行 NTNU 的 app 映像（`docker save | ssh … docker load`，標成 `socrates-ntnu-app:intel-test`，不在 msi_cubi 重編）。設定範本 `browser-test/env.example`：模型設定與正式一致，Google 憑證填佔位值，`CASCADE_LLM_TOKEN` 在主機上用 `openssl rand -hex 32` 產生，`.apikeylist` 只放一把（正式 `.apikeylist` 啟用中的那一把，其餘是註解）。`DEMO_MODE=true`：登入頁列出公開的示範帳號，所以**只能透過 `tailscale serve`（tailnet 內）提供，不可開 funnel**。
 
+- 2026-11-16 語音實測後的調整（只在這個測試堆疊，**正式 NTNU 沒動**，推理強度仍是 `high`）：`OPENAI_REASONING_EFFORT=medium`（實測首字曾超過 16 秒）；app 映像改成 msi_cubi 自己用目前原始碼建的 `socrates-ntnu-app:intel-test-diag`（`.env` 的 `APP_IMAGE_TAG`），內含語音診斷日誌（`voice event`：事件種類、狀態、播放毫秒數，不含音訊與文字；`voice turn received`：回合數與是否併句）與「重連後接著說不再回 409」的改動（見 `docs/specs/cascade-voice-spike.md`）。
 - 起動：`docker compose -p socrates-intel-test -f docker-compose.yml -f docker-compose.intel.yml -f docker/cascade-intel/browser-test/compose.yml --profile app --profile cascade up -d --no-build`。
 - cascade 啟動時會先探測 app 的內部 LLM 端點，app 還沒起來它會乾淨退出並被 `restart: unless-stopped` 反覆重啟；app 起來後即穩定。
 - `scripts/seed-demo.sh` 的第二段已跟不上目前資料表（活動改為多題目後沒有 `topic_id` 欄位，會中止），第一段（教室、名單、題目）可用；活動改用 API 建（示範教師登入 → `POST /api/activities` → `/publish`）。

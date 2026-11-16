@@ -413,7 +413,8 @@ pub(crate) enum Submitted {
 }
 
 /// 保存學生訊息並更新回合數；文字與語音對話共用。`answered_only` 時，上一則學生訊息
-/// 還沒有回覆就拒絕：語音對話沒有重試的畫面，不能把新的發言疊上去。
+/// 還沒有回覆就回 `unanswered_message`；語音的呼叫端接到後改走 [`rejoin_message`]，把新的發言
+/// 存成獨立的一則併進去回覆，不讓學生卡在沒有重試畫面的語音裡。
 ///
 /// 資料庫往返（不含教室的封存檢查）：`BEGIN`、查詢對話、claim 回合與寫入（一個語句）、`COMMIT`。
 pub(crate) async fn submit_message(

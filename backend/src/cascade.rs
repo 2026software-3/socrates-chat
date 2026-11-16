@@ -349,6 +349,76 @@ pub(crate) async fn socket(
         .on_upgrade(move |client| relay(client, url, session, state)))
 }
 
+/// 診斷日誌的一筆：瀏覽器與 cascade 之間的控制事件，只有種類、狀態與播放毫秒數。
+/// 音訊、逐字稿、回覆文字與項目代號一律不放進來。
+#[derive(Debug, PartialEq, Eq)]
+pub struct VoiceTrace {
+    pub from: &'static str,
+    pub kind: &'static str,
+    pub status: Option<&'static str>,
+    pub audio_end_ms: Option<u64>,
+}
+
+/// 這個事件要不要留診斷日誌（時間由日誌本身帶）。用來分辨回覆被取消的原因：
+/// 是 VAD 聽到聲音（`speech_started`）、瀏覽器主動取消或截斷，還是 cascade 自己結束。
+/// 方向不對的同名事件不記，狀態只認 cascade 已知的幾種，其餘寫成 `other`。
+pub fn voice_trace(from_client: bool, event: &serde_json::Value) -> Option<VoiceTrace> {
+    let kind = event_kind(event)?;
+    let (from, kind, status, audio_end_ms) = match (from_client, kind) {
+        (true, "response.cancel") => ("client", "response.cancel", None, None),
+        (true, "conversation.item.truncate") => (
+            "client",
+            "conversation.item.truncate",
+            None,
+            event["audio_end_ms"].as_f64().map(|ms| ms as u64),
+        ),
+        (false, "input_audio_buffer.speech_started") => {
+            ("cascade", "input_audio_buffer.speech_started", None, None)
+        }
+        (false, "input_audio_buffer.speech_stopped") => {
+            ("cascade", "input_audio_buffer.speech_stopped", None, None)
+        }
+        (false, "conversation.item.input_audio_transcription.completed") => (
+            "cascade",
+            "conversation.item.input_audio_transcription.completed",
+            None,
+            None,
+        ),
+        (false, "response.created") => ("cascade", "response.created", None, None),
+        (false, "response.done") => (
+            "cascade",
+            "response.done",
+            event["response"]["status"].as_str().map(|status| {
+                ["completed", "cancelled", "failed", "incomplete"]
+                    .into_iter()
+                    .find(|known| *known == status)
+                    .unwrap_or("other")
+            }),
+            None,
+        ),
+        _ => return None,
+    };
+    Some(VoiceTrace {
+        from,
+        kind,
+        status,
+        audio_end_ms,
+    })
+}
+
+fn log_voice_trace(conversation: Uuid, from_client: bool, event: Option<&serde_json::Value>) {
+    if let Some(trace) = event.and_then(|event| voice_trace(from_client, event)) {
+        tracing::info!(
+            %conversation,
+            from = trace.from,
+            event = trace.kind,
+            status = trace.status,
+            audio_end_ms = trace.audio_end_ms,
+            "voice event"
+        );
+    }
+}
+
 fn parse_event(text: &str) -> Option<serde_json::Value> {
     serde_json::from_str(text).ok()
 }
@@ -390,6 +460,7 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
             frame = from_client.next() => match frame {
                 Some(Ok(ClientFrame::Text(text))) => {
                     let event = parse_event(&text);
+                    log_voice_trace(session.conversation, true, event.as_ref());
                     if let Some(event) = &event {
                         heard.from_client(event);
                     }
@@ -406,6 +477,7 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
             frame = from_cascade.next() => match frame {
                 Some(Ok(CascadeFrame::Text(text))) => {
                     let event = parse_event(&text);
+                    log_voice_trace(session.conversation, false, event.as_ref());
                     if let Some(chars) = event.as_ref().and_then(|e| heard.from_cascade(e)) {
                         record_heard(&state, session.conversation, chars).await;
                     }
@@ -613,6 +685,8 @@ async fn spoken_turn(
     let _turn = turn_lock.lock().await;
     let fresh = state.voice_sessions.new_speech(token, content, user_turns);
     let joined = fresh != content;
+    // 診斷：cascade 把學生這句話送來了（只記回合數與是否併入前一句，不含內容）
+    tracing::info!(conversation = %id, user_turns, joined, "voice turn received");
     let mut attempts = 0;
     let submitted = loop {
         // 回覆沒被聽到又接著說：存成獨立的一則（畫面是兩個泡泡），但不多算一回合
@@ -623,7 +697,19 @@ async fn spoken_turn(
         };
         let result = match rejoined {
             Ok(Some(submitted)) => Ok(submitted),
-            Ok(None) => submit_message(state, user, id, &fresh, SOURCE, true).await,
+            Ok(None) => match submit_message(state, user, id, &fresh, SOURCE, true).await {
+                // 最後一則是沒有回覆的學生訊息（例如回覆沒產生、瀏覽器逾時後重連，新會話沒有記憶）：
+                // 不擋下，接著說的話存成獨立的一則、回合數不變，AI 一次回答兩句
+                Err(e) if e.code == "unanswered_message" => {
+                    match rejoin_message(state, user, id, &fresh, SOURCE).await {
+                        Ok(Some(submitted)) => Ok(submitted),
+                        // 這時最後一則已是聽到的 AI 回覆（交易之間有人回覆了）：照原本的錯誤處理
+                        Ok(None) => Err(e),
+                        Err(rejoin_error) => Err(rejoin_error),
+                    }
+                }
+                other => other,
+            },
             Err(e) => Err(e),
         };
         match result {
