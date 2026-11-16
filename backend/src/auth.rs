@@ -154,6 +154,7 @@ impl Roles {
 
 /// 目前登入的使用者；沒有有效 session 時回 401，
 /// 用臨時密碼登入、尚未更改密碼時回 403 `password_change_required`。
+#[derive(Clone)]
 pub struct CurrentUser {
     pub user: auth_store::User,
     pub roles: Roles,
@@ -163,6 +164,11 @@ pub struct CurrentUser {
 
 /// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
 pub struct AnyCurrentUser(pub CurrentUser);
+
+/// middleware 已經查好的登入者，放在 request extensions 給 handler 的 extractor 沿用，
+/// 同一個請求不必再查一次 session（#529）。目前只有維護模式的 `maintenance_gate` 會放。
+#[derive(Clone)]
+pub struct ResolvedUser(pub CurrentUser);
 
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
