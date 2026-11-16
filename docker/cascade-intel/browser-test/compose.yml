@@ -1,0 +1,20 @@
+# 在 msi_cubi 上用「空的測試資料庫」起完整的 app＋Intel 版 cascade，給真人用瀏覽器測語音（含打斷）。不碰正式環境。
+# 疊在 docker-compose.yml 與 docker-compose.intel.yml 之上，專案名稱用 socrates-intel-test（獨立的 volume 與網路）：
+#   F="-p socrates-intel-test -f docker-compose.yml -f docker-compose.intel.yml -f docker/cascade-intel/browser-test/compose.yml"
+#   docker compose $F --profile app --profile cascade up -d --no-build
+# 前置：.env（見 docker/cascade-intel/browser-test/env.example）、.apikeylist，以及 app 映像 socrates-ntnu-app:intel-test
+# （把現行 NTNU 的映像用 docker save | ssh … docker load 傳過去，不在 msi_cubi 重編）。
+# 網址：tailscale serve（只有 tailnet 內的裝置連得到，不是 funnel）轉到 127.0.0.1:3000，APP_BASE_URL 要與它一致。
+# DEMO_MODE=true 讓登入頁列出公開的示範帳號，所以這個環境不可對公網開放。
+services:
+  db:
+    ports: !override []
+  app:
+    image: socrates-ntnu-app:intel-test
+    build: !reset null
+    environment:
+      APP_BASE_URL: ${TEST_BASE_URL:?設定 TEST_BASE_URL}
+      COOKIE_SECURE: "true"
+      TRUSTED_PROXIES: 172.16.0.0/12
+      DEMO_MODE: "true"
+      CASCADE_REALTIME_URL: ws://cascade:8110/v1/realtime

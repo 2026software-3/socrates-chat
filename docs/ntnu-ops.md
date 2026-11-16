@@ -380,6 +380,15 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - cascade 日誌有 mooncake／nixl 的 ERROR：可選的傳輸層沒裝，不影響功能。
 - 尚未用真人從瀏覽器走完整語音（含打斷），也沒有接真的 Rust 後端。
 
+### msi_cubi 瀏覽器測試環境（空資料庫，不碰正式環境）
+
+`docker/cascade-intel/browser-test/compose.yml` 疊在上面兩個檔案之上，專案名稱 `socrates-intel-test`（獨立 volume 與網路），用現行 NTNU 的 app 映像（`docker save | ssh … docker load`，標成 `socrates-ntnu-app:intel-test`，不在 msi_cubi 重編）。設定範本 `browser-test/env.example`：模型設定與正式一致，Google 憑證填佔位值，`CASCADE_LLM_TOKEN` 在主機上用 `openssl rand -hex 32` 產生，`.apikeylist` 只放一把（正式 `.apikeylist` 啟用中的那一把，其餘是註解）。`DEMO_MODE=true`：登入頁列出公開的示範帳號，所以**只能透過 `tailscale serve`（tailnet 內）提供，不可開 funnel**。
+
+- 起動：`docker compose -p socrates-intel-test -f docker-compose.yml -f docker-compose.intel.yml -f docker/cascade-intel/browser-test/compose.yml --profile app --profile cascade up -d --no-build`。
+- cascade 啟動時會先探測 app 的內部 LLM 端點，app 還沒起來它會乾淨退出並被 `restart: unless-stopped` 反覆重啟；app 起來後即穩定。
+- `scripts/seed-demo.sh` 的第二段已跟不上目前資料表（活動改為多題目後沒有 `topic_id` 欄位，會中止），第一段（教室、名單、題目）可用；活動改用 API 建（示範教師登入 → `POST /api/activities` → `/publish`）。
+- 經 app 代理的鏈路測試：`smoke/chain_client.py` 設 `CASCADE_URL=ws://app:3000/api/conversations/<id>/voice`、`COOKIE`、`ORIGIN`。
+
 ## 狀態紀錄
 
 | 日期 | 事件 |

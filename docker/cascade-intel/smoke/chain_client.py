@@ -2,7 +2,8 @@
 
 流程：TTS（cascade-adapter 的 /v1/audio/speech）→ 24 kHz 轉 16 kHz → 每 100 ms 一包送進 cascade →
 等 `response.done`。輸出只含時間與長度，辨識文字只印字數與是否含預期關鍵字（不印全文）。
-用法：python chain_client.py [句子]（預設一句繁體問句）。環境變數 CASCADE_URL、ADAPTER_URL。
+用法：python chain_client.py [句子]（預設一句繁體問句）。環境變數 CASCADE_URL、ADAPTER_URL；
+經 app 代理測試時再設 COOKIE（學生的 session cookie）與 ORIGIN（APP_BASE_URL），CASCADE_URL 指向 ws://app:3000/api/conversations/<id>/voice。
 """
 import asyncio
 import base64
@@ -46,7 +47,9 @@ async def main():
     marks = {}
     transcript = ''
     deltas = audio_chunks = 0
-    async with websockets.connect(CASCADE_URL, max_size=None) as ws:
+    # 經真的 app 代理（/api/conversations/{id}/voice）測試時，帶學生的 session cookie 與符合 APP_BASE_URL 的 Origin
+    headers = {k: v for k, v in (('Cookie', os.environ.get('COOKIE')), ('Origin', os.environ.get('ORIGIN'))) if v}
+    async with websockets.connect(CASCADE_URL, max_size=None, additional_headers=headers or None) as ws:
         await ws.send(event({'type': 'session.update', 'session': {'type': 'realtime', 'instructions': 'smoke', 'audio': {'input': {'format': {'type': 'audio/pcm', 'rate': 16000}}}}}))
 
         async def sender():
