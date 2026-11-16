@@ -33,6 +33,42 @@ describe('tasks', () => {
     renderApp(null, { route: '/tasks' })
     await waitFor(() => expect(screen.getByRole('button', { name: '重試' })).toBeInTheDocument())
   })
+
+  it('keeps the claim button disabled until the refreshed status arrives', async () => {
+    let claimed = false
+    let refreshing = false
+    let finishRefresh = () => {}
+    const refresh = new Promise<void>((resolve) => { finishRefresh = resolve })
+    server.use(
+      http.get('/api/tasks', async () => {
+        if (claimed) {
+          refreshing = true
+          await refresh
+        }
+        return HttpResponse.json([{ ...tasks[0], claimed }])
+      }),
+      http.post('/api/tasks/daily_dialogue/claim', () => {
+        claimed = true
+        return HttpResponse.json({ ...tasks[0], claimed })
+      }),
+    )
+    renderApp(null, { route: '/tasks' })
+    await userEvent.click(await screen.findByRole('button', { name: '領取' }))
+    try {
+      await waitFor(() => expect(refreshing).toBe(true))
+      expect(screen.getByRole('button', { name: '領取' })).toBeDisabled()
+    } finally {
+      finishRefresh()
+    }
+    expect(await screen.findByText('已領取')).toBeInTheDocument()
+  })
+
+  it('shows the empty state when there are no tasks', async () => {
+    server.use(http.get('/api/tasks', () => HttpResponse.json([])))
+    renderApp(null, { route: '/tasks' })
+    expect(await screen.findByText('目前沒有任務。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '領取' })).not.toBeInTheDocument()
+  })
 })
 
 describe('task settings', () => {
