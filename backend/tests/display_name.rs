@@ -459,3 +459,70 @@ async fn patch_with_name_and_language_applies_both(pool: PgPool) {
     assert_eq!(body["display_name"], "小明");
     assert_eq!(body["language"], "es");
 }
+
+async fn stored_display_name(pool: &PgPool, student_number: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT display_name FROM users WHERE student_id = $1")
+        .bind(student_number)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// #548：寫入路徑不再各自把匯入姓名複製進 `display_name`，它只存使用者自訂的名稱；
+/// 顯示時才由同一個解析點補上匯入姓名。
+#[sqlx::test]
+async fn writes_never_copy_the_imported_name_into_display_name(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    import_unbound_student(&app, &a).await;
+    assert_eq!(stored_display_name(&pool, "11234567A").await, None);
+
+    // 首次綁定與之後的 Google 登入都不補上匯入姓名，也不改用 Google 提供的名稱
+    for _ in 0..2 {
+        let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+        assert_eq!(stored_display_name(&pool, "11234567A").await, None);
+        assert_eq!(me_name(&app, &cookie).await, "匯入姓名");
+    }
+
+    // 清除自訂名稱時存回空值，畫面照樣顯示匯入姓名
+    let cookie = login_as(&app, "sub-another-student", "another-student@example.com").await;
+    rename(&app, Some(&cookie), json!({"display_name": "小明"})).await;
+    assert_eq!(
+        stored_display_name(&pool, "11234567A").await.as_deref(),
+        Some("小明")
+    );
+    let (status, body) = rename(&app, Some(&cookie), json!({"display_name": null})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "匯入姓名");
+    assert_eq!(stored_display_name(&pool, "11234567A").await, None);
+}
+
+/// #548：`display_name` 沒有存值時，讀取一律解析成匯入姓名：個人資料、學生名單與名單搜尋。
+#[sqlx::test]
+async fn every_read_falls_back_to_the_imported_name(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    sqlx::query("UPDATE users SET display_name = NULL WHERE email = 'student@example.com'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(me_name(&app, &a.student).await, "學生");
+
+    // q=學生（百分比編碼）：名單搜尋也要比對到匯入姓名
+    let res = send(
+        &app,
+        get(
+            &format!(
+                "/api/classrooms/{}/students?q=%E5%AD%B8%E7%94%9F",
+                a.classroom
+            ),
+            Some(&a.teacher),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let list = json_body(res).await;
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["items"][0]["display_name"], "學生");
+}
