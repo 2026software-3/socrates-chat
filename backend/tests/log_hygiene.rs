@@ -21,6 +21,7 @@ use serde_json::json;
 use socrates_chat_backend::{AppState, ai::OpenAiProvider, app, key_pool::KeyPool};
 use sqlx::PgPool;
 use tracing_subscriber::fmt::MakeWriter;
+use uuid::Uuid;
 
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
@@ -81,6 +82,7 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         "some-model",
     );
     register_fixture_pool(&pool);
+    let notification_pool = pool.clone();
     let app = app(AppState::new(
         pool,
         test_config(),
@@ -168,7 +170,24 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     let conv = start_conversation(&app, &a).await;
     student_says(&app, &a, &conv, STUDENT_MESSAGE).await;
 
+    let student = json_body(send(&app, get("/api/me", Some(&a.student))).await).await;
+    let student_id: Uuid = student["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = notification_pool.begin().await.unwrap();
+    socrates_chat_backend::student_notifications::record_student_number_correction(
+        &mut tx, student_id,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let notices = json_body(send(&app, get("/api/notifications", Some(&a.student))).await).await;
+    let notice_id = notices[0]["id"].as_str().unwrap();
+    let read_path = format!("/api/notifications/{notice_id}/read");
+    let read = send(&app, json_req("POST", &read_path, Some(&a.student), None)).await;
+    assert_eq!(read.status(), StatusCode::NO_CONTENT);
+
     let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(!output.contains(student["student_number"].as_str().unwrap()));
+    assert!(!output.contains(notice_id));
     let entries: Vec<serde_json::Value> = output
         .lines()
         .map(|line| serde_json::from_str(line).expect("每行 tracing 輸出都應為 JSON"))

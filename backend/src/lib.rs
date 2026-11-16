@@ -81,6 +81,7 @@ pub mod radar_store;
 pub mod reply;
 pub mod roster;
 pub mod roster_store;
+pub mod student_notifications;
 pub mod summary;
 pub mod summary_translation;
 pub mod tasks;
@@ -239,6 +240,7 @@ pub fn app(state: AppState) -> Router {
         .merge(demo::routes())
         .merge(ai_usage::routes())
         .merge(announcements::routes())
+        .merge(student_notifications::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
