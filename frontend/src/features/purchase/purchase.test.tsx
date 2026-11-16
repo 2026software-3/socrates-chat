@@ -26,6 +26,35 @@ describe('part purchase', () => {
     await userEvent.click(screen.getByRole('button', { name: '解鎖' }))
     expect(await screen.findByText('已擁有')).toBeInTheDocument()
   })
+  it('disables purchase until the catalog refreshes ownership', async () => {
+    let owned = false
+    let refreshing = false
+    let finishRefresh = () => {}
+    const refresh = new Promise<void>((resolve) => { finishRefresh = resolve })
+    server.use(
+      http.get('/api/parts', async () => {
+        if (owned) {
+          refreshing = true
+          await refresh
+        }
+        return HttpResponse.json([{ ...part, owned }])
+      }),
+      http.get('/api/points', () => HttpResponse.json({ balance: owned ? 20 : 50 })),
+      http.post('/api/parts/synthetic/purchase', () => {
+        owned = true
+        return HttpResponse.json({ ...part, owned })
+      }),
+    )
+    renderApp(null, { route: '/parts' })
+    await userEvent.click(await screen.findByRole('button', { name: '解鎖' }))
+    try {
+      await waitFor(() => expect(refreshing).toBe(true))
+      expect(screen.getByRole('button', { name: '解鎖' })).toBeDisabled()
+    } finally {
+      finishRefresh()
+    }
+    expect(await screen.findByText('已擁有')).toBeInTheDocument()
+  })
   it('shows an actionable error when points are insufficient', async () => {
     server.use(
       http.get('/api/parts', () => HttpResponse.json([part])),

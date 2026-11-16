@@ -48,6 +48,7 @@ const STUDENT_MESSAGE: &str = "SECRETMESSAGE老師我覺得存在主義很難懂
 const WRONG_PASSWORD: &str = "SECRETPASSWORD-wrong-1";
 /// 假的 AI 服務在錯誤回應裡回聲這段文字，日誌不能把回應本文帶出來。
 const PROVIDER_BODY: &str = "SECRETPROVIDERBODY";
+const PURCHASE_DB_DETAIL: &str = "synthetic_part_private_detail";
 
 /// 一個永遠回 500 的假 OpenAI 服務。
 async fn failing_ai_base_url() -> String {
@@ -82,13 +83,36 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
     );
     register_fixture_pool(&pool);
     let app = app(AppState::new(
-        pool,
+        pool.clone(),
         test_config(),
         Arc::new(FakeIdentity),
         Arc::new(provider),
     ));
 
     let a = seed_actors(&app).await;
+    sqlx::query("INSERT INTO store_parts (id, name_zh_tw, name_en, name_es, price) VALUES ('synthetic_part', $1, 'Test part', 'Pieza de prueba', 30)")
+        .bind(PURCHASE_DB_DETAIL).execute(&pool).await.unwrap();
+    sqlx::query("ALTER TABLE store_parts ADD CHECK (price <> 42)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rejected_price = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/admin/parts/synthetic_part",
+            Some(&a.admin),
+            Some(json!({"price": 42, "enabled": true})),
+        ),
+    )
+    .await;
+    assert_json_error(
+        rejected_price,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+    )
+    .await;
+
     let roster_response = send(
         &app,
         json_req(
@@ -174,6 +198,10 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         .map(|line| serde_json::from_str(line).expect("每行 tracing 輸出都應為 JSON"))
         .collect();
     assert!(!entries.is_empty(), "應擷取到 JSON 日誌");
+    assert!(entries.iter().any(|entry| {
+        entry["fields"]["message"] == "database error" && entry["fields"]["class"] == "23514"
+    }));
+    assert!(!output.contains(PURCHASE_DB_DETAIL));
     let request_fields = entries
         .iter()
         .filter_map(|entry| entry.get("fields"))

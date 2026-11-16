@@ -117,7 +117,7 @@ pub(crate) async fn admin_list(
     ))
 }
 
-#[utoipa::path(patch, path = "/api/admin/parts/{id}", tag = "parts", summary = "修改部件價格與狀態（管理者）", params(("id" = String, Path)), request_body = PartUpdate, responses((status = 200, body = Part), (status = 400, body = crate::error::ErrorBody)))]
+#[utoipa::path(patch, path = "/api/admin/parts/{id}", tag = "parts", summary = "修改部件價格與狀態（管理者）", params(("id" = String, Path)), request_body = PartUpdate, responses((status = 200, body = Part), (status = 400, body = crate::error::ErrorBody), (status = 422, description = "invalid_body：價格必須為整數，且啟用狀態必須為布林值", body = crate::error::ErrorBody)))]
 pub(crate) async fn update(
     RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
