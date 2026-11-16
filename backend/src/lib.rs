@@ -473,10 +473,18 @@ async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Nex
     match auth::AnyCurrentUser::from_request_parts(&mut parts, &state).await {
         Ok(auth::AnyCurrentUser(cu)) if cu.roles.admin => {
             // 查好的管理者留給 handler 的 extractor 沿用，不再查一次 session（#529）
-            parts.extensions.insert(auth::ResolvedUser(cu));
+            parts.extensions.insert(auth::ResolvedUser::new(cu));
             next.run(Request::from_parts(parts, body)).await
         }
-        _ => announcements::MAINTENANCE_ERROR.into_response(),
+        Ok(_) => announcements::MAINTENANCE_ERROR.into_response(),
+        Err(e) => {
+            // 驗證失敗（含資料庫錯誤）對外仍是維護中，但留下 code 方便診斷；不記 token 或使用者資料
+            tracing::debug!(
+                code = e.code,
+                "maintenance gate could not resolve the session"
+            );
+            announcements::MAINTENANCE_ERROR.into_response()
+        }
     }
 }
 

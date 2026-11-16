@@ -166,9 +166,16 @@ pub struct CurrentUser {
 pub struct AnyCurrentUser(pub CurrentUser);
 
 /// middleware 已經查好的登入者，放在 request extensions 給 handler 的 extractor 沿用，
-/// 同一個請求不必再查一次 session（#529）。目前只有維護模式的 `maintenance_gate` 會放。
+/// 同一個請求不必再查一次 session（#529）。目前只有維護模式的 `maintenance_gate` 會放；
+/// 欄位與建構子都限在 crate 內，外部程式碼無法繞過 session 驗證塞入身分。
 #[derive(Clone)]
-pub struct ResolvedUser(pub CurrentUser);
+pub(crate) struct ResolvedUser(CurrentUser);
+
+impl ResolvedUser {
+    pub(crate) fn new(user: CurrentUser) -> Self {
+        Self(user)
+    }
+}
 
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;

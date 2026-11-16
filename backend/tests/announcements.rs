@@ -678,61 +678,46 @@ async fn a_reply_in_progress_finishes_but_new_messages_are_blocked(pool: PgPool)
     assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
 }
 
-/// #529：維護模式的 gate 已經查過 session 時，handler 的 extractor 直接沿用，不再查資料庫。
-/// 連線池指向不存在的資料庫，extractor 只要查一次資料庫就會失敗，所以通過即代表查詢次數為 0。
-#[tokio::test]
-async fn extractor_reuses_the_user_resolved_by_the_maintenance_gate() {
-    use axum::extract::FromRequestParts;
-    use socrates_chat_backend::{
-        AppState,
-        auth::{AnyCurrentUser, CurrentUser, ResolvedUser, Roles},
-        auth_store::User,
-    };
+/// #529：維護模式的 gate 已經查過 session，handler 的 extractor 沿用，同一個請求只查一次 session。
+/// 數連線池被取用的次數：維護模式開啟時管理者的請求，與關閉時完全相同。
+/// `before_acquire` 只在取用既有閒置連線時觸發，所以先備好足夠的連線，避免新建連線讓計數失準。
+#[sqlx::test]
+async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(Duration::from_millis(200))
-        .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+    let acquires = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = acquires.clone();
+    let counting = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(8)
+        .before_acquire(move |_, _| {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })
+        })
+        .connect_with((*pool.connect_options()).clone())
+        .await
         .unwrap();
-    let state = AppState::new(
-        pool,
-        test_config(),
-        std::sync::Arc::new(FakeIdentity),
-        FakeAi::with(vec![]),
-    );
-    let id = uuid::Uuid::new_v4();
-    let admin = CurrentUser {
-        user: User {
-            id,
-            google_sub: None,
-            email: Some("admin@example.com".to_string()),
-            student_number: None,
-            display_name: None,
-            language: "zh-TW".to_string(),
-            is_admin: true,
-            must_change_password: false,
-            created_at: Utc::now(),
-            disabled: false,
-        },
-        roles: Roles {
-            admin: true,
-            teacher: false,
-            student: false,
-        },
-        must_change_password: false,
-    };
-    let (mut parts, ()) = Request::get("/api/me")
-        .header("cookie", "sid=resolved-by-gate")
-        .body(())
-        .unwrap()
-        .into_parts();
-    parts.extensions.insert(ResolvedUser(admin));
+    let app = test_app(counting);
+    let a = seed_actors(&app).await;
 
-    let Ok(AnyCurrentUser(cu)) = AnyCurrentUser::from_request_parts(&mut parts, &state).await
-    else {
-        panic!("extractor queried the database instead of reusing the resolved user");
+    let acquires_of_one_request = || async {
+        // 先暖身，讓維護旗標的快取在量測期間仍有效
+        send(&app, get("/api/me", Some(&a.admin))).await;
+        let before = acquires.load(Ordering::SeqCst);
+        let res = send(&app, get("/api/me", Some(&a.admin))).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        acquires.load(Ordering::SeqCst) - before
     };
-    assert_eq!(cu.user.id, id);
-    assert!(cu.roles.admin);
+
+    let normal = acquires_of_one_request().await;
+    set_maintenance(&app, &a.admin, true).await;
+    let in_maintenance = acquires_of_one_request().await;
+    assert_eq!(
+        in_maintenance, normal,
+        "the maintenance gate and the handler extractor each queried the session"
+    );
 }
 
 #[sqlx::test]
