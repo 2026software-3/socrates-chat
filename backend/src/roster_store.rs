@@ -6,6 +6,8 @@ use serde::Serialize;
 use sqlx::{FromRow, PgConnection, PgPool};
 use uuid::Uuid;
 
+use crate::auth_store::display_name_sql;
+
 /// 將學生帳號加入教室；相同帳號在同一教室只保留一列。
 pub async fn add_user(
     conn: &mut PgConnection,
@@ -41,8 +43,8 @@ pub async fn create_student(
     password_hash: &str,
 ) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar(
-        "INSERT INTO users (student_id, imported_name, display_name, password_hash, must_change_password)
-         VALUES ($1, $2, $2, $3, true) RETURNING id",
+        "INSERT INTO users (student_id, imported_name, password_hash, must_change_password)
+         VALUES ($1, $2, $3, true) RETURNING id",
     )
     .bind(student_number)
     .bind(name)
@@ -82,12 +84,14 @@ pub async fn list_roster(
     after: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<RosterEntry>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT u.id, u.email, e.student_id AS student_number, u.display_name
+    sqlx::query_as(concat!(
+        "SELECT u.id, u.email, e.student_id AS student_number, ",
+        display_name_sql!("u"),
+        " AS display_name
          FROM enrollments e JOIN users u ON u.id = e.user_id
          WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
-         ORDER BY u.id LIMIT $3",
-    )
+         ORDER BY u.id LIMIT $3"
+    ))
     .bind(classroom_id)
     .bind(after)
     .bind(limit)
@@ -180,8 +184,10 @@ pub async fn list_students(
     limit: i64,
     search: Option<&str>,
 ) -> Result<Vec<StudentRow>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT u.id, u.email, u.student_id AS student_number, u.display_name,
+    sqlx::query_as(concat!(
+        "SELECT u.id, u.email, u.student_id AS student_number, ",
+        display_name_sql!("u"),
+        " AS display_name,
                 true AS has_account,
                 (u.disabled_at IS NOT NULL) AS disabled,
                 (SELECT count(*) FROM summaries s
@@ -193,9 +199,11 @@ pub async fn list_students(
          WHERE e.classroom_id = $1 AND ($2::uuid IS NULL OR u.id > $2)
            AND ($4::text IS NULL
                 OR u.email ILIKE $4 ESCAPE '\\'
-                OR u.display_name ILIKE $4 ESCAPE '\\')
-         ORDER BY u.id LIMIT $3",
-    )
+                OR ",
+        display_name_sql!("u"),
+        " ILIKE $4 ESCAPE '\\')
+         ORDER BY u.id LIMIT $3"
+    ))
     .bind(classroom_id)
     .bind(after)
     .bind(limit)
@@ -246,14 +254,16 @@ pub async fn count_students_matching(
     classroom_id: Uuid,
     search: Option<&str>,
 ) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar(
+    sqlx::query_scalar(concat!(
         "SELECT count(*)
          FROM enrollments e JOIN users u ON u.id = e.user_id
          WHERE e.classroom_id = $1
            AND ($2::text IS NULL
                 OR u.email ILIKE $2 ESCAPE '\\'
-                OR u.display_name ILIKE $2 ESCAPE '\\')",
-    )
+                OR ",
+        display_name_sql!("u"),
+        " ILIKE $2 ESCAPE '\\')"
+    ))
     .bind(classroom_id)
     .bind(search)
     .fetch_one(pool)

@@ -6,6 +6,27 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
+/// 有效顯示名稱的唯一解析點（#548）：自訂名稱優先，沒有就用名單匯入的姓名。
+/// `display_name` 只存使用者自訂（教師、管理者則包含 Google 提供）的名稱，寫入時不複製匯入姓名；
+/// 所有讀取顯示名稱的查詢都用這個巨集，不要直接選 `display_name`。
+/// 用法：`concat!("SELECT ", display_name_sql!("u"), " AS display_name FROM users u")`；
+/// 不帶參數時不加資料表前綴。
+macro_rules! display_name_sql {
+    () => {
+        "COALESCE(display_name, imported_name)"
+    };
+    ($table:literal) => {
+        concat!(
+            "COALESCE(",
+            $table,
+            ".display_name, ",
+            $table,
+            ".imported_name)"
+        )
+    };
+}
+pub(crate) use display_name_sql;
+
 /// Session 閒置上限。
 pub const SESSION_IDLE_TTL: Duration = Duration::days(7);
 /// `last_seen_at` 距上次寫入未滿這段時間時不再寫入（S-08.2）：每個已登入的請求都會查 session，
@@ -31,6 +52,7 @@ pub struct User {
     /// 學號（S-01.4，大寫），只有學生帳號有；資料庫欄位是 `users.student_id`。
     /// 每個回傳 `User` 的查詢都要選出 `student_id AS student_number`。
     pub student_number: Option<String>,
+    /// 有效顯示名稱（自訂名稱優先，否則是匯入姓名）；查詢要用 `display_name_sql!` 選出。
     pub display_name: Option<String>,
     pub language: String,
     pub is_admin: bool,
@@ -89,13 +111,18 @@ pub async fn upsert_user(
     admin_on_create: bool,
 ) -> Result<User, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let existing: Option<User> = sqlx::query_as(
-        "UPDATE users SET email = lower($2), display_name = COALESCE(display_name, imported_name, $3),
+    // Google 名稱只補給沒有匯入姓名的帳號（教師、管理者）；學生的名稱由 display_name_sql! 解析成匯入姓名
+    let existing: Option<User> = sqlx::query_as(concat!(
+        "UPDATE users SET email = lower($2),
+                display_name = CASE WHEN imported_name IS NULL THEN COALESCE(display_name, $3)
+                                    ELSE display_name END,
                 updated_at = now()
          WHERE google_sub = $1
-         RETURNING id, google_sub, email, student_id AS student_number, display_name, language, is_admin, must_change_password, created_at,
-                   disabled_at IS NOT NULL AS disabled",
-    )
+         RETURNING id, google_sub, email, student_id AS student_number, ",
+        display_name_sql!(),
+        " AS display_name, language, is_admin, must_change_password, created_at,
+                   disabled_at IS NOT NULL AS disabled"
+    ))
     .bind(google_sub)
     .bind(email)
     .bind(display_name)
@@ -104,18 +131,22 @@ pub async fn upsert_user(
     let user = match existing {
         Some(u) => u,
         None => {
-            let bound: Option<User> = sqlx::query_as(
+            let bound: Option<User> = sqlx::query_as(concat!(
                 "UPDATE users SET google_sub = $1,
-                        display_name = COALESCE(display_name, imported_name, $3),
+                        display_name = CASE WHEN imported_name IS NULL
+                                            THEN COALESCE(display_name, $3)
+                                            ELSE display_name END,
                         is_admin = is_admin OR $4,
                         password_hash = CASE WHEN must_change_password THEN NULL
                                              ELSE password_hash END,
                         must_change_password = false,
                         updated_at = now()
                  WHERE email = lower($2) AND google_sub IS NULL
-                 RETURNING id, google_sub, email, student_id AS student_number, display_name, language, is_admin,
-                           must_change_password, created_at, disabled_at IS NOT NULL AS disabled",
-            )
+                 RETURNING id, google_sub, email, student_id AS student_number, ",
+                display_name_sql!(),
+                " AS display_name, language, is_admin,
+                           must_change_password, created_at, disabled_at IS NOT NULL AS disabled"
+            ))
             .bind(google_sub)
             .bind(email)
             .bind(display_name)
@@ -125,13 +156,15 @@ pub async fn upsert_user(
             match bound {
                 Some(u) => u,
                 None => {
-                    sqlx::query_as(
+                    sqlx::query_as(concat!(
                         "INSERT INTO users (google_sub, email, display_name, is_admin)
                          VALUES ($1, lower($2), $3, $4)
-                         RETURNING id, google_sub, email, student_id AS student_number, display_name, language, is_admin,
+                         RETURNING id, google_sub, email, student_id AS student_number, ",
+                        display_name_sql!(),
+                        " AS display_name, language, is_admin,
                                    must_change_password, created_at,
-                                   disabled_at IS NOT NULL AS disabled",
-                    )
+                                   disabled_at IS NOT NULL AS disabled"
+                    ))
                     .bind(google_sub)
                     .bind(email)
                     .bind(display_name)
@@ -222,7 +255,7 @@ pub async fn find_active_session(
     token_hash: &[u8],
     now: DateTime<Utc>,
 ) -> Result<Option<SessionUser>, sqlx::Error> {
-    let row: Option<SessionUserRow> = sqlx::query_as(
+    let row: Option<SessionUserRow> = sqlx::query_as(concat!(
         "WITH s AS (
              SELECT id, user_id, created_at, last_seen_at, must_change_password FROM sessions
              WHERE token_hash = $1 AND last_seen_at > $3 AND created_at > $4
@@ -234,13 +267,15 @@ pub async fn find_active_session(
          SELECT s.id AS session_id, s.created_at AS session_created_at,
                 COALESCE((SELECT last_seen_at FROM touched), s.last_seen_at) AS last_seen_at,
                 s.must_change_password AS session_must_change_password,
-                u.id, u.google_sub, u.email, u.student_id AS student_number, u.display_name, u.language, u.is_admin,
+                u.id, u.google_sub, u.email, u.student_id AS student_number, ",
+        display_name_sql!("u"),
+        " AS display_name, u.language, u.is_admin,
                 u.must_change_password,
                 u.created_at, u.disabled_at IS NOT NULL AS disabled,
                 EXISTS (SELECT 1 FROM teachers t WHERE t.email = u.email) AS teacher,
                 EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id = u.id) AS student
-         FROM s JOIN users u ON u.id = s.user_id",
-    )
+         FROM s JOIN users u ON u.id = s.user_id"
+    ))
     .bind(token_hash)
     .bind(now)
     .bind(now - SESSION_IDLE_TTL)
