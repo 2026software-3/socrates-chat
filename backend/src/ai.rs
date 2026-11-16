@@ -88,6 +88,7 @@ pub struct AiError {
     pub(crate) class: crate::diagnostics::Failure,
     pub(crate) model: Option<String>,
     pub(crate) provider_attempts: i32,
+    pub(crate) retry_after: Option<Duration>,
 }
 
 impl AiError {
@@ -106,6 +107,7 @@ impl AiError {
             class,
             model: None,
             provider_attempts: 0,
+            retry_after: None,
         }
     }
 
@@ -166,6 +168,16 @@ impl AiError {
             _ => Failure::ServiceError,
         };
         Self::classified(class)
+    }
+
+    /// 供應商要求的等待時間（`Retry-After`），供 key 冷卻使用。
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
+    }
+
+    pub(crate) fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
     }
 
     pub(crate) fn with_model(mut self, model: &str) -> Self {
