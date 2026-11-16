@@ -38,7 +38,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - 登入驗證與 session 規格見 `docs/specs/S-08.2-auth-verification.md`；維運流程見 `docs/specs/S-09.3-ops-procedures.md`。
   - Migration：`sqlx migrate`（`backend/migrations/`）；設定與秘密用環境變數（S-08.3）。NTNU 自 2026-11-07 起視為正式環境，migration 只往前：已合併的 migration 不修改也不刪除，schema 變更一律新增 migration（含既有資料的搬移，可以寫 `ALTER`）（見 [CONTRIBUTING.md](CONTRIBUTING.md#資料庫-migration)、S-09.3）。
   - 開發／CI 資料庫：Docker Compose 的 PostgreSQL（S-09.1）。
-  - 維運：公告與管理者可開關的維護模式（S-15）；NTNU 的 docker compose 在後端前加反向代理與靜態停機說明頁（S-16）；客訴以 SMTP 寄給管理者並存資料庫（S-17），寄信只用於客訴通知（nginx 或 Caddy、SMTP 套件仍待實作時選定）。
+  - 維運：公告與管理者可開關的維護模式（S-15）；NTNU 的 docker compose 在後端前加反向代理與靜態停機說明頁（S-16）；客訴以 SMTP 寄給管理者並存資料庫（S-17），寄信只用於客訴通知（nginx 或 Caddy、SMTP 套件仍待實作時選定）；後台服務健康度與容器服務監控由後端對各服務的健康檢查端點發 HTTP GET，**不讀 Docker socket**，服務清單用環境變數 `MONITORED_SERVICES`（S-09.3、#580）。
   - 前端：React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui、react-router、Vitest + Testing Library + MSW、oxlint；圖表用純 SVG、i18n 自行實作（S-11）。不得擴充或更換主要框架，新增主要依賴需先經規格討論。
 - **未定案，不得自行決定**：
   - OpenAI 具體模型（S-03.4 評估後決定）
