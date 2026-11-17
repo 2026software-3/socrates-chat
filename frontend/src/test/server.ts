@@ -8,6 +8,8 @@ export const server = setupServer(
   // 沒有特別要測的測試：沒有公告、沒有維護
   http.get('/api/announcements', () => HttpResponse.json({ maintenance: false, announcements: [] })),
   http.get('/api/notifications', () => HttpResponse.json([])),
+  // 教室的 AI 供應商（學生教室資訊）；沒有特別要測的測試：尚未設定
+  http.get('/api/classrooms/:id/ai-provider', () => HttpResponse.json({ provider: null })),
   // 沒有特別要測單場雷達圖的測試：總結尚未成功，雷達圖面板不顯示
   http.get('/api/conversations/:id/radar', () =>
     HttpResponse.json({ status: 'summary_not_ready', retryable: false, scores: null, dimensions: null, rules_version: null, completed_at: null }),

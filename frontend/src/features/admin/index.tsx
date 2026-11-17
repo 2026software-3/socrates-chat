@@ -2,6 +2,7 @@ import type { Feature, NavItem } from '@/app/feature'
 import { classroomRoutes } from '@/features/classrooms/routes'
 import {
   AdminAnnouncementsPage,
+  AdminKeysPage,
   AdminHome,
   AdminPartsPage,
   AdminTasksPage,
@@ -16,6 +17,7 @@ export const adminFeature: Feature = {
     { path: '/admin', element: <AdminHome />, access: 'admin' },
     ...classroomRoutes('/admin', 'admin'),
     { path: '/admin/teachers', element: <TeachersPage />, access: 'admin' },
+    { path: '/admin/teacher-keys', element: <AdminKeysPage />, access: 'admin' },
     { path: '/admin/roster', element: <RosterPage />, access: 'admin' },
     { path: '/admin/topics', element: <TopicsPage />, access: 'admin' },
     { path: '/admin/diagnostics', element: <DiagnosticsPage />, access: 'admin' },
@@ -26,6 +28,7 @@ export const adminFeature: Feature = {
   // 同時具備教師／學生角色的管理者沿用一般導覽，另有管理者專屬頁面。
   nav: [
     { to: '/admin/teachers', labelKey: 'admin.nav.teachers', access: 'admin' },
+    { to: '/admin/teacher-keys', labelKey: 'adminKeys.nav', access: 'admin' },
     { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics', access: 'admin' },
     { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
     { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },
@@ -38,6 +41,7 @@ export const opsNav: NavItem[] = [
   { to: '/admin', labelKey: 'admin.nav.home', access: 'admin' },
   { to: '/admin/classrooms', labelKey: 'classrooms.nav', access: 'admin' },
   { to: '/admin/teachers', labelKey: 'admin.nav.teachers', access: 'admin' },
+  { to: '/admin/teacher-keys', labelKey: 'adminKeys.nav', access: 'admin' },
   { to: '/admin/roster', labelKey: 'admin.nav.roster', access: 'admin' },
   { to: '/admin/topics', labelKey: 'admin.nav.topics', access: 'admin' },
   { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics', access: 'admin' },
