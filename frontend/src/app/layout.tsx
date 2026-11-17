@@ -4,6 +4,7 @@ import { useAuth } from '@/auth/auth-context'
 import { canAccess, type NavItem } from '@/app/feature'
 import { LangSwitcher } from '@/components/lang-switcher'
 import { AnnouncementBar } from '@/features/announcements/announcement-banner'
+import { NotificationBanner } from '@/features/notifications/notification-banner'
 import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
 import { WorkspaceContext } from '@/components/page'
 import { Button } from '@/components/ui/button'
@@ -100,8 +101,9 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
     <WorkspaceContext.Provider value={workspace}>
       <div className={cn('flex min-w-0 flex-1 flex-col', fullBleed && 'min-h-0 overflow-y-auto')}>
         {/* 公告橫幅（S-15）：每一頁最上方；沒有公告時不佔位 */}
-        <div className={cn('w-full empty:hidden', fullBleed ? 'shrink-0 px-4 pt-3' : 'mx-auto max-w-5xl px-4 pt-4 md:px-8 md:pt-8')}>
+        <div className={cn('flex w-full flex-col gap-2 empty:hidden', fullBleed ? 'shrink-0 px-4 pt-3' : 'mx-auto max-w-5xl px-4 pt-4 md:px-8 md:pt-8')}>
           <AnnouncementBar />
+          {student ? <NotificationBanner key={me.id} /> : null}
         </div>
         {fullBleed ? <main className="flex min-h-0 flex-1 flex-col">{children}</main> : <main className="mx-auto w-full max-w-5xl p-4 md:p-8">{children}</main>}
       </div>
