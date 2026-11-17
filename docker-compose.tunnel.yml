@@ -1,0 +1,27 @@
+# Cloudflare Tunnel（對外網址 se3socrateschat.ntnu.cc → msi_cubi）。疊在 docker-compose.yml 上：
+#   docker compose -f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.tunnel.yml \
+#     --profile app --profile cascade --profile proxy --profile tunnel up -d
+# 前置：Cloudflare Zero Trust → Networks → Tunnels 建好 tunnel，Public Hostname 設
+#   se3socrateschat.ntnu.cc → http://proxy:80
+# （cloudflared 與 proxy 在同一個 compose 網路，所以用服務名 proxy；DNS 的 CNAME 由 Cloudflare 自動建立。）
+# token 放不進版控的 .env：CLOUDFLARE_TUNNEL_TOKEN=...（不要寫進這個檔案）。
+# 後端 TRUSTED_PROXIES 維持 172.16.0.0/12：Cloudflare 邊緣帶來真實來源，nginx 追加 cloudflared 容器位址，
+# 後端由右往左跳過受信任代理，與 Funnel 的鏈路相同。APP_BASE_URL 要改成 https://se3socrateschat.ntnu.cc，
+# Google OAuth 的 redirect URI 也要同步（使用者自己改）。
+services:
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:${CLOUDFLARED_TAG:-latest}
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?設定 .env 的 CLOUDFLARE_TUNNEL_TOKEN}
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+    depends_on:
+      proxy:
+        condition: service_started
+        required: false
