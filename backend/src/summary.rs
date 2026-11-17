@@ -147,12 +147,10 @@ struct SummarySource {
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
     let (SummarySource { owner, title, guiding_questions, activity_id, language, classroom }, turns) = tokio::try_join!(
-        sqlx::query_as::<_, SummarySource>(concat!(
-            "SELECT user_id AS owner, title, COALESCE((SELECT ",
-            crate::topic_ai_questions_sql!(),
-            " FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions, activity_id, language, classroom_id AS classroom
+        sqlx::query_as::<_, SummarySource>(
+            "SELECT user_id AS owner, title, COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions, activity_id, language, classroom_id AS classroom
              FROM conversations WHERE id = $1"
-        ))
+        )
         .bind(id)
         .fetch_one(&state.pool),
         load_messages_for(state, id),

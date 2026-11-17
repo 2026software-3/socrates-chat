@@ -63,7 +63,6 @@ pub struct Conversation {
     pub classroom_archived: bool,
     /// 該題目目前的引導問題（S-04.8）：給 AI 提示、總結、論證樹、雷達評分用，也供詳情 API 回傳；
     /// 不隨對話列表輸出；只有單場與 AI 路徑會讀取，其他查詢不含此欄時為空。
-    /// 題目沒有引導問題時以題目說明代替（見 `catalog::topic_ai_questions_sql`）。
     #[serde(skip)]
     #[schema(ignore)]
     #[sqlx(default)]
@@ -111,9 +110,7 @@ macro_rules! conversation_select_with_guiding {
     ($tail:literal) => {
         concat!(
             conversation_columns!(),
-            ", COALESCE((SELECT ",
-            crate::topic_ai_questions_sql!(),
-            " FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions FROM conversations",
+            ", COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions FROM conversations",
             classroom_join!(),
             $tail
         )

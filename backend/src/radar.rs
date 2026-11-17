@@ -197,10 +197,8 @@ async fn fetch<'e>(
     id: Uuid,
     stale_secs: f64,
 ) -> Result<Option<Row>, sqlx::Error> {
-    sqlx::query_as(concat!(
-        "SELECT c.user_id AS owner, c.classroom_id AS classroom, c.title, COALESCE(",
-        crate::topic_ai_questions_sql!(),
-        ", '{}') AS guiding_questions,
+    sqlx::query_as(
+        "SELECT c.user_id AS owner, c.classroom_id AS classroom, c.title, COALESCE(t.guiding_questions, '{}') AS guiding_questions,
                 t.id IS NOT NULL AS has_topic,
                 COALESCE(s.status = 'ready', false) AS summary_ready,
                 t.dimensions, t.dimensions_language,
@@ -213,8 +211,8 @@ async fn fetch<'e>(
          LEFT JOIN summaries s ON s.conversation_id = c.id
          LEFT JOIN topics t ON t.id = c.topic_id
          LEFT JOIN conversation_radar_results r ON r.conversation_id = c.id
-         WHERE c.id = $1"
-    ))
+         WHERE c.id = $1",
+    )
     .bind(id)
     .bind(stale_secs)
     .fetch_optional(conn)

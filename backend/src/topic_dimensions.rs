@@ -123,11 +123,7 @@ pub(crate) struct DimensionsEdit {
 #[derive(FromRow)]
 struct TopicDimensions {
     title: String,
-    /// 題目原欄位：鎖定與寫回的比對都用它，不能用回退後的值。
     guiding_questions: Vec<String>,
-    /// 給 AI 生成維度用（有引導問題用引導問題，否則用題目說明）；只有 `load` 會讀取。
-    #[sqlx(default)]
-    ai_guiding_questions: Vec<String>,
     dimensions: Option<SqlJson<[Dimension; 6]>>,
     dimensions_prompt_version: Option<String>,
     dimensions_language: Option<String>,
@@ -147,12 +143,8 @@ impl TopicDimensions {
     }
 }
 
-const SELECT: &str = concat!(
-    "SELECT title, guiding_questions, ",
-    crate::topic_ai_questions_sql!(),
-    " AS ai_guiding_questions, dimensions, dimensions_prompt_version,
-    dimensions_language, dimensions_pending_languages, has_had_conversation FROM topics t WHERE t.id = $1"
-);
+const SELECT: &str = "SELECT title, guiding_questions, dimensions, dimensions_prompt_version,
+    dimensions_language, dimensions_pending_languages, has_had_conversation FROM topics WHERE id = $1";
 
 async fn load(conn: &mut PgConnection, id: Uuid) -> Result<TopicDimensions, ApiError> {
     sqlx::query_as(SELECT)
@@ -371,7 +363,7 @@ async fn prepare(
     topic: &TopicDimensions,
     source: &str,
 ) -> Option<([Dimension; 6], Vec<String>)> {
-    let request = build_request(&topic.title, &topic.ai_guiding_questions, source);
+    let request = build_request(&topic.title, &topic.guiding_questions, source);
     let generation = async {
         for _ in 0..2 {
             if let Ok(raw) = ask(state, request.clone()).await
