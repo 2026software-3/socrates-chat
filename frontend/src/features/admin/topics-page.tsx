@@ -27,7 +27,6 @@ function TopicForm({
   initial,
   submitLabel,
   pendingLabel,
-  categories,
   onSubmit,
   onCancel,
 }: {
@@ -35,7 +34,6 @@ function TopicForm({
   initial: TopicInput
   submitLabel: string
   pendingLabel: string
-  categories: string[]
   onSubmit: (v: TopicInput) => Promise<void>
   onCancel?: () => void
 }) {
@@ -130,15 +128,8 @@ export function TopicsPage() {
   const [creating, setCreating] = useState(false)
   const [confirming, setConfirming] = useState<{ topic: Topic; next: boolean }>()
   const [query, setQuery] = useState('')
-  const [category, setCategory] = useState('')
 
   const topics = useMemo(() => (data ?? []).map((x) => ({ ...x, ...patched[x.id] })), [data, patched])
-  const categories = useMemo(
-    () => [...new Set(topics.map((x) => x.category).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b)),
-    [topics],
-  )
-  // 選取的分類若已不存在（例如最後一題被改走），視為「全部」
-  const activeCategory = categories.includes(category) ? category : ''
   const q = query.trim().toLowerCase()
   const shown = topics.filter(
     (x) =>
@@ -146,7 +137,7 @@ export function TopicsPage() {
       (!q || [x.title, ...(x.guiding_questions ?? []), x.category ?? ''].some((s) => s.toLowerCase().includes(q))),
   )
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
-  const filtered = q !== '' || activeCategory !== ''
+  const filtered = q !== ''
 
   function patch(id: string, p: Partial<Topic>) {
     setPatchState((prev) => {
@@ -233,22 +224,6 @@ export function TopicsPage() {
               <Label htmlFor="topic-search">{t('admin.topics.searchLabel')}</Label>
               <Input id="topic-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
-            <div className="space-y-1.5 md:w-56">
-              <Label htmlFor="topic-category-filter">{t('admin.topics.categoryFilter')}</Label>
-              <select
-                id="topic-category-filter"
-                value={activeCategory}
-                onChange={(e) => setCategory(e.target.value)}
-                className="border-input bg-background h-8 w-full rounded-lg border px-2 text-sm"
-              >
-                <option value="">{t('admin.topics.allCategories')}</option>
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <p className="text-sm font-medium" aria-live="polite">
@@ -267,7 +242,6 @@ export function TopicsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t('admin.topics.col.title')}</TableHead>
-                    <TableHead>{t('admin.topics.col.category')}</TableHead>
                     <TableHead>{t('admin.topics.col.status')}</TableHead>
                     <TableHead>{t('admin.topics.col.actions')}</TableHead>
                   </TableRow>
@@ -276,7 +250,6 @@ export function TopicsPage() {
                   {shown.map((x) => (
                     <TableRow key={x.id} className={x.is_active ? '' : 'text-muted-foreground'}>
                       <TableCell className="max-w-96 font-medium whitespace-normal break-words">{x.title}</TableCell>
-                      <TableCell>{x.category ?? '—'}</TableCell>
                       <TableCell>
                         <Badge variant={x.is_active ? 'default' : 'secondary'}>
                           {x.is_active ? t('admin.topics.active') : t('admin.topics.inactive')}
@@ -320,7 +293,6 @@ export function TopicsPage() {
             initial={{ title: '', category: '', questions: [] }}
             submitLabel={t('admin.topics.create')}
             pendingLabel={t('admin.topics.creating')}
-            categories={categories}
             onSubmit={create}
             onCancel={() => setCreating(false)}
           />
@@ -339,7 +311,6 @@ export function TopicsPage() {
           onConfirm={() => void toggle(confirming.topic, confirming.next)}
         >
           <ConfirmFact label={t('admin.topics.fact.topic')}>{confirming.topic.title}</ConfirmFact>
-          <ConfirmFact label={t('admin.topics.fact.category')}>{confirming.topic.category ?? '—'}</ConfirmFact>
         </ConfirmDialog>
       ) : null}
 
@@ -358,7 +329,6 @@ export function TopicsPage() {
               initial={{ title: editing.title, category: editing.category ?? '', questions: editing.guiding_questions ?? [] }}
               submitLabel={t('common.save')}
               pendingLabel={t('admin.topics.saving')}
-              categories={categories}
               onSubmit={(v) => edit(editing, v)}
               onCancel={() => setEditing(undefined)}
             />

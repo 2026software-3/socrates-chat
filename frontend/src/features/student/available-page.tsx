@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -13,13 +13,13 @@ type Source = { activity_id: string; topic_id: string } | { topic_id: string }
 
 type Item =
   | { kind: 'activity'; key: string; activity: StudentActivity }
-  | { kind: 'topic'; key: string; title: string; description: string; category: string | null; source: Source }
+  | { kind: 'topic'; key: string; title: string; description: string; source: Source }
 
 /** 搜尋比對的文字：活動含每題標題。 */
 function searchTexts(i: Item): string[] {
   return i.kind === 'activity'
     ? [i.activity.title, i.activity.description, ...i.activity.topics.map((x) => x.title)]
-    : [i.title, i.description, i.category ?? '']
+    : [i.title, i.description]
 }
 
 /** 自己是否有封存的對話屬於這個活動；查不到（含請求失敗）就當作沒有。 */
@@ -97,7 +97,6 @@ export function AvailablePage() {
         key: `t:${x.id}`,
         title: x.title,
         description: x.description,
-        category: x.category,
         source: { topic_id: x.id },
       }),
     )
@@ -199,7 +198,7 @@ type SectionProps = {
   layout: 'grid' | 'list'
 }
 
-/** 教室活動用兩欄卡片（標題、狀態、說明、主按鈕）；個人練習是單欄卡片（標題、題庫與分類、次按鈕）。 */
+/** 教室活動用兩欄卡片（標題、狀態、說明、主按鈕）；個人練習是單欄卡片（標題、題庫、次按鈕）。 */
 function Section({ title, level, emptyText, items, startingKey, onStart, layout }: SectionProps) {
   const t = useT()
   return (
@@ -217,10 +216,13 @@ function Section({ title, level, emptyText, items, startingKey, onStart, layout 
                   <div className="flex min-w-0 flex-col gap-1">
                     <span className="font-medium">{item.title}</span>
                     <span className="text-muted-foreground text-xs">
-                      {item.category ? t('student.available.bankCategory', { category: item.category }) : t('student.available.bank')}
+                      {t('student.available.bank')}
                     </span>
                   </div>
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-end gap-3">
+                    <Link to={`/topics/${encodeURIComponent(item.source.topic_id)}`} className="text-sm underline" aria-label={t('student.available.viewTopicNamed', { title: item.title })}>
+                      {t('student.available.viewTopic')}
+                    </Link>
                     <Button
                       variant="outline"
                       onClick={() => onStart(item.key, item.source)}
@@ -273,6 +275,13 @@ function ActivityCard({ activity, startingKey, onStart }: ActivityCardProps) {
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm">{topic.title}</span>
                 <span className="text-muted-foreground text-xs">{t(topicStatusKey(topic))}</span>
+                <Link
+                  to={`/topics/${encodeURIComponent(topic.topic_id)}?activity=${encodeURIComponent(activity.id)}`}
+                  className="text-xs underline"
+                  aria-label={t('student.available.viewTopicNamed', { title: topic.title })}
+                >
+                  {t('student.available.viewTopic')}
+                </Link>
               </div>
               <TopicAction
                 topic={topic}

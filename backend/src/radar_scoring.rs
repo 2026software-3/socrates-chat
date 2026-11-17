@@ -55,7 +55,7 @@ pub fn rubric_for(dimensions: &[Dimension]) -> Rubric {
 /// the topic's own dimensions goes in, so results never mix conversations.
 pub fn build_request(
     title: &str,
-    description: &str,
+    guiding_questions: &[String],
     dimensions: &[Dimension],
     turns: &[ChatTurn],
 ) -> AiRequest {
@@ -85,7 +85,7 @@ to 5. No other keys, no explanation. Example of the shape: {shape}",
         shape = json!(example),
     );
     let input = json!({
-        "topic": {"title": title, "description": description},
+        "topic": {"title": title, "guiding_questions": guiding_questions},
         "dimensions": dimensions.iter().map(|d| json!({
             "id": d.id,
             "name": d.name,
@@ -288,7 +288,12 @@ mod tests {
                 content: "因為救五個人比較重要".into(),
             },
         ];
-        let request = build_request("電車難題", "要不要拉桿", &dimensions(), &turns);
+        let request = build_request(
+            "電車難題",
+            &["要不要拉桿".to_string()],
+            &dimensions(),
+            &turns,
+        );
         assert!(request.system.starts_with(PROMPT_VERSION));
         assert!(request.system.contains("d1, d2, d3, d4, d5, d6"));
         assert_eq!(request.messages.len(), 1);
@@ -308,7 +313,7 @@ mod tests {
 
     #[test]
     fn the_prompt_states_the_scoring_rules_of_the_spec() {
-        let system = build_request("t", "d", &dimensions(), &[]).system;
+        let system = build_request("t", &[], &dimensions(), &[]).system;
         // S-04.2: only what the student expressed; revisions after follow-ups count;
         // 0 means not enough evidence and is never omitted.
         for rule in [
