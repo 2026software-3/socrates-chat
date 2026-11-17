@@ -19,14 +19,24 @@ services:
     build: !reset null
     restart: unless-stopped
     environment:
-      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象。經 Cloudflare Tunnel（cloudflared → proxy → app）提供 HTTPS
-      APP_BASE_URL: https://se3socrateschat.ntnu.cc
+      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象。.env 的 APP_PUBLIC_URL 決定：
+      #   https://raynb.tail5fc9fe.ts.net（預設）＝Windows 端 Tailscale Funnel 經 tailnet 轉到 proxy；
+      #   https://se3socrateschat.ntnu.cc＝Cloudflare Tunnel（tunnel 必須與 ntnu.cc 的 DNS 在同一個 Cloudflare 帳號）
+      APP_BASE_URL: ${APP_PUBLIC_URL:-https://raynb.tail5fc9fe.ts.net}
       COOKIE_SECURE: "true"
-      # cloudflared、nginx 都在 compose 網段內；後端由右往左跳過受信任代理取得真實來源
-      TRUSTED_PROXIES: 172.16.0.0/12
+      # compose 網段（nginx、cloudflared）＋ Funnel 入口節點的 tailnet 位址（/32），.env 的 TRUSTED_PROXIES 覆寫；
+      # 後端由右往左跳過受信任代理取得真實來源。不要放整段 100.64.0.0/10，否則 tailnet 內任何裝置都能偽造來源
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
       CASCADE_REALTIME_URL: ws://cascade:8110/v1/realtime
       # 語音訊息的 STT：沿用 NPU 上的 Whisper（OpenAI 相容的 /v1/audio/transcriptions）
       OPENAI_STT_BASE_URL: http://cascade-whisper:8101/v1
+
+  proxy:
+    restart: unless-stopped
+    # 127.0.0.1 給本機測試；tailnet 位址給 Windows 端的 Funnel（http://${PROXY_TAILNET_IP}:3080）。不綁 0.0.0.0（宿舍網路內其他人不該連到）
+    ports: !override
+      - "127.0.0.1:${PROXY_PORT:-3080}:80"
+      - "${PROXY_TAILNET_IP:-100.71.164.60}:${PROXY_PORT:-3080}:80"
 
 volumes:
   pgdata_v2:
