@@ -219,16 +219,16 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
                 guiding_questions = COALESCE($5::text[], guiding_questions),
                 -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
                 dimensions = CASE WHEN has_had_conversation
-                        OR (($2::text IS NULL OR $2 = title) AND ($7::text[] IS NULL OR $7 = guiding_questions))
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
                     THEN dimensions END,
                 dimensions_prompt_version = CASE WHEN has_had_conversation
-                        OR (($2::text IS NULL OR $2 = title) AND ($7::text[] IS NULL OR $7 = guiding_questions))
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
                     THEN dimensions_prompt_version END,
                 dimensions_language = CASE WHEN has_had_conversation
-                        OR (($2::text IS NULL OR $2 = title) AND ($7::text[] IS NULL OR $7 = guiding_questions))
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
                     THEN dimensions_language END,
                 dimensions_pending_languages = CASE WHEN has_had_conversation
-                        OR (($2::text IS NULL OR $2 = title) AND ($7::text[] IS NULL OR $7 = guiding_questions))
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
                     THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
