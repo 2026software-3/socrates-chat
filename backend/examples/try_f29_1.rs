@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if topics.is_empty() {
         let t: (Uuid, String) = sqlx::query_as(
-            "INSERT INTO topics (title, description, category) VALUES ('電車難題', '你會拉桿嗎？', '倫理學') RETURNING id, title",
+            "INSERT INTO topics (title, description) VALUES ('電車難題', '你會拉桿嗎？') RETURNING id, title",
         )
         .fetch_one(&pool)
         .await?;
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     if topics.len() < 2 {
         let t: (Uuid, String) = sqlx::query_as(
-            "INSERT INTO topics (title, description, category) VALUES ('說謊可以嗎？', '任何情況都不能說謊嗎？', '倫理學') RETURNING id, title",
+            "INSERT INTO topics (title, description) VALUES ('說謊可以嗎？', '任何情況都不能說謊嗎？') RETURNING id, title",
         )
         .fetch_one(&pool)
         .await?;
@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 5. 追加第 3 個題目並測試重排
     println!("\n[5/5] Appending Topic C and updating order to [Topic A, Topic B, Topic C]");
     let topic_c: (Uuid, String) = sqlx::query_as(
-        "INSERT INTO topics (title, description, category) VALUES ('自由意志存在嗎？', '我們是否有選擇的自由？', '形上學') RETURNING id, title",
+        "INSERT INTO topics (title, description) VALUES ('自由意志存在嗎？', '我們是否有選擇的自由？') RETURNING id, title",
     )
     .fetch_one(&pool)
     .await?;

@@ -64,7 +64,12 @@ fn request(suite: &Suite, case: &Case) -> (AiRequest, Rubric) {
         })
         .collect();
     (
-        build_request(&topic.title, &topic.description, &topic.dimensions, &turns),
+        build_request(
+            &topic.title,
+            std::slice::from_ref(&topic.description),
+            &topic.dimensions,
+            &turns,
+        ),
         rubric_for(&topic.dimensions),
     )
 }

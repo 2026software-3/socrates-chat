@@ -39,7 +39,6 @@ const AVAILABLE: Available = {
       id: 'top-1',
       title: 'Topic One',
       description: 'Topic desc',
-      category: 'Ethics',
       is_active: true,
     },
   ],
@@ -71,7 +70,7 @@ describe('student available page', () => {
     expect(within(act).getByText('Activity desc')).toBeInTheDocument()
     expect(within(act).queryByText('Topic One')).not.toBeInTheDocument()
     expect(within(bank).getByText('Topic One')).toBeInTheDocument()
-    expect(within(bank).getByText('題庫・Ethics')).toBeInTheDocument()
+    expect(within(bank).getByText('題庫')).toBeInTheDocument()
     expect(within(bank).queryByText('Activity One')).not.toBeInTheDocument()
   })
 
