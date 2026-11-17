@@ -53,6 +53,7 @@ pub mod cascade;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_ai_settings;
 pub mod classroom_ai_store;
 pub mod classroom_store;
 pub mod classrooms;
@@ -149,6 +150,8 @@ pub struct AppState {
     pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
     /// 教師 key 認證測試的對外探測；測試時以 `with_key_verifier` 換成假的。
     pub(crate) key_verifier: Arc<dyn ai_providers::KeyVerifier>,
+    /// 教室模型設定的模型驗證；測試時以 `with_model_verifier` 換成假的。
+    pub(crate) model_verifier: Arc<dyn ai_providers::ModelVerifier>,
     /// 教師按「測試 key」的每人頻率限制（暫定值，待需求方確認）。
     pub(crate) key_test_limit: Arc<user_limit::UserLimiter>,
 }
@@ -186,6 +189,7 @@ impl AppState {
             ai_usage,
             maintenance: Arc::default(),
             key_verifier: Arc::new(ai_providers::HttpKeyVerifier),
+            model_verifier: Arc::new(ai_providers::HttpModelVerifier),
             key_test_limit: Arc::new(user_limit::UserLimiter::new(
                 teacher_keys::KEY_TEST_MAX,
                 teacher_keys::KEY_TEST_WINDOW,
@@ -205,6 +209,11 @@ impl AppState {
 
     pub fn with_key_verifier(mut self, verifier: Arc<dyn ai_providers::KeyVerifier>) -> Self {
         self.key_verifier = verifier;
+        self
+    }
+
+    pub fn with_model_verifier(mut self, verifier: Arc<dyn ai_providers::ModelVerifier>) -> Self {
+        self.model_verifier = verifier;
         self
     }
 
@@ -246,6 +255,7 @@ pub fn app(state: AppState) -> Router {
         ))
         .merge(roster::routes())
         .merge(classrooms::routes())
+        .merge(classroom_ai_settings::routes())
         .merge(accounts::routes())
         .merge(dashboard::routes())
         .merge(claims::routes())

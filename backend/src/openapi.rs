@@ -8,8 +8,9 @@ use utoipa::{
 
 use crate::{
     accounts, achievement_admin, ai_usage, announcements, argument_tree, auth, cascade, catalog,
-    chat, claims, classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody,
-    points, purchase, reply, roster, roster_store, summary, tasks, teacher_keys, usage_api, voice,
+    chat, claims, classroom_ai_settings, classroom_store, classrooms, complaints, dashboard, demo,
+    error::ErrorBody, points, purchase, reply, roster, roster_store, summary, tasks, teacher_keys,
+    usage_api, voice,
 };
 
 struct SessionCookie;
@@ -117,6 +118,7 @@ impl Modify for SessionCookie {
         teacher_keys::list_providers, teacher_keys::list_keys, teacher_keys::add_key,
         teacher_keys::replace_key, teacher_keys::delete_key, teacher_keys::test_key,
         usage_api::key_usage, usage_api::classroom_usage,
+        classroom_ai_settings::get_settings, classroom_ai_settings::put_settings, classroom_ai_settings::get_provider,
         classrooms::list_classrooms, classrooms::create_classroom,
         classrooms::get_classroom, classrooms::update_classroom, classrooms::delete_classroom,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,

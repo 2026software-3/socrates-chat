@@ -22,6 +22,8 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: &'static str,
+    /// 錯誤指的是請求中的哪一項（例如模型驗證失敗的是主模型還是第幾個備援）；多數錯誤沒有。
+    pub target: Option<&'static str>,
 }
 
 impl ApiError {
@@ -30,7 +32,13 @@ impl ApiError {
             status,
             code,
             message,
+            target: None,
         }
+    }
+
+    pub const fn with_target(mut self, target: &'static str) -> Self {
+        self.target = Some(target);
+        self
     }
 
     pub const fn unauthorized() -> Self {
@@ -123,17 +131,15 @@ impl From<sqlx::Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let request_id = REQUEST_ID.try_with(|id| id.clone()).unwrap_or_default();
-        let mut response = (
-            self.status,
-            Json(json!({
-                "error": {
-                    // S-12.1：只回 code 與 request_id，由前端依 code 查翻譯
-                    "code": self.code,
-                    "request_id": request_id,
-                }
-            })),
-        )
-            .into_response();
+        let mut error = json!({
+            // S-12.1：只回 code 與 request_id，由前端依 code 查翻譯
+            "code": self.code,
+            "request_id": request_id,
+        });
+        if let Some(target) = self.target {
+            error["target"] = json!(target);
+        }
+        let mut response = (self.status, Json(json!({ "error": error }))).into_response();
         response.extensions_mut().insert(ErrorCode(self.code));
         response
     }
@@ -150,6 +156,9 @@ pub struct ErrorDetail {
     /// 錯誤碼，前端依此顯示翻譯文字（S-12.1）
     pub code: String,
     pub request_id: String,
+    /// 只有少數錯誤帶：指出是請求中的哪一項（例如 `primary`、`fallback_1`）
+    #[schema(required = false)]
+    pub target: Option<String>,
 }
 
 /// 幾乎所有需要登入的端點共有的錯誤回應。
