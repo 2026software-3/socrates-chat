@@ -88,6 +88,7 @@ pub mod summary_translation;
 pub mod tasks;
 pub mod teacher_key_crypto;
 pub mod teacher_key_store;
+pub mod teacher_keys;
 pub mod topic_dimensions;
 pub(crate) mod user_limit;
 pub mod voice;
@@ -143,6 +144,10 @@ pub struct AppState {
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
     /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
     pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
+    /// 教師 key 認證測試的對外探測；測試時以 `with_key_verifier` 換成假的。
+    pub(crate) key_verifier: Arc<dyn ai_providers::KeyVerifier>,
+    /// 教師按「測試 key」的每人頻率限制（暫定值，待需求方確認）。
+    pub(crate) key_test_limit: Arc<user_limit::UserLimiter>,
 }
 
 impl AppState {
@@ -177,6 +182,11 @@ impl AppState {
             summary_translation_wake: Arc::default(),
             ai_usage,
             maintenance: Arc::default(),
+            key_verifier: Arc::new(ai_providers::HttpKeyVerifier),
+            key_test_limit: Arc::new(user_limit::UserLimiter::new(
+                teacher_keys::KEY_TEST_MAX,
+                teacher_keys::KEY_TEST_WINDOW,
+            )),
         }
     }
 
@@ -187,6 +197,17 @@ impl AppState {
 
     pub fn with_google_translation(mut self, key: &str) -> Self {
         self.google_translation = google_translation::GoogleTranslation::new(key);
+        self
+    }
+
+    pub fn with_key_verifier(mut self, verifier: Arc<dyn ai_providers::KeyVerifier>) -> Self {
+        self.key_verifier = verifier;
+        self
+    }
+
+    /// 換掉教師 key 測試的頻率限制（測試用）。
+    pub fn with_key_test_limit(mut self, max: usize, window: std::time::Duration) -> Self {
+        self.key_test_limit = Arc::new(user_limit::UserLimiter::new(max, window));
         self
     }
 
@@ -242,6 +263,7 @@ pub fn app(state: AppState) -> Router {
         .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(teacher_keys::routes())
         .merge(announcements::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))

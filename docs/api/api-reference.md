@@ -142,6 +142,17 @@
 
 瀏覽器預設用 Web Speech API；不支援時才經 `/api/voice/*` 呼叫 OpenAI（S-05.3）。**不保存原始音訊**（S-05.4）。具體語音模型尚未決定，沒設定 `OPENAI_STT_MODEL`／`OPENAI_TTS_MODEL` 時回 `503 voice_unavailable`；外部服務失敗回 `502 voice_failed`。語音辨識的請求本文是音訊位元組（`Content-Type: audio/*`，上限 10 MB），`language` 為 `zh-TW`、`en` 或 `es`；合成文字 1–4000 字元。
 
+## 教師 API key（F-40.1，S-03.1）
+
+只有教師本人可用；學生、名單外帳號與只有管理者身分的人回 `403 forbidden`，未登入回 `401`。他人的 key 與不存在的 key（含格式不正確的 id）一律回相同的 `404 not_found`。回應、錯誤與日誌都不含完整 key 或密文，只回遮蔽識別（例如 `…abcd`；太短的 key 只回 `…`）。管理者的檢視與刪除另見 F-40.9。
+
+- `GET /api/teacher/ai-providers`：可綁定 key 的供應商名單 `[{ id, name }]`（寫死在程式，S-03.1；不含端點）。
+- `GET /api/teacher/keys`：自己的 key `[{ id, provider, mask, status, status_at, created_at, updated_at }]`。`status` 為 `ok`、`invalid`（失效或遭撤銷）、`rate_limited`、`quota_exhausted`；`status_at` 是進入該狀態的時間，`ok` 時為 `null`。
+- `POST /api/teacher/keys`：`{ provider, key }` → `201`（同上項目）。供應商不在名單回 `400 invalid_provider`；key 去掉前後空白後為空、超過 512 字元或含空白／控制字元回 `400 invalid_key`；同一把 key（不論哪位教師、哪個供應商）已存在回 `409 key_already_exists`（前端顯示「這把 key 已經存在」）。後端沒有設定 `TEACHER_KEY_ENCRYPTION_KEYS` 時回 `503 teacher_keys_unavailable`。
+- `PUT /api/teacher/keys/{id}`：`{ key }` 更換自己的 key；`id`、供應商與歷史用量不變，狀態重設為 `ok`。body 帶 `provider` 或其他欄位會被拒絕（要換供應商請新增另一把）。錯誤同新增。
+- `DELETE /api/teacher/keys/{id}`：`204`；該 key 的用量統計連帶刪除，教室統計隨之扣除。
+- `POST /api/teacher/keys/{id}/test`：只呼叫供應商的模型清單端點、不送對話內容，可能產生 API 請求與費用；回 `{ result: "usable" | "connection_failed" }`，額度不足或頻率限制算可用，key 無效或已撤銷、逾時算連線失敗。每位教師 10 分鐘最多 10 次（暫定值，待需求方確認），超過回 `429 key_test_rate_limited`。測試結果目前不改寫 key 的 `status`。
+
 ## 教師檢視
 
 教師檢視學生的總結，並可打開自己教室內已結束的活動對話原文（S-02.1，2026-11 需求方決定）。總結列表本身不含原文。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
