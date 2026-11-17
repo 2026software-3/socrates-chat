@@ -1,0 +1,37 @@
+# NTNU 正式環境在 msi_cubi 上的疊加檔（2026-11-17 起取代 Windows 端的 docker-compose.ntnu.yml）。
+# 使用（在 ~/socrates-intel）：
+#   F="-f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml"
+#   docker compose $F --profile app --profile cascade --profile proxy --profile tunnel up -d --no-build
+# .env 與 .apikeylist 不進版控；.env 要有 CASCADE_INTEL_TAG、APP_IMAGE_TAG、CLOUDFLARE_TUNNEL_TOKEN、CASCADE_LLM_TOKEN。
+# 沒有 DEMO_MODE（測試堆疊的 browser-test/compose.yml 才有，不可對公網開放）。
+# 資料庫放命名 volume pgdata_v2；搬遷前的備份在 Windows 端 ~/ntnu-backups/，舊資料在 Windows 的 volume 與
+# msi_cubi 測試堆疊的 socrates-intel-test_pgdata（留作退路，不要 down -v）。
+name: socrates-ntnu
+
+services:
+  db:
+    ports: !override []
+    volumes: !override
+      - pgdata_v2:/var/lib/postgresql/data
+    restart: unless-stopped
+  app:
+    image: socrates-ntnu-app:${APP_IMAGE_TAG:?設定 APP_IMAGE_TAG}
+    build: !reset null
+    restart: unless-stopped
+    environment:
+      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象。經 Cloudflare Tunnel（cloudflared → proxy → app）提供 HTTPS
+      APP_BASE_URL: https://se3socrateschat.ntnu.cc
+      COOKIE_SECURE: "true"
+      # cloudflared、nginx 都在 compose 網段內；後端由右往左跳過受信任代理取得真實來源
+      TRUSTED_PROXIES: 172.16.0.0/12
+      CASCADE_REALTIME_URL: ws://cascade:8110/v1/realtime
+      # 語音訊息的 STT：沿用 NPU 上的 Whisper（OpenAI 相容的 /v1/audio/transcriptions）
+      OPENAI_STT_BASE_URL: http://cascade-whisper:8101/v1
+
+volumes:
+  pgdata_v2:
+  # 重用測試堆疊已下載的模型與編譯快取（磁碟只剩幾 GB，不複製）
+  cascade_hf:
+    name: socrates-intel-test_cascade_hf
+  cascade_cache:
+    name: socrates-intel-test_cascade_cache
