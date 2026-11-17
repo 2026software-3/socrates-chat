@@ -20,7 +20,7 @@ fn ids(v: &Value, key: &str) -> Vec<String> {
 async fn only_admin_manages_topics(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;
-    let body = json!({"title": "什麼是正義？", "category": "倫理學"});
+    let body = json!({"title": "什麼是正義？"});
 
     let res = send(
         &app,

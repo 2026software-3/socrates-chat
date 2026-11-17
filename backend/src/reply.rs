@@ -457,7 +457,7 @@ async fn generate(
     let mut req = AiRequest {
         system: build_system_prompt(&PromptContext {
             title: &conv.title,
-            description: &conv.description,
+            guiding_questions: &conv.guiding_questions,
             stage: conv.stage,
             turn: conv.turn_count,
             wrap_up_turn: state.config.wrap_up_turn,

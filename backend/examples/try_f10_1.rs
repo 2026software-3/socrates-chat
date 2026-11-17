@@ -342,7 +342,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let started_at = chrono::Utc::now().to_rfc3339();
         let system = build_system_prompt(&PromptContext {
             title: &case.title,
-            description: &case.description,
+            guiding_questions: std::slice::from_ref(&case.description),
             stage: case.stage,
             turn: case
                 .conversation
