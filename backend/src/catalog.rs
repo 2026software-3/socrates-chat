@@ -71,6 +71,8 @@ fn valid_text(s: &str) -> bool {
 pub struct Topic {
     pub id: Uuid,
     pub title: String,
+    /// Deprecated：引導問題取代題目內容（S-04.8 修訂），之後另案移除。
+    #[schema(deprecated)]
     pub description: String,
     pub category: Option<String>,
     pub is_active: bool,
