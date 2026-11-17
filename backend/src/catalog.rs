@@ -71,9 +71,13 @@ fn valid_text(s: &str) -> bool {
 pub struct Topic {
     pub id: Uuid,
     pub title: String,
+    /// Deprecated：引導問題取代題目內容（S-04.8 修訂），之後另案移除。
+    #[schema(deprecated)]
     pub description: String,
     pub category: Option<String>,
     pub is_active: bool,
+    #[serde(default)]
+    pub guiding_questions: Vec<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -82,6 +86,8 @@ pub(crate) struct NewTopic {
     #[serde(default)]
     description: String,
     category: Option<String>,
+    #[serde(default)]
+    guiding_questions: Vec<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -91,6 +97,32 @@ pub(crate) struct TopicPatch {
     #[serde(default, deserialize_with = "nullable")]
     category: Option<Option<String>>,
     is_active: Option<bool>,
+    guiding_questions: Option<Vec<String>>,
+}
+
+fn validate_guiding_questions(qs: &[String]) -> Result<(), ApiError> {
+    if qs.len() > 5 {
+        return Err(ApiError::bad_request(
+            "invalid_guiding_questions",
+            "引導問題最多 5 個",
+        ));
+    }
+    for q in qs {
+        let trimmed = q.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request(
+                "invalid_guiding_questions",
+                "單一引導問題不可為空白",
+            ));
+        }
+        if trimmed.chars().count() > 200 {
+            return Err(ApiError::bad_request(
+                "invalid_guiding_questions",
+                "引導問題單一最多 200 字",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[utoipa::path(
@@ -109,7 +141,7 @@ pub(crate) async fn list_topics_for_teacher(
 
 async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     let rows = sqlx::query_as(
-        "SELECT id, title, description, category, is_active FROM topics ORDER BY created_at, id",
+        "SELECT id, title, description, category, is_active, guiding_questions FROM topics ORDER BY created_at, id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -141,13 +173,15 @@ async fn insert_topic(
     if !valid_text(&b.title) {
         return Err(ApiError::invalid_title());
     }
+    validate_guiding_questions(&b.guiding_questions)?;
     let t = sqlx::query_as(
-        "INSERT INTO topics (title, description, category) VALUES ($1, $2, $3)
-         RETURNING id, title, description, category, is_active",
+        "INSERT INTO topics (title, description, category, guiding_questions) VALUES ($1, $2, $3, $4)
+         RETURNING id, title, description, category, is_active, guiding_questions",
     )
     .bind(b.title.trim())
     .bind(b.description)
     .bind(b.category)
+    .bind(&b.guiding_questions)
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
@@ -181,10 +215,14 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::invalid_title());
     }
+    if let Some(ref qs) = p.guiding_questions {
+        validate_guiding_questions(qs)?;
+    }
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
                 category = CASE WHEN $4 THEN $5::text ELSE category END,
                 is_active = COALESCE($6, is_active),
+                guiding_questions = COALESCE($7::text[], guiding_questions),
                 -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
                 dimensions = CASE WHEN has_had_conversation
                         OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
@@ -200,7 +238,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
                     THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, category, is_active",
+         RETURNING id, title, description, category, is_active, guiding_questions",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
@@ -208,6 +246,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     .bind(p.category.is_some())
     .bind(p.category.flatten())
     .bind(p.is_active)
+    .bind(p.guiding_questions)
     .fetch_optional(&state.pool)
     .await?
     .map(Json)
@@ -819,7 +858,7 @@ pub(crate) async fn available(
     let (activities, topics) = tokio::try_join!(
         activity_store::list_published_with_progress(&state.pool, cu.user.id),
         sqlx::query_as(
-            "SELECT id, title, description, category, is_active FROM topics
+            "SELECT id, title, description, category, is_active, guiding_questions FROM topics
              WHERE is_active ORDER BY created_at, id",
         )
         .fetch_all(&state.pool),
