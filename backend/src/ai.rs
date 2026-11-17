@@ -89,6 +89,8 @@ pub struct AiError {
     pub(crate) model: Option<String>,
     pub(crate) provider_attempts: i32,
     pub(crate) retry_after: Option<Duration>,
+    /// 供應商回的 HTTP 狀態碼（只有狀態碼，不含本文）；供模型驗證區分「模型不存在」（F-40.3）。
+    pub(crate) http_status: Option<u16>,
 }
 
 impl AiError {
@@ -108,6 +110,7 @@ impl AiError {
             model: None,
             provider_attempts: 0,
             retry_after: None,
+            http_status: None,
         }
     }
 
@@ -173,6 +176,15 @@ impl AiError {
     /// 供應商要求的等待時間（`Retry-After`），供 key 冷卻使用。
     pub fn retry_after(&self) -> Option<Duration> {
         self.retry_after
+    }
+
+    pub fn http_status(&self) -> Option<u16> {
+        self.http_status
+    }
+
+    pub(crate) fn with_http_status(mut self, status: u16) -> Self {
+        self.http_status = Some(status);
+        self
     }
 
     pub(crate) fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {

@@ -222,7 +222,9 @@ fn classify(error: &genai::Error) -> AiError {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok())
             .map(Duration::from_secs);
-        return AiError::classified(class).with_retry_after(retry_after);
+        return AiError::classified(class)
+            .with_retry_after(retry_after)
+            .with_http_status(status.as_u16());
     }
     AiError::classified(match error {
         genai::Error::WebModelCall { webc_error, .. }
