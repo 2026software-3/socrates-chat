@@ -9,14 +9,17 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
-import { Textarea } from '@/components/ui/textarea'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
+import { GuidingQuestionsField } from './guiding-questions-field'
 import { TopicDimensionsDialog } from './topic-dimensions'
 
-type TopicInput = { title: string; description: string }
+type TopicInput = { title: string; category: string; questions: string[] }
+
+/** 去頭尾空白並略過空白項目。 */
+const cleanQuestions = (qs: string[]) => qs.map((q) => q.trim()).filter(Boolean)
 
 /** 新增與編輯共用的欄位表單；送出中停用按鈕，錯誤以翻譯後的訊息顯示在表單內。 */
 function TopicForm({
@@ -67,14 +70,20 @@ function TopicForm({
         />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${idPrefix}-description`}>{t('admin.topics.descriptionLabel')}</Label>
-        <Textarea
-          id={`${idPrefix}-description`}
-          rows={3}
-          value={v.description}
-          onChange={(e) => setV({ ...v, description: e.target.value })}
+        <Label htmlFor={`${idPrefix}-category`}>{t('admin.topics.categoryLabel')}</Label>
+        <Input
+          id={`${idPrefix}-category`}
+          list={`${idPrefix}-categories`}
+          value={v.category}
+          onChange={(e) => setV({ ...v, category: e.target.value })}
         />
+        <datalist id={`${idPrefix}-categories`}>
+          {categories.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
       </div>
+      <GuidingQuestionsField idPrefix={idPrefix} value={v.questions} onChange={(questions) => setV({ ...v, questions })} />
       <div aria-live="polite">
         {error ? (
           <Alert variant="destructive" role="alert">
@@ -124,7 +133,8 @@ export function TopicsPage() {
   const q = query.trim().toLowerCase()
   const shown = topics.filter(
     (x) =>
-      !q || [x.title, x.description].some((s) => s.toLowerCase().includes(q)),
+      (!activeCategory || x.category === activeCategory) &&
+      (!q || [x.title, ...(x.guiding_questions ?? []), x.category ?? ''].some((s) => s.toLowerCase().includes(q))),
   )
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
   const filtered = q !== ''
@@ -137,8 +147,10 @@ export function TopicsPage() {
   }
 
   async function create(v: TopicInput) {
-    const body: { title: string; description?: string } = { title: v.title.trim() }
-    if (v.description.trim()) body.description = v.description.trim()
+    const body: { title: string; category?: string; guiding_questions?: string[] } = { title: v.title.trim() }
+    if (v.category.trim()) body.category = v.category.trim()
+    const questions = cleanQuestions(v.questions)
+    if (questions.length > 0) body.guiding_questions = questions
     setNotice(undefined)
     await api.post('/api/topics', body)
     setCreating(false)
@@ -147,9 +159,14 @@ export function TopicsPage() {
   }
 
   async function edit(topic: Topic, v: TopicInput) {
-    const body: Partial<Pick<Topic, 'title' | 'description'>> = {}
+    const body: Partial<Pick<Topic, 'title' | 'category' | 'guiding_questions'>> = {}
     if (v.title.trim() !== topic.title) body.title = v.title.trim()
-    if (v.description.trim() !== topic.description.trim()) body.description = v.description.trim()
+    const questions = cleanQuestions(v.questions)
+    const before = topic.guiding_questions ?? []
+    if (questions.length !== before.length || questions.some((q, i) => q !== before[i])) body.guiding_questions = questions
+    // 後端 PATCH：沒帶＝保留、null＝清除分類
+    const category = v.category.trim()
+    if (category !== (topic.category ?? '')) body.category = category === '' ? null : category
     if (Object.keys(body).length > 0) {
       await api.patch(`/api/topics/${encodeURIComponent(topic.id)}`, body)
       patch(topic.id, body)
@@ -273,7 +290,7 @@ export function TopicsPage() {
           </DialogHeader>
           <TopicForm
             idPrefix="create"
-            initial={{ title: '', description: '' }}
+            initial={{ title: '', category: '', questions: [] }}
             submitLabel={t('admin.topics.create')}
             pendingLabel={t('admin.topics.creating')}
             onSubmit={create}
@@ -309,7 +326,7 @@ export function TopicsPage() {
             <TopicForm
               key={editing.id}
               idPrefix="edit"
-              initial={{ title: editing.title, description: editing.description }}
+              initial={{ title: editing.title, category: editing.category ?? '', questions: editing.guiding_questions ?? [] }}
               submitLabel={t('common.save')}
               pendingLabel={t('admin.topics.saving')}
               onSubmit={(v) => edit(editing, v)}
