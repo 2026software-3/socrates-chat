@@ -37,14 +37,14 @@ export function makeMessage(overrides: Partial<Message> = {}): Message {
 }
 
 export function makeDetail(
-  overrides: Partial<Conversation> & { generating?: boolean; voice_realtime?: boolean } = {},
+  overrides: Partial<Conversation> & { generating?: boolean; voice_realtime?: boolean; guiding_questions?: string[] } = {},
   messages: Message[] = [
     makeMessage({ id: 'm1', role: 'student', content: '我認為應該扳動拉桿。' }),
     makeMessage({ id: 'm2', role: 'ai', content: '你說的「應該」是依據什麼原則呢？', question_type: 'clarify' }),
   ],
 ): ConversationDetail {
-  const { generating = false, voice_realtime = false, ...conversation } = overrides
-  return { ...makeConversation(conversation), messages, generating, voice_realtime }
+  const { generating = false, voice_realtime = false, guiding_questions = [], ...conversation } = overrides
+  return { ...makeConversation(conversation), messages, generating, voice_realtime, guiding_questions }
 }
 
 export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {

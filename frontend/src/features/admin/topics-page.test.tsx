@@ -11,7 +11,6 @@ const topic = (id: string, over: Partial<Topic> = {}): Topic => ({
   id,
   title: `Topic ${id}`,
   description: `Description ${id}`,
-  category: 'Ethics',
   is_active: true,
   ...over,
 })
@@ -25,7 +24,7 @@ function mockTopics(initial: Topic[]) {
     http.post('/api/topics', async ({ request }) => {
       const body = (await request.json()) as Partial<Topic>
       calls.push({ method: 'POST', url: '/api/topics', body })
-      const created = topic(`n${topics.length + 1}`, { title: body.title, description: body.description ?? '', category: body.category ?? null })
+      const created = topic(`n${topics.length + 1}`, { title: body.title, description: body.description ?? '' })
       topics.push(created)
       return HttpResponse.json(created, { status: 201 })
     }),
@@ -86,11 +85,10 @@ describe('TopicsPage', () => {
     const dialog = await openCreate()
     await userEvent.type(within(dialog).getByLabelText('題目名稱'), ' New topic ')
     await userEvent.type(within(dialog).getByLabelText('題目內容'), 'About it')
-    await userEvent.type(within(dialog).getByLabelText('分類'), 'Logic')
     await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('New topic')).toBeInTheDocument()
     expect(calls).toEqual([
-      { method: 'POST', url: '/api/topics', body: { title: 'New topic', description: 'About it', category: 'Logic' } },
+      { method: 'POST', url: '/api/topics', body: { title: 'New topic', description: 'About it' } },
     ])
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByText('已新增題目「New topic」。')).toBeInTheDocument()
@@ -213,20 +211,15 @@ describe('TopicsPage', () => {
     expect(screen.queryByText('已停用')).not.toBeInTheDocument()
   })
 
-  it('filters by text and category', async () => {
+  it('filters by text', async () => {
     mockTopics([
-      topic('1', { title: 'Justice', category: 'Ethics' }),
-      topic('2', { title: 'Truth', category: 'Logic' }),
-      topic('3', { title: 'Old one', category: 'Logic', is_active: false }),
+      topic('1', { title: 'Justice' }),
+      topic('2', { title: 'Truth' }),
+      topic('3', { title: 'Old one', is_active: false }),
     ])
     render()
     await screen.findByText('Justice')
     expect(screen.getByText('Old one')).toBeInTheDocument()
-
-    await userEvent.selectOptions(screen.getByLabelText('依分類篩選'), 'Logic')
-    expect(screen.queryByText('Justice')).not.toBeInTheDocument()
-    expect(screen.getByText('Truth')).toBeInTheDocument()
-    await userEvent.selectOptions(screen.getByLabelText('依分類篩選'), '')
 
     await userEvent.type(screen.getByLabelText('搜尋題目'), 'justice')
     expect(screen.queryByText('Truth')).not.toBeInTheDocument()
@@ -239,30 +232,6 @@ describe('TopicsPage', () => {
 
   it('does not send a PATCH when the edit changes nothing', async () => {
     const { calls } = mockTopics([topic('1')])
-    render()
-    await screen.findByText('Topic 1')
-    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([])
-  })
-
-  it('sends category null when the category is emptied, and drops the shown category', async () => {
-    const { calls } = mockTopics([topic('1', { category: 'Ethics' })])
-    render()
-    await screen.findByText('Topic 1')
-    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.clear(within(dialog).getByLabelText('分類'))
-    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { category: null } }])
-    expect(within(screen.getByRole('table', { name: '題目清單' })).queryByText('Ethics')).not.toBeInTheDocument()
-  })
-
-  it('does not send the category when it is left empty on a topic without one', async () => {
-    const { calls } = mockTopics([topic('1', { category: null })])
     render()
     await screen.findByText('Topic 1')
     await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
@@ -333,23 +302,6 @@ describe('TopicsPage', () => {
     expect(await screen.findByText('Server title')).toBeInTheDocument()
     expect(screen.queryByText('已停用')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '停用「Server title」' })).toBeInTheDocument()
-  })
-
-  it('falls back to all categories when the selected category disappears', async () => {
-    mockTopics([topic('1', { category: 'Ethics' }), topic('2', { category: 'Logic' })])
-    render()
-    await screen.findByText('Topic 1')
-    await userEvent.selectOptions(screen.getByLabelText('依分類篩選'), 'Logic')
-    expect(screen.queryByText('Topic 1')).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 2」' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.clear(within(dialog).getByLabelText('分類'))
-    await userEvent.type(within(dialog).getByLabelText('分類'), 'Ethics')
-    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(screen.getByLabelText('依分類篩選')).toHaveValue('')
-    expect(screen.getByText('Topic 1')).toBeInTheDocument()
-    expect(screen.getByText('Topic 2')).toBeInTheDocument()
   })
 
   it('shows a retryable error next to the stale list when a reload fails', async () => {

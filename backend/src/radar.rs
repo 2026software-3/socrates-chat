@@ -81,7 +81,7 @@ struct Row {
     owner: Uuid,
     classroom: Option<Uuid>,
     title: String,
-    description: String,
+    guiding_questions: Vec<String>,
     has_topic: bool,
     summary_ready: bool,
     dimensions: Option<SqlJson<[Dimension; 6]>>,
@@ -112,7 +112,7 @@ struct Job {
     owner: Uuid,
     classroom: Option<Uuid>,
     title: String,
-    description: String,
+    guiding_questions: Vec<String>,
     dimensions: Vec<radar_scoring::Dimension>,
 }
 
@@ -186,7 +186,7 @@ impl Row {
             owner: self.owner,
             classroom: self.classroom,
             title: self.title,
-            description: self.description,
+            guiding_questions: self.guiding_questions,
             dimensions,
         })
     }
@@ -198,7 +198,7 @@ async fn fetch<'e>(
     stale_secs: f64,
 ) -> Result<Option<Row>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT c.user_id AS owner, c.classroom_id AS classroom, c.title, c.description,
+        "SELECT c.user_id AS owner, c.classroom_id AS classroom, c.title, COALESCE(t.guiding_questions, '{}') AS guiding_questions,
                 t.id IS NOT NULL AS has_topic,
                 COALESCE(s.status = 'ready', false) AS summary_ready,
                 t.dimensions, t.dimensions_language,
@@ -283,7 +283,7 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
     let turns = crate::summary::load_messages_for(state, id).await?;
     let rubric = radar_scoring::rubric_for(&job.dimensions);
     let request =
-        radar_scoring::build_request(&job.title, &job.description, &job.dimensions, &turns);
+        radar_scoring::build_request(&job.title, &job.guiding_questions, &job.dimensions, &turns);
     // 逾時、失敗或結果無效時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut scores = None;
     for retry in 0..2 {

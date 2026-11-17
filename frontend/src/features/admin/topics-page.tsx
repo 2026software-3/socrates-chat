@@ -16,7 +16,7 @@ import type { Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 import { TopicDimensionsDialog } from './topic-dimensions'
 
-type TopicInput = { title: string; description: string; category: string }
+type TopicInput = { title: string; description: string }
 
 /** 新增與編輯共用的欄位表單；送出中停用按鈕，錯誤以翻譯後的訊息顯示在表單內。 */
 function TopicForm({
@@ -24,7 +24,6 @@ function TopicForm({
   initial,
   submitLabel,
   pendingLabel,
-  categories,
   onSubmit,
   onCancel,
 }: {
@@ -32,7 +31,6 @@ function TopicForm({
   initial: TopicInput
   submitLabel: string
   pendingLabel: string
-  categories: string[]
   onSubmit: (v: TopicInput) => Promise<void>
   onCancel?: () => void
 }) {
@@ -76,20 +74,6 @@ function TopicForm({
           value={v.description}
           onChange={(e) => setV({ ...v, description: e.target.value })}
         />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor={`${idPrefix}-category`}>{t('admin.topics.categoryLabel')}</Label>
-        <Input
-          id={`${idPrefix}-category`}
-          list={`${idPrefix}-categories`}
-          value={v.category}
-          onChange={(e) => setV({ ...v, category: e.target.value })}
-        />
-        <datalist id={`${idPrefix}-categories`}>
-          {categories.map((c) => (
-            <option key={c} value={c} />
-          ))}
-        </datalist>
       </div>
       <div aria-live="polite">
         {error ? (
@@ -135,23 +119,15 @@ export function TopicsPage() {
   const [creating, setCreating] = useState(false)
   const [confirming, setConfirming] = useState<{ topic: Topic; next: boolean }>()
   const [query, setQuery] = useState('')
-  const [category, setCategory] = useState('')
 
   const topics = useMemo(() => (data ?? []).map((x) => ({ ...x, ...patched[x.id] })), [data, patched])
-  const categories = useMemo(
-    () => [...new Set(topics.map((x) => x.category).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b)),
-    [topics],
-  )
-  // 選取的分類若已不存在（例如最後一題被改走），視為「全部」
-  const activeCategory = categories.includes(category) ? category : ''
   const q = query.trim().toLowerCase()
   const shown = topics.filter(
     (x) =>
-      (!activeCategory || x.category === activeCategory) &&
-      (!q || [x.title, x.description, x.category ?? ''].some((s) => s.toLowerCase().includes(q))),
+      !q || [x.title, x.description].some((s) => s.toLowerCase().includes(q)),
   )
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
-  const filtered = q !== '' || activeCategory !== ''
+  const filtered = q !== ''
 
   function patch(id: string, p: Partial<Topic>) {
     setPatchState((prev) => {
@@ -161,9 +137,8 @@ export function TopicsPage() {
   }
 
   async function create(v: TopicInput) {
-    const body: { title: string; description?: string; category?: string } = { title: v.title.trim() }
+    const body: { title: string; description?: string } = { title: v.title.trim() }
     if (v.description.trim()) body.description = v.description.trim()
-    if (v.category.trim()) body.category = v.category.trim()
     setNotice(undefined)
     await api.post('/api/topics', body)
     setCreating(false)
@@ -172,12 +147,9 @@ export function TopicsPage() {
   }
 
   async function edit(topic: Topic, v: TopicInput) {
-    const body: Partial<Pick<Topic, 'title' | 'description' | 'category'>> = {}
+    const body: Partial<Pick<Topic, 'title' | 'description'>> = {}
     if (v.title.trim() !== topic.title) body.title = v.title.trim()
     if (v.description.trim() !== topic.description.trim()) body.description = v.description.trim()
-    // 後端 PATCH：沒帶＝保留、null＝清除分類
-    const category = v.category.trim()
-    if (category !== (topic.category ?? '')) body.category = category === '' ? null : category
     if (Object.keys(body).length > 0) {
       await api.patch(`/api/topics/${encodeURIComponent(topic.id)}`, body)
       patch(topic.id, body)
@@ -235,22 +207,6 @@ export function TopicsPage() {
               <Label htmlFor="topic-search">{t('admin.topics.searchLabel')}</Label>
               <Input id="topic-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
-            <div className="space-y-1.5 md:w-56">
-              <Label htmlFor="topic-category-filter">{t('admin.topics.categoryFilter')}</Label>
-              <select
-                id="topic-category-filter"
-                value={activeCategory}
-                onChange={(e) => setCategory(e.target.value)}
-                className="border-input bg-background h-8 w-full rounded-lg border px-2 text-sm"
-              >
-                <option value="">{t('admin.topics.allCategories')}</option>
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <p className="text-sm font-medium" aria-live="polite">
@@ -269,7 +225,6 @@ export function TopicsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t('admin.topics.col.title')}</TableHead>
-                    <TableHead>{t('admin.topics.col.category')}</TableHead>
                     <TableHead>{t('admin.topics.col.status')}</TableHead>
                     <TableHead>{t('admin.topics.col.actions')}</TableHead>
                   </TableRow>
@@ -278,7 +233,6 @@ export function TopicsPage() {
                   {shown.map((x) => (
                     <TableRow key={x.id} className={x.is_active ? '' : 'text-muted-foreground'}>
                       <TableCell className="max-w-96 font-medium whitespace-normal break-words">{x.title}</TableCell>
-                      <TableCell>{x.category ?? '—'}</TableCell>
                       <TableCell>
                         <Badge variant={x.is_active ? 'default' : 'secondary'}>
                           {x.is_active ? t('admin.topics.active') : t('admin.topics.inactive')}
@@ -319,10 +273,9 @@ export function TopicsPage() {
           </DialogHeader>
           <TopicForm
             idPrefix="create"
-            initial={{ title: '', description: '', category: '' }}
+            initial={{ title: '', description: '' }}
             submitLabel={t('admin.topics.create')}
             pendingLabel={t('admin.topics.creating')}
-            categories={categories}
             onSubmit={create}
             onCancel={() => setCreating(false)}
           />
@@ -341,7 +294,6 @@ export function TopicsPage() {
           onConfirm={() => void toggle(confirming.topic, confirming.next)}
         >
           <ConfirmFact label={t('admin.topics.fact.topic')}>{confirming.topic.title}</ConfirmFact>
-          <ConfirmFact label={t('admin.topics.fact.category')}>{confirming.topic.category ?? '—'}</ConfirmFact>
         </ConfirmDialog>
       ) : null}
 
@@ -357,10 +309,9 @@ export function TopicsPage() {
             <TopicForm
               key={editing.id}
               idPrefix="edit"
-              initial={{ title: editing.title, description: editing.description, category: editing.category ?? '' }}
+              initial={{ title: editing.title, description: editing.description }}
               submitLabel={t('common.save')}
               pendingLabel={t('admin.topics.saving')}
-              categories={categories}
               onSubmit={(v) => edit(editing, v)}
               onCancel={() => setEditing(undefined)}
             />
