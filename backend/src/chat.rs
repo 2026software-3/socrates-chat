@@ -136,6 +136,8 @@ pub(crate) struct Detail {
     generating: bool,
     /// 伺服器端語音對話已啟用，可連 `GET /api/conversations/{id}/voice`
     voice_realtime: bool,
+    /// 該題目目前的引導問題（S-04.8）；題目已不存在或沒有引導問題時為空
+    guiding_questions: Vec<String>,
 }
 
 #[utoipa::path(
@@ -352,11 +354,20 @@ pub(crate) async fn detail(
     // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
     let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;
+    let guiding_questions: Vec<String> = match conversation.topic_id {
+        Some(topic_id) => sqlx::query_scalar("SELECT guiding_questions FROM topics WHERE id = $1")
+            .bind(topic_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     Ok(Json(Detail {
         conversation,
         messages,
         generating,
         voice_realtime: state.config.cascade_voice_url().is_some(),
+        guiding_questions,
     }))
 }
 

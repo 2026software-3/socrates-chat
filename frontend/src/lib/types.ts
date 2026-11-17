@@ -104,6 +104,8 @@ export type ConversationDetail = Conversation & {
   generating: boolean
   /** 伺服器端語音對話已啟用（`GET /api/conversations/{id}/voice`） */
   voice_realtime: boolean
+  /** 該題目目前的引導問題（S-04.8）；對話頁隨機顯示其中一題 */
+  guiding_questions: string[]
 }
 
 /** 送出訊息的回應；`auto_ended` 表示達回合上限，對話已自動結束、總結產生中。 */

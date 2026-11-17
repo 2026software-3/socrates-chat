@@ -5,6 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
+import { pickGuidingQuestion } from '@/features/chat/guiding-question'
 import { useMessageSource } from '@/features/chat/use-message-source'
 import type { RealtimeHost } from '@/features/chat/voice/realtime/use-realtime-voice'
 import { createVoiceTurns } from '@/features/chat/voice/realtime/voice-turn'
@@ -113,6 +114,10 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   }, [detail, runtime, voiceTurns])
 
   const ended = status === 'ended'
+  const guidingQuestion = useMemo(
+    () => pickGuidingQuestion(detail.id, detail.guiding_questions ?? []),
+    [detail.id, detail.guiding_questions],
+  )
   // 單場雷達圖依賴總結：總結成功後才顯示它的計算狀態
   const [summaryReady, setSummaryReady] = useState(false)
 
@@ -140,7 +145,11 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
               <h1 className="text-2xl leading-8 font-medium break-words">{detail.title}</h1>
               <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
             </div>
-            {detail.description ? <p className="text-muted-foreground text-xs break-words">{detail.description}</p> : null}
+            {guidingQuestion ? (
+              <p data-testid="guiding-question" className="text-muted-foreground text-sm break-words whitespace-pre-line">
+                {guidingQuestion}
+              </p>
+            ) : null}
             <div className="mt-1 flex flex-wrap items-center gap-2">
               <RoundCount uncounted={uncounted} />
               <StageIndicator stage={stage} />
