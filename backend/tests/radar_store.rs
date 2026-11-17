@@ -23,7 +23,23 @@ async fn age_pending(pool: &PgPool, id: Uuid, secs: f64) {
 async fn ready_conversation(pool: &PgPool) -> Uuid {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let id = start_conversation(&app, &a).await.parse::<Uuid>().unwrap();
+    // 這個夾具也會在舊版資料庫結構（還沒有 topics.guiding_questions）上用到，
+    // 建立對話的 API 會讀該欄位，所以對話以 raw SQL 插入。
+    let activity = published_activity_with_topic(&app, &a, "電車難題")
+        .await
+        .parse::<Uuid>()
+        .unwrap();
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
+         SELECT u.id, act.id, (SELECT topic_id FROM activity_topics WHERE activity_id = act.id LIMIT 1),
+                act.classroom_id, '電車難題', '', 'zh-TW'
+         FROM users u, activities act WHERE u.email = 'student@example.com' AND act.id = $1
+         RETURNING id",
+    )
+    .bind(activity)
+    .fetch_one(pool)
+    .await
+    .unwrap();
     sqlx::query("UPDATE conversations SET status='ended', ended_at=now() WHERE id=$1")
         .bind(id)
         .execute(pool)

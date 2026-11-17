@@ -437,7 +437,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let req = AiRequest {
             system: build_system_prompt(&PromptContext {
                 title: &case.title,
-                description: &case.description,
+                guiding_questions: std::slice::from_ref(&case.description),
                 stage: case.stage,
                 turn: case.turn,
                 wrap_up_turn: WRAP_UP_TURN,
