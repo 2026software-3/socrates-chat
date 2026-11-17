@@ -10,7 +10,8 @@ import { server } from '@/test/server'
 const topic = (id: string, over: Partial<Topic> = {}): Topic => ({
   id,
   title: `Topic ${id}`,
-  description: `Description ${id}`,
+  description: '',
+  guiding_questions: [],
   category: 'Ethics',
   is_active: true,
   ...over,
@@ -25,7 +26,7 @@ function mockTopics(initial: Topic[]) {
     http.post('/api/topics', async ({ request }) => {
       const body = (await request.json()) as Partial<Topic>
       calls.push({ method: 'POST', url: '/api/topics', body })
-      const created = topic(`n${topics.length + 1}`, { title: body.title, description: body.description ?? '', category: body.category ?? null })
+      const created = topic(`n${topics.length + 1}`, { title: body.title, guiding_questions: body.guiding_questions ?? [], category: body.category ?? null })
       topics.push(created)
       return HttpResponse.json(created, { status: 201 })
     }),
@@ -85,12 +86,13 @@ describe('TopicsPage', () => {
     await screen.findByText('Topic 1')
     const dialog = await openCreate()
     await userEvent.type(within(dialog).getByLabelText('題目名稱'), ' New topic ')
-    await userEvent.type(within(dialog).getByLabelText('題目內容'), 'About it')
     await userEvent.type(within(dialog).getByLabelText('分類'), 'Logic')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增引導問題' }))
+    await userEvent.type(within(dialog).getByLabelText('引導問題 1'), ' Why? ')
     await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('New topic')).toBeInTheDocument()
     expect(calls).toEqual([
-      { method: 'POST', url: '/api/topics', body: { title: 'New topic', description: 'About it', category: 'Logic' } },
+      { method: 'POST', url: '/api/topics', body: { title: 'New topic', category: 'Logic', guiding_questions: ['Why?'] } },
     ])
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByText('已新增題目「New topic」。')).toBeInTheDocument()
@@ -272,21 +274,120 @@ describe('TopicsPage', () => {
     expect(calls).toEqual([])
   })
 
-  it('trims the description when creating and editing', async () => {
-    const { calls } = mockTopics([topic('1', { description: 'Desc' })])
+  it('has no topic content field any more', async () => {
+    mockTopics([])
+    render()
+    await screen.findByText('題目庫還沒有題目。請按右上角新增。')
+    const dialog = await openCreate()
+    expect(within(dialog).queryByLabelText('題目內容')).not.toBeInTheDocument()
+  })
+
+  it('adds, removes and reorders guiding questions, showing counts', async () => {
+    const { calls } = mockTopics([])
+    render()
+    await screen.findByText('題目庫還沒有題目。請按右上角新增。')
+    const dialog = await openCreate()
+    expect(within(dialog).getByText('0 / 5')).toBeInTheDocument()
+    const add = within(dialog).getByRole('button', { name: '新增引導問題' })
+    for (const text of ['A', 'B', 'C']) {
+      await userEvent.click(add)
+      const boxes = within(dialog).getAllByRole('textbox', { name: /^引導問題 \d$/ })
+      await userEvent.type(boxes[boxes.length - 1], text)
+    }
+    expect(within(dialog).getByText('3 / 5')).toBeInTheDocument()
+    expect(within(dialog).getAllByText(/^1 \/ 200$/)).toHaveLength(3)
+    await userEvent.click(within(dialog).getByRole('button', { name: '上移引導問題 3' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除引導問題 1' }))
+    expect(within(dialog).getByText('2 / 5')).toBeInTheDocument()
+    await userEvent.type(within(dialog).getByLabelText('題目名稱'), 'T')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
+    await screen.findByText('已新增題目「T」。')
+    expect(calls[0].body).toEqual({ title: 'T', guiding_questions: ['C', 'B'] })
+  })
+
+  it('disables the first up and last down buttons', async () => {
+    mockTopics([])
+    render()
+    await screen.findByText('題目庫還沒有題目。請按右上角新增。')
+    const dialog = await openCreate()
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增引導問題' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增引導問題' }))
+    expect(within(dialog).getByRole('button', { name: '上移引導問題 1' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: '下移引導問題 2' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: '下移引導問題 1' })).toBeEnabled()
+  })
+
+  it('stops at 5 guiding questions and limits each to 200 characters', async () => {
+    mockTopics([])
+    render()
+    await screen.findByText('題目庫還沒有題目。請按右上角新增。')
+    const dialog = await openCreate()
+    const add = within(dialog).getByRole('button', { name: '新增引導問題' })
+    for (let i = 0; i < 5; i++) await userEvent.click(add)
+    expect(add).toBeDisabled()
+    expect(within(dialog).getByText('5 / 5')).toBeInTheDocument()
+    expect(within(dialog).getByText('最多 5 個引導問題。')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('引導問題 1')).toHaveAttribute('maxlength', '200')
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除引導問題 5' }))
+    expect(add).toBeEnabled()
+  })
+
+  it('drops blank guiding questions on submit', async () => {
+    const { calls } = mockTopics([])
+    render()
+    await screen.findByText('題目庫還沒有題目。請按右上角新增。')
+    const dialog = await openCreate()
+    await userEvent.type(within(dialog).getByLabelText('題目名稱'), 'T')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增引導問題' }))
+    await userEvent.type(within(dialog).getByLabelText('引導問題 1'), '   ')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
+    await screen.findByText('已新增題目「T」。')
+    expect(calls[0].body).toEqual({ title: 'T' })
+  })
+
+  it('prefills existing guiding questions and patches only when they change', async () => {
+    const { calls } = mockTopics([topic('1', { guiding_questions: ['Q1', 'Q2'] })])
     render()
     await screen.findByText('Topic 1')
-    const createDialog = await openCreate()
-    await userEvent.type(within(createDialog).getByLabelText('題目名稱'), 'T')
-    await userEvent.type(within(createDialog).getByLabelText('題目內容'), '  hi  ')
-    await userEvent.click(within(createDialog).getByRole('button', { name: '新增題目' }))
-    await screen.findByText('已新增題目「T」。')
     await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.type(within(dialog).getByLabelText('題目內容'), '   ')
+    let dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('引導問題 1')).toHaveValue('Q1')
+    expect(within(dialog).getByLabelText('引導問題 2')).toHaveValue('Q2')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'POST', url: '/api/topics', body: { title: 'T', description: 'hi' } }])
+    expect(calls).toEqual([])
+    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
+    dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除引導問題 1' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { guiding_questions: ['Q2'] } }])
+  })
+
+  it('clears all guiding questions with an empty list on edit', async () => {
+    const { calls } = mockTopics([topic('1', { guiding_questions: ['Q1'] })])
+    render()
+    await screen.findByText('Topic 1')
+    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除引導問題 1' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { guiding_questions: [] } }])
+  })
+
+  it('shows the backend validation error inline and keeps the questions', async () => {
+    mockTopics([])
+    server.use(http.post('/api/topics', () => apiError(400, 'invalid_guiding_questions')))
+    render()
+    await screen.findByText('題目庫還沒有題目。請按右上角新增。')
+    const dialog = await openCreate()
+    await userEvent.type(within(dialog).getByLabelText('題目名稱'), 'T')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增引導問題' }))
+    await userEvent.type(within(dialog).getByLabelText('引導問題 1'), 'keep')
+    await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('引導問題')
+    expect(within(dialog).getByLabelText('引導問題 1')).toHaveValue('keep')
   })
 
   it('clears the create notice on the next submit', async () => {
