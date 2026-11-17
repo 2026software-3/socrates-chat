@@ -84,6 +84,8 @@ pub mod roster_store;
 pub mod summary;
 pub mod summary_translation;
 pub mod tasks;
+pub mod teacher_key_crypto;
+pub mod teacher_key_store;
 pub mod topic_dimensions;
 pub(crate) mod user_limit;
 pub mod voice;
