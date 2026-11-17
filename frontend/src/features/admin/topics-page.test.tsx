@@ -12,7 +12,6 @@ const topic = (id: string, over: Partial<Topic> = {}): Topic => ({
   title: `Topic ${id}`,
   description: '',
   guiding_questions: [],
-  category: 'Ethics',
   is_active: true,
   ...over,
 })
@@ -26,7 +25,7 @@ function mockTopics(initial: Topic[]) {
     http.post('/api/topics', async ({ request }) => {
       const body = (await request.json()) as Partial<Topic>
       calls.push({ method: 'POST', url: '/api/topics', body })
-      const created = topic(`n${topics.length + 1}`, { title: body.title, guiding_questions: body.guiding_questions ?? [], category: body.category ?? null })
+      const created = topic(`n${topics.length + 1}`, { title: body.title, guiding_questions: body.guiding_questions ?? [] })
       topics.push(created)
       return HttpResponse.json(created, { status: 201 })
     }),
@@ -86,13 +85,12 @@ describe('TopicsPage', () => {
     await screen.findByText('Topic 1')
     const dialog = await openCreate()
     await userEvent.type(within(dialog).getByLabelText('題目名稱'), ' New topic ')
-    await userEvent.type(within(dialog).getByLabelText('分類'), 'Logic')
     await userEvent.click(within(dialog).getByRole('button', { name: '新增引導問題' }))
     await userEvent.type(within(dialog).getByLabelText('引導問題 1'), ' Why? ')
     await userEvent.click(within(dialog).getByRole('button', { name: '新增題目' }))
     expect(await screen.findByText('New topic')).toBeInTheDocument()
     expect(calls).toEqual([
-      { method: 'POST', url: '/api/topics', body: { title: 'New topic', category: 'Logic', guiding_questions: ['Why?'] } },
+      { method: 'POST', url: '/api/topics', body: { title: 'New topic', guiding_questions: ['Why?'] } },
     ])
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByText('已新增題目「New topic」。')).toBeInTheDocument()
@@ -245,36 +243,24 @@ describe('TopicsPage', () => {
     expect(calls).toEqual([])
   })
 
-  it('sends category null when the category is emptied, and drops the shown category', async () => {
-    const { calls } = mockTopics([topic('1', { category: 'Ethics' })])
-    render()
-    await screen.findByText('Topic 1')
-    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.clear(within(dialog).getByLabelText('分類'))
-    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([{ method: 'PATCH', url: '/api/topics/1', body: { category: null } }])
-    expect(within(screen.getByRole('table', { name: '題目清單' })).queryByText('Ethics')).not.toBeInTheDocument()
-  })
-
-  it('does not send the category when it is left empty on a topic without one', async () => {
-    const { calls } = mockTopics([topic('1', { category: null })])
-    render()
-    await screen.findByText('Topic 1')
-    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(calls).toEqual([])
-  })
-
   it('has no topic content field any more', async () => {
     mockTopics([])
     render()
     await screen.findByText('題目庫還沒有題目。請按右上角新增。')
     const dialog = await openCreate()
     expect(within(dialog).queryByLabelText('題目內容')).not.toBeInTheDocument()
+  })
+
+  it('has no category field any more (removed with the topics.category column)', async () => {
+    mockTopics([topic('1')])
+    render()
+    await screen.findByText('Topic 1')
+    const dialog = await openCreate()
+    expect(within(dialog).queryByLabelText('分類')).not.toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await userEvent.click(screen.getByRole('button', { name: '編輯「Topic 1」' }))
+    const edit = await screen.findByRole('dialog')
+    expect(within(edit).queryByLabelText('分類')).not.toBeInTheDocument()
   })
 
   it('adds, removes and reorders guiding questions, showing counts', async () => {
