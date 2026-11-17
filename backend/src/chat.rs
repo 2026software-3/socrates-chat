@@ -61,6 +61,11 @@ pub struct Conversation {
     pub classroom_name: Option<String>,
     /// 來源教室已封存（顯示「已封存」）；個人練習為 false（S-14）
     pub classroom_archived: bool,
+    /// 該題目目前的引導問題（S-04.8）：給 AI 提示、總結、論證樹、雷達評分用，也供詳情 API 回傳；
+    /// 不隨對話列表輸出。題目已不存在或沒有引導問題時為空。
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub guiding_questions: Vec<String>,
 }
 
 /// 來源教室名稱與封存旗標：以一次 LATERAL JOIN 取同一列教室。子查詢只輸出這兩欄，
@@ -83,7 +88,8 @@ macro_rules! conversation_select {
                     COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
                     ended_at,
                     archived_at IS NOT NULL AS is_archived,
-                    src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived
+                    src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived,
+                    COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions
              FROM conversations",
             classroom_join!(),
             $tail
@@ -354,14 +360,7 @@ pub(crate) async fn detail(
     // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
     let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;
-    let guiding_questions: Vec<String> = match conversation.topic_id {
-        Some(topic_id) => sqlx::query_scalar("SELECT guiding_questions FROM topics WHERE id = $1")
-            .bind(topic_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
+    let guiding_questions = conversation.guiding_questions.clone();
     Ok(Json(Detail {
         conversation,
         messages,
