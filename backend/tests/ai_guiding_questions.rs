@@ -110,16 +110,21 @@ async fn chat_prompt_lists_the_guiding_questions_in_order_and_not_the_descriptio
 }
 
 #[sqlx::test]
-async fn chat_prompt_for_a_topic_without_guiding_questions_has_only_title_and_category(
+async fn chat_prompt_for_a_topic_without_guiding_questions_falls_back_to_the_description(
     pool: PgPool,
 ) {
+    // 遷移後新建、只有 description 的題目（內建、示範、只帶 description 的 API）：
+    // 沒有引導問題時，題目說明代替它進入提示，AI 脈絡不會只剩標題。
     let f = fixture(&pool, &[], vec![Reply(vec!["好"])]).await;
     student_says(&f.app, &f.actors, &f.conversation, "我會拉桿").await;
 
     let requests = f.ai.requests.lock().unwrap();
     let system = &requests[0].system;
     assert!(system.contains("電車難題"));
-    assert!(!system.contains(OLD_DESCRIPTION));
+    assert!(
+        system.contains(OLD_DESCRIPTION),
+        "沒有引導問題時應以 description 代替"
+    );
 }
 
 #[sqlx::test]

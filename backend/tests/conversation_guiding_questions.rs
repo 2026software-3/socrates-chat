@@ -58,7 +58,9 @@ async fn conversation_detail_returns_topic_guiding_questions(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn conversation_detail_guiding_questions_empty_without_any(pool: PgPool) {
+async fn conversation_detail_falls_back_to_description_without_guiding_questions(pool: PgPool) {
+    // 測試用的內建題目只有 description、沒有引導問題：詳情以題目說明代替（見 `topic_ai_questions_sql`）
+
     let app = test_app(pool);
     let a = seed_actors(&app).await;
     let conv = start_conversation(&app, &a).await;
@@ -68,5 +70,8 @@ async fn conversation_detail_guiding_questions_empty_without_any(pool: PgPool) {
         get(&format!("/api/conversations/{conv}"), Some(&a.student)),
     )
     .await;
-    assert_eq!(json_body(res).await["guiding_questions"], json!([]));
+    assert_eq!(
+        json_body(res).await["guiding_questions"],
+        json!(["你會拉桿嗎？"])
+    );
 }
