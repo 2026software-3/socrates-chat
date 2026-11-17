@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -220,7 +220,10 @@ function Section({ title, level, emptyText, items, startingKey, onStart, layout 
                       {item.category ? t('student.available.bankCategory', { category: item.category }) : t('student.available.bank')}
                     </span>
                   </div>
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-end gap-3">
+                    <Link to={`/topics/${encodeURIComponent(item.source.topic_id)}`} className="text-sm underline" aria-label={t('student.available.viewTopicNamed', { title: item.title })}>
+                      {t('student.available.viewTopic')}
+                    </Link>
                     <Button
                       variant="outline"
                       onClick={() => onStart(item.key, item.source)}
@@ -273,6 +276,13 @@ function ActivityCard({ activity, startingKey, onStart }: ActivityCardProps) {
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm">{topic.title}</span>
                 <span className="text-muted-foreground text-xs">{t(topicStatusKey(topic))}</span>
+                <Link
+                  to={`/topics/${encodeURIComponent(topic.topic_id)}?activity=${encodeURIComponent(activity.id)}`}
+                  className="text-xs underline"
+                  aria-label={t('student.available.viewTopicNamed', { title: topic.title })}
+                >
+                  {t('student.available.viewTopic')}
+                </Link>
               </div>
               <TopicAction
                 topic={topic}
