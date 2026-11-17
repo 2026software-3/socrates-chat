@@ -52,6 +52,7 @@ pub mod cascade;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_ai_store;
 pub mod classroom_store;
 pub mod classrooms;
 pub mod client_ip;
