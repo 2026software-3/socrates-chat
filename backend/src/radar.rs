@@ -287,7 +287,7 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
     // 逾時、失敗或結果無效時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut scores = None;
     // 教室內的對話只用教室建立者的 key（F-40.5）
-    let route = state.ai_for(job.classroom).await;
+    let route = state.ai_for_conversation(job.classroom, Some(id)).await;
     for retry in 0..2 {
         let Ok(route) = &route else { break };
         let scored = AiActivity::new("radar_scoring", Some(job.owner), job.classroom)

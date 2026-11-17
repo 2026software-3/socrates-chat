@@ -64,6 +64,15 @@ fn client() -> Result<&'static GenaiClient, AiError> {
 impl AppState {
     /// 這次呼叫該用哪個 AI。`classroom` 是對話所屬的教室（個人練習與全域操作傳 `None`）。
     pub(crate) async fn ai_for(&self, classroom: Option<Uuid>) -> Result<Route, AiError> {
+        self.ai_for_conversation(classroom, None).await
+    }
+
+    /// 同上，並且依對話目前用到的備援位置開始，換用備援後記回對話（同場持續用備援，F-40.6）。
+    pub(crate) async fn ai_for_conversation(
+        &self,
+        classroom: Option<Uuid>,
+        conversation: Option<Uuid>,
+    ) -> Result<Route, AiError> {
         let system = || Route {
             ai: self.ai.clone(),
             model: self.config.openai_model.clone(),
@@ -102,35 +111,61 @@ impl AppState {
             .await
             .map_err(|_| unavailable())?
             .ok_or_else(unavailable)?;
-        let provider = ai_providers::find(&setting.primary.provider).ok_or_else(unavailable)?;
-        let mut usable: Vec<UsableKey> = keys::keys_for(&self.pool, cipher, owner, provider.id)
-            .await
-            .map_err(|_| unavailable())?
-            .into_iter()
-            .filter(is_eligible)
-            .collect();
-        if usable.is_empty() {
-            return Err(unavailable());
+        // 同一場對話已換用備援就從那個位置開始，不跳回主模型
+        let start_position: i16 = match conversation {
+            Some(id) => {
+                sqlx::query_scalar("SELECT ai_fallback_position FROM conversations WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|_| unavailable())?
+                    .unwrap_or(0)
+            }
+            None => 0,
+        };
+        let mut models = vec![setting.primary.clone()];
+        models.extend(setting.fallbacks.iter().cloned());
+        let mut targets = Vec::new();
+        for (position, m) in models.into_iter().enumerate() {
+            let position = position as i16;
+            if position < start_position {
+                continue;
+            }
+            // 設定裡的供應商一定在名單內；不在就略過這個目標
+            let Some(provider) = ai_providers::find(&m.provider) else {
+                continue;
+            };
+            let mut usable: Vec<UsableKey> = keys::keys_for(&self.pool, cipher, owner, provider.id)
+                .await
+                .map_err(|_| unavailable())?
+                .into_iter()
+                .filter(is_eligible)
+                .collect();
+            if usable.is_empty() {
+                continue;
+            }
+            // 輪流：每次呼叫從下一把開始
+            let start = self.key_rotation.fetch_add(1, Ordering::Relaxed) % usable.len();
+            usable.rotate_left(start);
+            targets.push(Target {
+                position,
+                provider,
+                model: m.model,
+                keys: usable,
+            });
         }
-        // 輪流：每次呼叫從下一把開始
-        let start = self.key_rotation.fetch_add(1, Ordering::Relaxed) % usable.len();
-        usable.rotate_left(start);
-        let model = setting.primary.model.clone();
+        let first_model = targets.first().ok_or_else(unavailable)?.model.clone();
         let routed = Routed {
             pool: self.pool.clone(),
             classroom,
-            provider,
-            model: model.clone(),
-            endpoint: self
-                .route_endpoint
-                .clone()
-                .unwrap_or_else(|| provider.endpoint.to_owned()),
-            keys: usable,
+            conversation,
+            endpoint: self.route_endpoint.clone(),
+            targets,
             client: client()?,
         };
         Ok(Route {
             ai: Arc::new(MaskingAi::new(Arc::new(routed))),
-            model,
+            model: first_model,
         })
     }
 }
@@ -162,34 +197,46 @@ fn failover_status(error: &AiError) -> Option<KeyStatus> {
     }
 }
 
+/// 一個候選模型（主模型或第 n 個備援）與教師在該供應商可用的 key（依輪流順序）。
+struct Target {
+    /// 0 是主模型，1–3 是備援
+    position: i16,
+    provider: &'static Provider,
+    model: String,
+    keys: Vec<UsableKey>,
+}
+
 struct Routed {
     pool: PgPool,
     classroom: Uuid,
-    provider: &'static Provider,
-    model: String,
-    endpoint: String,
-    /// 依輪流順序排好的候選 key
-    keys: Vec<UsableKey>,
+    conversation: Option<Uuid>,
+    /// 測試用：把所有供應商端點換成假服務
+    endpoint: Option<String>,
+    targets: Vec<Target>,
     client: &'static GenaiClient,
 }
 
 impl Routed {
-    fn provider_for(&self, key: &UsableKey) -> Arc<GenaiProvider> {
-        Arc::new(self.client.provider(AiTarget::new(
-            self.provider.adapter,
-            self.endpoint.clone(),
-            self.model.clone(),
-            key.secret(),
-        )))
+    fn provider_for(&self, target: &Target, key: &UsableKey) -> Arc<GenaiProvider> {
+        Arc::new(
+            self.client.provider(AiTarget::new(
+                target.provider.adapter,
+                self.endpoint
+                    .clone()
+                    .unwrap_or_else(|| target.provider.endpoint.to_owned()),
+                target.model.clone(),
+                key.secret(),
+            )),
+        )
     }
 
-    fn guard(&self, key: &UsableKey, gp: &Arc<GenaiProvider>) -> UsageGuard {
+    fn guard(&self, target: &Target, key: &UsableKey, gp: &Arc<GenaiProvider>) -> UsageGuard {
         UsageGuard {
             pool: self.pool.clone(),
             key_id: key.id,
             classroom: self.classroom,
-            provider: self.provider.id,
-            model: self.model.clone(),
+            provider: target.provider.id,
+            model: target.model.clone(),
             gp: gp.clone(),
         }
     }
@@ -205,6 +252,27 @@ impl Routed {
     async fn recovered(&self, key: &UsableKey) {
         if key.status != KeyStatus::Ok {
             self.mark(key, KeyStatus::Ok).await;
+        }
+    }
+
+    /// 這個目標成功了：若是備援，記回對話，之後同場都從這裡開始。
+    async fn settled_on(&self, target: &Target) {
+        if target.position == 0 {
+            return;
+        }
+        let Some(conversation) = self.conversation else {
+            return;
+        };
+        if let Err(e) = sqlx::query(
+            "UPDATE conversations SET ai_fallback_position = $2
+              WHERE id = $1 AND ai_fallback_position < $2",
+        )
+        .bind(conversation)
+        .bind(target.position)
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record fallback position");
         }
     }
 }
@@ -249,45 +317,51 @@ impl Drop for UsageGuard {
 #[async_trait]
 impl AiProvider for Routed {
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        for key in &self.keys {
-            let gp = self.provider_for(key);
-            let guard = self.guard(key, &gp);
-            let mut stream = match gp.stream_chat(req.clone()).await {
-                Ok(s) => s,
-                Err(e) => match failover_status(&e) {
-                    Some(status) => {
-                        self.mark(key, status).await;
-                        continue;
+        // 先試主模型的每把 key，全部因限流、額度用盡或失效不能用，才換下一個備援（F-40.6）；
+        // 只在尚未送出任何內容時換，其餘錯誤照原樣回給呼叫端。
+        for target in &self.targets {
+            for key in &target.keys {
+                let gp = self.provider_for(target, key);
+                let guard = self.guard(target, key, &gp);
+                let mut stream = match gp.stream_chat(req.clone()).await {
+                    Ok(s) => s,
+                    Err(e) => match failover_status(&e) {
+                        Some(status) => {
+                            self.mark(key, status).await;
+                            continue;
+                        }
+                        None => return Err(e),
+                    },
+                };
+                // 串流是惰性的：HTTP 錯誤會是第一個元素。先取第一個元素，才知道這把 key 能不能用。
+                match stream.next().await {
+                    Some(Err(e)) => match failover_status(&e) {
+                        Some(status) => {
+                            self.mark(key, status).await;
+                            continue;
+                        }
+                        None => return Err(e),
+                    },
+                    Some(Ok(first)) => {
+                        self.recovered(key).await;
+                        self.settled_on(target).await;
+                        let rest = stream::once(async move { Ok(first) }).chain(stream);
+                        // guard 跟著串流：串流結束或被丟棄時記用量
+                        return Ok(rest
+                            .chain(
+                                stream::once(async move {
+                                    drop(guard);
+                                    None
+                                })
+                                .filter_map(|x: Option<Result<String, AiError>>| async move { x }),
+                            )
+                            .boxed());
                     }
-                    None => return Err(e),
-                },
-            };
-            // 串流是惰性的：HTTP 錯誤會是第一個元素。先取第一個元素，才知道這把 key 能不能用。
-            match stream.next().await {
-                Some(Err(e)) => match failover_status(&e) {
-                    Some(status) => {
-                        self.mark(key, status).await;
-                        continue;
+                    None => {
+                        self.recovered(key).await;
+                        self.settled_on(target).await;
+                        return Ok(stream::empty().boxed());
                     }
-                    None => return Err(e),
-                },
-                Some(Ok(first)) => {
-                    self.recovered(key).await;
-                    let rest = stream::once(async move { Ok(first) }).chain(stream);
-                    // guard 跟著串流：串流結束或被丟棄時記用量
-                    return Ok(rest
-                        .chain(
-                            stream::once(async move {
-                                drop(guard);
-                                None
-                            })
-                            .filter_map(|x: Option<Result<String, AiError>>| async move { x }),
-                        )
-                        .boxed());
-                }
-                None => {
-                    self.recovered(key).await;
-                    return Ok(stream::empty().boxed());
                 }
             }
         }
@@ -295,18 +369,21 @@ impl AiProvider for Routed {
     }
 
     async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
-        for key in &self.keys {
-            let gp = self.provider_for(key);
-            let _guard = self.guard(key, &gp);
-            match gp.complete_json(req.clone()).await {
-                Ok(done) => {
-                    self.recovered(key).await;
-                    return Ok(done);
+        for target in &self.targets {
+            for key in &target.keys {
+                let gp = self.provider_for(target, key);
+                let _guard = self.guard(target, key, &gp);
+                match gp.complete_json(req.clone()).await {
+                    Ok(done) => {
+                        self.recovered(key).await;
+                        self.settled_on(target).await;
+                        return Ok(done);
+                    }
+                    Err(e) => match failover_status(&e) {
+                        Some(status) => self.mark(key, status).await,
+                        None => return Err(e),
+                    },
                 }
-                Err(e) => match failover_status(&e) {
-                    Some(status) => self.mark(key, status).await,
-                    None => return Err(e),
-                },
             }
         }
         Err(unavailable())

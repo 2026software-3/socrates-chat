@@ -166,7 +166,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     let mut summary = None;
     let activity = AiActivity::new("summary", Some(owner), classroom).statuses(202, 202);
     // 教室內的對話只用教室建立者的 key（F-40.5）；沒有可用 key 時這次不產生，總結標記失敗、可重試
-    let route = state.ai_for(classroom).await;
+    let route = state.ai_for_conversation(classroom, Some(id)).await;
     for retry in 0..2 {
         let Ok(route) = &route else { break };
         let generated = activity

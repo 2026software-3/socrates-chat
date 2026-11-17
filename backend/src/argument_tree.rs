@@ -246,6 +246,7 @@ struct GenerationFailure {
 /// 呼叫模型並驗證結果；回傳（模型、可保存的樹）。
 async fn produce(
     state: &AppState,
+    conversation: Uuid,
     input: &Transcript,
     language: &str,
     classroom: Option<Uuid>,
@@ -265,7 +266,7 @@ async fn produce(
     };
     // 教室內的對話只用教室建立者的 key（F-40.5）
     let route = state
-        .ai_for(classroom)
+        .ai_for_conversation(classroom, Some(conversation))
         .await
         .map_err(|error| fail(Stage::Provider, error))?;
     let completion = tokio::time::timeout(
@@ -297,7 +298,8 @@ async fn generate(
 ) -> Result<(), sqlx::Error> {
     let activity = AiActivity::new("argument_tree", Some(charge.user), classroom);
     let started = Instant::now();
-    let (outcome, trace) = diagnostics::traced(produce(state, &input, &language, classroom)).await;
+    let (outcome, trace) =
+        diagnostics::traced(produce(state, id, &input, &language, classroom)).await;
     match outcome {
         Ok((model, tree)) => {
             activity.record(state, Some(&model), 0, started, None, &trace);

@@ -486,3 +486,136 @@ async fn another_teachers_key_is_never_used_for_this_classroom(pool: PgPool) {
     );
     assert!(w.fake.keys_seen().is_empty());
 }
+
+const FALLBACK_MODEL: &str = "fallback-model";
+
+impl World {
+    /// 主模型 openai，備援 deepseek（各有自己的 key）。
+    async fn configure_with_fallback(&self) {
+        classroom_ai_store::set(
+            &self.pool,
+            self.classroom,
+            ModelRef {
+                provider: "openai".into(),
+                model: MODEL.into(),
+            },
+            vec![ModelRef {
+                provider: "deepseek".into(),
+                model: FALLBACK_MODEL.into(),
+            }],
+        )
+        .await
+        .unwrap();
+    }
+    fn models_seen(&self) -> Vec<String> {
+        self.fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.model.clone())
+            .collect()
+    }
+    async fn position(&self) -> i16 {
+        sqlx::query_scalar("SELECT ai_fallback_position FROM conversations WHERE id = $1")
+            .bind(Uuid::parse_str(&self.conv).unwrap())
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+}
+
+#[sqlx::test]
+async fn rate_limited_primary_switches_to_the_fallback_and_the_conversation_stays_there(
+    pool: PgPool,
+) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    w.fake.set(
+        KEY_1,
+        Behavior::Status(429, r#"{"error":{"message":"slow"}}"#),
+    );
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert!(reply_text(&events).contains("請說說你的理由"), "{events:?}");
+    assert_eq!(w.models_seen(), vec![MODEL, FALLBACK_MODEL]);
+    assert_eq!(w.position().await, 1);
+    // 主模型恢復了，同一場對話仍持續用備援，不跳回主模型
+    w.fake.set(KEY_1, Behavior::Ok);
+    assert_eq!(error_code(&w.say().await), None);
+    assert_eq!(w.models_seen(), vec![MODEL, FALLBACK_MODEL, FALLBACK_MODEL]);
+    assert_eq!(w.system.request_count(), 0, "不得使用系統 key");
+}
+
+#[sqlx::test]
+async fn invalid_or_exhausted_primary_keys_also_trigger_the_switch(pool: PgPool) {
+    for (i, behavior) in [
+        Behavior::Status(401, "{}"),
+        Behavior::Status(402, "{}"),
+        Behavior::Status(429, r#"{"error":{"code":"insufficient_quota"}}"#),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let w = world(if i == 0 {
+            pool.clone()
+        } else {
+            pool_clone(&pool).await
+        })
+        .await;
+        w.add_key(w.owner, "openai", KEY_1).await;
+        w.add_key(w.owner, "deepseek", KEY_2).await;
+        w.configure_with_fallback().await;
+        w.fake.set(KEY_1, behavior);
+        assert_eq!(error_code(&w.say().await), None);
+        assert_eq!(
+            w.models_seen().last().map(String::as_str),
+            Some(FALLBACK_MODEL)
+        );
+        assert_eq!(w.position().await, 1);
+    }
+}
+
+#[sqlx::test]
+async fn ordinary_failures_do_not_switch_to_the_fallback(pool: PgPool) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    w.fake.set(KEY_1, Behavior::Status(500, "{}"));
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("ai_unavailable")
+    );
+    assert!(!w.models_seen().contains(&FALLBACK_MODEL.to_string()));
+    assert_eq!(w.position().await, 0);
+}
+
+#[sqlx::test]
+async fn primary_and_fallback_both_unusable_means_unavailable_never_the_system_key(pool: PgPool) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    w.fake.set(KEY_1, Behavior::Status(429, "{}"));
+    w.fake.set(KEY_2, Behavior::Status(401, "{}"));
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    assert_eq!(w.system.request_count(), 0);
+}
+
+#[sqlx::test]
+async fn fallback_without_a_key_is_skipped_and_a_missing_primary_key_uses_the_fallback(
+    pool: PgPool,
+) {
+    let w = world(pool).await;
+    // 主模型沒有 key（例如尚未新增），備援有 key：直接用備援
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    assert_eq!(error_code(&w.say().await), None);
+    assert_eq!(w.models_seen(), vec![FALLBACK_MODEL]);
+}
