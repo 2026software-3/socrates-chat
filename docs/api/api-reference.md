@@ -180,7 +180,7 @@
 
 只有管理者；未登入 `401`，教師、學生與名單外帳號 `403`。管理者**看不到用量與完整 key，也不能新增或更換**（這些路徑只接受 GET／DELETE，其他方法回 `405`）。
 
-- `GET /api/admin/teacher-keys`：全部教師的 key `[{ id, owner_email, provider, mask, status, status_at, created_at }]`，依教師電子郵件排序；不含用量、密文與完整 key。
+- `GET /api/admin/teacher-keys`：全部教師的 key `[{ id, owner_email, provider, provider_name, mask, status, status_at, created_at }]`，依教師電子郵件排序；不含用量、密文與完整 key。
 - `DELETE /api/admin/teacher-keys/{id}`：`204`；key 與它的用量紀錄一併刪除（教室統計扣除）。同一個交易內通知該教師（站內通知 `teacher_api_key_deleted`，只存類型與時間）並寫稽核 `teacher_key_deleted`（操作者、時間、受影響的教師帳號），**不記 key、遮蔽識別與用量**。不存在或已刪除回 `404 not_found`；`id` 不是 UUID 回 `400`。
 
 ## 教師檢視

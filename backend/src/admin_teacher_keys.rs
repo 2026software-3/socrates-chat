@@ -23,12 +23,14 @@ pub fn routes() -> Router<AppState> {
         .route("/api/admin/teacher-keys/{id}", delete(delete_key))
 }
 
-#[derive(Serialize, utoipa::ToSchema, sqlx::FromRow)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct AdminKeyItem {
     id: Uuid,
     /// 持有這把 key 的教師帳號
     owner_email: String,
     provider: String,
+    /// 供應商的顯示名稱（管理者不能呼叫教師的供應商名單，所以一併附上）
+    provider_name: String,
     /// 遮蔽後的識別（只有末四碼）
     mask: String,
     /// `ok`／`invalid`／`quota_exhausted`／`rate_limited`
@@ -52,13 +54,38 @@ pub(crate) async fn list_keys(
     RequireAdmin(_): RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let items: Vec<AdminKeyItem> = sqlx::query_as(
-        "SELECT k.id, u.email AS owner_email, k.provider, k.mask, k.status, k.status_at, k.created_at
+    type Row = (
+        Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT k.id, u.email, k.provider, k.mask, k.status, k.status_at, k.created_at
            FROM teacher_api_keys k JOIN users u ON u.id = k.owner_id
           ORDER BY u.email, k.created_at, k.id",
     )
     .fetch_all(&state.pool)
     .await?;
+    let items: Vec<AdminKeyItem> = rows
+        .into_iter()
+        .map(
+            |(id, owner_email, provider, mask, status, status_at, created_at)| AdminKeyItem {
+                id,
+                owner_email,
+                provider_name: crate::ai_providers::find(&provider)
+                    .map_or_else(|| provider.clone(), |p| p.name.to_owned()),
+                provider,
+                mask,
+                status,
+                status_at,
+                created_at,
+            },
+        )
+        .collect();
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(items)))
 }
 

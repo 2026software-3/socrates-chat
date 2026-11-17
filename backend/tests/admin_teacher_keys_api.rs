@@ -150,6 +150,7 @@ async fn admin_sees_configuration_status_but_neither_usage_nor_the_key(pool: PgP
     let item = &items[0];
     assert_eq!(item["id"], w.key.to_string());
     assert_eq!(item["provider"], "openai");
+    assert_eq!(item["provider_name"], "OpenAI");
     assert_eq!(item["status"], "ok");
     assert!(item["mask"].as_str().unwrap().ends_with("aaaa"));
     assert!(item["owner_email"].as_str().unwrap().contains('@'));
