@@ -16,7 +16,7 @@ import { useFetch } from '@/lib/use-fetch'
 import { GuidingQuestionsField } from './guiding-questions-field'
 import { TopicDimensionsDialog } from './topic-dimensions'
 
-type TopicInput = { title: string; category: string; questions: string[] }
+type TopicInput = { title: string; questions: string[] }
 
 /** 去頭尾空白並略過空白項目。 */
 const cleanQuestions = (qs: string[]) => qs.map((q) => q.trim()).filter(Boolean)
@@ -69,20 +69,6 @@ function TopicForm({
           onChange={(e) => setV({ ...v, title: e.target.value })}
         />
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor={`${idPrefix}-category`}>{t('admin.topics.categoryLabel')}</Label>
-        <Input
-          id={`${idPrefix}-category`}
-          list={`${idPrefix}-categories`}
-          value={v.category}
-          onChange={(e) => setV({ ...v, category: e.target.value })}
-        />
-        <datalist id={`${idPrefix}-categories`}>
-          {categories.map((c) => (
-            <option key={c} value={c} />
-          ))}
-        </datalist>
-      </div>
       <GuidingQuestionsField idPrefix={idPrefix} value={v.questions} onChange={(questions) => setV({ ...v, questions })} />
       <div aria-live="polite">
         {error ? (
@@ -132,9 +118,7 @@ export function TopicsPage() {
   const topics = useMemo(() => (data ?? []).map((x) => ({ ...x, ...patched[x.id] })), [data, patched])
   const q = query.trim().toLowerCase()
   const shown = topics.filter(
-    (x) =>
-      (!activeCategory || x.category === activeCategory) &&
-      (!q || [x.title, ...(x.guiding_questions ?? []), x.category ?? ''].some((s) => s.toLowerCase().includes(q))),
+    (x) => !q || [x.title, ...(x.guiding_questions ?? [])].some((s) => s.toLowerCase().includes(q)),
   )
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
   const filtered = q !== ''
@@ -147,8 +131,7 @@ export function TopicsPage() {
   }
 
   async function create(v: TopicInput) {
-    const body: { title: string; category?: string; guiding_questions?: string[] } = { title: v.title.trim() }
-    if (v.category.trim()) body.category = v.category.trim()
+    const body: { title: string; guiding_questions?: string[] } = { title: v.title.trim() }
     const questions = cleanQuestions(v.questions)
     if (questions.length > 0) body.guiding_questions = questions
     setNotice(undefined)
@@ -159,14 +142,11 @@ export function TopicsPage() {
   }
 
   async function edit(topic: Topic, v: TopicInput) {
-    const body: Partial<Pick<Topic, 'title' | 'category' | 'guiding_questions'>> = {}
+    const body: Partial<Pick<Topic, 'title' | 'guiding_questions'>> = {}
     if (v.title.trim() !== topic.title) body.title = v.title.trim()
     const questions = cleanQuestions(v.questions)
     const before = topic.guiding_questions ?? []
     if (questions.length !== before.length || questions.some((q, i) => q !== before[i])) body.guiding_questions = questions
-    // 後端 PATCH：沒帶＝保留、null＝清除分類
-    const category = v.category.trim()
-    if (category !== (topic.category ?? '')) body.category = category === '' ? null : category
     if (Object.keys(body).length > 0) {
       await api.patch(`/api/topics/${encodeURIComponent(topic.id)}`, body)
       patch(topic.id, body)
@@ -290,7 +270,7 @@ export function TopicsPage() {
           </DialogHeader>
           <TopicForm
             idPrefix="create"
-            initial={{ title: '', category: '', questions: [] }}
+            initial={{ title: '', questions: [] }}
             submitLabel={t('admin.topics.create')}
             pendingLabel={t('admin.topics.creating')}
             onSubmit={create}
@@ -326,7 +306,7 @@ export function TopicsPage() {
             <TopicForm
               key={editing.id}
               idPrefix="edit"
-              initial={{ title: editing.title, category: editing.category ?? '', questions: editing.guiding_questions ?? [] }}
+              initial={{ title: editing.title, questions: editing.guiding_questions ?? [] }}
               submitLabel={t('common.save')}
               pendingLabel={t('admin.topics.saving')}
               onSubmit={(v) => edit(editing, v)}
