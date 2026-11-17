@@ -185,8 +185,22 @@ async fn migration_splits_existing_groups_without_losing_summaries_or_membership
     .unwrap();
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "甲題").await;
-    let t2 = create_topic(&app, &a, "乙題").await;
+    // 升級前的資料庫還沒有 guiding_questions 欄位，題目 API 會寫入該欄位，所以以 raw SQL 插入。
+    let raw_topic = |title: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, uuid::Uuid>(
+                "INSERT INTO topics (title) VALUES ($1) RETURNING id",
+            )
+            .bind(title)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .to_string()
+        }
+    };
+    let t1 = raw_topic("甲題").await;
+    let t2 = raw_topic("乙題").await;
     let act = publish_activity(&app, &a, "舊活動", &t1).await;
     let act_id: uuid::Uuid = act.parse().unwrap();
     sqlx::query("INSERT INTO activity_topics (activity_id, topic_id, position) VALUES ($1,$2,1)")
