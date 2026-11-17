@@ -14,21 +14,19 @@ const topics: Topic[] = [
     id: 't1',
     title: '電車難題',
     description: '',
-    category: null,
     is_active: true,
   },
   {
     id: 't2',
     title: '自由意志',
     description: '',
-    category: null,
     is_active: true,
   },
 ]
 
 const topics3: Topic[] = [
   ...topics,
-  { id: 't3', title: '正義是什麼', description: '', category: null, is_active: true },
+  { id: 't3', title: '正義是什麼', description: '', is_active: true },
 ]
 
 function act(over: Partial<Activity> = {}): Activity {
@@ -453,7 +451,7 @@ describe('ActivitiesPanel', () => {
 
   it('stops at five topics and explains the limit', async () => {
     const many: Topic[] = ['1', '2', '3', '4', '5', '6'].map((n) => ({
-      id: `m${n}`, title: `題目${n}`, description: '', category: null, is_active: true,
+      id: `m${n}`, title: `題目${n}`, description: '', is_active: true,
     }))
     server.use(
       http.get('/api/topics', () => HttpResponse.json(many)),
@@ -566,7 +564,7 @@ describe('ActivitiesPanel', () => {
     server.use(
       http.get('/api/activities', () => pageOf([act({ topic_ids: ['t3'] })])),
       http.get('/api/topics', () =>
-        HttpResponse.json([...topics, { id: 't3', title: '已停用題目', description: '', category: null, is_active: false }]),
+        HttpResponse.json([...topics, { id: 't3', title: '已停用題目', description: '', is_active: false }]),
       ),
     )
     setup()

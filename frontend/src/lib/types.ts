@@ -21,7 +21,6 @@ export type Topic = {
   id: string
   title: string
   description: string
-  category: string | null
   is_active: boolean
   guiding_questions?: string[]
 }

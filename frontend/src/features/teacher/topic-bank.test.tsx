@@ -11,7 +11,6 @@ const trolley: Topic = {
   id: 't1',
   title: '電車難題',
   description: '你會拉桿嗎？',
-  category: '倫理學',
   is_active: true,
 }
 

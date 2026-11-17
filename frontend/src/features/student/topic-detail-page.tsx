@@ -62,7 +62,6 @@ export function TopicDetailPage() {
       {back}
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl leading-8 font-medium break-words">{topic.title}</h1>
-        {topic.category ? <p className="text-muted-foreground text-xs">{topic.category}</p> : null}
       </div>
       {questions.length > 0 ? (
         <section aria-labelledby="topic-guiding-heading" className="flex flex-col gap-3">

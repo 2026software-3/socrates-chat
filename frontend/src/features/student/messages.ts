@@ -3,7 +3,6 @@ import { defineMessages } from '@/i18n/define'
 export const studentMessages = defineMessages({
   'zh-TW': {
     'student.available.noMatch': '沒有符合的題目。',
-    'student.available.bankCategory': '題庫・{category}',
     'student.available.bank': '題庫',
     'student.available.startPractice': '開始練習',
     'student.detail.guiding': '引導問題',
@@ -36,7 +35,6 @@ export const studentMessages = defineMessages({
   },
   en: {
     'student.available.noMatch': 'No matching topics.',
-    'student.available.bankCategory': 'Topic bank · {category}',
     'student.available.bank': 'Topic bank',
     'student.available.startPractice': 'Start practice',
     'student.detail.guiding': 'Guiding questions',
@@ -69,7 +67,6 @@ export const studentMessages = defineMessages({
   },
   es: {
     'student.available.noMatch': 'Ningún tema coincide.',
-    'student.available.bankCategory': 'Banco de temas · {category}',
     'student.available.bank': 'Banco de temas',
     'student.available.startPractice': 'Empezar práctica',
     'student.detail.guiding': 'Preguntas guía',
