@@ -405,6 +405,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
   正式環境沒在跑時 staging-proxy 起不來（網路不存在）。
 - 啟動／更新：`docker compose -f docker-compose.staging.yml up -d --no-build`（換映像：`STAGING_APP_IMAGE_TAG=<tag>`，預設與正式相同）。不要用 `down -v`。
 - 首次建立與重置合成資料：
+  0. **ingress 已上線後重播時，先 `docker compose -f docker-compose.staging.yml stop staging-proxy`**，做完第 3 步再 `start`；DEMO_MODE 開著時登入頁會列出公開的示範帳號與密碼，不能在公網可達時開。
   1. `STAGING_DEMO_MODE=true docker compose -f docker-compose.staging.yml up -d --no-build`（讓後端建立示範帳號）。
   2. `DEMO_PSQL='docker exec -i socrates-staging-staging-db-1 psql -U socrates -d socrates' ./scripts/seed-staging.sh`（可重複執行）。
      不用 `seed-demo.sh`：它還是舊 schema（活動有 `topic_id`），在 2026-11-13 之後的 migration 上會失敗。
