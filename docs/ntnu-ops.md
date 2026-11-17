@@ -390,6 +390,29 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - `scripts/seed-demo.sh` 的第二段已跟不上目前資料表（活動改為多題目後沒有 `topic_id` 欄位，會中止），第一段（教室、名單、題目）可用；活動改用 API 建（示範教師登入 → `POST /api/activities` → `/publish`）。
 - 經 app 代理的鏈路測試：`smoke/chain_client.py` 設 `CASCADE_URL=ws://app:3000/api/conversations/<id>/voice`、`COOKIE`、`ORIGIN`。
 
+## staging 環境（msi_cubi，2026-11-17）
+
+只有 app＋db＋proxy，**不接語音**（沒有 cascade／Whisper／TTS），空資料庫加合成資料。與正式環境（專案 `socrates-ntnu`）獨立：
+專案名 `socrates-staging`、db volume `socrates-staging_pgdata_staging`、自己的網路；記憶體上限 app 768 MB、db 512 MB、proxy 64 MB，
+實際合計約 50 MB。網址 `https://staging.se3socrateschat.ntnu.cc`，作法與正式相同（Cloudflare for SaaS 自訂主機名稱＋學校 DNS 記錄，
+進**同一條** tunnel）。
+
+- 檔案：`docker-compose.staging.yml`、`docker/proxy/staging.conf`、`scripts/seed-staging.sh`；`.env.staging`、`.staging-credentials`、`.apikeylist` 在 `~/socrates-intel`，不進版控。
+- `.env.staging` 由正式 `.env` 衍生，**拿掉** SMTP／客訴信箱（staging 不寄信）、語音（CASCADE_*、STT／TTS）、tunnel token；管理者初始密碼另外產生。
+  OpenAI 用同一份 `.apikeylist`，會吃正式環境同一個每日免費額度。
+- 服務名是 `staging-app`／`staging-db`／`staging-proxy`，不叫 `app`／`db`／`proxy`：staging-proxy 同時加入正式環境的網路（別名 `staging-proxy`）讓既有 cloudflared 連得到，
+  若叫 `proxy`，正式網路裡的 `app` 解析會被 staging 干擾。tunnel remote ingress 的 `staging.se3socrateschat.ntnu.cc` → `http://staging-proxy:80`。
+  正式環境沒在跑時 staging-proxy 起不來（網路不存在）。
+- 啟動／更新：`docker compose -f docker-compose.staging.yml up -d --no-build`（換映像：`STAGING_APP_IMAGE_TAG=<tag>`，預設與正式相同）。不要用 `down -v`。
+- 首次建立與重置合成資料：
+  1. `STAGING_DEMO_MODE=true docker compose -f docker-compose.staging.yml up -d --no-build`（讓後端建立示範帳號）。
+  2. `DEMO_PSQL='docker exec -i socrates-staging-staging-db-1 psql -U socrates -d socrates' ./scripts/seed-staging.sh`（可重複執行）。
+     不用 `seed-demo.sh`：它還是舊 schema（活動有 `topic_id`），在 2026-11-13 之後的 migration 上會失敗。
+  3. **馬上把示範帳號密碼換成私有的**（`UPDATE users SET password_hash = <argon2id> WHERE student_id LIKE '115000%' OR email = 'demo.teacher@example.com'`），
+     再 `docker compose -f docker-compose.staging.yml up -d --no-build`（不帶 `STAGING_DEMO_MODE`）關掉 DEMO_MODE。staging 在公網，公開的示範密碼不能留著。
+- Google 登入要在 Google Cloud Console 加 `https://staging.se3socrateschat.ntnu.cc/api/auth/google/callback`。
+- 學校 DNS（名稱相對於 `se3socrateschat.ntnu.cc`）：CNAME `staging` → `socrates.ray-dev.stream`（灰雲）、TXT `_cf-custom-hostname.staging`、兩筆 TXT `_acme-challenge.staging`。
+
 ## 狀態紀錄
 
 | 日期 | 事件 |
