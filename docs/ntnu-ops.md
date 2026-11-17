@@ -403,7 +403,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - 服務名是 `staging-app`／`staging-db`／`staging-proxy`，不叫 `app`／`db`／`proxy`：staging-proxy 同時加入正式環境的網路（別名 `staging-proxy`）讓既有 cloudflared 連得到，
   若叫 `proxy`，正式網路裡的 `app` 解析會被 staging 干擾。tunnel remote ingress 的 `staging.se3socrateschat.ntnu.cc` → `http://staging-proxy:80`。
   正式環境沒在跑時 staging-proxy 起不來（網路不存在）。
-- 啟動／更新：`docker compose -f docker-compose.staging.yml up -d --no-build`（換映像：`STAGING_APP_IMAGE_TAG=<tag>`，預設與正式相同）。不要用 `down -v`。
+- 啟動／更新：`docker compose -f docker-compose.staging.yml up -d --no-build`（`STAGING_APP_IMAGE_TAG` 必填、沒有預設值，要寫在專案目錄的 `.env`（與 compose 檔同一層）或命令列環境變數；compose 做 `${}` 替換時不讀 `.env.staging`，只有它的 `env_file` 會讀）。不要用 `down -v`。
 - 首次建立與重置合成資料：
   0. **ingress 已上線後重播時，先 `docker compose -f docker-compose.staging.yml stop staging-proxy`**，做完第 3 步再 `start`；DEMO_MODE 開著時登入頁會列出公開的示範帳號與密碼，不能在公網可達時開。
   1. `STAGING_DEMO_MODE=true docker compose -f docker-compose.staging.yml up -d --no-build`（讓後端建立示範帳號）。

@@ -30,7 +30,7 @@ services:
       retries: 15
 
   staging-app:
-    image: socrates-ntnu-app:${STAGING_APP_IMAGE_TAG:-cutover-20261117}
+    image: socrates-ntnu-app:${STAGING_APP_IMAGE_TAG:?請在專案目錄的 .env（不是 .env.staging）設定 STAGING_APP_IMAGE_TAG，值為預覽版自己的 image tag（不可沿用正式版的 cutover-20261117）}
     restart: unless-stopped
     mem_limit: 768m
     logging:
