@@ -1,8 +1,6 @@
 import type { Feature } from '@/app/feature'
-import { TopicsPage } from '@/features/admin/topics-page'
-import { RosterPage } from '@/features/teacher/roster-page'
-import { SummariesPage } from '@/features/teacher/summaries-page'
 import { classroomRoutes } from '@/features/classrooms/routes'
+import { RosterPage, SummariesPage, TopicsPage } from '@/features/staff'
 
 export const teacherFeature: Feature = {
   routes: [

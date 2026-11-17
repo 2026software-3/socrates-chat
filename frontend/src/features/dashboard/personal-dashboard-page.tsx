@@ -1,27 +1,24 @@
 import { Link } from 'react-router'
-import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
+import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Stat } from '@/features/dashboard/distribution'
-import { ProfileForm } from '@/features/dashboard/profile-form'
 import { formatDate } from '@/lib/format'
 import { useI18n, useT } from '@/i18n'
 import type { PersonalDashboard } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
-/** 個人儀表板：自己的對話數量、最近完成的討論（主張、立場、回合數）。只算自己的資料。 */
-export function PersonalDashboardPage() {
-  const t = useT()
+/** 學生帳號頁（S-18）裡的儀表板內容：自己的對話數量、最近完成的討論（主張、立場、回合數）。只算自己的資料。 */
+export function PersonalDashboardContent() {
   const { data, error, loading, reload } = useFetch<PersonalDashboard>('/api/dashboard/me')
 
   return (
-    <Page title={t('dashboard.me.title')}>
-      <ProfileForm />
+    <>
       {loading && !data ? <LoadingBlock /> : null}
       {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
       {data ? <Body d={data} /> : null}
-    </Page>
+    </>
   )
 }
 

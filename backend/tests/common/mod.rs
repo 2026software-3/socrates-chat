@@ -18,7 +18,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use socrates_chat_backend::{
     AppState,
-    ai::{AiError, AiProvider, AiRequest, AiStream},
+    ai::{AiError, AiProvider, AiRequest, AiStream, StructuredCompletion, StructuredRequest},
     app,
     config::Config,
     identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
@@ -73,6 +73,7 @@ pub fn test_config() -> Config {
         google_client_id: "test-client".to_string(),
         google_client_secret: "test-secret".to_string(),
         google_redirect_url: format!("{APP_URL}/api/auth/google/callback"),
+        google_translation_api_key: None,
         admin_emails: vec!["admin@example.com".to_string()],
         admin_initial_password: None,
         cookie_secure: true,
@@ -100,8 +101,10 @@ pub fn test_config() -> Config {
         // 縮短逾時讓逾時測試很快跑完
         ai_first_token_timeout: Duration::from_millis(200),
         ai_total_timeout: Duration::from_millis(1000),
+        argument_tree_timeout: Duration::from_millis(1000),
         request_timeout: Duration::from_secs(10),
         demo_mode: false,
+        smtp: None,
     }
 }
 
@@ -141,6 +144,26 @@ impl FakeAi {
 
 #[async_trait]
 impl AiProvider for FakeAi {
+    async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        let content = socrates_chat_backend::ai::collect_background(
+            self,
+            AiRequest {
+                system: req.system,
+                messages: vec![socrates_chat_backend::ai::ChatTurn {
+                    role: socrates_chat_backend::ai::ChatRole::User,
+                    content: serde_json::to_string(&req.input)
+                        .map_err(|_| AiError::unclassified())?,
+                }],
+            },
+            Duration::from_secs(30),
+        )
+        .await?;
+        Ok(StructuredCompletion {
+            content,
+            model: "test-model".into(),
+        })
+    }
+
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
         self.requests.lock().unwrap().push(req);
         let script = self.scripts.lock().unwrap().pop_front();
@@ -152,7 +175,7 @@ impl AiProvider for FakeAi {
                 chunks
                     .into_iter()
                     .map(|c| Ok(c.to_string()))
-                    .chain([Err(AiError)]),
+                    .chain([Err(AiError::unclassified())]),
             )
             .boxed()),
             Some(Script::Hang) => std::future::pending().await,
@@ -162,7 +185,7 @@ impl AiProvider for FakeAi {
                     Ok(c.to_string())
                 })
                 .boxed()),
-            Some(Script::Fail) | None => Err(AiError),
+            Some(Script::Fail) | None => Err(AiError::unclassified()),
         }
     }
 }
@@ -477,6 +500,22 @@ pub async fn create_topic(app: &Router, a: &Actors, title: &str) -> String {
     json_body(res).await["id"].as_str().unwrap().to_string()
 }
 
+/// 插入對話測試的題目夾具，避免消耗留給對話或總結的假 AI 回應。
+pub async fn seed_topic(title: &str) -> String {
+    let options = FIXTURE_DB
+        .with(|options| options.borrow().clone())
+        .expect("先呼叫 test_app 建立 app");
+    let mut conn = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO topics (title, description) VALUES ($1, '你會拉桿嗎？') RETURNING id",
+    )
+    .bind(title)
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    id.to_string()
+}
+
 /// 教師以指定題目建立活動（草稿），回傳 id。
 pub async fn create_activity(app: &Router, a: &Actors, title: &str, topic_id: &str) -> String {
     let res = send(
@@ -517,7 +556,7 @@ pub async fn publish_activity(app: &Router, a: &Actors, title: &str, topic_id: &
 
 /// 教師建立題目與活動並發布，回傳活動 id（題目標題與活動標題相同）。
 pub async fn published_activity_with_topic(app: &Router, a: &Actors, title: &str) -> String {
-    let topic = create_topic(app, a, title).await;
+    let topic = seed_topic(title).await;
     publish_activity(app, a, title, &topic).await
 }
 

@@ -5,25 +5,35 @@ import { Route, Routes } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { AvailablePage } from '@/features/student/available-page'
 import { makeConversation } from '@/features/chat/test-data'
-import type { Available } from '@/lib/types'
+import type { Available, StudentActivity, TopicProgress } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
+function progress(id: string, overrides: Partial<TopicProgress> = {}): TopicProgress {
+  return { topic_id: id, title: `Act ${id}`, conversation_id: null, conversation_status: null, summary_ready: false, ...overrides }
+}
+
+function makeActivity(topics: TopicProgress[], overrides: Partial<StudentActivity> = {}): StudentActivity {
+  return {
+    id: 'act-1',
+    title: 'Activity One',
+    description: 'Activity desc',
+    topic_ids: topics.map((t) => t.topic_id),
+    opens_at: null,
+    closes_at: null,
+    classroom_id: 'room-a',
+    classroom_name: '合成 A 班',
+    status: 'published',
+    is_archived: false,
+    created_at: '2026-01-01T00:00:00Z',
+    topics,
+    completed: topics.length > 0 && topics.every((t) => t.summary_ready),
+    ...overrides,
+  }
+}
+
 const AVAILABLE: Available = {
-  activities: [
-    {
-      id: 'act-1',
-      title: 'Activity One',
-      description: 'Activity desc',
-      topic_ids: ['top-1'],
-      opens_at: null,
-      closes_at: null,
-      classroom_id: 'room-a',
-      status: 'published',
-      is_archived: false,
-      created_at: '2026-01-01T00:00:00Z',
-    },
-  ],
+  activities: [makeActivity([progress('A')])],
   topics: [
     {
       id: 'top-1',
@@ -65,6 +75,58 @@ describe('student available page', () => {
     expect(within(bank).queryByText('Activity One')).not.toBeInTheDocument()
   })
 
+  it('groups activities under the name of each classroom', async () => {
+    mockAvailable({
+      activities: [
+        makeActivity([progress('A')]),
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+        makeActivity([progress('C')], { id: 'act-3', title: 'Activity Three' }),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    const roomA = within(act).getByRole('region', { name: '合成 A 班' })
+    const roomB = within(act).getByRole('region', { name: '合成 B 班' })
+    expect(within(roomA).getByText('Activity One')).toBeInTheDocument()
+    expect(within(roomA).getByText('Activity Three')).toBeInTheDocument()
+    expect(within(roomA).queryByText('Activity Two')).not.toBeInTheDocument()
+    expect(within(roomB).getByText('Activity Two')).toBeInTheDocument()
+    expect(within(roomB).queryByText('Activity One')).not.toBeInTheDocument()
+  })
+
+  it('orders classroom groups by name, not by the newest activity', async () => {
+    mockAvailable({
+      // 後端依建立時間新到舊：B 班的活動最新，但分組仍依教室名稱排序
+      activities: [
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+        makeActivity([progress('A')]),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    const names = within(act)
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent)
+    expect(names).toEqual(['合成 A 班', '合成 B 班'])
+  })
+
+  it('drops a classroom group when search filters out all of its activities', async () => {
+    mockAvailable({
+      activities: [
+        makeActivity([progress('A')]),
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+    const act = await screen.findByRole('region', { name: '教室活動' })
+    await userEvent.type(screen.getByRole('searchbox'), 'Two')
+    expect(within(act).queryByRole('region', { name: '合成 A 班' })).not.toBeInTheDocument()
+    expect(within(act).getByRole('region', { name: '合成 B 班' })).toBeInTheDocument()
+  })
+
   it('starts a conversation from an activity', async () => {
     mockAvailable()
     let body: unknown
@@ -75,9 +137,9 @@ describe('student available page', () => {
       }),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: '開始討論：Act A' }))
     expect(await screen.findByText('chat page')).toBeInTheDocument()
-    expect(body).toEqual({ activity_id: 'act-1' })
+    expect(body).toEqual({ activity_id: 'act-1', topic_id: 'A' })
   })
 
   it('starts a conversation from a topic', async () => {
@@ -121,7 +183,7 @@ describe('student available page', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Topic One/ }))
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Topic One/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: /Activity One/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Act A/ })).toBeEnabled()
   })
 
   it('scrolls the start error into view', async () => {
@@ -145,12 +207,12 @@ describe('student available page', () => {
     mockAvailable()
     server.use(http.post('/api/conversations', () => apiError(409, 'activity_already_started')))
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Act A/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
       '你已經開始過這個活動，請從你的對話紀錄繼續，或刪除該場對話後重新開始。',
     )
     expect(screen.queryByText('activity_already_started')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Activity One/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Act A/ })).toBeEnabled()
   })
 
   it('sends the student to the archived view when their only conversation for the activity is archived', async () => {
@@ -164,7 +226,7 @@ describe('student available page', () => {
       }),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Act A/ }))
     expect(await screen.findByText('list page')).toBeInTheDocument()
     expect(queries).toEqual(['?archived=true&activity_id=act-1&limit=1'])
   })
@@ -176,7 +238,7 @@ describe('student available page', () => {
       http.get('/api/conversations', () => HttpResponse.json({ items: [], next_cursor: null })),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Act A/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('你已經開始過這個活動')
     expect(screen.queryByText('list page')).not.toBeInTheDocument()
   })
@@ -191,7 +253,7 @@ describe('student available page', () => {
       http.post('/api/conversations', () => apiError(400, 'invalid_conversation_source')),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Act A/ }))
     await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2))
     expect(screen.getByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
   })
@@ -206,7 +268,7 @@ describe('student available page', () => {
       http.post('/api/conversations', () => apiError(400, 'invalid_conversation_source')),
     )
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Activity One/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Act A/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('請選擇可用的活動或題目。')
     await waitFor(() => expect(screen.queryByText('Activity One')).not.toBeInTheDocument())
     expect(loads).toBe(2)
@@ -246,5 +308,78 @@ describe('student available page', () => {
     renderPage()
     expect(await screen.findByRole('status')).toHaveTextContent('載入中')
     expect(await screen.findByText('Activity One')).toBeInTheDocument()
+  })
+
+  describe('multi-topic activity card', () => {
+    const THREE = (done: number) =>
+      ['A', 'B', 'C'].map((id, i) =>
+        i < done
+          ? progress(id, { conversation_id: `c-${id}`, conversation_status: 'ended', summary_ready: true })
+          : progress(id),
+      )
+
+    it('shows progress and lets the student start the next topic', async () => {
+      mockAvailable({ activities: [makeActivity(THREE(2))], topics: [] })
+      let body: unknown
+      server.use(
+        http.post('/api/conversations', async ({ request }) => {
+          body = await request.json()
+          return HttpResponse.json({ id: 'c-new' }, { status: 201 })
+        }),
+      )
+      renderPage()
+      const card = (await screen.findByText('Activity One')).closest('article')!
+      expect(within(card).getByText('已完成 2／3 題')).toBeInTheDocument()
+      expect(within(card).queryByText('開放中')).toBeInTheDocument()
+      expect(within(card).getAllByRole('listitem')).toHaveLength(3)
+      expect(within(card).queryByRole('button', { name: '開始討論：Act A' })).not.toBeInTheDocument()
+      await userEvent.click(within(card).getByRole('button', { name: '開始討論：Act C' }))
+      expect(await screen.findByText('chat page')).toBeInTheDocument()
+      expect(body).toEqual({ activity_id: 'act-1', topic_id: 'C' })
+    })
+
+    it('offers continue for an active conversation and does not start a new one', async () => {
+      const topics = [progress('A', { conversation_id: 'c-A', conversation_status: 'active' }), progress('B')]
+      mockAvailable({ activities: [makeActivity(topics)], topics: [] })
+      let posts = 0
+      server.use(http.post('/api/conversations', () => ((posts += 1), HttpResponse.json({}, { status: 201 }))))
+      renderPage()
+      expect(await screen.findByText('已完成 0／2 題')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '開始討論：Act A' })).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: '繼續：Act A' }))
+      expect(await screen.findByText('chat page')).toBeInTheDocument()
+      expect(posts).toBe(0)
+    })
+
+    it('offers view summary for an ended conversation and does not allow restarting it', async () => {
+      const topics = [progress('A', { conversation_id: 'c-A', conversation_status: 'ended', summary_ready: true }), progress('B')]
+      mockAvailable({ activities: [makeActivity(topics)], topics: [] })
+      renderPage()
+      expect(await screen.findByText('已完成 1／2 題')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '開始討論：Act A' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '繼續：Act A' })).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: '查看總結：Act A' }))
+      expect(await screen.findByText('chat page')).toBeInTheDocument()
+    })
+
+    it('marks the activity as completed when every topic has a summary', async () => {
+      mockAvailable({ activities: [makeActivity(THREE(3))], topics: [] })
+      renderPage()
+      const card = (await screen.findByText('Activity One')).closest('article')!
+      expect(within(card).getByText('已完成 3／3 題')).toBeInTheDocument()
+      expect(within(card).getByText('活動已完成')).toBeInTheDocument()
+      expect(within(card).queryByText('開放中')).not.toBeInTheDocument()
+      expect(within(card).queryByRole('button', { name: /開始討論/ })).not.toBeInTheDocument()
+      expect(within(card).getAllByRole('button', { name: /查看總結/ })).toHaveLength(3)
+    })
+
+    it('does not count an ended conversation whose summary is not ready as done', async () => {
+      const topics = [progress('A', { conversation_id: 'c-A', conversation_status: 'ended', summary_ready: false })]
+      mockAvailable({ activities: [makeActivity(topics)], topics: [] })
+      renderPage()
+      expect(await screen.findByText('已完成 0／1 題')).toBeInTheDocument()
+      expect(screen.queryByText('活動已完成')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '查看總結：Act A' })).toBeInTheDocument()
+    })
   })
 })

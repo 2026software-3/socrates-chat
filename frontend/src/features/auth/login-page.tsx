@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { dictionaries, errorText, useT, type MessageKey } from '@/i18n'
+import { AnnouncementBanners } from '@/features/announcements/announcement-banner'
+import { useAnnouncements } from '@/features/announcements/use-announcements'
 import { api } from '@/lib/api'
 import { DemoAccounts } from './demo-accounts'
 
@@ -22,6 +24,7 @@ export function LoginPage() {
   const auth = useAuth()
   const [params] = useSearchParams()
   const errorKey = loginErrorKey(params.get('error'))
+  const announcements = useAnnouncements()
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -45,11 +48,17 @@ export function LoginPage() {
 
   return (
     <AuthFrame footer={t('login.footer')}>
+      <div className="flex w-full max-w-[400px] flex-col gap-4">
+      {announcements ? <AnnouncementBanners items={announcements.announcements} /> : null}
       <AuthCard>
         <AuthHeading title={t('login.title')} description={t('login.subtitle')} />
         {errorKey ? (
           <Alert variant="destructive" role="alert">
             <AlertTitle>{t(errorKey)}</AlertTitle>
+          </Alert>
+        ) : announcements?.maintenance ? (
+          <Alert role="status">
+            <AlertTitle>{t('login.maintenanceNotice')}</AlertTitle>
           </Alert>
         ) : null}
         <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
@@ -107,6 +116,7 @@ export function LoginPage() {
           }}
         />
       </AuthCard>
+      </div>
     </AuthFrame>
   )
 }

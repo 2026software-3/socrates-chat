@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useAuth } from '@/auth/auth-context'
 import { canAccess, type NavItem } from '@/app/feature'
 import { LangSwitcher } from '@/components/lang-switcher'
+import { AnnouncementBar } from '@/features/announcements/announcement-banner'
 import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
 import { WorkspaceContext } from '@/components/page'
 import { Button } from '@/components/ui/button'
@@ -41,6 +42,28 @@ function MainNav({ items, label }: { items: NavItem[]; label: string }) {
   )
 }
 
+/**
+ * 右上角的頭像（取名稱第一個字）：點擊進入帳號頁 `/account`（S-18）。
+ * 沒有內建密碼的教師與管理者在帳號頁沒有可做的事，頭像維持純顯示。
+ */
+function AccountAvatar({ me }: { me: Me }) {
+  const name = me.display_name ?? me.email ?? ''
+  const className = 'bg-outline-border flex size-8 items-center justify-center rounded-full border text-sm font-medium'
+  const initial = [...name][0]?.toUpperCase()
+  if (me.roles.student || me.can_change_password) {
+    return (
+      <Link to="/account" aria-label={name} className={cn(className, 'hover:bg-subtle focus-visible:ring-ring outline-none focus-visible:ring-2')}>
+        {initial}
+      </Link>
+    )
+  }
+  return (
+    <span role="img" aria-label={name} className={className}>
+      {initial}
+    </span>
+  )
+}
+
 /** 側欄底部：顯示名稱、角色、語言與登出。 */
 function Account({ me }: { me: Me }) {
   const t = useT()
@@ -48,13 +71,7 @@ function Account({ me }: { me: Me }) {
   const roles = (['admin', 'teacher', 'student'] as const).filter((r) => me.roles[r])
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2.5 md:mt-auto md:flex-col md:items-start">
-      {me.roles.student ? (
-        <Link to="/dashboard" className="text-sm font-medium underline-offset-4 hover:underline">
-          {me.display_name ?? me.email}
-        </Link>
-      ) : (
-        <span className="text-sm font-medium">{me.display_name ?? me.email}</span>
-      )}
+      <span className="text-sm font-medium">{me.display_name ?? me.email}</span>
       <span className="text-muted-foreground hidden text-xs md:inline">{roles.map((r) => t(`role.${r}`)).join(' / ')}</span>
       <div className="w-full max-w-48 md:mt-2">
         <AiUsageMeter />
@@ -77,12 +94,15 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
   const fullBleed = useMatch('/conversations/:id') !== null
   const student = me.roles.student
   const adminOnly = me.roles.admin && !me.roles.teacher && !me.roles.student
-  const displayName = me.display_name ?? me.email ?? ''
   const workspace = student ? null : t(adminOnly ? 'nav.workspace.admin' : 'nav.workspace.teacher')
 
   const content = (
     <WorkspaceContext.Provider value={workspace}>
       <div className={cn('flex min-w-0 flex-1 flex-col', fullBleed && 'min-h-0 overflow-y-auto')}>
+        {/* 公告橫幅（S-15）：每一頁最上方；沒有公告時不佔位 */}
+        <div className={cn('w-full empty:hidden', fullBleed ? 'shrink-0 px-4 pt-3' : 'mx-auto max-w-5xl px-4 pt-4 md:px-8 md:pt-8')}>
+          <AnnouncementBar />
+        </div>
         {fullBleed ? <main className="flex min-h-0 flex-1 flex-col">{children}</main> : <main className="mx-auto w-full max-w-5xl p-4 md:p-8">{children}</main>}
       </div>
     </WorkspaceContext.Provider>
@@ -98,7 +118,12 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
           <MainNav items={items} label="main" />
           <Account me={me} />
         </aside>
-        {content}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="bg-background sticky top-0 z-10 flex h-[52px] shrink-0 items-center justify-end border-b px-4 md:px-6">
+            <AccountAvatar me={me} />
+          </header>
+          {content}
+        </div>
       </div>
     )
   }
@@ -110,13 +135,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
           <span className="text-lg leading-7 font-medium">{t('app.brand')}</span>
           <span className="text-muted-foreground text-xs">{workspace}</span>
         </Link>
-        <span
-          role="img"
-          aria-label={displayName}
-          className="bg-outline-border flex size-8 items-center justify-center rounded-full border text-sm font-medium"
-        >
-          {[...displayName][0]?.toUpperCase()}
-        </span>
+        <AccountAvatar me={me} />
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:py-4', WORKSPACE_SIDEBAR, WORKSPACE_STICKY)}>

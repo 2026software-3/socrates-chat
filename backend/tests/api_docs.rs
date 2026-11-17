@@ -180,6 +180,7 @@ async fn admin_achievement_api_contract_is_fixed() {
     assert_eq!(
         property_names("NewAchievement"),
         [
+            "browser_translations",
             "condition_type",
             "description",
             "id",

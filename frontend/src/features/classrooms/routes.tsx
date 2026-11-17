@@ -4,9 +4,9 @@ import {
   ClassroomPage,
   ClassroomStudentPage,
   ClassroomStudentsPage,
-} from '@/features/classrooms/classroom-pages'
-import { ClassroomsPage } from '@/features/classrooms/classrooms-page'
-import { TranscriptPage } from '@/features/classrooms/transcript-page'
+  ClassroomsPage,
+  TranscriptPage,
+} from '@/features/staff'
 
 /** 教室 → 活動／學生／對話原文 的階層路由；教師在 `/teacher`、管理者在 `/admin`。 */
 export function classroomRoutes(prefix: '/teacher' | '/admin', access: AppRoute['access']): AppRoute[] {

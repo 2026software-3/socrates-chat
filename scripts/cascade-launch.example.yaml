@@ -4,9 +4,9 @@
 # 密碼不寫在這份檔案裡：LLM 節點用 api_key_env 指定「環境變數名稱」，啟動 cascade 的行程必須有同名環境變數，
 # 值要和後端的 CASCADE_LLM_TOKEN 相同（兩邊自己產生同一個，例如 openssl rand -hex 32）。
 #
-# 瘦身 cascade：GPU 只放 TTS 0.6B；ASR 為 CPU whisper，LLM 走後端的內部端點，打斷裁切到句子邊界。
+# 瘦身 cascade：GPU 只放 Kokoro TTS；ASR 為 CPU whisper，LLM 走後端的內部端點，打斷裁切到句子邊界。
 # TTS、Whisper、轉接層由各自的腳本啟動，這裡不寫 services。
-# 轉接層（本機評估是 127.0.0.1:8103，不在 repo）把 /v1/audio/transcriptions 轉給 scripts/whisper-server.py，
+# 轉接層（docker/cascade/tts_adapter.py）把 /v1/audio/transcriptions 轉給 scripts/whisper-server.py，
 # 把 /v1/audio/speech 轉給 TTS 服務，所以 asr 與 tts 的 base_url 都指向它。
 config_cls: StreamingCascadePipelineConfig
 model_path: /path/to/cascade # 依 sglang-omni 的要求填；本機評估時是放這份設定的目錄
@@ -62,10 +62,7 @@ session_nodes:
       - "input:session"
       - {kind: control, source: dialog, event: interrupt}
     base_url: "http://127.0.0.1:8103/v1"
-    model: Qwen/Qwen3-TTS-12Hz-0.6B-Base
-    # 參考音與逐字稿要自己準備且內容一致；repo 不附音檔，來源與授權請自行確認（參考音只限本機評估）
-    reference_audio_path: /path/to/reference.wav
-    reference_text: 請填入參考音檔的逐字稿
+    model: hexgrad/Kokoro-82M
     language: Chinese
   aligner:
     kind: alignment

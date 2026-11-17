@@ -105,7 +105,7 @@ async fn seeded(pool: PgPool) -> Seeded {
     finished_conversation(&app, &a.student, json!({"activity_id": act1}), &pool).await;
     finished_conversation(&app, &student2, json!({"activity_id": act1}), &pool).await;
     finished_conversation(&app, &a.student, json!({"activity_id": act2}), &pool).await;
-    let practice = create_topic(&app, &a.teacher, "自由意志").await;
+    let practice = seed_topic("自由意志").await;
     finished_conversation(&app, &a.student, json!({"topic_id": practice}), &pool).await;
     Seeded {
         app,
@@ -264,14 +264,19 @@ async fn class_distribution_is_per_activity_and_ignores_practice(pool: PgPool) {
     assert_eq!(activities[0]["completed"], 2);
     assert!(activities[0].get("radar").is_none());
     // 主張分布：兩個不同主張各一群；沒有主張的對話不列入
-    let claims = activities[0]["claims"].as_array().unwrap();
+    let claims = activities[0]["topics"][0]["claims"].as_array().unwrap();
     let names: Vec<&str> = claims.iter().map(|g| g["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["不拉桿", "拉桿"]);
     assert!(claims[0].get("radar").is_none());
     assert_eq!(activities[1]["activity_id"], act2.as_str());
     assert_eq!(activities[1]["completed"], 1);
-    assert!(activities[1]["claims"].as_array().unwrap().is_empty());
-    assert_eq!(activities[1]["ungrouped"], 0);
+    assert!(
+        activities[1]["topics"][0]["claims"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(activities[1]["topics"][0]["ungrouped"], 0);
     // 3 場活動對話各有一次總結，其中兩場有主張而歸群；個人練習只有總結、不歸群
     assert_eq!(ai.request_count(), 6);
 }

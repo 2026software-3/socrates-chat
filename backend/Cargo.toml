@@ -30,6 +30,8 @@ utoipa-redoc = { version = "7.0.0", features = ["axum"] }
 regex = "1.13.1"
 tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+# 客訴通知信（S-17.3）：SMTP 客戶端。只開 rustls（沿用 reqwest 已有的 ring 與 webpki-roots），不拉 openssl／native-tls。
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "rustls", "ring", "webpki-roots"] }
 
 [dev-dependencies]
 dotenvy = "0.15.7"

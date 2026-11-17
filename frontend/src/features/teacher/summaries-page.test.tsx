@@ -2,16 +2,20 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { LangSwitcher } from '@/components/lang-switcher'
 import { SummariesPage } from '@/features/teacher/summaries-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Page, TeacherSummary } from '@/lib/types'
-import { apiError } from '@/test/render'
+import { apiError, makeMe } from '@/test/render'
 import { server } from '@/test/server'
 
 function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
   return {
     conversation_id: 'c1',
     classroom_id: 'room-1',
+    activity_id: null,
+    topic_id: null,
+    activity_completed: false,
     title: '電車難題',
     ended_at: '2026-03-05T10:00:00Z',
     student_user_id: 's1',
@@ -84,6 +88,41 @@ describe('SummariesPage classification', () => {
 })
 
 describe('SummariesPage', () => {
+  it('reloads saved translations when a different account language is saved', async () => {
+    let english = false
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([row({
+        translation: english ? { language: 'en', stance: 'Pull the lever', reasons: 'Save more people' } : null,
+      })]))),
+      http.patch('/api/me', () => {
+        english = true
+        return HttpResponse.json(makeMe({ teacher: true }, { language: 'en' }))
+      }),
+    )
+    renderTeacherPage(<><LangSwitcher /><SummariesPage /></>)
+
+    expect(await screen.findByText('應該拉桿')).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '語言' }), 'en')
+    expect(await screen.findByText('Pull the lever')).toBeInTheDocument()
+  })
+
+  it('shows the saved account-language translation first and keeps the original available', async () => {
+    const translation = { language: 'es' as const, stance: 'Movería la palanca', reasons: 'Salvar a más personas' }
+    const backend = vi.fn()
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([{ ...row(), translation }]))),
+      http.post('/api/summaries/c1/translation', backend),
+    )
+    renderTeacherPage(<SummariesPage />, 'es')
+
+    const card = cardOf(await screen.findByText(translation.stance))
+    expect(within(card).getByText(translation.reasons)).toBeInTheDocument()
+    expect(within(card).queryByText('應該拉桿')).not.toBeInTheDocument()
+    await userEvent.click(within(card).getByRole('button', { name: 'Mostrar original' }))
+    expect(within(card).getByText('應該拉桿')).toBeInTheDocument()
+    expect(backend).not.toHaveBeenCalled()
+  })
+
   it('uses the browser translator before the backend AI fallback', async () => {
     const backend = vi.fn(() => HttpResponse.json({
       language: 'en',

@@ -32,7 +32,7 @@ npm run build
 src/
   app/          外框、路由彙整、角色守門（Feature / AppRoute / NavItem 型別）
   auth/         目前登入者（AuthProvider、useAuth、useMe）
-  components/   共用元件；ui/ 與 assistant-ui/ 是 shadcn CLI 產生的程式碼，盡量不手改
+  components/   共用元件；ui/ 是 shadcn CLI 產生的程式碼，盡量不手改
   features/     每個功能一個目錄：index.tsx（匯出 Feature）、messages.ts（三語翻譯）、頁面與測試
   i18n/         語言、翻譯彙整（zh-TW、en、es；預設 zh-TW）
   lib/          API 客戶端、型別、useFetch

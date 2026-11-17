@@ -1,0 +1,35 @@
+name: Proxy
+
+# 反向代理（S-16）的設定或驗證腳本有變動時，用假後端跑一遍 scripts/verify-proxy.sh
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/proxy/**"
+      - "docker-compose.yml"
+      - "scripts/verify-proxy.sh"
+      - "scripts/proxy-check.py"
+      - ".github/workflows/proxy.yml"
+  pull_request:
+    paths:
+      - "docker/proxy/**"
+      - "docker-compose.yml"
+      - "scripts/verify-proxy.sh"
+      - "scripts/proxy-check.py"
+      - ".github/workflows/proxy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Reverse proxy (verify-proxy.sh)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/verify-proxy.sh

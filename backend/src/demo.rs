@@ -34,6 +34,18 @@ fn roster() -> Roster {
     serde_json::from_str(ACCOUNTS).expect("demo_accounts.json is valid")
 }
 
+/// 這個帳號是否為示範帳號（教師信箱或學號在 `demo_accounts.json` 內）。只看名單，
+/// 是否受示範限制還要看有沒有開 `DEMO_MODE`（S-18：公開的固定密碼不能被改掉）。
+pub fn is_demo_account(email: Option<&str>, student_number: Option<&str>) -> bool {
+    let r = roster();
+    email.is_some_and(|e| r.teacher.email.eq_ignore_ascii_case(e.trim()))
+        || student_number.is_some_and(|n| {
+            r.students
+                .iter()
+                .any(|s| s.student_id.eq_ignore_ascii_case(n.trim()))
+        })
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/demo/accounts", get(accounts))
 }

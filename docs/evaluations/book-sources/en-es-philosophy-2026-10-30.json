@@ -1,0 +1,111 @@
+{
+  "retrieved_on": "2026-10-30",
+  "selection_basis": "人工選定五部作品的英文、西文版本（各五本），涵蓋倫理、自我反思、正義、自由及市場界限；非排行榜、非課程核准書單。先固定樣本再查 API。",
+  "limitations": "偏知名西方哲學作品，Sandel 佔兩部；不代表新書、冷門書、原生西文作者或各語言總體覆蓋。與中文新書組不作整體語言優劣推論。",
+  "query_policy": "兩來源同用書名／書名加作者／指定 ISBN；書名去副標，保留重音與標點，不輪試別名、不加語言篩選以沿用先前基準。pair_id 僅為人工測試配對，不是來源作品關係證據。",
+  "books": [
+    {
+      "position": 1,
+      "pair_id": "meditations",
+      "language": "en",
+      "display_title": "Meditations",
+      "query_title": "Meditations",
+      "author": "Marcus Aurelius",
+      "isbn": "9780140449334",
+      "metadata_source": "https://www.penguin.co.uk/books/35489/meditations-by-aurelius-marcus/9780140449334"
+    },
+    {
+      "position": 2,
+      "pair_id": "republic",
+      "language": "en",
+      "display_title": "The Republic",
+      "query_title": "The Republic",
+      "author": "Plato",
+      "isbn": "9780140455113",
+      "metadata_source": "https://www.penguinrandomhouse.com/books/302379/the-republic-by-plato/"
+    },
+    {
+      "position": 3,
+      "pair_id": "liberty",
+      "language": "en",
+      "display_title": "On Liberty",
+      "query_title": "On Liberty",
+      "author": "John Stuart Mill",
+      "isbn": "9780141046945",
+      "metadata_source": "https://www.penguin.co.uk/books/177230/on-liberty-by-john-stuart-mill/9780141046945"
+    },
+    {
+      "position": 4,
+      "pair_id": "justice",
+      "language": "en",
+      "display_title": "Justice",
+      "query_title": "Justice",
+      "author": "Michael J. Sandel",
+      "isbn": "9780374532505",
+      "metadata_source": "https://us.macmillan.com/books/9780374532505/justice/"
+    },
+    {
+      "position": 5,
+      "pair_id": "markets",
+      "language": "en",
+      "display_title": "What Money Can't Buy",
+      "query_title": "What Money Can't Buy",
+      "author": "Michael J. Sandel",
+      "isbn": "9781429942584",
+      "metadata_source": "https://us.macmillan.com/books/9781429942584/whatmoneycantbuy/",
+      "notes": "指定電子書 ISBN；不可把相同作品紙本或有聲版當成指定 ISBN 命中。"
+    },
+    {
+      "position": 6,
+      "pair_id": "meditations",
+      "language": "es",
+      "display_title": "Meditaciones",
+      "query_title": "Meditaciones",
+      "author": "Marco Aurelio",
+      "isbn": "9788497163330",
+      "metadata_source": "https://www.olanetaeditor.com/titulos/meditaciones/"
+    },
+    {
+      "position": 7,
+      "pair_id": "republic",
+      "language": "es",
+      "display_title": "La república",
+      "query_title": "La república",
+      "author": "Platón",
+      "isbn": "9788420678818",
+      "metadata_source": "https://www.alianzaeditorial.es/libro/clasicos-de-grecia-y-roma/la-republica-platon-9788420678818/"
+    },
+    {
+      "position": 8,
+      "pair_id": "liberty",
+      "language": "es",
+      "display_title": "Sobre la libertad",
+      "query_title": "Sobre la libertad",
+      "author": "John Stuart Mill",
+      "isbn": "9788420675558",
+      "metadata_source": "https://www.alianzaeditorial.es/libro/ciencias-sociales/sobre-la-libertad-john-stuart-mill-9788420675558/"
+    },
+    {
+      "position": 9,
+      "pair_id": "justice",
+      "language": "es",
+      "display_title": "Justicia",
+      "query_title": "Justicia",
+      "author": "Michael J. Sandel",
+      "isbn": "9788483069189",
+      "metadata_source": "https://dialnet.unirioja.es/servlet/libro?codigo=473016",
+      "notes": "書目來源為西班牙大學 Dialnet；完整書名 Justicia. ¿Hacemos lo que debemos?，查詢去副標。"
+    },
+    {
+      "position": 10,
+      "pair_id": "markets",
+      "language": "es",
+      "display_title": "Lo que el dinero no puede comprar",
+      "query_title": "Lo que el dinero no puede comprar",
+      "author": "Michael Sandel",
+      "isbn": "9789566247531",
+      "metadata_source": "https://isbnchile.cl/catalogo.php?anio=2024&mode=busqueda_menu&pagina=979",
+      "notes": "智利 ISBN 登錄之 2024 年版；西文版本含不同出版地，不代表已驗證 es-ES 文案品質。"
+    }
+  ]
+}

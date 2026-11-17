@@ -1,5 +1,6 @@
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,6 +12,8 @@ import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { ChatThread } from '@/features/chat/chat-thread'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
+import { ArgumentTreePanel } from '@/features/chat/argument-tree-panel'
+import { RadarPanel } from '@/features/chat/radar-panel'
 import { SummaryPanel } from '@/features/chat/summary-panel'
 import { useT } from '@/i18n'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
@@ -110,6 +113,8 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   }, [detail, runtime, voiceTurns])
 
   const ended = status === 'ended'
+  // 單場雷達圖依賴總結：總結成功後才顯示它的計算狀態
+  const [summaryReady, setSummaryReady] = useState(false)
 
   async function endDiscussion() {
     if (ending) return
@@ -141,14 +146,19 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
               <StageIndicator stage={stage} />
             </div>
           </div>
-          <EndDiscussion
-            ended={ended}
-            suggestEnd={suggestEnd}
-            pending={ending}
-            error={endError}
-            onClearError={() => setEndError(undefined)}
-            onConfirm={endDiscussion}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to={`/complaint?conversation=${encodeURIComponent(detail.id)}`}>{t('complaints.report')}</Link>
+            </Button>
+            <EndDiscussion
+              ended={ended}
+              suggestEnd={suggestEnd}
+              pending={ending}
+              error={endError}
+              onClearError={() => setEndError(undefined)}
+              onConfirm={endDiscussion}
+            />
+          </div>
         </header>
 
         <ChatThread
@@ -161,7 +171,9 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
         {ended ? (
           <div className="space-y-4 px-4 pb-6 md:px-8">
             <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p>
-            <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} />
+            <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} onReadyChange={setSummaryReady} />
+            {summaryReady ? <RadarPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} /> : null}
+            <ArgumentTreePanel conversationId={detail.id} />
           </div>
         ) : null}
       </div>

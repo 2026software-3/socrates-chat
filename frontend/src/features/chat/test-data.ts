@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Message, SummaryView } from '@/lib/types'
+import type { Conversation, ConversationDetail, Message, RadarView, SummaryView } from '@/lib/types'
 
 /** 測試用的合成資料（不含任何真實學生資料）。 */
 export function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -15,8 +15,11 @@ export function makeConversation(overrides: Partial<Conversation> = {}): Convers
     turn_count: 3,
     converge_ready: false,
     created_at: '2026-03-05T08:00:00Z',
+    updated_at: '2026-03-05T08:00:00Z',
     ended_at: null,
     is_archived: false,
+    classroom_name: null,
+    classroom_archived: false,
     ...overrides,
   }
 }
@@ -52,4 +55,33 @@ export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
     completed_at: '2026-03-05T09:00:00Z',
     ...overrides,
   }
+}
+
+/** 已完成的單場雷達圖；其他狀態用 `makeRadarState`。 */
+export function makeRadar(overrides: Partial<RadarView> = {}): RadarView {
+  return {
+    status: 'ready',
+    retryable: false,
+    scores: { d1: 5, d2: 0, d3: 3, d4: 1, d5: 0, d6: 2 },
+    dimensions: [1, 2, 3, 4, 5, 6].map((n) => ({
+      id: `d${n}`,
+      name: { zh_tw: `合成傾向${n}`, en: `Synthetic tendency ${n}`, es: `Tendencia sintética ${n}` },
+      description: { zh_tw: `合成說明${n}`, en: `Synthetic description ${n}`, es: `Descripción sintética ${n}` },
+    })),
+    rules_version: 'radar-scoring-v1',
+    completed_at: '2026-03-05T09:00:05Z',
+    ...overrides,
+  }
+}
+
+/** 還沒有分數的雷達圖狀態。 */
+export function makeRadarState(status: RadarView['status'], retryable = false): RadarView {
+  return makeRadar({
+    status,
+    retryable,
+    scores: null,
+    rules_version: null,
+    completed_at: null,
+    ...(status === 'dimensions_pending' || status === 'unavailable' ? { dimensions: null } : {}),
+  })
 }

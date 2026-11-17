@@ -85,7 +85,7 @@ function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious, 
                 <TableHead>{t('chat.list.col.title')}</TableHead>
                 <TableHead>{t('chat.list.col.source')}</TableHead>
                 <TableHead>{t('chat.list.col.turns')}</TableHead>
-                <TableHead>{t('chat.list.col.created')}</TableHead>
+                <TableHead>{t('chat.list.col.updated')}</TableHead>
                 <TableHead>{t('chat.list.col.status')}</TableHead>
                 <TableHead>
                   <span className="sr-only">{t('chat.list.col.actions')}</span>
@@ -129,6 +129,19 @@ function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious, 
   )
 }
 
+/**
+ * 來源欄：教室名稱（封存加註「已封存」，S-14）＋活動名稱，例如「A 班・倫理學第一週」；
+ * 個人練習顯示「個人練習」；沒有教室名稱時退回「教室活動・活動名稱」或「教室活動」。
+ */
+function sourceLabel(t: ReturnType<typeof useT>, c: Conversation): string {
+  if (c.classroom_name) {
+    const classroom = c.classroom_archived ? t('chat.list.source.archived', { name: c.classroom_name }) : c.classroom_name
+    return c.activity_title ? t('chat.list.source.classroomActivity', { classroom, activity: c.activity_title }) : classroom
+  }
+  if (c.activity_id && c.activity_title) return t('chat.list.source.activityNamed', { activity: c.activity_title })
+  return t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')
+}
+
 function ConversationRow({ conversation: c, onArchive, onDelete }: { conversation: Conversation; onArchive: () => void; onDelete: () => void }) {
   const t = useT()
   const { lang } = useI18n()
@@ -136,13 +149,9 @@ function ConversationRow({ conversation: c, onArchive, onDelete }: { conversatio
   return (
     <TableRow>
       <TableCell className="max-w-72 font-medium break-words whitespace-normal">{c.title}</TableCell>
-      <TableCell className="max-w-56 break-words whitespace-normal">
-        {c.activity_id && c.activity_title
-          ? t('chat.list.source.activityNamed', { activity: c.activity_title })
-          : t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')}
-      </TableCell>
+      <TableCell className="max-w-56 break-words whitespace-normal">{sourceLabel(t, c)}</TableCell>
       <TableCell className="tabular-nums">{c.turn_count}</TableCell>
-      <TableCell>{formatDate(c.created_at, lang)}</TableCell>
+      <TableCell>{formatDate(c.updated_at, lang)}</TableCell>
       <TableCell>{t(`chat.status.${c.status}`)}</TableCell>
       <TableCell>
         <div className="flex flex-wrap items-center justify-end gap-1">

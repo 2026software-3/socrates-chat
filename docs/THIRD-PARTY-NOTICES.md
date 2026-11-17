@@ -6,14 +6,13 @@
 
 ## 複製進原始碼的程式碼
 
-shadcn/ui 與 assistant-ui 的元件原始碼被複製進本 repo（並依需求修改），MIT 要求保留原作者的版權與授權聲明。
+shadcn/ui 的元件原始碼被複製進本 repo（並依需求修改），MIT 要求保留原作者的版權與授權聲明。
 
 | 來源 | 本專案中的位置 | 版權 |
 | --- | --- | --- |
 | [shadcn/ui](https://github.com/shadcn-ui/ui) | `frontend/src/components/ui/`、`frontend/src/lib/utils.ts` | Copyright (c) 2023 shadcn |
-| [assistant-ui](https://github.com/assistant-ui/assistant-ui) | `frontend/src/components/assistant-ui/` | Copyright (c) 2026 AgentbaseAI Inc. |
 
-兩者皆使用相同的 MIT 條款，授權文字如下（`<版權人>` 依上表代入）：
+使用 MIT 條款，授權文字如下（`<版權人>` 依上表代入）：
 
 ```text
 MIT License

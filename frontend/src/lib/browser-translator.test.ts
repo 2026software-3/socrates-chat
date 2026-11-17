@@ -27,6 +27,18 @@ describe('translateInBrowser', () => {
     expect(stub.translate).toHaveBeenCalledWith('理由')
   })
 
+  it('preserves masking and personal-data placeholders in browser translations', async () => {
+    const stub = stubTranslator('available')
+    expect(await translateInBrowser('zh-TW', 'en', [
+      'message',
+      '立場 [EMAIL] [PHONE]\n[NATIONAL_ID] [STUDENT_ID] 理由',
+    ])).toEqual([
+      'message',
+      '[立場] [EMAIL] [PHONE]\n[NATIONAL_ID] [STUDENT_ID] [理由]',
+    ])
+    expect(stub.translate.mock.calls.map(([text]) => text)).toEqual(['立場', '理由'])
+  })
+
   it('does not even create a translator when every text is empty', async () => {
     const stub = stubTranslator('available')
     expect(await translateInBrowser('zh-TW', 'en', ['', ''])).toEqual(['', ''])

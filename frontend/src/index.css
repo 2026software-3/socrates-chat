@@ -3,7 +3,6 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/noto-sans-tc";
-@import "tw-shimmer";
 
 @custom-variant dark (&:is(.dark *));
 

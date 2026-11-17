@@ -1,0 +1,108 @@
+{
+  "retrieved_on": "2026-10-30",
+  "ranking_source": "https://philomedium.com/report/83685",
+  "ranking_basis": "2025 讀者票選；依哲學經典、哲學普及分類表格各取五本，非總榜前十。原文表格與敘述名次不一致，以表格固定選樣；投票日期亦有年份筆誤。",
+  "query_policy": "書名去副標與再版字樣；作者使用來源列示之首位作者的外文名，Plátōn Plato 簡化為 Plato。不輪試別名；與博客來中文作者組分開解讀。ISBN 均取所連書目頁。",
+  "books": [
+    {
+      "position": 1,
+      "category": "哲學經典",
+      "category_rank": 1,
+      "display_title": "康德政治哲學講座",
+      "query_title": "康德政治哲學講座",
+      "author": "Hannah Arendt",
+      "isbn": "9786263903630",
+      "metadata_source": "https://philomedium.com/biblio/83348"
+    },
+    {
+      "position": 2,
+      "category": "哲學經典",
+      "category_rank": 2,
+      "display_title": "擁有還是存在？",
+      "query_title": "擁有還是存在？",
+      "author": "Erich Fromm",
+      "isbn": "9786263147690",
+      "metadata_source": "https://philomedium.com/biblio/83296"
+    },
+    {
+      "position": 3,
+      "category": "哲學經典",
+      "category_rank": 3,
+      "display_title": "蘇格拉底的審判",
+      "query_title": "蘇格拉底的審判",
+      "author": "Plato",
+      "isbn": "9789863509806",
+      "metadata_source": "https://philomedium.com/biblio/83524"
+    },
+    {
+      "position": 4,
+      "category": "哲學經典",
+      "category_rank": 4,
+      "display_title": "心智生命",
+      "query_title": "心智生命",
+      "author": "Hannah Arendt",
+      "isbn": "9786264191142",
+      "metadata_source": "https://philomedium.com/biblio/83288"
+    },
+    {
+      "position": 5,
+      "category": "哲學經典",
+      "category_rank": 5,
+      "display_title": "哲學論述",
+      "query_title": "哲學論述",
+      "author": "Michel Foucault",
+      "isbn": "9786267705513",
+      "metadata_source": "https://philomedium.com/biblio/83563"
+    },
+    {
+      "position": 6,
+      "category": "哲學普及",
+      "category_rank": 1,
+      "display_title": "厭女的資格（再版）",
+      "query_title": "厭女的資格",
+      "author": "Kate Manne",
+      "isbn": "9786263109278",
+      "metadata_source": "https://philomedium.com/biblio/83589"
+    },
+    {
+      "position": 7,
+      "category": "哲學普及",
+      "category_rank": 2,
+      "display_title": "左膠是如何煉成的",
+      "query_title": "左膠是如何煉成的",
+      "author": "Helen Pluckrose",
+      "isbn": "9786267509234",
+      "metadata_source": "https://philomedium.com/biblio/83286"
+    },
+    {
+      "position": 8,
+      "category": "哲學普及",
+      "category_rank": 3,
+      "display_title": "焦慮的意義",
+      "query_title": "焦慮的意義",
+      "author": "Samir Chopra",
+      "isbn": "9786263108240",
+      "metadata_source": "https://philomedium.com/biblio/83363"
+    },
+    {
+      "position": 9,
+      "category": "哲學普及",
+      "category_rank": 4,
+      "display_title": "正常由誰定義？",
+      "query_title": "正常由誰定義？",
+      "author": "Robert Chapman",
+      "isbn": "9786267596937",
+      "metadata_source": "https://philomedium.com/biblio/83611"
+    },
+    {
+      "position": 10,
+      "category": "哲學普及",
+      "category_rank": 5,
+      "display_title": "世界還能變好嗎？",
+      "query_title": "世界還能變好嗎？",
+      "author": "David Runciman",
+      "isbn": "9786263108448",
+      "metadata_source": "https://philomedium.com/biblio/83430"
+    }
+  ]
+}

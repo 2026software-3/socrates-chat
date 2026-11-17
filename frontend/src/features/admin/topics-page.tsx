@@ -14,6 +14,7 @@ import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
+import { TopicDimensionsDialog } from './topic-dimensions'
 
 type TopicInput = { title: string; description: string; category: string }
 
@@ -130,6 +131,7 @@ export function TopicsPage() {
   const [actionError, setActionError] = useState<unknown>()
   const [notice, setNotice] = useState<string>()
   const [editing, setEditing] = useState<Topic>()
+  const [reviewing, setReviewing] = useState<Topic>()
   const [creating, setCreating] = useState(false)
   const [confirming, setConfirming] = useState<{ topic: Topic; next: boolean }>()
   const [query, setQuery] = useState('')
@@ -287,6 +289,9 @@ export function TopicsPage() {
                           <Button variant="ghost" size="icon" aria-label={t('admin.topics.edit', { title: x.title })} onClick={() => setEditing(x)}>
                             <Pencil aria-hidden />
                           </Button>
+                          <Button variant="outline" onClick={() => setReviewing(x)}>
+                            {t('admin.dimensions.open')}
+                          </Button>
                           <Button
                             variant="outline"
                             disabled={toggling.has(x.id)}
@@ -339,6 +344,8 @@ export function TopicsPage() {
           <ConfirmFact label={t('admin.topics.fact.category')}>{confirming.topic.category ?? '—'}</ConfirmFact>
         </ConfirmDialog>
       ) : null}
+
+      {reviewing ? <TopicDimensionsDialog key={reviewing.id} topic={reviewing} close={() => setReviewing(undefined)} /> : null}
 
       <Dialog open={editing !== undefined} onOpenChange={(o) => !o && setEditing(undefined)}>
         <DialogContent showCloseButton={false}>

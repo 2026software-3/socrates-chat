@@ -671,6 +671,80 @@ async fn a_cut_during_generation_applies_when_the_reply_is_saved(pool: PgPool) {
     assert_eq!(ai.1, "你聽到這句");
 }
 
+/// 語音回覆暫存的打斷位置要寫入之後才釋放 claim：下一輪一開始載入的歷史就要是學生聽到的版本。
+/// 回覆已存好、聽到的字元數還沒寫的空窗很短，所以讓寫入 `heard_chars` 的 UPDATE 慢下來，
+/// 再從資料庫旁觀：空窗內 claim 必須還在。
+#[sqlx::test]
+async fn a_voice_reply_keeps_its_claim_until_what_was_heard_is_saved(pool: PgPool) {
+    sqlx::query(
+        "CREATE FUNCTION slow_heard() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_sleep(0.6); RETURN NEW; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER slow_heard BEFORE UPDATE OF heard_chars ON messages
+         FOR EACH ROW EXECUTE FUNCTION slow_heard()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let pace = std::time::Duration::from_millis(100);
+    let v = voice(
+        pool.clone(),
+        vec![Paced(vec!["你聽到這句。", "沒聽到這句。"], pace)],
+    )
+    .await;
+    let before: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_id = $1")
+            .bind(v.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let res = v.say(&[("user", "第一句")]).await;
+    record_heard(&v.r.state, v.id, 5).await;
+
+    // 這次回覆保存之後、聽到的字元數寫入之前：claim 持有中（held）或已被釋放（released_early）
+    let watch = async {
+        let (mut held, mut released_early) = (false, false);
+        loop {
+            let row: Option<(bool, Option<i32>)> = sqlx::query_as(
+                "SELECT c.generating_since IS NULL, m.heard_chars
+                 FROM conversations c
+                 JOIN messages m ON m.conversation_id = c.id AND m.role = 'ai' AND m.seq > $2
+                 WHERE c.id = $1 ORDER BY m.seq DESC LIMIT 1",
+            )
+            .bind(v.id)
+            .bind(before)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            match row {
+                Some((unclaimed, None)) if unclaimed => released_early = true,
+                Some((_, None)) => held = true,
+                Some((_, Some(_))) => return (held, released_early),
+                None => {}
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    let (_, watched) = tokio::join!(
+        text_of(res),
+        tokio::time::timeout(std::time::Duration::from_secs(15), watch)
+    );
+    let (held, released_early) = watched.expect("the heard position was never saved");
+
+    assert!(
+        !released_early,
+        "the claim was released before what was heard was saved"
+    );
+    assert!(
+        held,
+        "the window between saving the reply and saving what was heard was never observed"
+    );
+}
+
 #[sqlx::test]
 async fn an_unheard_reply_can_be_generated_again(pool: PgPool) {
     let v = voice(

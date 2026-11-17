@@ -22,6 +22,7 @@ export function makeMe(roles: Partial<Roles> = {}, overrides: Partial<Me> = {}):
     language: 'zh-TW',
     is_admin: r.admin,
     must_change_password: false,
+    can_change_password: true,
     roles: r,
     ...overrides,
   }

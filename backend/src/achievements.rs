@@ -38,6 +38,7 @@ pub async fn record_completed_conversation_in_tx(
     conversation_id: Uuid,
     completed_at: DateTime<Utc>,
 ) -> Result<Vec<Unlock>, sqlx::Error> {
+    lock_catalog_for_event(tx).await?;
     lock_user(tx, user_id).await?;
     let inserted = sqlx::query(
         "INSERT INTO achievement_completion_events (user_id, conversation_id, completed_at)
@@ -83,6 +84,7 @@ pub async fn record_dimension_score_in_tx(
     if scores.len() != 6 || scores.iter().any(|score| !(0..=5).contains(score)) {
         return Ok(vec![]);
     }
+    lock_catalog_for_event(tx).await?;
     unlock_matching(
         tx,
         user_id,
@@ -104,11 +106,13 @@ pub async fn record_first_task_reward(
     Ok(unlocked)
 }
 
-/// Transaction-aware task hook; call in the reward-claim transaction.
+/// Transaction-aware task hook. If the caller locks the user row, it must lock
+/// the catalog for the event first.
 pub async fn record_first_task_reward_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
 ) -> Result<Vec<Unlock>, sqlx::Error> {
+    lock_catalog_for_event(tx).await?;
     unlock_matching(tx, user_id, "first_task_claim", 1, None).await
 }
 
@@ -124,12 +128,35 @@ pub async fn record_first_character_part(
 }
 
 /// Transaction-aware purchase hook; call only after the purchase succeeded,
-/// inside the transaction that commits the purchase.
+/// inside the transaction that commits the purchase. If the caller locks the
+/// user row, it must lock the catalog for the event first.
 pub async fn record_first_character_part_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
 ) -> Result<Vec<Unlock>, sqlx::Error> {
+    lock_catalog_for_event(tx).await?;
     unlock_matching(tx, user_id, "first_purchase", 1, None).await
+}
+
+/// Events can run concurrently, but a catalog change and its backfill must
+/// see either all or none of each event transaction. Lock the catalog before
+/// taking any user-row lock so events and backfills use the same lock order.
+pub(crate) async fn lock_catalog_for_event(
+    tx: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("LOCK TABLE achievements IN ROW EXCLUSIVE MODE")
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn lock_catalog_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("LOCK TABLE achievements IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// Serialize a student's progress evaluation so concurrent completions
@@ -236,6 +263,7 @@ pub async fn backfill_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     achievement_id: &str,
 ) -> Result<Vec<Unlock>, sqlx::Error> {
+    lock_catalog_for_update(tx).await?;
     let kind: Option<String> =
         sqlx::query_scalar("SELECT condition_type FROM achievements WHERE id = $1 LIMIT 1")
             .bind(achievement_id)

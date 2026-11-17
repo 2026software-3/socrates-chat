@@ -3,27 +3,27 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
-import type { ActivityDistribution } from '@/lib/types'
+import type { TopicDistribution } from '@/lib/types'
 
 /**
- * 一個活動的「主張分布」：每列是一種主張（AI 把意思相近的歸成一群並命名），
+ * 活動內一個題目的「主張分布」：每列是一種主張（AI 把意思相近的歸成一群並命名），
  * 顯示人數與比例；展開可看這群人的核心理由（AI 總結的文字，沒有姓名與原文）。
  * 分組由 AI 完成，可能不夠穩定，所以教師可以按「重新分組」。
  */
-export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: ActivityDistribution; onChanged: () => void; canRegroup: boolean }) {
+export function ClaimGroups({ topic, onChanged, canRegroup, activityId }: { topic: TopicDistribution; activityId: string; onChanged: () => void; canRegroup: boolean }) {
   const t = useT()
   const { lang } = useI18n()
   const pct = useMemo(() => new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 }), [lang])
   const [pending, setPending] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<unknown>()
-  const total = activity.claims.reduce((n, g) => n + g.count, 0)
+  const total = topic.claims.reduce((n, g) => n + g.count, 0)
 
   async function regroup() {
     setPending(true)
     setError(undefined)
     try {
-      await api.post('/api/dashboard/class/regroup', { activity_id: activity.activity_id })
+      await api.post('/api/dashboard/class/regroup', { activity_id: activityId, topic_id: topic.topic_id })
       setConfirming(false)
       onChanged()
     } catch (e) {
@@ -36,11 +36,11 @@ export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: Act
   return (
     <section className="space-y-3">
       <h4 className="text-sm font-medium">{t('dashboard.claims')}</h4>
-      {activity.claims.length === 0 ? (
+      {topic.claims.length === 0 ? (
         <p className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">{t('dashboard.claims.empty')}</p>
       ) : (
         <ul aria-label={t('dashboard.claims')} className="space-y-2">
-          {activity.claims.map((g) => {
+          {topic.claims.map((g) => {
             const share = total > 0 ? g.count / total : 0
             const name = g.other ? t('dashboard.claims.other') : (g.name ?? '')
             return (
@@ -76,12 +76,12 @@ export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: Act
           })}
         </ul>
       )}
-      {activity.ungrouped > 0 ? (
+      {topic.ungrouped > 0 ? (
         <p role="status" className="text-muted-foreground text-xs">
-          {t('dashboard.claims.ungrouped', { count: activity.ungrouped })}
+          {t('dashboard.claims.ungrouped', { count: topic.ungrouped })}
         </p>
       ) : null}
-      {canRegroup && (activity.claims.length > 0 || activity.ungrouped > 0) ? (
+      {canRegroup && (topic.claims.length > 0 || topic.ungrouped > 0) ? (
         <div className="space-y-2">
           <p className="text-muted-foreground text-xs">{t('dashboard.claims.regroupHelp')}</p>
           <Button variant="outline" size="sm" disabled={pending} onClick={() => { setError(undefined); setConfirming(true) }}>
@@ -91,7 +91,7 @@ export function ClaimGroups({ activity, onChanged, canRegroup }: { activity: Act
             open={confirming}
             onOpenChange={setConfirming}
             title={t('dashboard.claims.regroupTitle')}
-            description={t('dashboard.claims.regroupBody')}
+            description={t('dashboard.claims.regroupBody', { title: topic.title })}
             confirmLabel={t('dashboard.claims.regroup')}
             pending={pending}
             error={error}

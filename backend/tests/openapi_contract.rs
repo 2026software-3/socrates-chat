@@ -33,7 +33,15 @@ mod classroom {
         );
         let response_schema: &Value =
             &create["responses"]["201"]["content"]["application/json"]["schema"];
-        assert_eq!(response_schema["$ref"], "#/components/schemas/Classroom");
+        assert_eq!(
+            response_schema["$ref"],
+            "#/components/schemas/ClassroomDetail"
+        );
+        let update = &paths["/api/classrooms/{id}"]["patch"];
+        assert_eq!(
+            update["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ClassroomDetail"
+        );
 
         let request_schema = &document["components"]["schemas"]["NewClassroom"]["properties"];
         assert_eq!(request_schema["name"]["maxLength"], 255);
@@ -175,6 +183,19 @@ mod classroom_scope {
         }
         let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
         assert!(row.get("classroom_id").is_some(), "SummaryRow.classroom_id");
+    }
+
+    /// F-29.3：總結列帶有活動完成狀態與題目、活動 ID。
+    #[test]
+    fn summary_rows_contract_supports_activity_completion() {
+        let doc = document();
+        let row = &doc["components"]["schemas"]["SummaryRow"]["properties"];
+        assert!(
+            row.get("activity_completed").is_some(),
+            "SummaryRow.activity_completed"
+        );
+        assert!(row.get("activity_id").is_some(), "SummaryRow.activity_id");
+        assert!(row.get("topic_id").is_some(), "SummaryRow.topic_id");
     }
 }
 
@@ -389,4 +410,76 @@ mod voice {
             .unwrap();
         assert!(payload_too_large_description.contains("10 MB"));
     }
+}
+
+#[test]
+fn dashboard_contract_scopes_distributions_and_regroup_to_activity_topics() {
+    let doc = serde_json::to_value(socrates_chat_backend::openapi::document()).unwrap();
+    let schemas = &doc["components"]["schemas"];
+    let activity = &schemas["ActivityDistribution"]["properties"];
+    assert!(activity["topics"].is_object());
+    assert!(activity.get("claims").is_none());
+    let topic = &schemas["TopicDistribution"]["properties"];
+    for field in ["topic_id", "title", "completed", "claims", "ungrouped"] {
+        assert!(
+            topic[field].is_object(),
+            "missing TopicDistribution.{field}"
+        );
+    }
+    let required = schemas["RegroupBody"]["required"].as_array().unwrap();
+    assert!(required.contains(&serde_json::json!("activity_id")));
+    assert!(required.contains(&serde_json::json!("topic_id")));
+}
+
+#[test]
+fn radar_contract_exposes_status_retry_and_scores_without_the_rubric() {
+    let doc = serde_json::to_value(socrates_chat_backend::openapi::document()).unwrap();
+    let view = "#/components/schemas/RadarView";
+    let read = &doc["paths"]["/api/conversations/{id}/radar"]["get"];
+    assert_eq!(
+        read["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        view
+    );
+    let retry = &doc["paths"]["/api/conversations/{id}/radar/retry"]["post"];
+    assert_eq!(
+        retry["responses"]["202"]["content"]["application/json"]["schema"]["$ref"],
+        view
+    );
+    let conflicts = retry["responses"]["409"]["description"].as_str().unwrap();
+    for code in [
+        "classroom_archived",
+        "dimensions_pending",
+        "radar_not_retryable",
+    ] {
+        assert!(conflicts.contains(code), "missing 409 {code}");
+    }
+    let schemas = &doc["components"]["schemas"];
+    for field in [
+        "status",
+        "retryable",
+        "scores",
+        "dimensions",
+        "rules_version",
+        "completed_at",
+    ] {
+        assert!(
+            schemas["RadarView"]["properties"][field].is_object(),
+            "missing RadarView.{field}"
+        );
+    }
+    let statuses = schemas["RadarStatus"].to_string();
+    for status in [
+        "summary_not_ready",
+        "unavailable",
+        "dimensions_pending",
+        "not_started",
+        "pending",
+        "failed",
+        "ready",
+    ] {
+        assert!(statuses.contains(status), "missing status {status}");
+    }
+    let dimension = &schemas["RadarDimension"]["properties"];
+    assert!(dimension["name"].is_object() && dimension["description"].is_object());
+    assert!(dimension.get("rubric").is_none());
 }

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
+import { useAccountLanguage } from '@/auth/auth-context'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -30,11 +31,14 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
   const base = useClassroomsBase()
   const { lang } = useI18n()
   const [translation, setTranslation] = useState<SummaryTranslation | null>(null)
-  const [showTranslation, setShowTranslation] = useState(false)
+  const [showOriginal, setShowOriginal] = useState(false)
   const [translating, setTranslating] = useState(false)
   const [translationError, setTranslationError] = useState<unknown>(null)
-  const shown = showTranslation && translation?.language === lang ? translation : null
+  const saved = row.translation?.language === lang ? row.translation : null
+  const current = saved ?? (translation?.language === lang ? translation : null)
+  const shown = showOriginal ? null : current
   const visible = shown ?? row
+  const masked = row.stance === 'message' && row.reasons === 'message'
 
   async function translate() {
     setTranslating(true)
@@ -45,7 +49,7 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
         ? { language: lang, stance: local[0], reasons: local[1] }
         : await api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`)
       setTranslation(result)
-      setShowTranslation(true)
+      setShowOriginal(false)
     } catch (error) {
       setTranslationError(error)
     } finally {
@@ -86,6 +90,9 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
             <Field label={t('teacher.summaries.stance')} value={visible.stance} />
             <Field label={t('teacher.summaries.reasons')} value={visible.reasons} />
           </dl>
+          {row.translation_pending && !current ? (
+            <p role="status" className="text-muted-foreground text-sm">{t('chat.summary.translationPending')}</p>
+          ) : null}
           <Link
             to={`${base}/${row.classroom_id}/conversations/${row.conversation_id}`}
             className="text-sm underline-offset-4 hover:underline"
@@ -98,11 +105,11 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
             </p>
           ) : null}
           {shown ? (
-            <Button type="button" variant="outline" size="sm" onClick={() => setShowTranslation(false)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowOriginal(true)}>
               {t('teacher.summaries.showOriginal')}
             </Button>
-          ) : row.language !== lang ? (
-            <Button type="button" variant="outline" size="sm" disabled={translating} onClick={() => void translate()}>
+          ) : row.language !== lang && !masked ? (
+            <Button type="button" variant="outline" size="sm" disabled={translating} onClick={() => current ? setShowOriginal(false) : void translate()}>
               {translating ? t('teacher.summaries.translating') : t('teacher.summaries.translate')}
             </Button>
           ) : null}
@@ -115,6 +122,7 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
 /** 教師：學生的 AI 總結列表。列表只載入總結，對話原文要點進去才請求（S-02.1）。依後端的不透明游標前後翻頁；搜尋交給後端（`q`），涵蓋所有頁。 */
 export function SummariesPage() {
   const t = useT()
+  const accountLanguage = useAccountLanguage()
   const [draft, setDraft] = useState('')
   const [search, setSearch] = useState('')
   const [cursors, setCursors] = useState<(string | null)[]>([null])
@@ -141,14 +149,16 @@ export function SummariesPage() {
           {t('teacher.summaries.search')}
         </Button>
       </form>
-      <SummaryList
-        key={`${search}\n${cursor ?? ''}`}
-        search={search}
-        cursor={cursor}
-        onNext={(next) => setCursors((previous) => [...previous, next])}
-        onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
-        onRestart={() => setCursors([null])}
-      />
+      {accountLanguage ? (
+        <SummaryList
+          key={`${search}\n${cursor ?? ''}\n${accountLanguage}`}
+          search={search}
+          cursor={cursor}
+          onNext={(next) => setCursors((previous) => [...previous, next])}
+          onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
+          onRestart={() => setCursors([null])}
+        />
+      ) : <LoadingBlock />}
     </Page>
   )
 }

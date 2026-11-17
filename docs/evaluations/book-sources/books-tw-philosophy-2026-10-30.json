@@ -1,0 +1,98 @@
+{
+  "retrieved_on": "2026-10-30",
+  "ranking_source": "https://www.books.com.tw/web/books_bmidm_0410/?loc=P_0002_2_001",
+  "ranking_basis": "搜尋引擎於2026-10-30提供、標示前一天擷取的哲學分類暢銷區塊前十筆。原站直接存取403；不是已確認的即時榜，未提供統計期間。不是當代思潮/哲學分類。",
+  "query_policy": "人工移除副標、版次、贈品等行銷詞，保留原榜書名供核對；使用同一份短書名比較兩來源。不使用LLM翻譯或簡繁轉換。",
+  "books": [
+    {
+      "position": 1,
+      "display_title": "傅佩榮易經課：占卜、解卦、指引人生、趨吉避凶",
+      "query_title": "傅佩榮易經課",
+      "author": "傅佩榮",
+      "isbn": "9789864797950",
+      "metadata_source": "https://www.books.com.tw/products/0010831570?loc=P_0020_001",
+      "notes": ""
+    },
+    {
+      "position": 2,
+      "display_title": "老子，道德經全本典藏版",
+      "query_title": "老子 道德經",
+      "author": "老子",
+      "isbn": "9789863924753",
+      "metadata_source": "https://www.books.com.tw/products/0010945225?loc=P_0008_007",
+      "notes": ""
+    },
+    {
+      "position": 3,
+      "display_title": "沉思錄：世界名人、國家級領導人、各大企業領袖隨身書，羅馬哲學家皇帝淬鍊一生的智慧經典",
+      "query_title": "沉思錄",
+      "author": "馬可斯‧奧理略‧安東尼努斯",
+      "isbn": "9789573284840",
+      "metadata_source": "https://www.books.com.tw/products/0010816881?loc=P_0020_002",
+      "notes": "同名／多譯本；書名命中不等於此版"
+    },
+    {
+      "position": 4,
+      "display_title": "【易經白話講座手記套組版】：《易經白話講座》+《樂易心開手記》加贈「易經卜卦方法速見卡」",
+      "query_title": "易經白話講座",
+      "author": "王思迅",
+      "isbn": "9786267045213",
+      "metadata_source": "https://www.books.com.tw/products/0010966119?loc=P_0008_014",
+      "notes": "商品頁 ISBN 與第7筆相同；ISBN 命中僅代表所含書籍，不能證明套組命中"
+    },
+    {
+      "position": 5,
+      "display_title": "易經問命三部曲：解答之書→悟卦之書→溯源之書【旗艦特裝】",
+      "query_title": "易經問命三部曲",
+      "author": "梁冬",
+      "isbn": "",
+      "metadata_source": "https://www.books.com.tw/products/0011062814?loc=P_0020_002",
+      "notes": "商品頁標 ISBN 4711528701404，非978/979 ISBN；不送ISBN查詢"
+    },
+    {
+      "position": 6,
+      "display_title": "漫畫易經【全新書衣版】",
+      "query_title": "漫畫易經",
+      "author": "周春才",
+      "isbn": "9786269725496",
+      "metadata_source": "https://www.ncc.com.tw/books/goods.php?from=rss&id=18419",
+      "notes": "ISBN由星僑書店交叉核對，非直接取得博客來詳細頁"
+    },
+    {
+      "position": 7,
+      "display_title": "易經白話講座：64卦，卦卦讓你找到內在真實的力量",
+      "query_title": "易經白話講座",
+      "author": "王思迅",
+      "isbn": "9786267045213",
+      "metadata_source": "https://www.books.com.tw/products/E050124893",
+      "notes": "ISBN來自電子書頁列出的紙本ISBN；EISBN另為9786267045237，實體商品頁仍待核對"
+    },
+    {
+      "position": 8,
+      "display_title": "傅佩榮講易經：詳解易經六十四卦（全二冊）",
+      "query_title": "傅佩榮講易經",
+      "author": "傅佩榮",
+      "isbn": "9789863602149",
+      "metadata_source": "https://weblink.pccu.edu.tw/weblink/scripts/weblink/cChoiceBookwk2.aspx?ff=100&id=0&m1=15&smonth=4&stype=%E7%B8%BD%E9%A1%9E&ye=2024",
+      "notes": "ISBN由文化大學館藏書目交叉核對"
+    },
+    {
+      "position": 9,
+      "display_title": "傅佩榮的易經入門課（三版）",
+      "query_title": "傅佩榮的易經入門課",
+      "author": "傅佩榮",
+      "isbn": "9789864507603",
+      "metadata_source": "https://www.books.com.tw/products/0011013830?loc=P_0003_003",
+      "notes": ""
+    },
+    {
+      "position": 10,
+      "display_title": "如是我聞：金剛經筆記【加贈蔣勳祈福讀誦《金剛經》+繪寫書籤2款】",
+      "query_title": "如是我聞 金剛經筆記",
+      "author": "蔣勳",
+      "isbn": "9786264181341",
+      "metadata_source": "https://library.toread.bocach.gov.tw/webpac_rwd/content.cfm?mid=989186",
+      "notes": "ISBN由彰化縣公共圖書館交叉核對；贈品不等於書籍版本"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { PersonalDashboardPage } from '@/features/dashboard/personal-dashboard-page'
+import { PersonalDashboardContent } from '@/features/dashboard/personal-dashboard-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { PersonalDashboard } from '@/lib/types'
 import { server } from '@/test/server'
@@ -16,10 +16,10 @@ const personal: PersonalDashboard = {
   ],
 }
 
-describe('personal dashboard', () => {
+describe('personal dashboard content (shown on the student account page)', () => {
   it('shows my own counts and the claims, stances and turns of recent discussions', async () => {
     server.use(http.get('/api/dashboard/me', () => HttpResponse.json(personal)))
-    renderTeacherPage(<PersonalDashboardPage />, undefined, { student: true })
+    renderTeacherPage(<PersonalDashboardContent />, undefined, { student: true })
     expect(await screen.findByText('對話數')).toBeInTheDocument()
     expect(screen.getByText('17')).toBeInTheDocument()
     const link = screen.getByRole('link', { name: '電車難題' })
@@ -35,7 +35,7 @@ describe('personal dashboard', () => {
 
   it('shows no radar chart and no ethical school label', async () => {
     server.use(http.get('/api/dashboard/me', () => HttpResponse.json(personal)))
-    renderTeacherPage(<PersonalDashboardPage />, undefined, { student: true })
+    renderTeacherPage(<PersonalDashboardContent />, undefined, { student: true })
     await screen.findByRole('link', { name: '電車難題' })
     expect(screen.queryByTestId('radar-chart')).not.toBeInTheDocument()
     expect(screen.queryByText(/效益主義|義務論|德行倫理|契約論|關懷倫理|存在主義|論證傾向|學派/)).not.toBeInTheDocument()
@@ -45,7 +45,7 @@ describe('personal dashboard', () => {
     server.use(
       http.get('/api/dashboard/me', () => HttpResponse.json({ ...personal, total_conversations: 1, completed: 0, recent: [] })),
     )
-    renderTeacherPage(<PersonalDashboardPage />, undefined, { student: true })
+    renderTeacherPage(<PersonalDashboardContent />, undefined, { student: true })
     expect(await screen.findByText(/完成第一場討論後/u)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '選擇題目開始討論' })).toHaveAttribute('href', '/')
   })

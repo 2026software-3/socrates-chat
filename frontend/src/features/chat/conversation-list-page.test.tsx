@@ -31,6 +31,31 @@ describe('ConversationListPage', () => {
     expect(within(second).getByText('已結束')).toBeInTheDocument()
   })
 
+  it('shows the source classroom name, personal practice, and an archived classroom note', async () => {
+    setup([
+      makeConversation({ id: 'c1', title: '合成題目：甲', activity_id: 'a1', classroom_name: '合成 A 班' }),
+      makeConversation({ id: 'c2', title: '合成題目：乙', activity_id: 'a2', classroom_name: '合成 B 班', classroom_archived: true }),
+      makeConversation({ id: 'c3', title: '合成題目：丙' }),
+    ])
+    renderApp(null, { route: '/conversations' })
+    const row = async (title: string) =>
+      (await screen.findByRole('link', { name: `開啟對話：${title}` })).closest('tr') as HTMLElement
+    expect(within(await row('合成題目：甲')).getByText('合成 A 班')).toBeInTheDocument()
+    expect(within(await row('合成題目：乙')).getByText('合成 B 班（已封存）')).toBeInTheDocument()
+    expect(within(await row('合成題目：丙')).getByText('個人練習')).toBeInTheDocument()
+  })
+
+  it('shows the classroom name together with the activity name', async () => {
+    setup([
+      makeConversation({ id: 'c1', title: '合成題目：甲', activity_id: 'a1', activity_title: '倫理學第一週', classroom_name: '合成 A 班' }),
+      makeConversation({ id: 'c2', title: '合成題目：乙', activity_id: 'a2', activity_title: '倫理學第二週', classroom_name: '合成 B 班', classroom_archived: true }),
+    ])
+    renderApp(null, { route: '/conversations' })
+    expect(await screen.findByText('合成 A 班・倫理學第一週')).toBeInTheDocument()
+    expect(screen.getByText('合成 B 班（已封存）・倫理學第二週')).toBeInTheDocument()
+    expect(screen.queryByText(/教室活動/)).not.toBeInTheDocument()
+  })
+
   it('shows only the activity name in the source column for activity conversations', async () => {
     setup([
       makeConversation({ id: 'c1', activity_id: 'a1', activity_title: '倫理學第一週', title: '合成題目：電車難題' }),
@@ -174,8 +199,8 @@ describe('ConversationListPage', () => {
     expect(screen.queryByRole('link', { name: /開啟對話/ })).not.toBeInTheDocument()
   })
 
-  it('omits the created date instead of rendering a blank value when the date is invalid', async () => {
-    setup([makeConversation({ created_at: 'not-a-date' })])
+  it('omits the last updated date instead of rendering a blank value when the date is invalid', async () => {
+    setup([makeConversation({ updated_at: 'not-a-date' })])
     renderApp(null, { route: '/conversations' })
     await screen.findByRole('link', { name: /開啟對話/ })
     expect(screen.queryByText(/2026/)).not.toBeInTheDocument()

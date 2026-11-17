@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useAccountLanguage } from '@/auth/auth-context'
 import { api, isAbortError, isApiError, type ApiError } from '@/lib/api'
 import type { SummaryView } from '@/lib/types'
 
@@ -18,15 +19,18 @@ type Options = { pollMs?: number; maxPollMs?: number }
 
 /**
  * 輪詢 `GET /api/conversations/{id}/summary`：pending 時每隔 `pollMs` 再查一次，
- * ready／failed 停止；超過 `maxPollMs` 顯示 timeout。離開頁面（unmount）時中止請求與計時器。
+ * 總結 ready 後仍會在翻譯待完成時繼續輪詢；總結產生超過 `maxPollMs` 顯示 timeout。
+ * 離開頁面（unmount）時中止請求與計時器。
  */
 export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, maxPollMs = SUMMARY_MAX_POLL_MS }: Options = {}) {
+  const accountLanguage = useAccountLanguage()
   const [state, setState] = useState<SummaryState>({ kind: 'pending' })
   const [round, setRound] = useState(0)
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<unknown>()
 
   useEffect(() => {
+    if (!accountLanguage) return
     const ctrl = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const startedAt = Date.now()
@@ -35,7 +39,10 @@ export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, m
       try {
         const s = await api.get<SummaryView>(`/api/conversations/${conversationId}/summary`, ctrl.signal)
         if (ctrl.signal.aborted) return
-        if (s.status === 'ready') setState({ kind: 'ready', summary: s })
+        if (s.status === 'ready') {
+          setState({ kind: 'ready', summary: s })
+          if (s.translation_pending) timer = setTimeout(poll, pollMs)
+        }
         else if (s.status === 'failed') setState({ kind: 'failed' })
         else if (Date.now() - startedAt >= maxPollMs) setState({ kind: 'timeout' })
         else {
@@ -53,7 +60,7 @@ export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, m
       ctrl.abort()
       clearTimeout(timer)
     }
-  }, [conversationId, round, pollMs, maxPollMs])
+  }, [conversationId, round, pollMs, maxPollMs, accountLanguage])
 
   /** 重新開始輪詢（逾時或查詢失敗後的「再檢查一次」）。 */
   const check = useCallback(() => {

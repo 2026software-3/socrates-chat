@@ -4,12 +4,15 @@ import { canAccess, type Access, type Feature } from '@/app/feature'
 import { Layout } from '@/app/layout'
 import { RouteErrorBoundary } from '@/app/route-error-boundary'
 import { ErrorBlock, LoadingBlock, Page } from '@/components/page'
+import { accountFeature } from '@/features/account'
 import { adminFeature, opsNav } from '@/features/admin'
+import { MaintenancePage } from '@/features/announcements/maintenance-page'
 import { DisabledPage } from '@/features/auth/disabled-page'
 import { LoginPage } from '@/features/auth/login-page'
 import { ChangePasswordPage } from '@/features/auth/change-password-page'
 import { PendingPage } from '@/features/auth/pending-page'
 import { chatFeature } from '@/features/chat'
+import { complaintsFeature } from '@/features/complaints'
 import { dashboardFeature } from '@/features/dashboard'
 import { studentFeature } from '@/features/student'
 import { AvailablePage } from '@/features/student/available-page'
@@ -19,7 +22,7 @@ import type { Roles } from '@/lib/types'
 import { Suspense, type ReactNode } from 'react'
 
 // 新增功能時：在 features/<name>/index.tsx 匯出 Feature，再加進這裡。
-export const features: Feature[] = [studentFeature, chatFeature, dashboardFeature, teacherFeature, adminFeature]
+export const features: Feature[] = [studentFeature, chatFeature, dashboardFeature, accountFeature, teacherFeature, complaintsFeature, adminFeature]
 const allNav = features.flatMap((f) => f.nav)
 /** 不參與討論的教師：拿掉學生功能（選題、我的對話、我的儀表板）。 */
 const staffNav = allNav.filter((n) => n.access !== 'member')
@@ -50,6 +53,7 @@ function Shell() {
   }
   if (auth.status === 'anon') return <Navigate to="/login" replace />
   if (auth.status === 'disabled') return <DisabledPage />
+  if (auth.status === 'maintenance') return <MaintenancePage />
   const { me } = auth
   // 臨時密碼：改密碼前其他 API 都會回 password_change_required，所以只放行改密碼頁
   if (me.must_change_password) return <ChangePasswordPage />
@@ -71,8 +75,8 @@ function RequireAccess({ access, children }: { access: Access; children: ReactNo
   const t = useT()
   const { pathname } = useLocation()
   if (auth.status !== 'authed') return null
-  // 純管理者只能進維運頁面；其他功能頁導回維運首頁
-  if (isOpsAdmin(auth.me.roles) && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />
+  // 純管理者只能進維運頁面；其他功能頁導回維運首頁。例外：帳號頁（更改密碼，S-18）
+  if (isOpsAdmin(auth.me.roles) && !pathname.startsWith('/admin') && access !== 'any') return <Navigate to="/admin" replace />
   // 教師不參與討論：學生功能導向教師首頁
   if (access === 'member' && !participates(auth.me.roles)) return <Navigate to="/teacher/classrooms" replace />
   if (!canAccess(access, auth.me.roles)) {
