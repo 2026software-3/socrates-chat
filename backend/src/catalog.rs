@@ -74,7 +74,6 @@ pub struct Topic {
     /// Deprecated：引導問題取代題目內容（S-04.8 修訂），之後另案移除。
     #[schema(deprecated)]
     pub description: String,
-    pub category: Option<String>,
     pub is_active: bool,
     #[serde(default)]
     pub guiding_questions: Vec<String>,
@@ -85,7 +84,6 @@ pub(crate) struct NewTopic {
     title: String,
     #[serde(default)]
     description: String,
-    category: Option<String>,
     #[serde(default)]
     guiding_questions: Vec<String>,
 }
@@ -94,8 +92,6 @@ pub(crate) struct NewTopic {
 pub(crate) struct TopicPatch {
     title: Option<String>,
     description: Option<String>,
-    #[serde(default, deserialize_with = "nullable")]
-    category: Option<Option<String>>,
     is_active: Option<bool>,
     guiding_questions: Option<Vec<String>>,
 }
@@ -141,7 +137,7 @@ pub(crate) async fn list_topics_for_teacher(
 
 async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     let rows = sqlx::query_as(
-        "SELECT id, title, description, category, is_active, guiding_questions FROM topics ORDER BY created_at, id",
+        "SELECT id, title, description, is_active, guiding_questions FROM topics ORDER BY created_at, id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -175,12 +171,11 @@ async fn insert_topic(
     }
     validate_guiding_questions(&b.guiding_questions)?;
     let t = sqlx::query_as(
-        "INSERT INTO topics (title, description, category, guiding_questions) VALUES ($1, $2, $3, $4)
-         RETURNING id, title, description, category, is_active, guiding_questions",
+        "INSERT INTO topics (title, description, guiding_questions) VALUES ($1, $2, $3)
+         RETURNING id, title, description, is_active, guiding_questions",
     )
     .bind(b.title.trim())
     .bind(b.description)
-    .bind(b.category)
     .bind(&b.guiding_questions)
     .fetch_one(&state.pool)
     .await?;
@@ -220,9 +215,8 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     }
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
-                category = CASE WHEN $4 THEN $5::text ELSE category END,
-                is_active = COALESCE($6, is_active),
-                guiding_questions = COALESCE($7::text[], guiding_questions),
+                is_active = COALESCE($4, is_active),
+                guiding_questions = COALESCE($5::text[], guiding_questions),
                 -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
                 dimensions = CASE WHEN has_had_conversation
                         OR (($2::text IS NULL OR $2 = title) AND ($3::text IS NULL OR $3 = description))
@@ -238,13 +232,11 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
                     THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, category, is_active, guiding_questions",
+         RETURNING id, title, description, is_active, guiding_questions",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
-    .bind(p.category.is_some())
-    .bind(p.category.flatten())
     .bind(p.is_active)
     .bind(p.guiding_questions)
     .fetch_optional(&state.pool)
@@ -259,7 +251,7 @@ pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_00
 /// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO topics (id, title, description, category) VALUES ($1, $2, $3, $4)
+        "INSERT INTO topics (id, title, description) VALUES ($1, $2, $3)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(TROLLEY_TOPIC_ID)
@@ -268,7 +260,6 @@ pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
         "一輛失控的電車正衝向軌道上的五個人。你站在轉轍器旁，只要拉下拉桿，電車就會轉向另一條軌道，\
          但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。",
     )
-    .bind("倫理學")
     .execute(pool)
     .await?;
     Ok(())
@@ -858,7 +849,7 @@ pub(crate) async fn available(
     let (activities, topics) = tokio::try_join!(
         activity_store::list_published_with_progress(&state.pool, cu.user.id),
         sqlx::query_as(
-            "SELECT id, title, description, category, is_active, guiding_questions FROM topics
+            "SELECT id, title, description, is_active, guiding_questions FROM topics
              WHERE is_active ORDER BY created_at, id",
         )
         .fetch_all(&state.pool),
