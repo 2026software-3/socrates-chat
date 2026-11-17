@@ -153,6 +153,14 @@
 - `DELETE /api/teacher/keys/{id}`：`204`；該 key 的用量統計連帶刪除，教室統計隨之扣除。
 - `POST /api/teacher/keys/{id}/test`：只呼叫供應商的模型清單端點、不送對話內容，可能產生 API 請求與費用；回 `{ result: "usable" | "connection_failed" }`，額度不足或頻率限制算可用，key 無效或已撤銷、逾時算連線失敗。每位教師 10 分鐘最多 10 次（暫定值，待需求方確認），超過回 `429 key_test_rate_limited`。測試結果目前不改寫 key 的 `status`。
 
+### AI 用量（F-40.8，S-03.1）
+
+- `GET /api/teacher/keys/{id}/usage?range=`：自己某把 key 的用量。
+- `GET /api/classrooms/{id}/ai-usage?range=`：自己建立的教室的用量（各 key 加總；封存的教室仍可看）。
+- `range` 為 `today`、`7d`（預設，暫定）、`30d` 或 `all`，其他值回 `400 invalid_range`；「日」以 Asia/Taipei 日曆日計，`7d`、`30d` 含今天（待需求方確認）。
+- 回 `{ range, totals, items }`；`totals` 與每個 `items`（依供應商、模型細分，備援模型歸在它自己的列）都是 `{ requests, input_tokens, output_tokens, unreported_requests }`。`unreported_requests` 是供應商沒回報 token 的請求數，這些請求不估算 token。不計金額。刪除 key 後該 key 的用量消失、教室總計扣除；更換 key 用量延續。
+- 權限：未登入 `401`；學生、名單外帳號與只有管理者身分的人 `403`（管理者不能看教師 key 的用量；管理者看教室用量規格未明，預設不開放，待確認）；其他教師查他人的 key 或教室與不存在相同 `404`。
+
 ## 教師檢視
 
 教師檢視學生的總結，並可打開自己教室內已結束的活動對話原文（S-02.1，2026-11 需求方決定）。總結列表本身不含原文。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。
