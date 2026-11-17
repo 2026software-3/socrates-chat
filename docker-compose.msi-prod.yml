@@ -26,7 +26,8 @@ services:
       COOKIE_SECURE: "true"
       # compose 網段（nginx、cloudflared）＋ Funnel 入口節點的 tailnet 位址（/32），.env 的 TRUSTED_PROXIES 覆寫；
       # 後端由右往左跳過受信任代理取得真實來源。不要放整段 100.64.0.0/10，否則 tailnet 內任何裝置都能偽造來源
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
+      # 必填：沒設就不要啟動。預設值若漏掉入口節點，所有學生會共用同一個來源 IP，登入限流會把整班一起鎖住
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:?設定 .env 的 TRUSTED_PROXIES（172.16.0.0/12 加 Funnel 入口節點的 /32）}
       CASCADE_REALTIME_URL: ws://cascade:8110/v1/realtime
       # 語音訊息的 STT：沿用 NPU 上的 Whisper（OpenAI 相容的 /v1/audio/transcriptions）
       OPENAI_STT_BASE_URL: http://cascade-whisper:8101/v1
