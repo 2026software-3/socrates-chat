@@ -217,22 +217,18 @@ async fn migration_splits_existing_groups_without_losing_summaries_or_membership
     .await
     .unwrap();
     for topic in [&t1, &t2] {
-        let res = send(
-            &app,
-            json_req(
-                "POST",
-                "/api/conversations",
-                Some(&a.student),
-                Some(json!({"activity_id":act,"topic_id":topic})),
-            ),
+        // 升級前的資料庫沒有 topics.guiding_questions，建立對話的 API 會讀它，所以對話以 raw SQL 插入。
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
+             SELECT u.id, $1, $2, $3, '題目', '', 'zh-TW' FROM users u WHERE u.email = 'student@example.com'
+             RETURNING id",
         )
-        .await;
-        assert_eq!(res.status(), StatusCode::CREATED);
-        let id: uuid::Uuid = json_body(res).await["id"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
+        .bind(act_id)
+        .bind(topic.parse::<uuid::Uuid>().unwrap())
+        .bind(a.classroom.parse::<uuid::Uuid>().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO summaries (conversation_id,status,stance,reasons,claim,claim_group_id,completed_at) VALUES ($1,'ready','立場','理由','主張',$2,now())")
             .bind(id).bind(group).execute(&pool).await.unwrap();
     }

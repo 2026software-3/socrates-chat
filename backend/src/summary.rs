@@ -139,16 +139,16 @@ async fn on_conversation_completed(
 struct SummarySource {
     owner: Uuid,
     title: String,
-    description: String,
+    guiding_questions: Vec<String>,
     activity_id: Option<Uuid>,
     language: String,
     classroom: Option<Uuid>,
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let (SummarySource { owner, title, description, activity_id, language, classroom }, turns) = tokio::try_join!(
+    let (SummarySource { owner, title, guiding_questions, activity_id, language, classroom }, turns) = tokio::try_join!(
         sqlx::query_as::<_, SummarySource>(
-            "SELECT user_id AS owner, title, description, activity_id, language, classroom_id AS classroom
+            "SELECT user_id AS owner, title, COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions, activity_id, language, classroom_id AS classroom
              FROM conversations WHERE id = $1"
         )
         .bind(id)
@@ -156,7 +156,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
         load_messages_for(state, id),
     )?;
     let req = AiRequest {
-        system: build_summary_prompt(&title, &description, &language),
+        system: build_summary_prompt(&title, &guiding_questions, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: format_transcript(&turns, &language),

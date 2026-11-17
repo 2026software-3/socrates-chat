@@ -283,7 +283,7 @@ mod tests {
         for stage in 1..=3 {
             let prompt = build_system_prompt(&PromptContext {
                 title: "電車難題",
-                description: "你會拉桿嗎？",
+                guiding_questions: &["你會拉桿嗎？".to_string()],
                 stage,
                 turn: 18,
                 wrap_up_turn: 16,
@@ -292,7 +292,7 @@ mod tests {
             assert_eq!(masked(&prompt), prompt);
         }
         for prompt in [
-            build_summary_prompt("電車難題", "你會拉桿嗎？", "zh-TW"),
+            build_summary_prompt("電車難題", &["你會拉桿嗎？".to_string()], "zh-TW"),
             build_group_assign_prompt("電車難題", &["拉桿".to_string()], "zh-TW"),
             build_regroup_prompt(
                 "電車難題",

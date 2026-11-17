@@ -66,9 +66,20 @@ async fn existing_database_upgrades_without_losing_conversations(pool: PgPool) {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let response = start_topic(&app, Some(&actors.student), &activity, &first).await;
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let original = json_body(response).await["id"].as_str().unwrap().to_owned();
+    // 升級前的資料庫（< 20261107000100）還沒有 topics.guiding_questions，建立對話的 API 會讀它，
+    // 依 migration 測試慣例，升級前的對話以 raw SQL 插入。
+    let original: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
+         SELECT u.id, $1, $2, $3, '第一題', '', 'zh-TW' FROM users u WHERE u.email = 'student@example.com'
+         RETURNING id",
+    )
+    .bind(activity.parse::<uuid::Uuid>().unwrap())
+    .bind(first.parse::<uuid::Uuid>().unwrap())
+    .bind(actors.classroom.parse::<uuid::Uuid>().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let original = original.to_string();
 
     all.run(&pool).await.unwrap();
     all.run(&pool).await.unwrap();

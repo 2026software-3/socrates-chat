@@ -22,7 +22,6 @@ async fn create_topic_with_guiding_questions_and_default(pool: PgPool) {
             Some(&a.teacher),
             Some(json!({
                 "title": "人工智慧與道德主體",
-                "category": "科技倫理",
                 "guiding_questions": [
                     "AI 是否具備感受痛苦的能力？",
                     "如果 AI 做出道德抉擇，責任該歸屬於誰？"
@@ -49,8 +48,7 @@ async fn create_topic_with_guiding_questions_and_default(pool: PgPool) {
             "/api/topics",
             Some(&a.teacher),
             Some(json!({
-                "title": "笛卡兒的懷疑論",
-                "category": "知識論"
+                "title": "笛卡兒的懷疑論"
             })),
         ),
     )
