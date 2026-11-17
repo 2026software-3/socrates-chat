@@ -19,10 +19,11 @@ services:
     build: !reset null
     restart: unless-stopped
     environment:
-      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象。2026-11-17 起是 https://socrates.ray-dev.stream：
-      # Cloudflare Tunnel（cloudflared → proxy → app），tunnel 與 ray-dev.stream 的 DNS 在同一個 Cloudflare 帳號。
-      # （曾用 Windows 端 Tailscale Funnel 經 tailnet 轉入 raynb.tail5fc9fe.ts.net；tunnel 不能用學校帳號下的 ntnu.cc，
-      #  因為 cfargotunnel.com 只代理同一帳號內的 DNS 記錄）
+      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象（只認這一個）。2026-11-17 起是 https://se3socrateschat.ntnu.cc：
+      # 學校 DNS 的 CNAME → socrates.ray-dev.stream（Cloudflare for SaaS 自訂主機名稱，fallback origin 也是它）
+      # → Cloudflare Tunnel（cloudflared → proxy → app）。tunnel 與 ray-dev.stream 在同一個 Cloudflare 帳號；
+      # tunnel 不能直接用學校帳號下的 ntnu.cc（cfargotunnel.com 只代理同一帳號內的 DNS 記錄），所以才用 SaaS 自訂主機名稱。
+      # 備用網址 https://socrates.ray-dev.stream 也能到同一個服務，但寫入請求會因 Origin 不符被 CSRF 擋掉。
       APP_BASE_URL: ${APP_PUBLIC_URL:?設定 .env 的 APP_PUBLIC_URL}
       COOKIE_SECURE: "true"
       # compose 網段（nginx、cloudflared）＋ Funnel 入口節點的 tailnet 位址（/32），.env 的 TRUSTED_PROXIES 覆寫；
