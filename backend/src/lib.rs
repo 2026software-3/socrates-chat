@@ -88,6 +88,7 @@ pub mod summary_translation;
 pub mod tasks;
 pub mod teacher_key_crypto;
 pub mod teacher_key_store;
+pub mod teacher_key_usage;
 pub mod teacher_keys;
 pub mod topic_dimensions;
 pub(crate) mod user_limit;
