@@ -248,6 +248,7 @@ async fn produce(
     state: &AppState,
     input: &Transcript,
     language: &str,
+    classroom: Option<Uuid>,
 ) -> Result<(String, Value), GenerationFailure> {
     let fail = |stage, error| GenerationFailure { stage, error };
     let model_input =
@@ -262,9 +263,14 @@ async fn produce(
         schema,
         name: "main_argument_tree".into(),
     };
+    // 教室內的對話只用教室建立者的 key（F-40.5）
+    let route = state
+        .ai_for(classroom)
+        .await
+        .map_err(|error| fail(Stage::Provider, error))?;
     let completion = tokio::time::timeout(
         state.config.argument_tree_timeout,
-        state.ai.complete_json(request),
+        route.ai.complete_json(request),
     )
     .await
     .map_err(|_| fail(Stage::Provider, AiError::classified(Failure::Timeout)))?
@@ -291,7 +297,7 @@ async fn generate(
 ) -> Result<(), sqlx::Error> {
     let activity = AiActivity::new("argument_tree", Some(charge.user), classroom);
     let started = Instant::now();
-    let (outcome, trace) = diagnostics::traced(produce(state, &input, &language)).await;
+    let (outcome, trace) = diagnostics::traced(produce(state, &input, &language, classroom)).await;
     match outcome {
         Ok((model, tree)) => {
             activity.record(state, Some(&model), 0, started, None, &trace);

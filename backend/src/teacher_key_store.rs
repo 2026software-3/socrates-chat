@@ -89,6 +89,8 @@ macro_rules! columns {
 pub struct UsableKey {
     pub id: Uuid,
     pub status: KeyStatus,
+    /// 進入目前狀態的時間；`Ok` 時為 `None`。
+    pub status_at: Option<DateTime<Utc>>,
     secret: String,
 }
 
@@ -222,8 +224,9 @@ pub async fn keys_for(
     owner: Uuid,
     provider: &str,
 ) -> Result<Vec<UsableKey>, sqlx::Error> {
-    let rows: Vec<(Uuid, Vec<u8>, String, String)> = sqlx::query_as(
-        "SELECT id, ciphertext, encryption_key_id, status FROM teacher_api_keys
+    type SecretRow = (Uuid, Vec<u8>, String, String, Option<DateTime<Utc>>);
+    let rows: Vec<SecretRow> = sqlx::query_as(
+        "SELECT id, ciphertext, encryption_key_id, status, status_at FROM teacher_api_keys
           WHERE owner_id = $1 AND provider = $2 ORDER BY created_at, id",
     )
     .bind(owner)
@@ -233,10 +236,11 @@ pub async fn keys_for(
     Ok(rows
         .into_iter()
         .filter_map(
-            |(id, ct, key_id, status)| match cipher.decrypt(&key_id, &ct) {
+            |(id, ct, key_id, status, status_at)| match cipher.decrypt(&key_id, &ct) {
                 Ok(secret) => Some(UsableKey {
                     id,
                     status: KeyStatus::parse(&status),
+                    status_at,
                     secret,
                 }),
                 Err(_) => {
@@ -285,6 +289,7 @@ pub async fn get_secret(
                 UsableKey {
                     id,
                     status: KeyStatus::parse(&status),
+                    status_at: None,
                     secret,
                 },
             )

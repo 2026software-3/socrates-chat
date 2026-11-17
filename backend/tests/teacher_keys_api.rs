@@ -48,6 +48,7 @@ fn build(pool: PgPool, with_cipher: bool, v: Arc<FakeVerifier>, limit: Option<us
     let mut config = test_config();
     if with_cipher {
         config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+        config.classroom_ai_routing = true;
     }
     let mut state = AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
         .with_key_verifier(v);

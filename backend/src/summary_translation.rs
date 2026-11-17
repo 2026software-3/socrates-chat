@@ -66,6 +66,7 @@ pub async fn process_batch(state: &AppState, retry_delay: Duration) -> Result<us
 struct Job {
     conversation_id: Uuid,
     source_language: String,
+    classroom: Option<Uuid>,
     language: String,
     stance: String,
     reasons: String,
@@ -78,7 +79,7 @@ async fn process_next(state: &AppState, retry_delay: Duration) -> Result<bool, s
     let lease = GOOGLE_TIMEOUT + state.config.ai_total_timeout + Duration::from_secs(5);
     let job: Option<Job> = sqlx::query_as(
         "WITH next_job AS (
-             SELECT t.conversation_id, c.language AS source_language, t.language, s.stance, s.reasons
+             SELECT t.conversation_id, c.language AS source_language, c.classroom_id AS classroom, t.language, s.stance, s.reasons
              FROM summary_translations t
              JOIN summaries s ON s.conversation_id = t.conversation_id
              JOIN conversations c ON c.id = t.conversation_id
@@ -90,7 +91,7 @@ async fn process_next(state: &AppState, retry_delay: Duration) -> Result<bool, s
          SET attempt_token = $1, available_at = clock_timestamp() + make_interval(secs => $2)
          FROM next_job j
          WHERE t.conversation_id = j.conversation_id AND t.language = j.language
-         RETURNING j.conversation_id, j.source_language, j.language, j.stance, j.reasons",
+         RETURNING j.conversation_id, j.source_language, j.classroom, j.language, j.stance, j.reasons",
     )
     .bind(token)
     .bind(lease.as_secs_f64())
@@ -103,7 +104,9 @@ async fn process_next(state: &AppState, retry_delay: Duration) -> Result<bool, s
     let fields = [&*stance, &*reasons];
     let result = match via_google(state, &job.source_language, &job.language, fields).await {
         Some(translation) => Some(translation),
-        None => via_ai(state, &job.language, fields).await.ok(),
+        None => via_ai(state, &job.language, fields, job.classroom)
+            .await
+            .ok(),
     };
     let (stance, reasons) = result.map_or((None, None), |result| {
         (Some(result.stance), Some(result.reasons))
@@ -143,6 +146,7 @@ pub(crate) async fn via_ai(
     state: &AppState,
     target: &str,
     fields: [&str; 2],
+    classroom: Option<Uuid>,
 ) -> Result<TranslatedSummary, AiError> {
     let [stance, reasons] = fields;
     let req = AiRequest {
@@ -155,7 +159,9 @@ pub(crate) async fn via_ai(
             content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+    // 教室內的對話只用教室建立者的 key（F-40.5）
+    let route = state.ai_for(classroom).await?;
+    let raw = collect_background(route.ai.as_ref(), req, state.config.ai_total_timeout).await?;
     let result = parse_summary_translation(&raw).ok_or_else(AiError::invalid_output)?;
     preserves_tokens(fields, &result)
         .then_some(result)

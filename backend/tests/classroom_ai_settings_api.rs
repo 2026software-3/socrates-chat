@@ -63,6 +63,7 @@ fn build(pool: PgPool, cipher: bool, limit: Option<usize>) -> (Router, Arc<FakeM
     let mut config = test_config();
     if cipher {
         config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+        config.classroom_ai_routing = true;
     }
     let models = Arc::new(FakeModels::default());
     let mut state = AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))

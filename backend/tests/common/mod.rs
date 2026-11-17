@@ -106,6 +106,7 @@ pub fn test_config() -> Config {
         demo_mode: false,
         smtp: None,
         teacher_key_cipher: None,
+        classroom_ai_routing: false,
     }
 }
 

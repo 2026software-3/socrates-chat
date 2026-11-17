@@ -113,6 +113,8 @@ pub enum Failure {
     ServiceError,
     /// 供應商正常回應，但內容無法解析；不算供應商失敗
     InvalidOutput,
+    /// 教室的 AI 服務無法使用（沒有可用的教師 key、建立者停用或不再是教師等），不退回系統 key（S-03.1）
+    ClassroomUnavailable,
     InvalidCredentials,
     AccountDisabled,
     AccountLocked,
@@ -128,6 +130,7 @@ impl Failure {
             Self::RateLimited => "rate_limited",
             Self::ServiceError => "service_error",
             Self::InvalidOutput => "invalid_output",
+            Self::ClassroomUnavailable => "classroom_ai_unavailable",
             Self::InvalidCredentials => "invalid_credentials",
             Self::AccountDisabled => "account_disabled",
             Self::AccountLocked => "account_locked",
