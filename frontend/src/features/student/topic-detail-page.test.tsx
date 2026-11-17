@@ -14,7 +14,6 @@ const topic = (over: Partial<Topic> = {}): Topic => ({
   id: 'top-1',
   title: 'Trolley problem',
   description: '',
-  category: 'Ethics',
   is_active: true,
   guiding_questions: ['Who is responsible?', 'Does intent matter?'],
   ...over,
@@ -37,11 +36,10 @@ function renderDetail(route = '/topics/top-1') {
 }
 
 describe('student topic detail page', () => {
-  it('shows the title, category, guiding questions and a start button', async () => {
+  it('shows the title, guiding questions and a start button', async () => {
     mockCatalog([topic()])
     renderDetail()
     expect(await screen.findByRole('heading', { level: 1, name: 'Trolley problem' })).toBeInTheDocument()
-    expect(screen.getByText('Ethics')).toBeInTheDocument()
     const section = screen.getByRole('region', { name: '引導問題' })
     const items = within(section).getAllByRole('listitem')
     expect(items.map((li) => li.textContent)).toEqual(['Who is responsible?', 'Does intent matter?'])
