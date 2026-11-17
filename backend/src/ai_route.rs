@@ -15,7 +15,11 @@
 //! 日誌與診斷事件不含 key 或對話原文。
 
 use std::{
-    sync::{Arc, OnceLock, atomic::Ordering},
+    collections::HashSet,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicI16, Ordering},
+    },
     time::Duration,
 };
 
@@ -162,6 +166,8 @@ impl AppState {
             endpoint: self.route_endpoint.clone(),
             targets,
             client: client()?,
+            failed: Mutex::default(),
+            settled: AtomicI16::new(0),
         };
         Ok(Route {
             ai: Arc::new(MaskingAi::new(Arc::new(routed))),
@@ -214,6 +220,10 @@ struct Routed {
     endpoint: Option<String>,
     targets: Vec<Target>,
     client: &'static GenaiClient,
+    /// 這次解析中已確定不能用的 key；同一次回覆的重試不再打擾它們
+    failed: Mutex<HashSet<Uuid>>,
+    /// 已成功換用的備援位置；之後的呼叫從這裡開始
+    settled: AtomicI16,
 }
 
 impl Routed {
@@ -241,8 +251,17 @@ impl Routed {
         }
     }
 
+    /// 這個目標或 key 在這次解析中是否還不值得試。
+    fn skip(&self, target: &Target, key: Option<&UsableKey>) -> bool {
+        target.position < self.settled.load(Ordering::Relaxed)
+            || key.is_some_and(|k| self.failed.lock().is_ok_and(|f| f.contains(&k.id)))
+    }
+
     /// 這把 key 失敗了：記錄狀態並換下一把。
     async fn mark(&self, key: &UsableKey, status: KeyStatus) {
+        if let Ok(mut failed) = self.failed.lock() {
+            failed.insert(key.id);
+        }
         if let Err(e) = keys::set_status(&self.pool, key.id, status).await {
             tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record key status");
         }
@@ -257,6 +276,7 @@ impl Routed {
 
     /// 這個目標成功了：若是備援，記回對話，之後同場都從這裡開始。
     async fn settled_on(&self, target: &Target) {
+        self.settled.fetch_max(target.position, Ordering::Relaxed);
         if target.position == 0 {
             return;
         }
@@ -320,7 +340,13 @@ impl AiProvider for Routed {
         // 先試主模型的每把 key，全部因限流、額度用盡或失效不能用，才換下一個備援（F-40.6）；
         // 只在尚未送出任何內容時換，其餘錯誤照原樣回給呼叫端。
         for target in &self.targets {
+            if self.skip(target, None) {
+                continue;
+            }
             for key in &target.keys {
+                if self.skip(target, Some(key)) {
+                    continue;
+                }
                 let gp = self.provider_for(target, key);
                 let guard = self.guard(target, key, &gp);
                 let mut stream = match gp.stream_chat(req.clone()).await {
@@ -370,7 +396,13 @@ impl AiProvider for Routed {
 
     async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
         for target in &self.targets {
+            if self.skip(target, None) {
+                continue;
+            }
             for key in &target.keys {
+                if self.skip(target, Some(key)) {
+                    continue;
+                }
                 let gp = self.provider_for(target, key);
                 let _guard = self.guard(target, key, &gp);
                 match gp.complete_json(req.clone()).await {

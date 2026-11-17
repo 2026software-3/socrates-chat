@@ -143,6 +143,9 @@ async fn world(pool: PgPool) -> World {
     let mut config = test_config();
     config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
     config.classroom_ai_routing = true;
+    // 換 key、換備援都要多幾次往返；預設的 200 毫秒在平行測試下會逾時而觸發重試
+    config.ai_first_token_timeout = Duration::from_secs(5);
+    config.ai_total_timeout = Duration::from_secs(10);
     // 系統 key 路徑：若被呼叫就會回覆「SYSTEM」，測試用它確認有沒有退回系統 key
     let system = FakeAi::with((0..10).map(|_| Script::Reply(vec!["SYSTEM"])).collect());
     let app = app(
