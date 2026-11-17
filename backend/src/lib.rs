@@ -42,6 +42,7 @@ pub mod accounts;
 pub mod achievement_admin;
 pub mod achievements;
 pub mod activity_store;
+pub mod admin_teacher_keys;
 pub mod ai;
 pub mod ai_providers;
 mod ai_route;
@@ -291,6 +292,7 @@ pub fn app(state: AppState) -> Router {
         .merge(demo::routes())
         .merge(ai_usage::routes())
         .merge(teacher_keys::routes())
+        .merge(admin_teacher_keys::routes())
         .merge(usage_api::routes())
         .merge(announcements::routes())
         .merge(student_notifications::routes())

@@ -29,10 +29,11 @@
 - `GET /api/me` 回傳 `can_change_password`：帳號有內建密碼且不是示範模式的示範帳號時為 `true`，前端依此決定是否在個人設定顯示「更改密碼」。`POST /api/auth/change-password` 對示範模式的示範帳號回 `403 demo_account`；目前密碼連續輸錯 5 次回 `429 too_many_attempts`（鎖定 15 分鐘，只針對更改密碼，不影響登入），成功更改會記稽核 `change_password`（S-18）。
 - `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生、教師與管理者另可用同一 PATCH 修改 `display_name`（去除頭尾空白後上限 30 個 Unicode 字元、不可含控制字元與行／段落分隔字元，違反回 `400 invalid_display_name`；`null` 或空白清除：學生回到匯入的姓名；教師與管理者暫時顯示電子郵件，Google 帳號在下次 Google 登入時重新取自 Google）；沒有任何角色的帳號送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
 
-## 學生站內通知（F-30.6）
+## 站內通知（F-30.6、F-40.9）
 
-- 學生登入後只取得自己尚未讀取的通知，由最早建立的通知開始顯示。學號更正通知只提供識別碼、類型與更正時間，前端依介面語言顯示。
+- 學生與教師登入後只取得自己尚未讀取的通知，由最早建立的通知開始顯示。學號更正通知只提供識別碼、類型與更正時間，前端依介面語言顯示。
 - 關閉通知會標記已讀。對同一筆自己的通知重送標記仍會成功，保留首次已讀時間。不存在或屬於他人的通知一律回 `404 not_found`。
+- 教師的通知類型 `teacher_api_key_deleted`：管理者刪除了該教師的 API key（F-40.9），同樣只有識別碼、類型與時間。只有管理者身分與名單外帳號呼叫通知端點回 `403`，未登入 `401`。
 - 通知沒有到期日。未讀通知跨登入保留，成功標記已讀後不再出現在未讀清單。
 
 ## 管理（管理者）
@@ -174,6 +175,13 @@
 - 錯誤碼：`invalid_provider`、`invalid_model`（空白或超過 200 字元）、`too_many_fallbacks`、`model_auth_failed`、`model_not_found`、`model_streaming_unsupported`、`model_structured_output_unsupported`、`model_check_failed`；與請求中某一項有關的錯誤帶 `error.target`（`primary`、`fallback_1`…`fallback_3`）。封存的教室不能修改（`409 classroom_archived`）；沒設定加密金鑰回 `503 teacher_keys_unavailable`。
 - 權限：未登入 `401`；學生、名單外帳號、只有管理者身分的人 `403`（管理者能否檢視規格未明，預設不開放，待確認）；其他教師與不存在的教室相同 `404`。
 - `GET /api/classrooms/{id}/ai-provider`：教室名單內的學生，回 `{ provider: { id, name } | null }`，供顯示「本教室的 AI 由 {供應商} 提供」；尚未設定或過渡中為 `null`，看不到模型 ID、備援或 key。不在該教室名單內的學生與不存在相同 `404`。
+
+### 管理者檢視與刪除教師 key（F-40.9，S-03.1）
+
+只有管理者；未登入 `401`，教師、學生與名單外帳號 `403`。管理者**看不到用量與完整 key，也不能新增或更換**（這些路徑只接受 GET／DELETE，其他方法回 `405`）。
+
+- `GET /api/admin/teacher-keys`：全部教師的 key `[{ id, owner_email, provider, mask, status, status_at, created_at }]`，依教師電子郵件排序；不含用量、密文與完整 key。
+- `DELETE /api/admin/teacher-keys/{id}`：`204`；key 與它的用量紀錄一併刪除（教室統計扣除）。同一個交易內通知該教師（站內通知 `teacher_api_key_deleted`，只存類型與時間）並寫稽核 `teacher_key_deleted`（操作者、時間、受影響的教師帳號），**不記 key、遮蔽識別與用量**。不存在或已刪除回 `404 not_found`；`id` 不是 UUID 回 `400`。
 
 ## 教師檢視
 

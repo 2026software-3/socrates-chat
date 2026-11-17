@@ -204,14 +204,17 @@ pub async fn delete(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<bool, sqlx::
 }
 
 /// 管理者刪除任一把 key（F-40.9）：回傳被刪項目的公開資訊，供通知與稽核；不存在回 `None`。
-pub async fn delete_any(pool: &PgPool, id: Uuid) -> Result<Option<TeacherKey>, sqlx::Error> {
+pub async fn delete_any(
+    db: impl sqlx::PgExecutor<'_>,
+    id: Uuid,
+) -> Result<Option<TeacherKey>, sqlx::Error> {
     let row: Option<Row> = sqlx::query_as(concat!(
         "DELETE FROM teacher_api_keys WHERE id = $1 RETURNING ",
         columns!(),
         ""
     ))
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await?;
     Ok(row.map(Into::into))
 }

@@ -84,7 +84,12 @@ async fn only_the_recipient_can_read_and_dismiss_an_unread_notification(pool: Pg
         "not_found",
     )
     .await;
-    for cookie in [&a.teacher, &a.admin, &a.outsider] {
+    // 教師也會收到站內通知（F-40.9），但看不到學生的；只有管理者身分與名單外帳號不能用
+    assert_eq!(
+        json_body(send(&app, get(PATH, Some(&a.teacher))).await).await,
+        json!([])
+    );
+    for cookie in [&a.admin, &a.outsider] {
         assert_eq!(
             send(&app, get(PATH, Some(cookie))).await.status(),
             StatusCode::FORBIDDEN
