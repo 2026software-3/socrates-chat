@@ -140,9 +140,14 @@ async fn chat_prompt_follows_the_current_guiding_questions_after_the_teacher_edi
     assert_eq!(res.status(), StatusCode::OK);
     student_says(&f.app, &f.actors, &f.conversation, "我會拉桿").await;
 
+    // 改引導問題也會讓題目維度重新產生，那次 AI 呼叫排在前面；只看對話提示那一筆。
     let requests = f.ai.requests.lock().unwrap();
-    assert!(requests[0].system.contains("新問題"));
-    assert!(!requests[0].system.contains("舊問題"));
+    let chat = requests
+        .iter()
+        .find(|r| r.system.contains("蘇格拉底"))
+        .expect("沒有送出對話提示");
+    assert!(chat.system.contains("新問題"));
+    assert!(!chat.system.contains("舊問題"));
 }
 
 #[sqlx::test]
@@ -162,7 +167,9 @@ async fn summary_prompt_lists_the_guiding_questions_and_not_the_description(pool
 }
 
 #[sqlx::test]
-async fn argument_tree_input_carries_guiding_questions_and_not_the_description(pool: PgPool) {
+async fn argument_tree_input_carries_neither_the_description_nor_the_guiding_questions(
+    pool: PgPool,
+) {
     let f = fixture(
         &pool,
         &["問題甲", "問題乙"],
@@ -185,10 +192,13 @@ async fn argument_tree_input_carries_guiding_questions_and_not_the_description(p
     }
 
     let requests = f.ai.requests.lock().unwrap();
+    // 論證樹只從學生的發言整理論點，送給模型的輸入本來就只有標題與逐輪對話（沒有題目說明），
+    // 引導問題同樣不送進去，免得模型把引導問題當成學生的論點來源。
     let content = &requests[1].messages[0].content;
     let payload: Value = serde_json::from_str(content).unwrap();
-    assert_eq!(payload["guiding_questions"], json!(["問題甲", "問題乙"]));
+    assert!(payload.get("guiding_questions").is_none());
     assert!(!content.contains(OLD_DESCRIPTION));
+    assert!(!content.contains("問題甲"));
 }
 
 #[sqlx::test]

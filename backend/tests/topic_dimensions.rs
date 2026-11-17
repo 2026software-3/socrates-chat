@@ -312,3 +312,76 @@ async fn changing_the_topic_text_discards_unlocked_dimensions_only(pool: PgPool)
     let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
     assert!(view["dimensions"].is_array());
 }
+
+#[sqlx::test]
+async fn generation_reads_the_guiding_questions_not_the_old_description(pool: PgPool) {
+    let ai = FakeAi::with(vec![Script::Reply(vec![GENERATED])]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let actors = seed_actors(&app).await;
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/topics",
+            Some(&actors.teacher),
+            Some(json!({
+                "title": "水資源",
+                "description": "舊說明DESC不該再出現",
+                "guiding_questions": ["問題甲", "問題乙"]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    settle(&ai, 1).await;
+
+    let requests = ai.requests.lock().unwrap();
+    let content = &requests[0].messages[0].content;
+    let payload: Value = serde_json::from_str(content).unwrap();
+    assert_eq!(payload["guiding_questions"], json!(["問題甲", "問題乙"]));
+    assert!(!content.contains("舊說明DESC"));
+}
+
+#[sqlx::test]
+async fn changing_guiding_questions_discards_unlocked_dimensions_and_regenerates(pool: PgPool) {
+    // 第一次產生成功（其後的翻譯請求用完腳本而失敗，與上一個測試相同），改題目後的重新產生一律失敗，
+    // 這樣只需看「舊維度被丟掉」與「重新產生的請求帶新的引導問題」。
+    let ai = FakeAi::with(vec![
+        Script::Reply(vec![GENERATED]),
+        Script::Fail,
+        Script::Fail,
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let actors = seed_actors(&app).await;
+    let id = create(&app, &actors.teacher).await;
+    settle(&ai, 3).await;
+    let path = format!("/api/topics/{id}/dimensions");
+    let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
+    assert!(view["dimensions"].is_array());
+
+    let response = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/topics/{id}"),
+            Some(&actors.teacher),
+            Some(json!({"guiding_questions": ["新的引導問題"]})),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    settle(&ai, 5).await;
+
+    let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
+    assert!(
+        view["dimensions"].is_null(),
+        "改了引導問題，沒鎖定的舊維度要丟掉"
+    );
+    let requests = ai.requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.messages[0].content.contains("新的引導問題")),
+        "改了引導問題就重新產生維度，請求要帶新的引導問題"
+    );
+}

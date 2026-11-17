@@ -38,7 +38,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for case in cases {
         let raw = collect_background(
             &provider,
-            build_request(&case.title, &case.description, &case.language),
+            build_request(
+                &case.title,
+                std::slice::from_ref(&case.description),
+                &case.language,
+            ),
             limit,
         )
         .await
@@ -90,7 +94,11 @@ mod tests {
         );
         for case in cases {
             assert!(case.coverage.len() >= 4);
-            let request = build_request(&case.title, &case.description, &case.language);
+            let request = build_request(
+                &case.title,
+                std::slice::from_ref(&case.description),
+                &case.language,
+            );
             assert!(request.system.contains(PROMPT_VERSION));
             assert!(request.system.contains("Avoid synonyms"));
             assert!(request.system.contains("Score 0"));
