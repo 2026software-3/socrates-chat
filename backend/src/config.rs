@@ -80,6 +80,7 @@ pub struct Config {
     pub demo_mode: bool,
     /// 客訴通知信的 SMTP 設定（S-17.3）；沒設定（缺主機、寄件人或收件信箱）就是 `None`，客訴照常保存、寄信狀態為 `skipped`。
     pub smtp: Option<crate::mail::SmtpConfig>,
+    pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
 }
 
 #[derive(Debug)]
@@ -226,6 +227,13 @@ impl Config {
     }
 
     pub fn from_env() -> Result<Self, ConfigError> {
+        let monitored_services = match env::var("MONITORED_SERVICES") {
+            Ok(value) => crate::service_monitor::MonitoredService::parse(&value)?,
+            Err(env::VarError::NotPresent) => Vec::new(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError("MONITORED_SERVICES must be UTF-8".into()));
+            }
+        };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
@@ -329,6 +337,7 @@ impl Config {
             request_timeout: Duration::from_secs(request_timeout_secs),
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             smtp: crate::mail::SmtpConfig::from_env()?,
+            monitored_services,
             app_base_url,
         })
     }

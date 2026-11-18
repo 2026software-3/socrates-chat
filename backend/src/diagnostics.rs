@@ -714,10 +714,17 @@ fn diagnostics_unavailable() -> ApiError {
 }
 
 pub async fn purge_expired(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    sqlx::query("DELETE FROM diagnostic_events WHERE occurred_at < now() - interval '720 hours'")
-        .execute(pool)
-        .await
-        .map(|result| result.rows_affected())
+    let (diagnostics, services) = tokio::join!(
+        sqlx::query(
+            "DELETE FROM diagnostic_events WHERE occurred_at < now() - interval '720 hours'"
+        )
+        .execute(pool),
+        sqlx::query(
+            "DELETE FROM service_status_events WHERE occurred_at < now() - interval '720 hours'"
+        )
+        .execute(pool),
+    );
+    Ok(diagnostics?.rows_affected() + services?.rows_affected())
 }
 
 pub fn spawn_retention(pool: PgPool) {
