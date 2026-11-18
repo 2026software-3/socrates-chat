@@ -243,12 +243,15 @@ pub(crate) async fn put_settings(
             "驗證太頻繁，請稍後再試",
         ));
     }
-    for (e, key) in entries.iter().zip(&secrets) {
+    // 各模型同時驗證（最多四個，各自有逾時）；失敗時回報清單中第一個不通過的
+    let checks = futures_util::future::join_all(entries.iter().zip(&secrets).map(|(e, key)| {
         state
             .model_verifier
             .verify_model(e.provider, &e.model, key.secret())
-            .await
-            .map_err(|reason| check_error(reason, e.target))?;
+    }))
+    .await;
+    for (e, check) in entries.iter().zip(checks) {
+        check.map_err(|reason| check_error(reason, e.target))?;
     }
 
     let mut it = entries.iter();

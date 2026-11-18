@@ -463,7 +463,20 @@ fn failure_table() -> Vec<FailureCase> {
     let plain = json!({"error": {"message": PROVIDER_BODY}}).to_string();
     let quota =
         json!({"error": {"code": "insufficient_quota", "message": PROVIDER_BODY}}).to_string();
+    // Gemini 對無效或已撤銷的 key 回 400 INVALID_ARGUMENT，原因在 details[].reason
+    let gemini_bad_key = json!({"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": PROVIDER_BODY,
+        "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID"}]}})
+    .to_string();
+    // Anthropic 容量不足：529 overloaded_error
+    let overloaded =
+        json!({"type": "error", "error": {"type": "overloaded_error", "message": PROVIDER_BODY}})
+            .to_string();
     vec![
+        case(400, vec![], &gemini_bad_key, Failure::InvalidKey, None),
+        case(400, vec![], &plain, Failure::ServiceError, None),
+        case(529, vec![], &overloaded, Failure::RateLimited, None),
+        case(529, vec![], &plain, Failure::RateLimited, None),
+        case(503, vec![], &overloaded, Failure::RateLimited, None),
         case(401, vec![], &plain, Failure::InvalidKey, None),
         case(403, vec![], &plain, Failure::InvalidKey, None),
         case(402, vec![], &plain, Failure::QuotaExceeded, None),

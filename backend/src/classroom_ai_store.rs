@@ -107,6 +107,14 @@ pub async fn set(
         .execute(&mut *tx)
         .await?;
     }
+    // 備援清單換了：各場對話記下的備援位置已對不上新清單，一律從主模型重新開始（F-40.6）
+    sqlx::query(
+        "UPDATE conversations SET ai_fallback_position = 0
+          WHERE classroom_id = $1 AND ai_fallback_position <> 0",
+    )
+    .bind(classroom)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
