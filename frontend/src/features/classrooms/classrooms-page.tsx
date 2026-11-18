@@ -192,6 +192,7 @@ export function ClassroomsPage() {
   }
 
   const visible = data?.filter((room) => room.is_archived === showArchived)
+  const missingModel = data?.filter((room) => room.ai_model_missing).length ?? 0
   const title = canCreate ? t('classrooms.title.teacher') : t('classrooms.title.admin')
 
   return (
@@ -207,6 +208,11 @@ export function ClassroomsPage() {
     >
       <p className="text-muted-foreground text-sm">{t('classrooms.intro')}</p>
       {archiveError ? <ErrorBlock error={archiveError} /> : null}
+      {canCreate && missingModel > 0 ? (
+        <Alert variant="destructive" role="alert">
+          <AlertTitle>{t('classrooms.noModel.banner', { count: missingModel })}</AlertTitle>
+        </Alert>
+      ) : null}
       {notice ? <p role="status" className="text-sm text-green-700 dark:text-green-400">{notice}</p> : null}
       <ArchiveViewToggle archived={showArchived} onChange={setShowArchived} />
       {loading && !data ? <LoadingBlock /> : null}
@@ -238,7 +244,14 @@ export function ClassroomsPage() {
                   <TableCell className="text-muted-foreground max-w-80 whitespace-normal">
                     {[classroom.year_label, classroom.description].filter(Boolean).join(' · ') || '—'}
                   </TableCell>
-                  <TableCell>{classroom.is_archived ? t('classrooms.archived') : t('classrooms.active')}</TableCell>
+                  <TableCell>
+                    {classroom.is_archived ? t('classrooms.archived') : t('classrooms.active')}
+                    {canCreate && classroom.ai_model_missing ? (
+                      <Link to={`${base}/${classroom.id}/ai`} className="text-destructive mt-1 block text-xs underline underline-offset-2">
+                        {t('classrooms.noModel.row')}
+                      </Link>
+                    ) : null}
+                  </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
                       <Button asChild variant="ghost">

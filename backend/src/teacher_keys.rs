@@ -58,7 +58,7 @@ fn teacher_only(cu: &CurrentUser) -> Result<(), ApiError> {
     }
 }
 
-fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
+pub(crate) fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
     state
         .config
         .teacher_key_cipher
@@ -70,7 +70,7 @@ fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
         ))
 }
 
-fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
+pub(crate) fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::not_found())
 }
 
@@ -78,7 +78,7 @@ const INVALID_KEY: ApiError = ApiError::bad_request("invalid_key", "API key 格�
 const DUPLICATE: ApiError = ApiError::conflict("key_already_exists", "這把 key 已經存在");
 
 /// 去掉前後空白後，必須非空、不超過上限，且不含空白或控制字元。
-fn clean_key(raw: &str) -> Result<&str, ApiError> {
+pub(crate) fn clean_key(raw: &str) -> Result<&str, ApiError> {
     let key = raw.trim();
     if key.is_empty()
         || key.chars().count() > MAX_KEY_CHARS
@@ -89,7 +89,7 @@ fn clean_key(raw: &str) -> Result<&str, ApiError> {
     Ok(key)
 }
 
-fn add_error(e: AddError) -> ApiError {
+pub(crate) fn add_error(e: AddError) -> ApiError {
     match e {
         AddError::Duplicate => DUPLICATE,
         AddError::Db(e) => e.into(),
@@ -99,9 +99,9 @@ fn add_error(e: AddError) -> ApiError {
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ProviderItem {
     #[schema(example = "openai")]
-    id: &'static str,
+    pub(crate) id: &'static str,
     #[schema(example = "OpenAI")]
-    name: &'static str,
+    pub(crate) name: &'static str,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -136,9 +136,9 @@ impl From<TeacherKey> for KeyItem {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewKey {
     #[schema(example = "openai")]
-    provider: String,
+    pub(crate) provider: String,
     #[schema(max_length = 512)]
-    key: String,
+    pub(crate) key: String,
 }
 
 /// 更換 key：供應商不可變更，要換供應商請新增另一把。
@@ -146,13 +146,13 @@ pub(crate) struct NewKey {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplaceKey {
     #[schema(max_length = 512)]
-    key: String,
+    pub(crate) key: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct KeyTestResult {
     /// `usable` 或 `connection_failed`；額度不足仍算可用，key 無效或已撤銷算連線失敗
-    result: &'static str,
+    pub(crate) result: &'static str,
 }
 
 /// 開放給教師的供應商名單。
@@ -342,17 +342,17 @@ pub(crate) async fn test_key(
 #[into_params(parameter_in = Query)]
 pub(crate) struct ModelsQuery {
     /// 供應商識別碼，例如 `openai`
-    provider: String,
+    pub(crate) provider: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ModelList {
-    provider: String,
+    pub(crate) provider: String,
     /// `ok`：`models` 是供應商目前列出的模型；`no_key`：這位教師沒有該供應商的 key；
     /// `unavailable`：有 key 但取不到清單（key 無效、供應商不提供清單、逾時等）。後兩者前端退回手動輸入。
-    status: &'static str,
+    pub(crate) status: &'static str,
     /// 只是輸入建議，不是白名單：儲存時仍以模型驗證為準。已排序、去重，最多 500 個。
-    models: Vec<String>,
+    pub(crate) models: Vec<String>,
 }
 
 /// 用自己的 key 向供應商取模型清單，給教室 AI 設定的模型欄位當輸入建議。
@@ -390,20 +390,27 @@ pub(crate) async fn list_models(
         ));
     }
     let keys = store::keys_for(&state.pool, cipher, cu.user.id, provider.id).await?;
-    let respond = |status, models| {
-        Json(ModelList {
-            provider: provider.id.to_owned(),
-            status,
-            models,
-        })
+    Ok(Json(model_list_for(&state, provider, &keys).await))
+}
+
+/// 依序用最多 `MODEL_LIST_MAX_KEYS` 把 key 向供應商取清單；教師與管理者（系統 key）共用。
+pub(crate) async fn model_list_for(
+    state: &AppState,
+    provider: &'static ai_providers::Provider,
+    keys: &[store::UsableKey],
+) -> ModelList {
+    let respond = |status, models| ModelList {
+        provider: provider.id.to_owned(),
+        status,
+        models,
     };
     if keys.is_empty() {
-        return Ok(respond("no_key", Vec::new()));
+        return respond("no_key", Vec::new());
     }
     for key in keys.iter().take(MODEL_LIST_MAX_KEYS) {
         if let Ok(models) = state.model_lister.list_models(provider, key.secret()).await {
-            return Ok(respond("ok", models));
+            return respond("ok", models);
         }
     }
-    Ok(respond("unavailable", Vec::new()))
+    respond("unavailable", Vec::new())
 }

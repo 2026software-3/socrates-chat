@@ -90,6 +90,8 @@ pub mod roster_store;
 pub mod student_notifications;
 pub mod summary;
 pub mod summary_translation;
+pub mod system_ai;
+pub mod system_key_store;
 pub mod tasks;
 pub mod teacher_key_crypto;
 pub mod teacher_key_store;
@@ -107,7 +109,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 12] = [
+pub const LONG_RUNNING_ROUTES: [&str; 15] = [
     "/api/topics/{id}/dimensions/retry",
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
@@ -130,6 +132,10 @@ pub const LONG_RUNNING_ROUTES: [&str; 12] = [
     "/api/classrooms/{id}/ai-settings",
     // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
     "/api/teacher/keys/models",
+    // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
+    "/api/admin/system-ai/model",
+    "/api/admin/system-ai/models",
+    "/api/admin/system-ai/keys/{id}/test",
 ];
 
 /// 所有 handler 共用的狀態。
@@ -319,6 +325,7 @@ pub fn app(state: AppState) -> Router {
         .merge(ai_usage::routes())
         .merge(teacher_keys::routes())
         .merge(admin_teacher_keys::routes())
+        .merge(system_ai::routes())
         .merge(usage_api::routes())
         .merge(announcements::routes())
         .merge(student_notifications::routes())
