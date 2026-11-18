@@ -2,8 +2,10 @@
 # 正式環境自動部署的主機端一次性設定（msi_cubi，需要 root）。互動式：每一步先說明、等你按 Enter 才做。
 #
 #   用法（在 msi_cubi 上，PR 已合進 deploy/msi-cubi-intel 之後）：
-#     sudo bash setup-prod-autodeploy.sh
-#
+#     sudo bash setup-prod-autodeploy.sh                 # 互動：每一步按 Enter 才做
+#   一行指令（從本機 repo 根目錄；token 由本機用 gh 產生，只要輸入一次 sudo 密碼，不再逐步詢問）：
+#     scp scripts/host/setup-prod-autodeploy.sh msi_cubi:~/ && ssh -t msi_cubi "sudo env ASSUME_YES=1 RUNNER_TOKEN=$(gh api -X POST repos/2026software-3/socrates-chat/actions/runners/registration-token --jq .token) bash ~/setup-prod-autodeploy.sh"
+#   token 約 1 小時失效、只用於註冊 runner，不寫進 repo；runner 已註冊時不會用到它。
 # 做的事（都可重跑，已完成的步驟會略過）：
 #   1. 建立 /var/lib/socrates-prod（deploy/msi-cubi-intel 的 root 擁有的 clone）與 /var/backups/socrates-prod
 #   2. 把 ~/socrates-intel/.env 複製成 /var/lib/socrates-prod/.env（root 0600）；缺 TEACHER_KEY_ENCRYPTION_KEYS 就產生一把
@@ -21,6 +23,12 @@ OLD_DIR="${OLD_DIR:-/home/ray520/socrates-intel}"
 RUNNER_USER="gha-runner-prod"
 RUNNER_HOME="/home/$RUNNER_USER"
 RUNNER_DIR="$RUNNER_HOME/actions-runner"
+# 固定 runner 版本並驗證 SHA256（與 staging 的 runner 相同；升級時兩個值一起改）
+RUNNER_VERSION="2.338.2"
+RUNNER_SHA256="baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
+# ASSUME_YES=1：不逐步詢問（給 `ssh -t ... 'sudo bash -s'` 這種 stdin 被腳本佔用的跑法）
+ASSUME_YES="${ASSUME_YES:-0}"
+RUNNER_TOKEN="${RUNNER_TOKEN:-}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "請用 sudo 執行：sudo bash $0" >&2
@@ -31,6 +39,7 @@ step() {
   echo
   echo "=== $1 ==="
   echo "$2"
+  [ "$ASSUME_YES" = 1 ] && return 0
   read -r -p "按 Enter 執行，輸入 s 略過，Ctrl-C 中止：" ans
   [ "$ans" != "s" ]
 }
@@ -77,23 +86,30 @@ if step "3/5 安裝包裝腳本與 sudoers" "install scripts/host/socrates-prod-
 fi
 
 if step "4/5 建立 runner 使用者並註冊 self-hosted runner" "使用者 $RUNNER_USER（不加入 docker 群組）、目錄 $RUNNER_DIR、label msi-cubi-prod。
-    需要註冊 token：到 https://github.com/2026software-3/socrates-chat/settings/actions/runners/new 複製 --token 後面那串（約 1 小時失效）。"; then
+    註冊 token 由 RUNNER_TOKEN 環境變數帶入（沒設且是互動模式才會詢問）；runner 版本固定 v$RUNNER_VERSION 並驗證 SHA256。"; then
   id "$RUNNER_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$RUNNER_USER"
   if id -nG "$RUNNER_USER" | grep -qw docker; then gpasswd -d "$RUNNER_USER" docker; fi
   if [ -x "$RUNNER_DIR/svc.sh" ] && [ -f "$RUNNER_DIR/.runner" ]; then
     echo "runner 已註冊，略過（要重新註冊請先刪除 $RUNNER_DIR/.runner）"
   else
-    read -r -p "貼上註冊 token：" TOKEN
-    case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo "不支援的架構" >&2; exit 1 ;; esac
-    ver="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)"
-    [ -n "$ver" ] || { echo "查不到 runner 版本" >&2; exit 1; }
+    if [ -z "$RUNNER_TOKEN" ]; then
+      [ "$ASSUME_YES" = 1 ] && { echo "非互動模式需要 RUNNER_TOKEN" >&2; exit 1; }
+      read -r -p "貼上註冊 token：" RUNNER_TOKEN
+    fi
+    [ "$(uname -m)" = x86_64 ] || { echo "固定的 runner 校驗碼只適用 x86_64" >&2; exit 1; }
     install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0755 "$RUNNER_DIR"
     tmp="$(mktemp -d)"
-    curl -fsSL -o "$tmp/runner.tgz" "https://github.com/actions/runner/releases/download/v$ver/actions-runner-linux-$arch-$ver.tar.gz"
-    tar -xzf "$tmp/runner.tgz" -C "$RUNNER_DIR"
+    echo "→ 下載 runner v$RUNNER_VERSION 並驗證 SHA256"
+    curl -fsSL -o "$tmp/runner.tgz" "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz"
+    echo "$RUNNER_SHA256  $tmp/runner.tgz" | sha256sum -c -
+    echo "→ 解壓縮（以 $RUNNER_USER 身份）"
+    chmod 0644 "$tmp/runner.tgz"
+    runuser -u "$RUNNER_USER" -- tar xzf "$tmp/runner.tgz" -C "$RUNNER_DIR"
     rm -rf "$tmp"
-    chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR"
-    runuser -u "$RUNNER_USER" -- bash -c "cd '$RUNNER_DIR' && ./config.sh --url '$REPO_URL' --token '$TOKEN' --labels msi-cubi-prod --name msi-cubi-prod --unattended --replace"
+    echo "→ 安裝 runner 的系統相依套件"
+    "$RUNNER_DIR/bin/installdependencies.sh"
+    echo "→ 註冊 runner（label: msi-cubi-prod）"
+    runuser -u "$RUNNER_USER" -- bash -c "cd '$RUNNER_DIR' && ./config.sh --url '$REPO_URL' --token '$RUNNER_TOKEN' --labels msi-cubi-prod --name msi-cubi-prod --unattended --replace"
     # 只在剛設定完、runner 還沒啟動時以 root 執行一次 svc.sh（它由 runner 使用者擁有，runner 上線後
     # 就不要再以 root 執行它，否則等於讓 runner 使用者取得 root）。之後用 systemctl 管理服務。
     (cd "$RUNNER_DIR" && ./svc.sh install "$RUNNER_USER" && ./svc.sh start)
