@@ -526,3 +526,47 @@ async fn every_read_falls_back_to_the_imported_name(pool: PgPool) {
     assert_eq!(list["total"], 1);
     assert_eq!(list["items"][0]["display_name"], "學生");
 }
+
+/// #548：摘要列表的姓名搜尋與逐字稿的 `student_name` 也要解析成匯入姓名。
+#[sqlx::test]
+async fn summaries_resolve_the_imported_name_in_search_and_transcript(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    sqlx::query("UPDATE users SET display_name = NULL WHERE email = 'student@example.com'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let conv = uuid::Uuid::from_u128(1);
+    sqlx::query(
+        "INSERT INTO conversations (id, user_id, classroom_id, title, status, ended_at)
+         SELECT $1, u.id, $2, 'Synthetic topic', 'ended', now() FROM users u WHERE u.email = 'student@example.com'",
+    )
+    .bind(conv)
+    .bind(a.classroom.parse::<uuid::Uuid>().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO summaries (conversation_id, status, stance, reasons, claim, completed_at) VALUES ($1, 'ready', 's', 'r', 'c', now())")
+        .bind(conv)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res = send(
+        &app,
+        get("/api/summaries?q=%E5%AD%B8%E7%94%9F", Some(&a.teacher)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let list = json_body(res).await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list["items"][0]["student_name"], "學生");
+
+    let res = send(
+        &app,
+        get(&format!("/api/summaries/{conv}/messages"), Some(&a.teacher)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["student_name"], "學生");
+}

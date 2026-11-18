@@ -178,8 +178,8 @@ async fn existing_student_can_join_another_class_without_a_new_account(pool: PgP
 
     assert_eq!(joined["added"], 1);
     assert_eq!(joined["credentials"], json!([]));
-    let row: (String, i64) = sqlx::query_as("SELECT COALESCE(u.display_name, u.imported_name), count(e.user_id) FROM users u JOIN enrollments e ON e.user_id = u.id WHERE u.student_id = '12345678A' GROUP BY u.id").fetch_one(&pool).await.unwrap();
-    assert_eq!(row, ("甲".into(), 2));
+    let row: (String, Option<String>, i64) = sqlx::query_as("SELECT u.imported_name, u.display_name, count(e.user_id) FROM users u JOIN enrollments e ON e.user_id = u.id WHERE u.student_id = '12345678A' GROUP BY u.id").fetch_one(&pool).await.unwrap();
+    assert_eq!(row, ("甲".into(), None, 2));
 }
 
 #[sqlx::test]

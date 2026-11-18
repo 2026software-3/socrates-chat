@@ -27,6 +27,14 @@ macro_rules! display_name_sql {
 }
 pub(crate) use display_name_sql;
 
+/// 寫入 Google 提供的名稱時的 `display_name` 值運算式（綁定參數固定為 `$3`）：
+/// 只補給沒有匯入姓名的帳號（教師、管理者）；學生保持原值，由 `display_name_sql!` 解析成匯入姓名。
+macro_rules! google_display_name_sql {
+    () => {
+        "CASE WHEN imported_name IS NULL THEN COALESCE(display_name, $3) ELSE display_name END"
+    };
+}
+
 /// Session 閒置上限。
 pub const SESSION_IDLE_TTL: Duration = Duration::days(7);
 /// `last_seen_at` 距上次寫入未滿這段時間時不再寫入（S-08.2）：每個已登入的請求都會查 session，
@@ -114,8 +122,9 @@ pub async fn upsert_user(
     // Google 名稱只補給沒有匯入姓名的帳號（教師、管理者）；學生的名稱由 display_name_sql! 解析成匯入姓名
     let existing: Option<User> = sqlx::query_as(concat!(
         "UPDATE users SET email = lower($2),
-                display_name = CASE WHEN imported_name IS NULL THEN COALESCE(display_name, $3)
-                                    ELSE display_name END,
+                display_name = ",
+        google_display_name_sql!(),
+        ",
                 updated_at = now()
          WHERE google_sub = $1
          RETURNING id, google_sub, email, student_id AS student_number, ",
@@ -133,9 +142,9 @@ pub async fn upsert_user(
         None => {
             let bound: Option<User> = sqlx::query_as(concat!(
                 "UPDATE users SET google_sub = $1,
-                        display_name = CASE WHEN imported_name IS NULL
-                                            THEN COALESCE(display_name, $3)
-                                            ELSE display_name END,
+                        display_name = ",
+                google_display_name_sql!(),
+                ",
                         is_admin = is_admin OR $4,
                         password_hash = CASE WHEN must_change_password THEN NULL
                                              ELSE password_hash END,
