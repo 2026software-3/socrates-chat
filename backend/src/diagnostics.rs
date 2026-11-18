@@ -380,6 +380,18 @@ impl AiActivity {
         self
     }
 
+    /// 還沒呼叫供應商就失敗（例如教室的 AI 路由不可用）：記一筆沒有耗時與模型的失敗。
+    pub(crate) fn record_unreached(self, state: &AppState, error: &crate::ai::AiError) {
+        self.record(
+            state,
+            None,
+            0,
+            Instant::now(),
+            Some(error),
+            &AiSnapshot::default(),
+        );
+    }
+
     /// 執行一次 AI 嘗試並記錄結果。`retry` 是這次之前已重試的次數。
     pub(crate) async fn run<T>(
         self,
@@ -427,7 +439,11 @@ impl AiActivity {
                 } else {
                     self.success_status
                 },
-                error_code: error.map(|_| self.failure_code),
+                // 教室 AI 不可用時學生拿到的是 classroom_ai_unavailable，診斷也記同一個代碼
+                error_code: error.map(|error| match error.class {
+                    Failure::ClassroomUnavailable => Failure::ClassroomUnavailable.code(),
+                    _ => self.failure_code,
+                }),
                 user: self.user,
                 classroom: self.classroom,
                 ai: Some(ai),
