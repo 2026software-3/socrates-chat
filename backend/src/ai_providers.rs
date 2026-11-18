@@ -164,15 +164,7 @@ async fn verify_key_at(
     else {
         return KeyCheck::ConnectionFailed;
     };
-    let mut request = client.get(format!("{endpoint}models"));
-    // 各家文件上的認證方式；key 只放標頭，不放網址
-    request = match adapter {
-        AdapterKind::Anthropic => request
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01"),
-        AdapterKind::Gemini => request.header("x-goog-api-key", key),
-        _ => request.bearer_auth(key),
-    };
+    let request = authenticated(client.get(format!("{endpoint}models")), adapter, key);
     match request.send().await {
         Ok(response) => {
             let status = response.status();
@@ -184,6 +176,143 @@ async fn verify_key_at(
         }
         Err(_) => KeyCheck::ConnectionFailed,
     }
+}
+
+/// 各家文件上的認證方式；key 只放標頭，不放網址。
+fn authenticated(
+    request: reqwest::RequestBuilder,
+    adapter: AdapterKind,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    match adapter {
+        AdapterKind::Anthropic => request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        AdapterKind::Gemini => request.header("x-goog-api-key", key),
+        _ => request.bearer_auth(key),
+    }
+}
+
+/// 模型清單最多回傳幾個、單一 ID 最長幾個字元（與儲存時的模型名稱上限一致）、回應最大位元組數。
+pub const MODEL_LIST_MAX: usize = 500;
+const MODEL_ID_MAX_CHARS: usize = 200;
+const MODEL_LIST_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// 取不到模型清單（key 無效、供應商不支援清單端點、逾時、回應異常）。不分原因：前端一律退回手動輸入。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListUnavailable;
+
+/// 取供應商的模型清單，只當輸入建議；儲存時仍以 `verify_model` 驗證。
+pub async fn list_models(provider: &Provider, key: &str) -> Result<Vec<String>, ListUnavailable> {
+    list_models_at(provider.endpoint, provider.adapter, key, KEY_CHECK_TIMEOUT).await
+}
+
+/// 讓路由可以在測試中換掉真正的清單查詢。
+#[async_trait::async_trait]
+pub trait ModelLister: Send + Sync {
+    async fn list_models(
+        &self,
+        provider: &Provider,
+        key: &str,
+    ) -> Result<Vec<String>, ListUnavailable>;
+}
+
+pub struct HttpModelLister;
+
+#[async_trait::async_trait]
+impl ModelLister for HttpModelLister {
+    async fn list_models(
+        &self,
+        provider: &Provider,
+        key: &str,
+    ) -> Result<Vec<String>, ListUnavailable> {
+        list_models(provider, key).await
+    }
+}
+
+async fn list_models_at(
+    endpoint: &str,
+    adapter: AdapterKind,
+    key: &str,
+    timeout: Duration,
+) -> Result<Vec<String>, ListUnavailable> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ListUnavailable)?;
+    // 各家預設只回一小頁，要求一次拿到最多
+    let query: &[(&str, &str)] = match adapter {
+        AdapterKind::Anthropic => &[("limit", "1000")],
+        AdapterKind::Gemini => &[("pageSize", "1000")],
+        _ => &[],
+    };
+    let response = authenticated(client.get(format!("{endpoint}models")), adapter, key)
+        .query(query)
+        .send()
+        .await
+        .map_err(|_| ListUnavailable)?;
+    if !response.status().is_success()
+        || response.content_length() > Some(MODEL_LIST_MAX_BYTES as u64)
+    {
+        return Err(ListUnavailable);
+    }
+    let bytes = response.bytes().await.map_err(|_| ListUnavailable)?;
+    if bytes.len() > MODEL_LIST_MAX_BYTES {
+        return Err(ListUnavailable);
+    }
+    let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ListUnavailable)?;
+    Ok(parse_models(adapter, &body))
+}
+
+/// 供應商清單裡明顯不是對話模型的名稱片段；只是建議用的過濾，漏掉或多列都不影響儲存時的驗證。
+const NON_CHAT_MARKERS: [&str; 8] = [
+    "embed",
+    "whisper",
+    "tts",
+    "dall-e",
+    "moderation",
+    "transcribe",
+    "rerank",
+    "image",
+];
+
+/// 從供應商的回應取出模型 ID：Gemini 是 `models[].name`（去掉 `models/`，且要支援 `generateContent`），
+/// 其餘是 `data[].id`。去除重複、不合規的 ID 與非對話模型，排序後最多 `MODEL_LIST_MAX` 個。
+fn parse_models(adapter: AdapterKind, body: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<String> = if adapter == AdapterKind::Gemini {
+        body["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| {
+                m["supportedGenerationMethods"]
+                    .as_array()
+                    .is_none_or(|methods| methods.iter().any(|x| x == "generateContent"))
+            })
+            .filter_map(|m| m["name"].as_str())
+            .map(|name| name.strip_prefix("models/").unwrap_or(name).to_owned())
+            .collect()
+    } else {
+        body["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["id"].as_str())
+            .map(str::to_owned)
+            .collect()
+    };
+    ids.retain(|id| {
+        let lower = id.to_lowercase();
+        !id.is_empty()
+            && id.chars().count() <= MODEL_ID_MAX_CHARS
+            && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+            && !NON_CHAT_MARKERS.iter().any(|m| lower.contains(m))
+    });
+    ids.sort();
+    ids.dedup();
+    ids.truncate(MODEL_LIST_MAX);
+    ids
 }
 
 /// 模型驗證失敗的原因碼；前端再翻成文字。

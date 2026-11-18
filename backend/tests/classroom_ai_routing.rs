@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use socrates_chat_backend::{
     AppState, app,
     classroom_ai_store::{self, ModelRef},
+    system_key_store,
     teacher_key_crypto::KeyCipher,
     teacher_key_store::{self as keys, KeyStatus},
     teacher_key_usage::{self as usage, Range},
@@ -752,4 +753,198 @@ async fn fallback_without_a_key_is_skipped_and_a_missing_primary_key_uses_the_fa
     w.configure_with_fallback().await;
     assert_eq!(error_code(&w.say().await), None);
     assert_eq!(w.models_seen(), vec![FALLBACK_MODEL]);
+}
+
+/// 等到這個功能的 AI 診斷事件出現；回傳（失敗分類、錯誤代碼、教室）。
+async fn wait_diagnostic(pool: &PgPool, function: &str) -> (String, String, Option<Uuid>) {
+    for _ in 0..200 {
+        let row: Option<(String, String, Option<Uuid>)> = sqlx::query_as(
+            "SELECT failure_class, error_code, classroom_id FROM diagnostic_events
+              WHERE kind = 'ai' AND function = $1 AND failure_class IS NOT NULL
+              ORDER BY occurred_at DESC LIMIT 1",
+        )
+        .bind(function)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if let Some(row) = row {
+            return row;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no diagnostic event for {function}");
+}
+
+#[sqlx::test]
+async fn an_unconfigured_classroom_is_recorded_in_diagnostics_for_replies_and_summaries(
+    pool: PgPool,
+) {
+    let w = world(pool.clone()).await;
+    // 教師加了 key，但還沒設定教室的模型
+    w.add_key(w.owner, "openai", KEY_1).await;
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    let expected = (
+        "classroom_ai_unavailable".to_owned(),
+        "classroom_ai_unavailable".to_owned(),
+        Some(w.classroom),
+    );
+    assert_eq!(wait_diagnostic(&pool, "chat_reply").await, expected);
+    let res = send(
+        &w.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/end", w.conv),
+            Some(&w.a.student),
+            None,
+        ),
+    )
+    .await;
+    assert!(res.status().is_success(), "{}", res.status());
+    assert_eq!(
+        settled_summary(&w.app, &w.a.student, &w.conv).await["status"],
+        "failed"
+    );
+    assert_eq!(wait_diagnostic(&pool, "summary").await, expected);
+    assert!(w.fake.keys_seen().is_empty(), "沒有路由就不會呼叫供應商");
+}
+
+#[sqlx::test]
+async fn a_classroom_whose_keys_all_fail_is_recorded_with_the_classroom_code(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.configure().await;
+    w.fake.set(KEY_1, Behavior::Status(401, "{}"));
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    let (class, code, classroom) = wait_diagnostic(&pool, "chat_reply").await;
+    assert_eq!(class, "classroom_ai_unavailable");
+    assert_eq!(code, "classroom_ai_unavailable");
+    assert_eq!(classroom, Some(w.classroom));
+}
+
+// ---- 系統用途（管理者在介面設定的系統 key 與模型）----
+
+const SYSTEM_KEY: &str = "sk-synthetic-SSSS-1111-2222-3333-ssss";
+const SYSTEM_MODEL: &str = "system-model";
+
+impl World {
+    /// 過渡中的教室走系統用途的路由；管理者（教室建立者）設定系統 key 與模型。
+    async fn system_setup(&self, with_setting: bool) -> Uuid {
+        sqlx::query("UPDATE classrooms SET ai_transitional = true")
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        let key = system_key_store::add(
+            &self.pool,
+            &KeyCipher::parse(ENC).unwrap(),
+            self.owner,
+            "openai",
+            SYSTEM_KEY,
+        )
+        .await
+        .unwrap()
+        .id;
+        if with_setting {
+            system_key_store::set_setting(&self.pool, self.owner, "openai", SYSTEM_MODEL)
+                .await
+                .unwrap();
+        }
+        key
+    }
+    async fn system_status(&self, id: Uuid) -> String {
+        sqlx::query_scalar("SELECT status FROM system_api_keys WHERE id = $1")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+}
+
+#[sqlx::test]
+async fn system_purposes_use_the_admin_configured_key_and_model_and_record_system_usage(
+    pool: PgPool,
+) {
+    let w = world(pool.clone()).await;
+    let key = w.system_setup(true).await;
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.system.request_count(), 0, "不該用主機的 key");
+    let seen = w.fake.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        (seen[0].key.as_str(), seen[0].model.as_str()),
+        (SYSTEM_KEY, SYSTEM_MODEL)
+    );
+    // 用量記在系統用量，不是教師 key 用量
+    for _ in 0..200 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT coalesce(sum(requests), 0)::bigint FROM system_ai_usage WHERE key_id = $1",
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if n == 1 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("system usage was not recorded");
+}
+
+#[sqlx::test]
+async fn system_purposes_keep_using_the_host_key_until_a_model_is_set(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    w.system_setup(false).await;
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.system.request_count(), 1);
+    assert!(w.fake.keys_seen().is_empty());
+}
+
+#[sqlx::test]
+async fn a_failing_system_key_is_recorded_and_the_host_key_takes_over(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let key = w.system_setup(true).await;
+    w.fake.set(SYSTEM_KEY, Behavior::Status(401, "{}"));
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.system_status(key).await, "invalid");
+    assert_eq!(
+        w.system.request_count(),
+        1,
+        "管理者設定的 key 都不能用時退回主機的 key"
+    );
+    // 冷卻中不再打擾供應商，直接用主機的 key
+    let before = w.fake.keys_seen().len();
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.fake.keys_seen().len(), before);
+    assert_eq!(w.system.request_count(), 2);
+}
+
+#[sqlx::test]
+async fn the_system_setting_does_not_affect_a_configured_classroom(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    w.system_setup(true).await;
+    // 教室已經設定自己的教師 key 與模型：只用教師的 key
+    sqlx::query("UPDATE classrooms SET ai_transitional = false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.configure().await;
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    let seen = w.fake.seen.lock().unwrap().clone();
+    assert_eq!(
+        (seen[0].key.as_str(), seen[0].model.as_str()),
+        (KEY_1, MODEL)
+    );
+    assert_eq!(w.system.request_count(), 0);
 }
