@@ -92,6 +92,7 @@ pub mod teacher_key_store;
 pub mod teacher_key_usage;
 pub mod teacher_keys;
 pub mod topic_dimensions;
+pub mod usage_api;
 pub(crate) mod user_limit;
 pub mod voice;
 
@@ -268,6 +269,7 @@ pub fn app(state: AppState) -> Router {
         .merge(demo::routes())
         .merge(ai_usage::routes())
         .merge(teacher_keys::routes())
+        .merge(usage_api::routes())
         .merge(announcements::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))

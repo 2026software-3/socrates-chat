@@ -118,3 +118,72 @@ pub async fn totals_for_classroom(
         unreported_requests,
     })
 }
+
+/// 某個（供應商、模型）的累計；備援模型的用量歸在它自己的（供應商、模型）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelUsage {
+    pub provider: String,
+    pub model: String,
+    pub totals: Totals,
+}
+
+type ModelRow = (String, String, i64, i64, i64, i64);
+
+fn model_usage(rows: Vec<ModelRow>) -> Vec<ModelUsage> {
+    rows.into_iter()
+        .map(
+            |(provider, model, requests, input_tokens, output_tokens, unreported_requests)| {
+                ModelUsage {
+                    provider,
+                    model,
+                    totals: Totals {
+                        requests,
+                        input_tokens,
+                        output_tokens,
+                        unreported_requests,
+                    },
+                }
+            },
+        )
+        .collect()
+}
+
+pub async fn by_model_for_key(
+    pool: &PgPool,
+    key_id: Uuid,
+    range: Range,
+) -> Result<Vec<ModelUsage>, sqlx::Error> {
+    let rows: Vec<ModelRow> = sqlx::query_as(
+        "SELECT provider, model, SUM(requests)::bigint, SUM(input_tokens)::bigint,
+                SUM(output_tokens)::bigint, SUM(unreported_requests)::bigint
+           FROM teacher_key_usage
+          WHERE key_id = $1
+            AND ($2::int IS NULL OR day > (now() AT TIME ZONE 'Asia/Taipei')::date - $2::int)
+          GROUP BY provider, model ORDER BY provider, model",
+    )
+    .bind(key_id)
+    .bind(range.days())
+    .fetch_all(pool)
+    .await?;
+    Ok(model_usage(rows))
+}
+
+pub async fn by_model_for_classroom(
+    pool: &PgPool,
+    classroom_id: Uuid,
+    range: Range,
+) -> Result<Vec<ModelUsage>, sqlx::Error> {
+    let rows: Vec<ModelRow> = sqlx::query_as(
+        "SELECT provider, model, SUM(requests)::bigint, SUM(input_tokens)::bigint,
+                SUM(output_tokens)::bigint, SUM(unreported_requests)::bigint
+           FROM teacher_key_usage
+          WHERE classroom_id = $1
+            AND ($2::int IS NULL OR day > (now() AT TIME ZONE 'Asia/Taipei')::date - $2::int)
+          GROUP BY provider, model ORDER BY provider, model",
+    )
+    .bind(classroom_id)
+    .bind(range.days())
+    .fetch_all(pool)
+    .await?;
+    Ok(model_usage(rows))
+}
