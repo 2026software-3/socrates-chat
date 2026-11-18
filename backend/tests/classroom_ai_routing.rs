@@ -656,10 +656,12 @@ async fn changing_the_settings_restarts_conversations_on_the_primary_model(pool:
     w.configure().await;
     assert_eq!(w.position().await, 0);
     // 主模型的 key 冷卻已過
-    sqlx::query("UPDATE teacher_api_keys SET status_at = now() - interval '2 minutes'")
-        .execute(&w.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE teacher_api_keys SET status_at = now() - interval '2 minutes' WHERE status <> 'ok'",
+    )
+    .execute(&w.pool)
+    .await
+    .unwrap();
     let events = w.say().await;
     assert_eq!(error_code(&events), None, "{events:?}");
     assert_eq!(w.models_seen().last().map(String::as_str), Some(MODEL));
