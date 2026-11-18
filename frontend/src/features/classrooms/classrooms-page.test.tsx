@@ -66,7 +66,8 @@ describe('classroom management', () => {
       }),
     )
     renderTeacher()
-    expect(screen.getByRole('status')).toBeInTheDocument()
+    await screen.findByRole('heading', { name: '我的教室' })
+    expect(screen.getByRole('status')).toHaveTextContent('載入中…')
     release()
     expect(await screen.findByText('你還沒有教室，先建立一間吧。')).toBeInTheDocument()
   })
