@@ -342,17 +342,17 @@ pub(crate) async fn test_key(
 #[into_params(parameter_in = Query)]
 pub(crate) struct ModelsQuery {
     /// 供應商識別碼，例如 `openai`
-    provider: String,
+    pub(crate) provider: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ModelList {
-    provider: String,
+    pub(crate) provider: String,
     /// `ok`：`models` 是供應商目前列出的模型；`no_key`：這位教師沒有該供應商的 key；
     /// `unavailable`：有 key 但取不到清單（key 無效、供應商不提供清單、逾時等）。後兩者前端退回手動輸入。
-    status: &'static str,
+    pub(crate) status: &'static str,
     /// 只是輸入建議，不是白名單：儲存時仍以模型驗證為準。已排序、去重，最多 500 個。
-    models: Vec<String>,
+    pub(crate) models: Vec<String>,
 }
 
 /// 用自己的 key 向供應商取模型清單，給教室 AI 設定的模型欄位當輸入建議。
@@ -390,20 +390,27 @@ pub(crate) async fn list_models(
         ));
     }
     let keys = store::keys_for(&state.pool, cipher, cu.user.id, provider.id).await?;
-    let respond = |status, models| {
-        Json(ModelList {
-            provider: provider.id.to_owned(),
-            status,
-            models,
-        })
+    Ok(Json(model_list_for(&state, provider, &keys).await))
+}
+
+/// 依序用最多 `MODEL_LIST_MAX_KEYS` 把 key 向供應商取清單；教師與管理者（系統 key）共用。
+pub(crate) async fn model_list_for(
+    state: &AppState,
+    provider: &'static ai_providers::Provider,
+    keys: &[store::UsableKey],
+) -> ModelList {
+    let respond = |status, models| ModelList {
+        provider: provider.id.to_owned(),
+        status,
+        models,
     };
     if keys.is_empty() {
-        return Ok(respond("no_key", Vec::new()));
+        return respond("no_key", Vec::new());
     }
     for key in keys.iter().take(MODEL_LIST_MAX_KEYS) {
         if let Ok(models) = state.model_lister.list_models(provider, key.secret()).await {
-            return Ok(respond("ok", models));
+            return respond("ok", models);
         }
     }
-    Ok(respond("unavailable", Vec::new()))
+    respond("unavailable", Vec::new())
 }

@@ -109,7 +109,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 14] = [
+pub const LONG_RUNNING_ROUTES: [&str; 15] = [
     "/api/topics/{id}/dimensions/retry",
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
@@ -134,6 +134,7 @@ pub const LONG_RUNNING_ROUTES: [&str; 14] = [
     "/api/teacher/keys/models",
     // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
     "/api/admin/system-ai/model",
+    "/api/admin/system-ai/models",
     "/api/admin/system-ai/keys/{id}/test",
 ];
 

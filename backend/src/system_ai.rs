@@ -7,7 +7,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{StatusCode, header},
     response::IntoResponse,
     routing::{get, post, put},
@@ -24,7 +24,7 @@ use crate::{
     error::ApiError,
     system_key_store::{self as store, SystemKey},
     teacher_key_store::KeyStatus,
-    teacher_keys::{self, KeyTestResult, NewKey, ReplaceKey},
+    teacher_keys::{self, KeyTestResult, ModelList, ModelsQuery, NewKey, ReplaceKey},
 };
 
 const MAX_MODEL_CHARS: usize = 200;
@@ -37,6 +37,7 @@ pub fn routes() -> Router<AppState> {
             "/api/admin/system-ai/model",
             put(set_model).delete(clear_model),
         )
+        .route("/api/admin/system-ai/models", get(list_models))
         .route("/api/admin/system-ai/keys", post(add_key))
         .route(
             "/api/admin/system-ai/keys/{id}",
@@ -154,6 +155,45 @@ pub(crate) async fn overview(
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(overview_of(&state).await?),
+    ))
+}
+
+/// 用系統 key 向供應商取模型清單，給系統模型欄位當輸入建議（不是白名單，儲存時仍會驗證）。
+/// 取不到時回 200 與 `status`（`no_key`／`unavailable`），前端退回手動輸入；不改動 key 狀態。
+#[utoipa::path(
+    get,
+    path = "/api/admin/system-ai/models",
+    tag = "admin",
+    summary = "供應商的模型清單（系統 key，輸入建議）",
+    params(ModelsQuery),
+    responses(
+        (status = 200, body = ModelList),
+        (status = 400, description = "不支援的供應商（invalid_provider）"),
+        (status = 429, description = "太頻繁（model_list_rate_limited）"),
+        crate::error::CommonErrors
+    )
+)]
+pub(crate) async fn list_models(
+    RequireAdmin(cu): RequireAdmin,
+    State(state): State<AppState>,
+    Query(query): Query<ModelsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let provider = ai_providers::find(&query.provider).ok_or(ApiError::bad_request(
+        "invalid_provider",
+        "不支援這個供應商",
+    ))?;
+    let cipher = teacher_keys::cipher(&state)?;
+    if state.model_list_limit.try_acquire(cu.user.id).is_none() {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "model_list_rate_limited",
+            "操作太頻繁，請稍後再試",
+        ));
+    }
+    let keys = store::keys_for(&state.pool, cipher, provider.id).await?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(teacher_keys::model_list_for(&state, provider, &keys).await),
     ))
 }
 

@@ -103,6 +103,25 @@ describe('SystemAiPage', () => {
     await waitFor(() => expect(deleted).toBe(true))
   })
 
+  it('suggests models from the system keys and still accepts any typed model', async () => {
+    const asked: string[] = []
+    server.use(
+      http.get('/api/admin/system-ai/models', ({ request }) => {
+        asked.push(new URL(request.url).searchParams.get('provider') ?? '')
+        return HttpResponse.json({ provider: 'openai', status: 'ok', models: ['gpt-a', 'gpt-b'] })
+      }),
+    )
+    await open(overview({ keys: [key] }))
+    const user = userEvent.setup()
+    await user.selectOptions(await screen.findByLabelText('供應商', { selector: '#sys-provider' }), 'openai')
+    await waitFor(() => expect(asked).toEqual(['openai']))
+    const input = screen.getByLabelText('模型 ID', { selector: '#sys-model' })
+    await waitFor(() => expect(input).toHaveAttribute('list'))
+    expect(document.querySelectorAll(`datalist#${input.getAttribute('list')} option`)).toHaveLength(2)
+    await user.type(input, 'my-own-model')
+    expect(input).toHaveValue('my-own-model')
+  })
+
   it('tests, replaces and deletes a key', async () => {
     const seen: string[] = []
     server.use(

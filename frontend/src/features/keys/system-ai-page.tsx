@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ModelFields } from '@/features/keys/ai-settings-page'
 import { StatusBadge } from '@/features/keys/keys-page'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
@@ -119,23 +120,17 @@ export function SystemAiPage() {
 
           <form onSubmit={onSaveModel} className="space-y-3" aria-label={t('systemAi.model.title')}>
             <h2 className="text-base font-medium">{t('systemAi.model.title')}</h2>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="sys-provider">{t('aiSettings.provider')}</Label>
-                <select id="sys-provider" className={nativeSelectClass} value={settingProvider} onChange={(e) => setProvider(e.target.value)}>
-                  <option value="">{t('aiSettings.providerPlaceholder')}</option>
-                  {overview.providers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="sys-model">{t('aiSettings.model')}</Label>
-                <Input id="sys-model" autoComplete="off" spellCheck={false} maxLength={200} value={settingModel} onChange={(e) => setModel(e.target.value)} />
-              </div>
-            </div>
+            <ModelFields
+              listPath={`${BASE}/models`}
+              idPrefix="sys"
+              value={{ provider: settingProvider, model: settingModel }}
+              providers={overview.providers}
+              disabled={busy !== undefined}
+              onChange={(patch) => {
+                if (patch.provider !== undefined) setProvider(patch.provider)
+                if (patch.model !== undefined) setModel(patch.model)
+              }}
+            />
             <div className="flex flex-wrap gap-2">
               <Button type="submit" disabled={busy !== undefined || !settingProvider || !settingModel.trim()}>
                 {busy === 'model' ? t('systemAi.model.saving') : t('systemAi.model.save')}

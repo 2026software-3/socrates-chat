@@ -264,7 +264,9 @@ function SettingsForm({
   )
 }
 
-function ModelFields({
+/** 供應商＋模型欄位；模型欄位有供應商的清單時可挑選，取不到時退回純文字輸入。 */
+export function ModelFields({
+  listPath = '/api/teacher/keys/models',
   legend,
   idPrefix,
   value,
@@ -272,6 +274,8 @@ function ModelFields({
   disabled,
   onChange,
 }: {
+  /** 取得模型清單的端點（加上 `?provider=`）；教師用自己的 key，管理者的系統 AI 頁用系統 key */
+  listPath?: string
   legend?: string
   idPrefix: string
   value: ModelRef
@@ -282,7 +286,7 @@ function ModelFields({
   const t = useT()
   // 模型清單只是輸入建議：取不到（沒有 key、供應商不提供、逾時）就是純文字輸入，儲存時仍由後端驗證
   const list = useFetch<ModelList>(
-    value.provider ? `/api/teacher/keys/models?provider=${encodeURIComponent(value.provider)}` : null,
+    value.provider ? `${listPath}?provider=${encodeURIComponent(value.provider)}` : null,
   )
   const suggestions = value.provider && list.data?.provider === value.provider && list.data.status === 'ok' ? list.data.models : []
   const listUnavailable = Boolean(value.provider) && list.data?.provider === value.provider && list.data.status === 'unavailable'
