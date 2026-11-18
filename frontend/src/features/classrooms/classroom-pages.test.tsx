@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { classroom, ROOM_A } from '@/features/teacher/test-helpers'
+import { classroom, ROOM_A, ROOM_B, student } from '@/features/teacher/test-helpers'
 import type { Roles, Activity, ActivityDistribution, ClaimGroup, ClassDashboard, TeacherSummary } from '@/lib/types'
 import { apiError, makeMe, mockMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -121,8 +121,65 @@ describe('classroom → activity → student navigation', () => {
     expect(await screen.findByRole('heading', { level: 1, name: '王小明' })).toBeInTheDocument()
     await screen.findByText('應該拉桿')
     const studentCall = seen.filter((u) => u.pathname === '/api/summaries').at(-1)!
+    expect(studentCall.searchParams.get('classroom_id')).toBe(ROOM_A)
     expect(studentCall.searchParams.get('student')).toBe(STUDENT)
     expect(studentCall.searchParams.get('activity')).toBeNull()
+  })
+
+  it.each([
+    { base: '/teacher/classrooms', roles: { teacher: true } },
+    { base: '/admin/classrooms', roles: { admin: true } },
+  ])('switches classrooms and scopes requests from $base', async ({ base, roles }) => {
+    const rooms = [
+      { id: ROOM_A, name: '春季班', title: '春季活動', email: 'spring@example.com', count: 31 },
+      { id: ROOM_B, name: '秋季班', title: '秋季活動', email: 'fall@example.com', count: 42 },
+    ]
+    const findRoom = (request: Request) => {
+      const id = new URL(request.url).searchParams.get('classroom_id')
+      return rooms.find((room) => room.id === id)
+    }
+    server.use(
+      http.get('/api/classrooms', () => HttpResponse.json(rooms.map(({ id, name }) => classroom(id, name)))),
+      http.get('/api/topics', () => HttpResponse.json([])),
+      http.get('/api/activities', ({ request }) => {
+        const room = findRoom(request)
+        if (!room) return apiError(404, 'not_found')
+        const archived = new URL(request.url).searchParams.get('archived') === 'true'
+        return pageOf(archived ? [] : [{ ...activity, id: room.id, classroom_id: room.id, title: room.title }])
+      }),
+      http.get('/api/dashboard/class', ({ request }) => {
+        const room = findRoom(request)
+        if (!room) return apiError(404, 'not_found')
+        return HttpResponse.json({ ...dashboard, students_total: room.count, activities: [] })
+      }),
+      http.get('/api/classrooms/:id/students', ({ params }) => {
+        const room = rooms.find(({ id }) => id === params.id)
+        return room ? pageOf([student(room.email)], null, { total: 1 }) : apiError(404, 'not_found')
+      }),
+      http.get('/api/summaries', ({ request }) => {
+        const room = findRoom(request)
+        const studentId = new URL(request.url).searchParams.get('student')
+        if (!room || studentId !== student(room.email).id) return apiError(404, 'not_found')
+        return pageOf([{ ...summary, classroom_id: room.id, title: room.title }])
+      }),
+    )
+    renderAt(base, roles)
+    const user = userEvent.setup()
+
+    for (const room of rooms) {
+      await user.click(await screen.findByRole('link', { name: room.name }))
+      expect(await screen.findByRole('heading', { level: 1, name: room.name })).toBeInTheDocument()
+      expect(await screen.findByRole('link', { name: room.title })).toHaveAttribute('href', `${base}/${room.id}/activities/${room.id}`)
+      expect(await screen.findByText(String(room.count))).toBeInTheDocument()
+      await user.click(screen.getByRole('link', { name: '學生名單' }))
+      const studentLink = await screen.findByRole('link', { name: room.email })
+      expect(studentLink).toHaveAttribute('href', `${base}/${room.id}/students/${student(room.email).id}`)
+      await user.click(studentLink)
+      expect(await screen.findByText(room.title)).toBeInTheDocument()
+
+      const crumbs = screen.getByRole('navigation', { name: 'breadcrumb' })
+      await user.click(within(crumbs).getByRole('link', { name: '教室管理' }))
+    }
   })
 
   it('offers breadcrumbs back up the hierarchy', async () => {
