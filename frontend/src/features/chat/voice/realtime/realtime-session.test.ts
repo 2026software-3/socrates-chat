@@ -299,6 +299,24 @@ describe('realtime session', () => {
     expect(cb.onReplyFailed.mock.invocationCallOrder[0]).toBeLessThan(cb.onReplyEnd.mock.invocationCallOrder[0])
   })
 
+  it('closes with classroomUnavailable when the failed notice carries the classroom code', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    ws.event(created('resp_1'))
+    ws.event({ type: 'socrates.turn.failed', code: 'classroom_ai_unavailable' })
+    expect(cb.onReplyFailed).toHaveBeenCalledTimes(1)
+    expect(cb.onClosed).toHaveBeenCalledWith('classroomUnavailable')
+    expect(micClose).toHaveBeenCalled()
+  })
+
+  it('treats an unknown failed-notice code like a plain failed turn', async () => {
+    await connected()
+    const ws = FakeSocket.last
+    ws.event(created('resp_1'))
+    ws.event({ type: 'socrates.turn.failed', code: 'something_else' })
+    expect(cb.onClosed).toHaveBeenCalledWith('replyFailed')
+  })
+
   it('fails the turn when a transcript gets no reply within 10 seconds', async () => {
     await connected()
     const ws = FakeSocket.last

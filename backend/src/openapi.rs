@@ -8,8 +8,9 @@ use utoipa::{
 
 use crate::{
     accounts, achievement_admin, ai_usage, announcements, argument_tree, auth, cascade, catalog,
-    chat, claims, classroom_store, classrooms, complaints, dashboard, demo, error::ErrorBody,
-    points, purchase, reply, roster, roster_store, summary, tasks, voice,
+    chat, claims, classroom_ai_settings, classroom_store, classrooms, complaints, dashboard, demo,
+    error::ErrorBody, points, purchase, reply, roster, roster_store, summary, tasks, teacher_keys,
+    usage_api, voice,
 };
 
 struct SessionCookie;
@@ -114,6 +115,10 @@ impl Modify for SessionCookie {
     paths(
         auth::login, auth::link_start, auth::unlink_google, auth::callback, auth::password_login, auth::change_password, auth::logout,
         auth::me, auth::update_me, auth::reset_password, ai_usage::usage,
+        teacher_keys::list_providers, teacher_keys::list_keys, teacher_keys::add_key,
+        teacher_keys::replace_key, teacher_keys::delete_key, teacher_keys::test_key,
+        usage_api::key_usage, usage_api::classroom_usage,
+        classroom_ai_settings::get_settings, classroom_ai_settings::put_settings, classroom_ai_settings::get_provider,
         classrooms::list_classrooms, classrooms::create_classroom,
         classrooms::get_classroom, classrooms::update_classroom, classrooms::delete_classroom,
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
@@ -143,6 +148,8 @@ impl Modify for SessionCookie {
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
         announcements::public_list, announcements::list, announcements::create, announcements::update,
         announcements::remove, announcements::get_maintenance, announcements::set_maintenance,
+        crate::admin_teacher_keys::list_keys, crate::admin_teacher_keys::delete_key,
+        crate::student_notifications::list_unread, crate::student_notifications::mark_read,
         complaints::submit, complaints::list, complaints::update, complaints::resend,
         argument_tree::read,
         argument_tree::create,

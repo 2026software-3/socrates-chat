@@ -8,6 +8,7 @@ import { errorText, useI18n, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
 import type { Available, Conversation, Page, StudentActivity, TopicProgress } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
+import { ClassroomProviderNote } from '@/features/keys/classroom-provider-note'
 
 type Source = { activity_id: string; topic_id: string } | { topic_id: string }
 
@@ -116,7 +117,10 @@ export function AvailablePage() {
             <EmptyBlock>{needle ? t('student.available.noMatch') : t('student.available.noActivities')}</EmptyBlock>
           ) : (
             classrooms.map((c) => (
-              <Section key={c.id} title={c.name} level={3} emptyText="" items={c.items} startingKey={startingKey} onStart={start} layout="grid" />
+              <div key={c.id} className="flex flex-col gap-1">
+                <Section title={c.name} level={3} emptyText="" items={c.items} startingKey={startingKey} onStart={start} layout="grid" />
+                <ClassroomProviderNote classroomId={c.id} />
+              </div>
             ))
           )}
         </Block>
@@ -136,6 +140,7 @@ export function AvailablePage() {
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl leading-8 font-medium">{t('student.available.title')}</h1>
         <p className="text-muted-foreground text-xs">{t('student.available.subtitle')}</p>
+        <p className="text-muted-foreground text-xs">{t('classroomAi.privacy')}</p>
       </div>
       <div>
         <label htmlFor="available-search" className="sr-only">

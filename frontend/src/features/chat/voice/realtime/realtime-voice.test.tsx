@@ -235,6 +235,22 @@ describe('server voice conversation', () => {
     expect(await startButton()).toBeDisabled()
   })
 
+
+  it('tells the student the classroom AI is unavailable and offers a retry', async () => {
+    const { cb } = await startLive()
+    act(() => {
+      cb.onPhase('listening')
+      cb.onTranscript('合成的語音發言')
+    })
+    await screen.findByText('合成的語音發言')
+    act(() => {
+      cb.onReplyFailed()
+      cb.onReplyEnd()
+      cb.onClosed('classroomUnavailable')
+    })
+    expect(await screen.findByText(/教室的 AI 服務暫時無法使用/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '重試' })).toBeInTheDocument()
+  })
   it('offers a restart after a dropped connection', async () => {
     const { cb } = await startLive()
     act(() => cb.onClosed('lost'))

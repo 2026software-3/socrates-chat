@@ -37,7 +37,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{
-        AiError, AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta,
+        AiError, AiProvider, AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta,
         build_system_prompt, closing_instruction, parse_meta, rules_version,
     },
     auth::RequireStudent,
@@ -46,6 +46,9 @@ use crate::{
     error::ApiError,
     mutex::lock,
 };
+
+/// 教室沒有可用的教師 key 時，學生端與語音通知的錯誤代碼（F-40.5）
+const CLASSROOM_UNAVAILABLE: &str = "classroom_ai_unavailable";
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/conversations/{id}/stream", get(stream))
@@ -57,7 +60,8 @@ type EventTx = mpsc::UnboundedSender<Event>;
 /// 語音對話收到的回覆：文字片段，最後若沒有存成回覆再加一個 `Failed`。
 pub(crate) enum ReplyText {
     Delta(String),
-    Failed,
+    /// 沒有存成回覆；附上學生端要顯示的原因代碼（目前只有教室的 AI 不可用，其餘為 `None`）
+    Failed(Option<&'static str>),
 }
 
 /// 這個服務程序內正在產生的回覆：已送出的文字與正在收看的連線。
@@ -79,6 +83,8 @@ struct Live {
     heard: Option<usize>,
     /// 回覆已存好或已失敗，之後的打斷直接寫資料庫
     sealed: bool,
+    /// 失敗原因代碼，語音對話的通知用
+    failure: Option<&'static str>,
 }
 
 /// 一次回覆產生的紀錄，由產生回覆的工作持有。
@@ -102,6 +108,11 @@ impl LiveReply {
     /// 語音對話的回覆（有收回覆文字的通道）：可能有暫存的打斷位置要在釋放 claim 前寫入。
     fn is_voice(&self) -> bool {
         lock(&self.live).tap.is_some()
+    }
+
+    /// 記下這次失敗的原因代碼，語音對話的通知會帶上。
+    fn fail_with(&self, code: &'static str) {
+        lock(&self.live).failure = Some(code);
     }
 
     /// 收尾：之後的 `cut` 不再暫存，回傳已暫存的聽到字元數。
@@ -130,6 +141,7 @@ impl LiveReplies {
             tap,
             heard: None,
             sealed: false,
+            failure: None,
         }));
         lock(&self.0).insert(id, live.clone());
         LiveReply { id, live }
@@ -149,7 +161,7 @@ impl LiveReplies {
         if let Some(tap) = live.tap.take()
             && failed
         {
-            let _ = tap.send(ReplyText::Failed);
+            let _ = tap.send(ReplyText::Failed(live.failure));
         }
         for w in live.watchers.drain(..) {
             let _ = w.send(last.clone());
@@ -482,12 +494,25 @@ async fn generate(
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
     let activity = AiActivity::new("chat_reply", Some(user), conv.classroom_id).statuses(200, 200);
+    // 教室內的對話只用教室建立者的 key，不退回系統 key（F-40.5）
+    let route = match state
+        .ai_for_conversation(conv.classroom_id, Some(conv.id))
+        .await
+    {
+        Ok(route) => route,
+        Err(_) => {
+            reply.fail_with(CLASSROOM_UNAVAILABLE);
+            return Err(event("error", json!({"code": CLASSROOM_UNAVAILABLE})));
+        }
+    };
+    let mut classroom_unavailable = false;
     for retry in 0..2 {
         let started = Instant::now();
-        let (result, trace) = diagnostics::traced(attempt(state, reply, &req)).await;
+        let (result, trace) =
+            diagnostics::traced(attempt(route.ai.as_ref(), state, reply, &req)).await;
         activity.record(
             state,
-            Some(&state.config.openai_model),
+            Some(&route.model),
             retry,
             started.into_std(),
             result.as_ref().err().map(|(error, _)| error),
@@ -498,11 +523,20 @@ async fn generate(
                 outcome = Some(r);
                 break;
             }
+            // 沒有可用的教師 key：重試沒有意義
+            Err((error, _)) if error.class == Failure::ClassroomUnavailable => {
+                classroom_unavailable = true;
+                break;
+            }
             Err((_, true)) => break,
             Err(_) => {}
         }
     }
     let Some((text, meta)) = outcome else {
+        if classroom_unavailable {
+            reply.fail_with(CLASSROOM_UNAVAILABLE);
+            return Err(event("error", json!({"code": CLASSROOM_UNAVAILABLE})));
+        }
         return Err(event("error", json!({"code": "ai_unavailable"})));
     };
 
@@ -532,6 +566,7 @@ async fn generate(
 
 /// 一次 AI 呼叫。失敗時回傳「是否已經送出內容給學生」，決定能不能自動重試。
 async fn attempt(
+    ai: &dyn AiProvider,
     state: &AppState,
     reply: &LiveReply,
     req: &AiRequest,
@@ -541,8 +576,7 @@ async fn attempt(
     let first_token_deadline = start + state.config.ai_first_token_timeout;
     let total_deadline = start + state.config.ai_total_timeout;
 
-    let mut stream = match timeout_at(first_token_deadline, state.ai.stream_chat(req.clone())).await
-    {
+    let mut stream = match timeout_at(first_token_deadline, ai.stream_chat(req.clone())).await {
         Ok(Ok(s)) => s,
         Ok(Err(error)) => return Err((error, false)),
         Err(_) => return Err((AiError::classified(Failure::Timeout), false)),

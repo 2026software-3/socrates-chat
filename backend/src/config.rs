@@ -80,6 +80,12 @@ pub struct Config {
     pub demo_mode: bool,
     /// 客訴通知信的 SMTP 設定（S-17.3）；沒設定（缺主機、寄件人或收件信箱）就是 `None`，客訴照常保存、寄信狀態為 `skipped`。
     pub smtp: Option<crate::mail::SmtpConfig>,
+    /// 教師 API key 的加密金鑰（`TEACHER_KEY_ENCRYPTION_KEYS`，S-03.1）；沒設定就是 `None`，教師 key 功能不可用。
+    /// 設定了但格式錯誤時啟動失敗（錯誤訊息不含設定內容）。
+    pub teacher_key_cipher: Option<Arc<crate::teacher_key_crypto::KeyCipher>>,
+    /// 教室對話是否依教室設定走教師 key（F-40.5）。正式環境一律為 `true`，沒有對應的環境變數；
+    /// 只有既有測試把它設為 `false`，讓教室內的對話繼續用假的系統 AI。
+    pub classroom_ai_routing: bool,
 }
 
 #[derive(Debug)]
@@ -98,6 +104,16 @@ fn required(name: &str) -> Result<String, ConfigError> {
         .ok()
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ConfigError(format!("missing environment variable {name}")))
+}
+
+fn teacher_key_cipher_from_env()
+-> Result<Option<Arc<crate::teacher_key_crypto::KeyCipher>>, ConfigError> {
+    match env::var("TEACHER_KEY_ENCRYPTION_KEYS") {
+        Ok(v) if !v.trim().is_empty() => crate::teacher_key_crypto::KeyCipher::parse(&v)
+            .map(|c| Some(Arc::new(c)))
+            .map_err(|e| ConfigError(e.to_string())),
+        _ => Ok(None),
+    }
 }
 
 fn parse_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, ConfigError> {
@@ -329,6 +345,8 @@ impl Config {
             request_timeout: Duration::from_secs(request_timeout_secs),
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             smtp: crate::mail::SmtpConfig::from_env()?,
+            teacher_key_cipher: teacher_key_cipher_from_env()?,
+            classroom_ai_routing: true,
             app_base_url,
         })
     }
