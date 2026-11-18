@@ -14,7 +14,8 @@ fn classroom_block() -> String {
 #[sqlx::test]
 async fn demo_classrooms_keep_using_the_system_key(pool: PgPool) {
     demo::seed_accounts(&pool).await.unwrap();
-    sqlx::raw_sql(&classroom_block())
+    // 內容是版本控制中的腳本本身，不含任何外部輸入
+    sqlx::raw_sql(sqlx::AssertSqlSafe(classroom_block()))
         .execute(&pool)
         .await
         .unwrap();
