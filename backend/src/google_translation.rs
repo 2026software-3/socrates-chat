@@ -10,7 +10,7 @@ const QUOTA_REASONS: [&str; 2] = ["dailyLimitExceeded", "userRateLimitExceeded"]
 /// 同一 403 的 `error.message`（人類可讀，作為後備比對）。
 const QUOTA_MESSAGES: [&str; 2] = ["Daily Limit Exceeded", "User Rate Limit Exceeded"];
 
-/// 翻譯失敗的種類。配額錯誤與其他失敗都會回退到 AI，只有配額錯誤會留下紀錄。
+/// 翻譯失敗的種類。兩種失敗都會回退到 AI；記錄只含失敗種類，不含譯文或回應內容。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
     /// 每日或每分鐘配額用盡（HTTP 403）。
@@ -88,7 +88,10 @@ impl GoogleTranslation {
                 tracing::warn!("google translation quota exceeded; falling back to AI");
                 None
             }
-            Err(Failure::Other) => None,
+            Err(Failure::Other) => {
+                tracing::warn!("google translation failed; falling back to AI");
+                None
+            }
         }
     }
 
