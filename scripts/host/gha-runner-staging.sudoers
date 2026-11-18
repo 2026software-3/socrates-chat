@@ -1,5 +1,6 @@
 # /etc/sudoers.d/gha-runner-staging（root:root 0440）
 # msi_cubi 上 staging 自動部署的 self-hosted runner（gha-runner）只能以 root 執行部署包裝腳本。
 # 安裝：先 visudo -cf 檢查，再 install -o root -g root -m 0440 本檔 /etc/sudoers.d/gha-runner-staging。
-# 包裝腳本本身會再驗證參數（40 位小寫十六進位），這裡的萬用字元只是第一道篩選。
-gha-runner ALL=(root) NOPASSWD: /usr/local/sbin/socrates-staging-deploy [0-9a-f]*
+# 這裡不寫參數（sudoers 不接受參數中的萬用字元，會被 visudo 拒絕）。sudo 因此允許任何參數，
+# 所以參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支的祖先。
+gha-runner ALL=(root) NOPASSWD: /usr/local/sbin/socrates-staging-deploy
