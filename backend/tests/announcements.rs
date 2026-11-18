@@ -721,6 +721,48 @@ async fn a_reply_in_progress_finishes_but_new_messages_are_blocked(pool: PgPool)
     assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
 }
 
+/// #529：維護模式的 gate 已經查過 session，handler 的 extractor 沿用，同一個請求只查一次 session。
+/// 數連線池被取用的次數：維護模式開啟時管理者的請求，與關閉時完全相同。
+/// `before_acquire` 只在取用既有閒置連線時觸發，所以先備好足夠的連線，避免新建連線讓計數失準。
+#[sqlx::test]
+async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let acquires = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = acquires.clone();
+    let counting = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(8)
+        .before_acquire(move |_, _| {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })
+        })
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let app = test_app(counting);
+    let a = seed_actors(&app).await;
+
+    let acquires_of_one_request = || async {
+        // 先暖身，讓維護旗標的快取在量測期間仍有效
+        send(&app, get("/api/me", Some(&a.admin))).await;
+        let before = acquires.load(Ordering::SeqCst);
+        let res = send(&app, get("/api/me", Some(&a.admin))).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        acquires.load(Ordering::SeqCst) - before
+    };
+
+    let normal = acquires_of_one_request().await;
+    set_maintenance(&app, &a.admin, true).await;
+    let in_maintenance = acquires_of_one_request().await;
+    assert_eq!(
+        in_maintenance, normal,
+        "the maintenance gate and the handler extractor each queried the session"
+    );
+}
+
 #[sqlx::test]
 async fn maintenance_also_blocks_the_internal_cascade_endpoint(pool: PgPool) {
     let app = test_app_with_ai(pool, FakeAi::with(vec![]));
