@@ -123,7 +123,7 @@ pub(crate) async fn get_settings(
     Ok(Json(view(&state, classroom.id).await?))
 }
 
-fn check_error(reason: ModelCheckError, target: &'static str) -> ApiError {
+pub(crate) fn check_error(reason: ModelCheckError, target: &'static str) -> ApiError {
     let (code, message) = match reason {
         ModelCheckError::AuthFailed => ("model_auth_failed", "供應商拒絕了這把 key"),
         ModelCheckError::ModelNotFound => ("model_not_found", "找不到這個模型"),

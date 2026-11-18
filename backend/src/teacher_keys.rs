@@ -58,7 +58,7 @@ fn teacher_only(cu: &CurrentUser) -> Result<(), ApiError> {
     }
 }
 
-fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
+pub(crate) fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
     state
         .config
         .teacher_key_cipher
@@ -70,7 +70,7 @@ fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
         ))
 }
 
-fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
+pub(crate) fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::not_found())
 }
 
@@ -78,7 +78,7 @@ const INVALID_KEY: ApiError = ApiError::bad_request("invalid_key", "API key 格�
 const DUPLICATE: ApiError = ApiError::conflict("key_already_exists", "這把 key 已經存在");
 
 /// 去掉前後空白後，必須非空、不超過上限，且不含空白或控制字元。
-fn clean_key(raw: &str) -> Result<&str, ApiError> {
+pub(crate) fn clean_key(raw: &str) -> Result<&str, ApiError> {
     let key = raw.trim();
     if key.is_empty()
         || key.chars().count() > MAX_KEY_CHARS
@@ -89,7 +89,7 @@ fn clean_key(raw: &str) -> Result<&str, ApiError> {
     Ok(key)
 }
 
-fn add_error(e: AddError) -> ApiError {
+pub(crate) fn add_error(e: AddError) -> ApiError {
     match e {
         AddError::Duplicate => DUPLICATE,
         AddError::Db(e) => e.into(),
@@ -136,9 +136,9 @@ impl From<TeacherKey> for KeyItem {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewKey {
     #[schema(example = "openai")]
-    provider: String,
+    pub(crate) provider: String,
     #[schema(max_length = 512)]
-    key: String,
+    pub(crate) key: String,
 }
 
 /// 更換 key：供應商不可變更，要換供應商請新增另一把。
@@ -146,13 +146,13 @@ pub(crate) struct NewKey {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplaceKey {
     #[schema(max_length = 512)]
-    key: String,
+    pub(crate) key: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct KeyTestResult {
     /// `usable` 或 `connection_failed`；額度不足仍算可用，key 無效或已撤銷算連線失敗
-    result: &'static str,
+    pub(crate) result: &'static str,
 }
 
 /// 開放給教師的供應商名單。
