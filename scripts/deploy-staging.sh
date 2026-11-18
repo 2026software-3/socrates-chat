@@ -59,7 +59,7 @@ for _ in $(seq 1 30); do
 done
 if [ "$ok" -ne 1 ]; then
   echo "健康檢查失敗：http://127.0.0.1:$PROXY_PORT/ready 60 秒內沒有回 200" >&2
-  docker compose -f docker-compose.staging.yml ps >&2
+  STAGING_APP_IMAGE_TAG="$TAG" docker compose -f docker-compose.staging.yml ps >&2 || true
   exit 1
 fi
 
@@ -68,5 +68,5 @@ docker image ls --filter "reference=$IMAGE_REPO:staging-*" --format '{{.Reposito
   | tail -n +"$((KEEP_IMAGES + 1))" \
   | xargs -r docker image rm >/dev/null 2>&1 || true
 
-docker compose -f docker-compose.staging.yml ps
+STAGING_APP_IMAGE_TAG="$TAG" docker compose -f docker-compose.staging.yml ps
 echo "完成：staging 已部署 $SHA（$TAG）"
