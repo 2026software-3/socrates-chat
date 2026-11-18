@@ -204,3 +204,14 @@ fn only_rate_limited_cooldowns_count_as_rate_limited() {
     pool.mark_rate_limited(1, None);
     assert!(pool.has_rate_limited_key());
 }
+
+#[test]
+fn an_empty_pool_has_no_usable_key_and_forks_empty() {
+    let p = KeyPool::empty();
+    assert!(p.is_empty());
+    assert_eq!(p.len(), 0);
+    assert!(p.acquire().is_none());
+    assert_eq!(p.usable_count(), 0);
+    assert!(p.next_available_in().is_none());
+    assert!(p.fork().acquire().is_none());
+}

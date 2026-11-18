@@ -375,7 +375,7 @@
 - migration 使用 `sqlx migrate`（`backend/migrations/`）。
 - 設定與秘密一律用環境變數；本機用 `.env`（不進版控），並提供 `.env.example`。
 - **API 契約採 OpenAPI 3，用 `utoipa` 由程式碼產生（2026-10 決定）**：各 handler 以 `#[utoipa::path]`、型別以 `ToSchema` 標註，文件公開在 `GET /api/openapi.json`；測試檢查每個已文件化的端點都有對應路由且受保護。人讀的補充說明在 `docs/api/api-reference.md`。
-- **系統 AI 的 key 可在介面管理（2026-11，需求方確認；暫列待書面確認的取捨：模型驗證會產生少量費用、key 以教師 key 的加密金鑰加密）**：沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度與公告翻譯等「系統用途」，管理者可在介面設定供應商、模型與多把系統 key（任何支援的平台，新增、更換、刪除、測試；失效或限流自動換下一把，用量依 key 記在 `system_ai_usage`）。key 加密存資料庫（`TEACHER_KEY_ENCRYPTION_KEYS`，與教師 key 相同做法），此為對「秘密一律用環境變數」的修正：加密金鑰仍在環境變數，key 本身可存加密後的資料庫。主機上的 `.apikeylist` 保留為退路：沒設定模型、沒有可用 key 或全部失敗時照舊使用，所以不設定時行為不變。稽核只記操作者與供應商識別碼。語音（STT／TTS）不在此範圍。
+- **系統 AI 的 key 可在介面管理（2026-11，需求方確認；暫列待書面確認的取捨：模型驗證會產生少量費用、key 以教師 key 的加密金鑰加密）**：沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度與公告翻譯等「系統用途」，管理者可在介面設定供應商、模型與多把系統 key（任何支援的平台，新增、更換、刪除、測試；失效或限流自動換下一把，用量依 key 記在 `system_ai_usage`）。key 加密存資料庫（`TEACHER_KEY_ENCRYPTION_KEYS`，與教師 key 相同做法），此為對「秘密一律用環境變數」的修正：加密金鑰仍在環境變數，key 本身可存加密後的資料庫。**主機上的 `.apikeylist`、`OPENAI_API_KEYS`、`OPENAI_API_KEYS_FILE`、`OPENAI_API_KEY` 於 2026-11-19 淘汰（需求方指示）**：後端不再讀取，設了只在啟動時警告；沒設定模型或沒有可用 key 時，系統用途的 AI 無法使用（先前會退回主機 key）。因此升級後第一件事是管理者在「系統 AI」頁設定模型與 key（需先設好 `TEACHER_KEY_ENCRYPTION_KEYS`）。語音辨識走自架 Whisper（`OPENAI_STT_BASE_URL`）時不需要也不送任何 OpenAI 金鑰；走 OpenAI 的語音備援因沒有主機 key 而不可用。離線評估工具（`backend/examples`、`backend/eval`）仍可讀 `.apikeylist`。稽核只記操作者與供應商識別碼。語音（STT／TTS）不在此範圍。
 - **新增的環境變數（2026-11）**：客訴寄信用 `SMTP_FROM`、`COMPLAINT_TO` 與 SMTP 連線設定（S-17.3）；NTNU 加上反向代理後，`TRUSTED_PROXIES` 要包含代理所在的網段（S-16）。名稱見 S-17.3 與 `.env.example`。
 
 ### S-08.4 對話 API 傳輸方式與錯誤邊界（已決定）

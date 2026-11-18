@@ -51,7 +51,7 @@ const goTo = async (name: string) => userEvent.setup().click(await screen.findBy
 describe('SystemAiPage', () => {
   it('says the host key list is in use and warns when the feature is not enabled', async () => {
     await open(overview({ encryption_configured: false }))
-    expect(await screen.findByText(/目前使用主機上的 \.apikeylist（模型 gpt-4o-mini）/)).toBeInTheDocument()
+    expect(await screen.findByText(/尚未設定系統 AI（預設模型 gpt-4o-mini）/)).toBeInTheDocument()
     expect(screen.getByText(/後端尚未啟用教師 key 功能/)).toBeInTheDocument()
   })
 

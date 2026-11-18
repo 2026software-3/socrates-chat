@@ -276,7 +276,7 @@ pub async fn set_setting(
     Ok(())
 }
 
-/// 清除設定（回到主機上的 .apikeylist）；原本有設定才回 `true`。
+/// 清除設定（系統用途的 AI 暫時無法使用）；原本有設定才回 `true`。
 pub async fn clear_setting(db: impl sqlx::PgExecutor<'_>) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query("DELETE FROM system_ai_settings")
         .execute(db)

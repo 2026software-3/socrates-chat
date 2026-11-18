@@ -201,7 +201,7 @@ impl AppState {
 
     /// 系統用途的 AI：沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度與公告翻譯等。
     /// 管理者在介面設定了供應商、模型與系統 key 就用它們（多把輪流、失效或限流自動換下一把）；
-    /// 沒有設定、沒有可用的 key 或全部失敗時，退回主機上的 `.apikeylist`（`self.ai`），行為與以前相同。
+    /// 沒有設定、沒有可用的 key 或全部失敗時，退回 `self.ai`；它的主機 key 池已淘汰、永遠是空的，所以會失敗（AI 無法使用），不會連到任何服務。
     pub(crate) async fn system_route(&self) -> Route {
         match self.configured_system_route().await {
             Some(route) => route,
@@ -257,7 +257,7 @@ impl AppState {
     }
 }
 
-/// 系統用途：管理者設定的 key 都不能用時，退回主機上的 `.apikeylist`。
+/// 系統用途：管理者設定的 key 都不能用時，退回 `self.ai`（沒有 key，會直接失敗）。
 struct WithFallback {
     primary: Arc<dyn AiProvider>,
     fallback: Arc<dyn AiProvider>,
