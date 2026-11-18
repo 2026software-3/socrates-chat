@@ -35,6 +35,8 @@ const MODEL: &str = "classroom-model";
 enum Behavior {
     Ok,
     Status(u16, &'static str),
+    /// 429，並以 `Retry-After` 要求等待這麼多秒
+    LimitedFor(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +93,12 @@ async fn handle(State(f): State<Fake>, headers: HeaderMap, body: Bytes) -> Respo
             .status(StatusCode::from_u16(status).unwrap())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
+            .unwrap(),
+        Behavior::LimitedFor(secs) => Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("retry-after", secs)
+            .body(Body::from(r#"{"error":{"message":"slow down"}}"#))
             .unwrap(),
         Behavior::Ok => {
             let mut b = String::new();
@@ -402,6 +410,52 @@ async fn failing_key_enters_cooldown_then_gets_another_chance(pool: PgPool) {
         .unwrap();
     assert_eq!(error_code(&w.say().await), None);
     assert_eq!(w.status_of(bad).await, KeyStatus::Ok);
+}
+
+#[sqlx::test]
+async fn rate_limited_key_waits_as_long_as_the_providers_retry_after(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let key = w.add_key(w.owner, "openai", KEY_1).await;
+    w.configure().await;
+    w.fake.set(KEY_1, Behavior::LimitedFor("300"));
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    assert_eq!(w.status_of(key).await, KeyStatus::RateLimited);
+    let saved: Option<i32> =
+        sqlx::query_scalar("SELECT retry_after_secs FROM teacher_api_keys WHERE id = $1")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, Some(300));
+    w.fake.set(KEY_1, Behavior::Ok);
+    let before = w.fake.keys_seen().len();
+    // 已超過固定的 60 秒冷卻，但還沒到供應商要求的 300 秒：不打擾供應商
+    sqlx::query("UPDATE teacher_api_keys SET status_at = now() - interval '2 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    assert_eq!(w.fake.keys_seen().len(), before);
+    // 等滿之後再試；成功後狀態與等待時間都清除
+    sqlx::query("UPDATE teacher_api_keys SET status_at = now() - interval '6 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(error_code(&w.say().await), None);
+    assert_eq!(w.status_of(key).await, KeyStatus::Ok);
+    let saved: Option<i32> =
+        sqlx::query_scalar("SELECT retry_after_secs FROM teacher_api_keys WHERE id = $1")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, None);
 }
 
 #[sqlx::test]
