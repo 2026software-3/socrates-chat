@@ -99,9 +99,9 @@ pub(crate) fn add_error(e: AddError) -> ApiError {
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ProviderItem {
     #[schema(example = "openai")]
-    id: &'static str,
+    pub(crate) id: &'static str,
     #[schema(example = "OpenAI")]
-    name: &'static str,
+    pub(crate) name: &'static str,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

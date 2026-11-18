@@ -82,6 +82,8 @@ pub(crate) struct Overview {
     /// 主機設定的模型（`OPENAI_MODEL`）：`source` 是 `host_file` 時使用它
     host_model: String,
     keys: Vec<SystemKeyItem>,
+    /// 可選的供應商（管理者不能呼叫教師的供應商名單）
+    providers: Vec<teacher_keys::ProviderItem>,
 }
 
 fn provider_name(id: &str) -> String {
@@ -108,6 +110,13 @@ async fn overview_of(state: &AppState) -> Result<Overview, ApiError> {
         }),
         host_model: state.config.openai_model.clone(),
         keys: keys.into_iter().map(|k| item(k, &usage)).collect(),
+        providers: ai_providers::providers()
+            .iter()
+            .map(|p| teacher_keys::ProviderItem {
+                id: p.id,
+                name: p.name,
+            })
+            .collect(),
     })
 }
 

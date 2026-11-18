@@ -370,3 +370,29 @@ export type ClassroomAiSettings = {
   fallbacks: ModelRef[]
   confirmed_providers: string[]
 }
+
+/** `GET /api/admin/system-ai`：系統用途的模型、key 與近 30 天用量。 */
+export type SystemAiKey = {
+  id: string
+  provider: string
+  provider_name: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+  requests_30d: number
+  input_tokens_30d: number
+  output_tokens_30d: number
+  unreported_requests_30d: number
+}
+
+export type SystemAiOverview = {
+  /** `database`：用這裡設定的模型與 key；`host_file`：用主機上的 .apikeylist */
+  source: 'database' | 'host_file'
+  routing_enabled: boolean
+  encryption_configured: boolean
+  setting: { provider: string; provider_name: string; model: string } | null
+  host_model: string
+  keys: SystemAiKey[]
+  providers: AiProvider[]
+}

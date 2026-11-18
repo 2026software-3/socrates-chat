@@ -162,6 +162,11 @@
 
 ### AI 用量（F-40.8，S-03.1）
 
+- **系統 AI（管理者，`/api/admin/system-ai`）**：系統用途（沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度、公告翻譯）使用的供應商、模型與多把系統 key；沒設定或沒有可用 key 時用主機的 `.apikeylist`。只有管理者（未登入 `401`、其他角色 `403`），寫入需同源（CSRF）。
+  - `GET /api/admin/system-ai`：`{ source: "database" | "host_file", routing_enabled, encryption_configured, setting, host_model, keys[], providers[] }`；`keys[]` 只有遮蔽識別、狀態與近 30 天用量（請求數、輸入／輸出 token、未回報請求數），不含 key。
+  - `PUT /api/admin/system-ai/model` `{ provider, model }`：用該供應商的一把系統 key 送一次最小串流與 JSON 請求驗證（少量費用）後儲存；沒有該供應商的 key 回 `400 no_key_for_provider`，驗證失敗的代碼同教室 AI 設定；驗證太頻繁 `429 key_test_rate_limited`（沿用 key 測試額度）。`DELETE` 清除設定（回到 `.apikeylist`）。
+  - `POST /api/admin/system-ai/keys` `{ provider, key }` → `201`；`PUT …/keys/{id}` `{ key }` 更換（供應商與歷史用量不變、狀態重設）；`DELETE …/keys/{id}` → `204`（用量一併刪除）；`POST …/keys/{id}/test` → `{ result: "usable" | "connection_failed" }`（只呼叫模型清單端點）。錯誤代碼同教師 key（`invalid_provider`、`invalid_key`、`key_already_exists`——與教師 key 全域不得重複、`503 teacher_keys_unavailable`）。
+  - 稽核動作：`system_key_added`、`system_key_replaced`、`system_key_deleted`、`system_ai_model_set`、`system_ai_model_cleared`（對象只記供應商識別碼）。
 - `GET /api/teacher/keys/models?provider=`：用自己該供應商的 key 向供應商取模型清單，只當教室 AI 設定的輸入建議（不是白名單，儲存時仍以模型驗證為準）。回 `{ provider, status: "ok" | "no_key" | "unavailable", models: [string] }`：`ok` 時 `models` 已排序、去重、排除名稱明顯不是對話模型的項目，最多 500 個；`no_key` 是沒有該供應商的 key；`unavailable` 是有 key 但取不到清單（key 無效、供應商不提供、逾時；同一供應商最多依序試 3 把 key）。後兩者都回 `200`，前端退回純文字輸入。供應商不在名單或缺少 `provider` 回 `400`（`invalid_provider`）；每位教師每分鐘最多 30 次（暫定值，待需求方確認），超過回 `429 model_list_rate_limited`；沒有設定加密金鑰回 `503 teacher_keys_unavailable`。不改動 key 的狀態，回應與日誌不含 key。只有教師本人（管理者身分也是 `403`）。
 - `GET /api/teacher/keys/{id}/usage?range=`：自己某把 key 的用量。
 - `GET /api/classrooms/{id}/ai-usage?range=`：自己建立的教室的用量（各 key 加總；封存的教室仍可看）。
