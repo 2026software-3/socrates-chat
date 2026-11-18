@@ -34,10 +34,12 @@ const key = {
   unreported_requests_30d: 0,
 }
 
-async function open(data: SystemAiOverview) {
+const noUsage = { range: '7d', totals: { requests: 0, input_tokens: 0, output_tokens: 0, unreported_requests: 0 }, items: [] }
+
+async function open(data: SystemAiOverview, usage: (range: string) => unknown = () => noUsage) {
   server.use(
     http.get('/api/admin/system-ai', () => HttpResponse.json(data)),
-    http.get('/api/admin/system-ai/usage', () => HttpResponse.json({ range: '7d', totals: { requests: 0, input_tokens: 0, output_tokens: 0, unreported_requests: 0 }, items: [] })),
+    http.get('/api/admin/system-ai/usage', ({ request }) => HttpResponse.json(usage(new URL(request.url).searchParams.get('range') ?? ''))),
   )
   mockMe(makeMe({ admin: true }))
   renderApp(null, { route: '/admin/system-ai' })
@@ -108,17 +110,14 @@ describe('SystemAiPage', () => {
 
   it('shows the system usage by provider and model with a range selector', async () => {
     const ranges: string[] = []
-    server.use(
-      http.get('/api/admin/system-ai/usage', ({ request }) => {
-        ranges.push(new URL(request.url).searchParams.get('range') ?? '')
-        return HttpResponse.json({
-          range: '7d',
-          totals: { requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 },
-          items: [{ provider: 'openai', model: 'gpt-a', requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 }],
-        })
-      }),
-    )
-    await open(overview({ keys: [key] }))
+    await open(overview({ keys: [key] }), (range) => {
+      ranges.push(range)
+      return {
+        range,
+        totals: { requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 },
+        items: [{ provider: 'openai', model: 'gpt-a', requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 }],
+      }
+    })
     expect(await screen.findByText('OpenAI / gpt-a')).toBeInTheDocument()
     expect(ranges[0]).toBe('7d')
     await userEvent.setup().selectOptions(screen.getByLabelText('期間'), '30d')
