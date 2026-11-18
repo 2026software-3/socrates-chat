@@ -35,6 +35,8 @@ const MODEL: &str = "classroom-model";
 enum Behavior {
     Ok,
     Status(u16, &'static str),
+    /// 429，並以 `Retry-After` 要求等待這麼多秒
+    LimitedFor(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +93,12 @@ async fn handle(State(f): State<Fake>, headers: HeaderMap, body: Bytes) -> Respo
             .status(StatusCode::from_u16(status).unwrap())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
+            .unwrap(),
+        Behavior::LimitedFor(secs) => Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("retry-after", secs)
+            .body(Body::from(r#"{"error":{"message":"slow down"}}"#))
             .unwrap(),
         Behavior::Ok => {
             let mut b = String::new();
@@ -408,6 +416,85 @@ async fn failing_key_enters_cooldown_then_gets_another_chance(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn rate_limited_key_waits_as_long_as_the_providers_retry_after(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let key = w.add_key(w.owner, "openai", KEY_1).await;
+    w.configure().await;
+    w.fake.set(KEY_1, Behavior::LimitedFor("300"));
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    assert_eq!(w.status_of(key).await, KeyStatus::RateLimited);
+    let saved: Option<i32> =
+        sqlx::query_scalar("SELECT retry_after_secs FROM teacher_api_keys WHERE id = $1")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, Some(300));
+    w.fake.set(KEY_1, Behavior::Ok);
+    let before = w.fake.keys_seen().len();
+    // 已超過固定的 60 秒冷卻，但還沒到供應商要求的 300 秒：不打擾供應商
+    sqlx::query("UPDATE teacher_api_keys SET status_at = now() - interval '2 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    assert_eq!(w.fake.keys_seen().len(), before);
+    // 等滿之後再試；成功後狀態與等待時間都清除
+    sqlx::query("UPDATE teacher_api_keys SET status_at = now() - interval '6 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(error_code(&w.say().await), None);
+    assert_eq!(w.status_of(key).await, KeyStatus::Ok);
+    let saved: Option<i32> =
+        sqlx::query_scalar("SELECT retry_after_secs FROM teacher_api_keys WHERE id = $1")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, None);
+}
+
+#[sqlx::test]
+async fn a_key_that_recovers_stays_usable_for_the_retry_of_the_same_call(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    let key = w.add_key(w.owner, "openai", KEY_1).await;
+    w.configure().await;
+    assert_eq!(error_code(&w.say().await), None);
+    // 唯一的 key 曾受頻率限制，冷卻已過
+    sqlx::query(
+        "UPDATE teacher_api_keys SET status = 'rate_limited', status_at = now() - interval '2 minutes'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = w.fake.keys_seen().len();
+    // 總結：第一次成功連上（key 恢復）但輸出不是總結格式，於是以同一個路由重試一次。
+    // 重試必須仍能用這把剛恢復的 key，而不是當成失敗的 key 跳過、回報教室 AI 不可用
+    let res = send(
+        &w.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/end", w.conv),
+            Some(&w.a.student),
+            None,
+        ),
+    )
+    .await;
+    assert!(res.status().is_success(), "{}", res.status());
+    let summary = settled_summary(&w.app, &w.a.student, &w.conv).await;
+    assert_eq!(summary["status"], "failed", "{summary}");
+    assert_eq!(w.fake.keys_seen().len(), before + 2, "兩次嘗試都送到供應商");
+    assert_eq!(w.status_of(key).await, KeyStatus::Ok);
+}
+
+#[sqlx::test]
 async fn other_errors_do_not_switch_keys_or_change_key_status(pool: PgPool) {
     let w = world(pool).await;
     let k1 = w.add_key(w.owner, "openai", KEY_1).await;
@@ -550,6 +637,43 @@ async fn rate_limited_primary_switches_to_the_fallback_and_the_conversation_stay
     assert_eq!(error_code(&w.say().await), None);
     assert_eq!(w.models_seen(), vec![MODEL, FALLBACK_MODEL, FALLBACK_MODEL]);
     assert_eq!(w.system.request_count(), 0, "不得使用系統 key");
+}
+
+#[sqlx::test]
+async fn changing_the_settings_restarts_conversations_on_the_primary_model(pool: PgPool) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    w.fake.set(
+        KEY_1,
+        Behavior::Status(429, r#"{"error":{"message":"slow"}}"#),
+    );
+    assert_eq!(error_code(&w.say().await), None);
+    assert_eq!(w.position().await, 1);
+    // 教師改了設定、拿掉備援：這場對話不能卡在已不存在的位置
+    w.fake.set(KEY_1, Behavior::Ok);
+    w.configure().await;
+    assert_eq!(w.position().await, 0);
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.models_seen().last().map(String::as_str), Some(MODEL));
+}
+
+#[sqlx::test]
+async fn a_stored_position_beyond_the_current_list_starts_from_the_primary(pool: PgPool) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    sqlx::query("UPDATE conversations SET ai_fallback_position = 3 WHERE id = $1")
+        .bind(Uuid::parse_str(&w.conv).unwrap())
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.models_seen(), vec![MODEL]);
 }
 
 #[sqlx::test]

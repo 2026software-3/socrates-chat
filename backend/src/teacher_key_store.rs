@@ -91,6 +91,8 @@ pub struct UsableKey {
     pub status: KeyStatus,
     /// 進入目前狀態的時間；`Ok` 時為 `None`。
     pub status_at: Option<DateTime<Utc>>,
+    /// 供應商以 `Retry-After` 要求的等待時間（只有受頻率限制時會記）。
+    pub retry_after: Option<std::time::Duration>,
     secret: String,
 }
 
@@ -173,7 +175,7 @@ pub async fn replace(
     let row: Option<Row> = sqlx::query_as(concat!(
         "UPDATE teacher_api_keys
             SET ciphertext = $3, encryption_key_id = $4, mask = $5, fingerprint = $6,
-                status = 'ok', status_at = NULL, updated_at = now()
+                status = 'ok', status_at = NULL, retry_after_secs = NULL, updated_at = now()
           WHERE id = $1 AND owner_id = $2
         RETURNING ",
         columns!(),
@@ -227,9 +229,16 @@ pub async fn keys_for(
     owner: Uuid,
     provider: &str,
 ) -> Result<Vec<UsableKey>, sqlx::Error> {
-    type SecretRow = (Uuid, Vec<u8>, String, String, Option<DateTime<Utc>>);
+    type SecretRow = (
+        Uuid,
+        Vec<u8>,
+        String,
+        String,
+        Option<DateTime<Utc>>,
+        Option<i32>,
+    );
     let rows: Vec<SecretRow> = sqlx::query_as(
-        "SELECT id, ciphertext, encryption_key_id, status, status_at FROM teacher_api_keys
+        "SELECT id, ciphertext, encryption_key_id, status, status_at, retry_after_secs FROM teacher_api_keys
           WHERE owner_id = $1 AND provider = $2 ORDER BY created_at, id",
     )
     .bind(owner)
@@ -238,28 +247,68 @@ pub async fn keys_for(
     .await?;
     Ok(rows
         .into_iter()
-        .filter_map(
-            |(id, ct, key_id, status, status_at)| match cipher.decrypt(&key_id, &ct) {
+        .filter_map(|(id, ct, key_id, status, status_at, retry)| {
+            match cipher.decrypt(&key_id, &ct) {
                 Ok(secret) => Some(UsableKey {
                     id,
                     status: KeyStatus::parse(&status),
                     status_at,
+                    retry_after: retry
+                        .map(|s| std::time::Duration::from_secs(s.unsigned_abs().into())),
                     secret,
                 }),
                 Err(_) => {
                     tracing::warn!(key_id = %id, "teacher api key could not be decrypted");
                     None
                 }
-            },
-        )
+            }
+        })
         .collect())
+}
+
+/// 以實際用過的 key 記錄狀態：只有那筆項目的 key 還是同一把（指紋相同）才寫入。
+/// 呼叫進行中教師更換了 key 時，舊 key 的失敗不會蓋到新 key 上；沒寫入回 `false`。
+pub async fn set_status_for(
+    pool: &PgPool,
+    key: &UsableKey,
+    status: KeyStatus,
+) -> Result<bool, sqlx::Error> {
+    set_status_after(pool, key, status, None).await
+}
+
+/// 同 [`set_status_for`]，並記下供應商要求的等待時間（`Retry-After`）；狀態恢復時清除。
+pub async fn set_status_after(
+    pool: &PgPool,
+    key: &UsableKey,
+    status: KeyStatus,
+    retry_after: Option<std::time::Duration>,
+) -> Result<bool, sqlx::Error> {
+    let secs = retry_after
+        .filter(|_| status != KeyStatus::Ok)
+        .map(|d| i32::try_from(d.as_secs()).unwrap_or(i32::MAX))
+        .filter(|s| *s > 0);
+    Ok(sqlx::query(
+        "UPDATE teacher_api_keys
+            SET status = $2, status_at = CASE WHEN $2 = 'ok' THEN NULL ELSE now() END,
+                retry_after_secs = $4
+          WHERE id = $1 AND fingerprint = $3",
+    )
+    .bind(key.id)
+    .bind(status.as_str())
+    .bind(fingerprint(key.secret()))
+    .bind(secs)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
 }
 
 /// 記錄 key 的狀態；`Ok` 會清除狀態時間。key 不存在回 `false`。
 pub async fn set_status(pool: &PgPool, id: Uuid, status: KeyStatus) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query(
         "UPDATE teacher_api_keys
-            SET status = $2, status_at = CASE WHEN $2 = 'ok' THEN NULL ELSE now() END
+            SET status = $2, status_at = CASE WHEN $2 = 'ok' THEN NULL ELSE now() END,
+                retry_after_secs = NULL
           WHERE id = $1",
     )
     .bind(id)
@@ -293,6 +342,7 @@ pub async fn get_secret(
                     id,
                     status: KeyStatus::parse(&status),
                     status_at: None,
+                    retry_after: None,
                     secret,
                 },
             )
