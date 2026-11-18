@@ -320,8 +320,12 @@ async fn authorization_matrix(pool: PgPool) {
             (StatusCode::UNAUTHORIZED, "unauthorized"),
             "{p}"
         );
-        // 學生、名單外帳號、管理者（不能看教師 key 的用量；教室用量預設不開放，待確認）
-        for cookie in [&w.a.student, &w.a.outsider, &w.a.admin] {
+        // 學生、名單外帳號：403；管理者不能看教師 key 的用量，但可以看教室用量（需求方已確認）
+        let mut blocked = vec![&w.a.student, &w.a.outsider];
+        if p.contains("/keys/") {
+            blocked.push(&w.a.admin);
+        }
+        for cookie in blocked {
             let (s, _) = call(&w.app, "GET", p, Some(cookie), None).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "{p}");
         }
@@ -329,6 +333,26 @@ async fn authorization_matrix(pool: PgPool) {
         let (s, e) = call(&w.app, "GET", p, Some(&t2), None).await;
         assert_eq!((s, code(&e)), (StatusCode::NOT_FOUND, "not_found"), "{p}");
     }
+    // 管理者可以查任何教室的用量（含各 key 加總），不存在的教室仍是 404
+    let (s, v) = call(
+        &w.app,
+        "GET",
+        &format!("/api/classrooms/{}/ai-usage?range=all", w.classroom),
+        Some(&w.a.admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["totals"]["requests"], 1);
+    let (s, _) = call(
+        &w.app,
+        "GET",
+        "/api/classrooms/00000000-0000-0000-0000-000000000000/ai-usage",
+        Some(&w.a.admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
     // 不存在或格式不正確的 id
     for p in [
         "/api/teacher/keys/00000000-0000-0000-0000-000000000000/usage",

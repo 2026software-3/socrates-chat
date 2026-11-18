@@ -166,7 +166,7 @@
 - `GET /api/classrooms/{id}/ai-usage?range=`：自己建立的教室的用量（各 key 加總；封存的教室仍可看）。
 - `range` 為 `today`、`7d`（預設，暫定）、`30d` 或 `all`，其他值回 `400 invalid_range`；「日」以 Asia/Taipei 日曆日計，`7d`、`30d` 含今天（待需求方確認）。
 - 回 `{ range, totals, items }`；`totals` 與每個 `items`（依供應商、模型細分，備援模型歸在它自己的列）都是 `{ requests, input_tokens, output_tokens, unreported_requests }`。`unreported_requests` 是供應商沒回報 token 的請求數，這些請求不估算 token。不計金額。刪除 key 後該 key 的用量消失、教室總計扣除；更換 key 用量延續。
-- 權限：未登入 `401`；學生、名單外帳號與只有管理者身分的人 `403`（管理者不能看教師 key 的用量；管理者看教室用量規格未明，預設不開放，待確認）；其他教師查他人的 key 或教室與不存在相同 `404`。
+- 權限：未登入 `401`；學生與名單外帳號 `403`。`/api/teacher/keys/{id}/usage` 只有 key 的持有教師，只有管理者身分的人也是 `403`（管理者看不到教師 key 的用量）。`/api/classrooms/{id}/ai-usage` 教師看自己建立的教室，管理者可看任何教室（需求方已確認）；其他教師查他人的 key 或教室與不存在相同 `404`。
 
 ### 教室的 AI 模型設定（F-40.4，S-03.1）
 
