@@ -114,6 +114,8 @@ pub enum Failure {
     /// 供應商正常回應，但內容無法解析；不算供應商失敗
     InvalidOutput,
     /// 教室的 AI 服務無法使用（沒有可用的教師 key、建立者停用或不再是教師等），不退回系統 key（S-03.1）
+    /// 名稱與存進資料庫、回給學生的代碼一致，管理者才能用它篩選
+    #[serde(rename = "classroom_ai_unavailable")]
     ClassroomUnavailable,
     InvalidCredentials,
     AccountDisabled,
