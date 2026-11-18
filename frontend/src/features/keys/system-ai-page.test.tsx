@@ -35,7 +35,10 @@ const key = {
 }
 
 async function open(data: SystemAiOverview) {
-  server.use(http.get('/api/admin/system-ai', () => HttpResponse.json(data)))
+  server.use(
+    http.get('/api/admin/system-ai', () => HttpResponse.json(data)),
+    http.get('/api/admin/system-ai/usage', () => HttpResponse.json({ range: '7d', totals: { requests: 0, input_tokens: 0, output_tokens: 0, unreported_requests: 0 }, items: [] })),
+  )
   mockMe(makeMe({ admin: true }))
   renderApp(null, { route: '/admin/system-ai' })
   await screen.findByRole('heading', { name: '系統 AI' })
@@ -101,6 +104,25 @@ describe('SystemAiPage', () => {
     expect(await screen.findByText('已儲存系統模型。')).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: /清除設定/ }))
     await waitFor(() => expect(deleted).toBe(true))
+  })
+
+  it('shows the system usage by provider and model with a range selector', async () => {
+    const ranges: string[] = []
+    server.use(
+      http.get('/api/admin/system-ai/usage', ({ request }) => {
+        ranges.push(new URL(request.url).searchParams.get('range') ?? '')
+        return HttpResponse.json({
+          range: '7d',
+          totals: { requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 },
+          items: [{ provider: 'openai', model: 'gpt-a', requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 }],
+        })
+      }),
+    )
+    await open(overview({ keys: [key] }))
+    expect(await screen.findByText('OpenAI / gpt-a')).toBeInTheDocument()
+    expect(ranges[0]).toBe('7d')
+    await userEvent.setup().selectOptions(screen.getByLabelText('期間'), '30d')
+    await waitFor(() => expect(ranges).toContain('30d'))
   })
 
   it('suggests models from the system keys and still accepts any typed model', async () => {

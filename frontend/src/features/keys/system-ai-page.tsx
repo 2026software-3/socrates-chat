@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ModelFields } from '@/features/keys/ai-settings-page'
 import { StatusBadge } from '@/features/keys/keys-page'
+import { UsagePanel } from '@/features/keys/usage-panel'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { SystemAiKey, SystemAiOverview } from '@/lib/types'
@@ -193,6 +194,11 @@ export function SystemAiPage() {
                 ))}
               </ul>
             )}
+          </section>
+
+          <section className="space-y-2" aria-label={t('systemAi.usage.title')}>
+            <h2 className="text-base font-medium">{t('systemAi.usage.title')}</h2>
+            <UsagePanel idPrefix="system" path={`${BASE}/usage`} providers={overview.providers} />
           </section>
 
           <form onSubmit={onAdd} className="space-y-3" aria-label={t('keys.add.title')}>

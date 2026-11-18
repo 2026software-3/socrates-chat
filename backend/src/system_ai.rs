@@ -25,6 +25,7 @@ use crate::{
     system_key_store::{self as store, SystemKey},
     teacher_key_store::KeyStatus,
     teacher_keys::{self, KeyTestResult, ModelList, ModelsQuery, NewKey, ReplaceKey},
+    usage_api::{self, RangeQuery, UsageReport},
 };
 
 const MAX_MODEL_CHARS: usize = 200;
@@ -38,6 +39,7 @@ pub fn routes() -> Router<AppState> {
             put(set_model).delete(clear_model),
         )
         .route("/api/admin/system-ai/models", get(list_models))
+        .route("/api/admin/system-ai/usage", get(usage))
         .route("/api/admin/system-ai/keys", post(add_key))
         .route(
             "/api/admin/system-ai/keys/{id}",
@@ -155,6 +157,31 @@ pub(crate) async fn overview(
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(overview_of(&state).await?),
+    ))
+}
+
+/// 系統用途的 AI 用量：依（供應商、模型）細分的請求次數與 token（各系統 key 加總），格式同教師的用量。
+/// 不計金額；供應商沒回報 token 的請求只標示未回報。刪除 key 時該 key 的用量一併刪除。
+#[utoipa::path(
+    get,
+    path = "/api/admin/system-ai/usage",
+    tag = "admin",
+    summary = "系統用途的 AI 用量",
+    params(("range" = Option<String>, Query, description = "today、7d（預設）、30d、all")),
+    responses((status = 200, body = UsageReport), (status = 400, description = "invalid_range", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn usage(
+    RequireAdmin(_): RequireAdmin,
+    State(state): State<AppState>,
+    Query(q): Query<RangeQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (range, name) = usage_api::parse_range(&q)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(usage_api::report(
+            name,
+            store::usage_by_model(&state.pool, range).await?,
+        )),
     ))
 }
 

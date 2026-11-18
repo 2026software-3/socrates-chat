@@ -16,7 +16,7 @@ pub enum Range {
 
 impl Range {
     /// 起算日往前幾天（含今天）；`All` 不設限。
-    fn days(self) -> Option<i32> {
+    pub(crate) fn days(self) -> Option<i32> {
         match self {
             Self::Today => Some(1),
             Self::Last7Days => Some(7),
@@ -127,9 +127,9 @@ pub struct ModelUsage {
     pub totals: Totals,
 }
 
-type ModelRow = (String, String, i64, i64, i64, i64);
+pub(crate) type ModelRow = (String, String, i64, i64, i64, i64);
 
-fn model_usage(rows: Vec<ModelRow>) -> Vec<ModelUsage> {
+pub(crate) fn model_usage(rows: Vec<ModelRow>) -> Vec<ModelUsage> {
     rows.into_iter()
         .map(
             |(provider, model, requests, input_tokens, output_tokens, unreported_requests)| {
