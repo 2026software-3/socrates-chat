@@ -53,7 +53,14 @@ describe('tasks', () => {
       }),
     )
     renderApp(null, { route: '/tasks' })
-    await userEvent.click(await screen.findByRole('button', { name: '領取' }))
+    const claimButton = await screen.findByRole('button', { name: '領取' })
+    const enabledAfterClaim: boolean[] = []
+    const observer = new MutationObserver((records) => {
+      // 按鈕的 disabled 屬性被移除，代表在刷新完成前已可再次點擊
+      if (claimed && records.some((record) => record.oldValue !== null)) enabledAfterClaim.push(true)
+    })
+    observer.observe(claimButton, { attributes: true, attributeFilter: ['disabled'], attributeOldValue: true })
+    await userEvent.click(claimButton)
     try {
       await waitFor(() => expect(refreshing).toBe(true))
       expect(screen.getByRole('button', { name: '領取' })).toBeDisabled()
@@ -61,6 +68,25 @@ describe('tasks', () => {
       finishRefresh()
     }
     expect(await screen.findByText('已領取')).toBeInTheDocument()
+    observer.disconnect()
+    expect(enabledAfterClaim).toEqual([])
+  })
+
+  it('keeps the claim button disabled and offers retry when the refresh fails after claiming', async () => {
+    let claimed = false
+    server.use(
+      http.get('/api/tasks', () => claimed
+        ? HttpResponse.json({ error: { code: 'internal', request_id: 't' } }, { status: 500 })
+        : HttpResponse.json([{ ...tasks[0], claimed }])),
+      http.post('/api/tasks/daily_dialogue/claim', () => {
+        claimed = true
+        return HttpResponse.json({ ...tasks[0], claimed })
+      }),
+    )
+    renderApp(null, { route: '/tasks' })
+    await userEvent.click(await screen.findByRole('button', { name: '領取' }))
+    expect(await screen.findByRole('button', { name: '重試' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '領取' })).toBeDisabled()
   })
 
   it('shows the empty state when there are no tasks', async () => {
