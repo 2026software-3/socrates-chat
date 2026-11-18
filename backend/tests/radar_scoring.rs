@@ -42,7 +42,7 @@ async fn run(ai: &FakeAi, student: &str) -> Result<Scores, AiError> {
         ai,
         build_request(
             "Trolley problem",
-            "Pull the lever?",
+            &["Pull the lever?".to_string()],
             &dimensions,
             &turns(student),
         ),

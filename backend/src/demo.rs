@@ -74,8 +74,8 @@ pub async fn seed_accounts(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
     for s in &r.students {
         sqlx::query(
-            "INSERT INTO users (student_id, imported_name, password_hash, must_change_password, display_name, language, language_initialized)
-             VALUES ($1, $2, $3, false, $2, $4, true)
+            "INSERT INTO users (student_id, imported_name, password_hash, must_change_password, language, language_initialized)
+             VALUES ($1, $2, $3, false, $4, true)
              ON CONFLICT (student_id) DO UPDATE
                SET password_hash = $3, must_change_password = false, disabled_at = NULL, updated_at = now()",
         )

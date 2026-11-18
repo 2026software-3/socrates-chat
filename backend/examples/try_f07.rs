@@ -141,7 +141,7 @@ fn validate_cases(cases: &[Case]) -> Result<(), String> {
 fn system_prompt_for(case: &Case, language: &str) -> String {
     build_system_prompt(&PromptContext {
         title: &case.title,
-        description: &case.description,
+        guiding_questions: std::slice::from_ref(&case.description),
         stage: case.stage,
         turn: case
             .conversation

@@ -123,7 +123,7 @@ pub(crate) struct DimensionsEdit {
 #[derive(FromRow)]
 struct TopicDimensions {
     title: String,
-    description: String,
+    guiding_questions: Vec<String>,
     dimensions: Option<SqlJson<[Dimension; 6]>>,
     dimensions_prompt_version: Option<String>,
     dimensions_language: Option<String>,
@@ -143,7 +143,7 @@ impl TopicDimensions {
     }
 }
 
-const SELECT: &str = "SELECT title, description, dimensions, dimensions_prompt_version,
+const SELECT: &str = "SELECT title, guiding_questions, dimensions, dimensions_prompt_version,
     dimensions_language, dimensions_pending_languages, has_had_conversation FROM topics WHERE id = $1";
 
 async fn load(conn: &mut PgConnection, id: Uuid) -> Result<TopicDimensions, ApiError> {
@@ -200,7 +200,7 @@ pub(crate) async fn update(
         .ok_or_else(invalid)?;
     let mut tx = state.pool.begin().await?;
     let mut topic: TopicDimensions = sqlx::query_as(
-        "SELECT title, description, dimensions, dimensions_prompt_version,
+        "SELECT title, guiding_questions, dimensions, dimensions_prompt_version,
                 dimensions_language, dimensions_pending_languages, has_had_conversation FROM topics
          WHERE id = $1 FOR NO KEY UPDATE",
     )
@@ -324,7 +324,7 @@ pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), Ap
     let Some(_job) = state.dimension_jobs.start(id) else {
         return Ok(());
     };
-    // A second pass picks up a title or description edited while the first ran.
+    // A second pass picks up a title or guiding questions edited while the first ran.
     for _ in 0..2 {
         let topic = {
             let mut conn = state.pool.acquire().await?;
@@ -340,7 +340,7 @@ pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), Ap
         let stored = sqlx::query(
             "UPDATE topics SET dimensions = $2, dimensions_prompt_version = $3,
                         dimensions_language = $4, dimensions_pending_languages = $5
-                     WHERE id = $1 AND dimensions IS NULL AND title = $6 AND description = $7",
+                     WHERE id = $1 AND dimensions IS NULL AND title = $6 AND guiding_questions = $7",
         )
         .bind(id)
         .bind(SqlJson(dimensions))
@@ -348,7 +348,7 @@ pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), Ap
         .bind(source)
         .bind(pending)
         .bind(topic.title)
-        .bind(topic.description)
+        .bind(topic.guiding_questions)
         .execute(&state.pool)
         .await?;
         if stored.rows_affected() > 0 {
@@ -363,7 +363,7 @@ async fn prepare(
     topic: &TopicDimensions,
     source: &str,
 ) -> Option<([Dimension; 6], Vec<String>)> {
-    let request = build_request(&topic.title, &topic.description, source);
+    let request = build_request(&topic.title, &topic.guiding_questions, source);
     let generation = async {
         for _ in 0..2 {
             if let Ok(raw) = ask(state, request.clone()).await
@@ -433,7 +433,7 @@ pub fn translation_text(drafts: &[Draft; 6]) -> [&str; 12] {
     })
 }
 
-pub fn build_request(title: &str, description: &str, source: &str) -> AiRequest {
+pub fn build_request(title: &str, guiding_questions: &[String], source: &str) -> AiRequest {
     AiRequest {
         system: format!(
             "{PROMPT_VERSION}: Generate exactly six distinct, topic-specific decision-making tendencies in {source}.
@@ -446,7 +446,7 @@ pub fn build_request(title: &str, description: &str, source: &str) -> AiRequest 
         ),
         messages: vec![ChatTurn {
             role: ChatRole::User,
-            content: serde_json::json!({"title": title, "description": description}).to_string(),
+            content: serde_json::json!({"title": title, "guiding_questions": guiding_questions}).to_string(),
         }],
     }
 }

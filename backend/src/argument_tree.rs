@@ -132,9 +132,13 @@ pub(crate) async fn create(
         return Err(ApiError::conflict("empty_conversation", "沒有學生發言"));
     }
     // Node IDs are scoped to the result; conversation identity stays in the authenticated URL.
-    let input = parse_transcript(&json!({
-        "topic_id":"TREE", "title":conversation.title, "description":conversation.description, "messages":messages
-    }).to_string()).map_err(|_| ApiError::conflict("argument_tree_input_invalid", "對話格式無法分析"))?;
+    let input = parse_transcript(
+        &json!({
+            "topic_id":"TREE", "title":conversation.title, "messages":messages
+        })
+        .to_string(),
+    )
+    .map_err(|_| ApiError::conflict("argument_tree_input_invalid", "對話格式無法分析"))?;
     let input = sanitized_transcript(&input).map_err(|_| ApiError::internal())?;
     let mut tx = state.pool.begin().await?;
     // Keep the archive check and the generation claim in one short transaction.
