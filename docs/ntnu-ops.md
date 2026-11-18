@@ -418,7 +418,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 - 流程：推送 `deploy/msi-cubi-staging` → GitHub Actions「Staging deploy (msi_cubi)」（`.github/workflows/staging-deploy.yml`，需 environment `staging-deploy` 核准）→ msi_cubi 上的 self-hosted runner（使用者 `gha-runner`，label `msi-cubi-staging`）執行 `sudo -n /usr/local/sbin/socrates-staging-deploy <sha>` → 包裝腳本（原始檔 `scripts/host/socrates-staging-deploy`）：驗證 SHA 格式、確認 SHA 是 `origin/deploy/msi-cubi-staging` 的祖先（含 head）、在 `/var/lib/socrates-staging` 切到該 commit、`docker build -t socrates-ntnu-app:staging-<sha12>`、`STAGING_APP_IMAGE_TAG=… docker compose -f docker-compose.staging.yml up -d --no-build`、經 `127.0.0.1:3081/ready` 健康檢查（60 秒內要回 200），最後只保留最近 5 個 staging 映像。
 - 權限模型：
-  - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；參數會先被 sudoers 以十六進位萬用字元篩過，包裝腳本再驗證一次（40 位小寫十六進位）。
+  - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支的祖先。
   - 部署邏輯來自主機上 root 擁有的 `/usr/local/sbin/socrates-staging-deploy`，**不取自被推送的 commit**。
   - 密鑰（`.env.staging`、`.apikeylist`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。
   - 允許回滾：對舊的 run 按 Re-run，會部署該 commit（只要它仍是分支的祖先）。
