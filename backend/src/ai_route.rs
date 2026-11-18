@@ -473,12 +473,15 @@ impl Drop for UsageGuard {
             handle.spawn(async move {
                 let recorded = match classroom {
                     Some(classroom) => {
-                        teacher_key_usage::record(&pool, key, classroom, provider, &model, tokens).await
+                        teacher_key_usage::record(&pool, key, classroom, provider, &model, tokens)
+                            .await
                     }
-                    None => system_key_store::record_usage(&pool, key, provider, &model, tokens).await,
+                    None => {
+                        system_key_store::record_usage(&pool, key, provider, &model, tokens).await
+                    }
                 };
                 if let Err(e) = recorded {
-                    tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record AI usage");
+                    teacher_key_usage::log_record_failure(&e);
                 }
             });
         }
