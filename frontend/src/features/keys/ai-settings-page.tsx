@@ -147,6 +147,12 @@ function SettingsForm({
           <AlertDescription className="text-foreground">{t('aiSettings.transitional')}</AlertDescription>
         </Alert>
       ) : null}
+      {!settings.transitional && !settings.primary && !archived ? (
+        <Alert variant="destructive" role="alert">
+          <AlertTitle>{t('aiSettings.noModel.title')}</AlertTitle>
+          <AlertDescription>{t('aiSettings.noModel.body')}</AlertDescription>
+        </Alert>
+      ) : null}
       {archived ? (
         <Alert role="status">
           <AlertDescription className="text-foreground">{t('aiSettings.archived')}</AlertDescription>
