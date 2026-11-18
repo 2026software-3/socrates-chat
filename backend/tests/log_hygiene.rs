@@ -80,6 +80,7 @@ async fn rejecting_teacher_provider() -> String {
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     format!("http://{addr}/v1/")
 }
+const PURCHASE_DB_DETAIL: &str = "synthetic_part_private_detail";
 
 /// 一個永遠回 500 的假 OpenAI 服務。
 async fn failing_ai_base_url() -> String {
@@ -132,6 +133,29 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         .execute(&notification_pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO store_parts (id, name_zh_tw, name_en, name_es, price) VALUES ('synthetic_part', $1, 'Test part', 'Pieza de prueba', 30)")
+        .bind(PURCHASE_DB_DETAIL).execute(&notification_pool).await.unwrap();
+    sqlx::query("ALTER TABLE store_parts ADD CHECK (price <> 42)")
+        .execute(&notification_pool)
+        .await
+        .unwrap();
+    let rejected_price = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/admin/parts/synthetic_part",
+            Some(&a.admin),
+            Some(json!({"price": 42, "enabled": true})),
+        ),
+    )
+    .await;
+    assert_json_error(
+        rejected_price,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+    )
+    .await;
+
     let roster_response = send(
         &app,
         json_req(
@@ -309,6 +333,10 @@ async fn logs_never_contain_passwords_emails_keys_or_message_text(pool: PgPool) 
         .map(|line| serde_json::from_str(line).expect("每行 tracing 輸出都應為 JSON"))
         .collect();
     assert!(!entries.is_empty(), "應擷取到 JSON 日誌");
+    assert!(entries.iter().any(|entry| {
+        entry["fields"]["message"] == "database error" && entry["fields"]["class"] == "23514"
+    }));
+    assert!(!output.contains(PURCHASE_DB_DETAIL));
     let request_fields = entries
         .iter()
         .filter_map(|entry| entry.get("fields"))
