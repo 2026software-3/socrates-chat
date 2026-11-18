@@ -10,7 +10,7 @@
 #     - <commit-sha> 必須是 40 位小寫十六進位，而且是 origin/deploy/msi-cubi-staging 的祖先（含 head）。
 #       分支外的 commit 一律拒絕。允許祖先，所以可以用 Re-run 回滾到分支上的舊 commit。
 #     - 部署目錄 $STAGING_BASE（預設 /var/lib/socrates-staging）由 root 擁有，內含不進版控的
-#       .env.staging、.apikeylist（root 0600）。runner 讀不到。
+#       .env.staging（root 0600）。runner 讀不到。
 #     - 同時只會有一個部署（flock）。
 #
 # 只動 staging：不碰正式環境（socrates-ntnu）的容器、volume 與 .env；不使用 down、不使用 -v。
@@ -39,7 +39,7 @@ cd "$STAGING_BASE"
 exec 9>"$STAGING_BASE/.deploy.lock"
 flock 9
 
-for f in .env.staging .apikeylist; do
+for f in .env.staging; do
   if [ ! -f "$f" ]; then
     echo "缺少 $STAGING_BASE/$f（不進版控，需由 root 先放好）" >&2
     exit 1
@@ -55,7 +55,7 @@ if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
 fi
 
 echo "→ 切換到 $SHA"
-# --hard 只改追蹤中的檔案；被 .gitignore 的 .env.staging、.apikeylist、.staging-credentials 不會被動到。
+# --hard 只改追蹤中的檔案；被 .gitignore 的 .env.staging、.staging-credentials 不會被動到。
 git reset --hard --quiet "$SHA"
 
 TAG="staging-$(git rev-parse --short=12 HEAD)"

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# msi_cubi 上 NTNU 正式環境（compose 專案 socrates-ntnu）的部署包裝腳本。
+#
+# 安裝位置：/usr/local/sbin/socrates-prod-deploy（root:root 0755）。runner 使用者 gha-runner-prod 不在 docker 群組，
+# 只能透過 /etc/sudoers.d/gha-runner-prod 以 root 執行這一個腳本，而且只能傳一個參數。
+# 這支腳本「不」從被部署的 commit 取得，部署邏輯來自主機上的 root 檔案；要更新它必須由 root 重新安裝。
+#
+#   用法：sudo /usr/local/sbin/socrates-prod-deploy <commit-sha>
+#   規則：
+#     - <commit-sha> 必須是 40 位小寫十六進位，而且是 origin/deploy/msi-cubi-intel 的祖先（含 head）。
+#       分支外的 commit 一律拒絕。允許祖先，所以可以用 Re-run 回滾到分支上的舊 commit
+#       （注意：migration 只往前，舊映像遇到新 schema 不一定能跑，見 docs/ntnu-ops.md）。
+#     - 部署目錄 $PROD_BASE（預設 /var/lib/socrates-prod）由 root 擁有，內含不進版控的 .env（root 0600）。runner 讀不到。
+#     - 部署前先 pg_dump 備份到 $BACKUP_DIR；備份失敗就中止，不動任何容器。
+#     - 同時只會有一個部署（flock）。
+#
+# 只更新 socrates-ntnu：不使用 down、不使用 -v，不碰資料庫 volume（socrates-ntnu_pgdata_v2）。
+# 不重建 cascade 映像（用 .env 的 CASCADE_INTEL_TAG）；沒有 DEMO_MODE。
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "用法：socrates-prod-deploy <commit-sha>（只接受一個參數）" >&2
+  exit 2
+fi
+SHA="$1"
+if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "commit SHA 格式不正確（需要 40 位小寫十六進位）" >&2
+  exit 2
+fi
+
+PROD_BASE="${PROD_BASE:-/var/lib/socrates-prod}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/socrates-prod}"
+BRANCH="deploy/msi-cubi-intel"
+PROXY_PORT="${PROD_PROXY_PORT:-3080}"
+IMAGE_REPO="socrates-ntnu-app"
+DB_CONTAINER="${PROD_DB_CONTAINER:-socrates-ntnu-db-1}"
+KEEP_IMAGES=5
+KEEP_BACKUPS=14
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml)
+PROFILES=(--profile app --profile cascade --profile proxy --profile tunnel)
+
+cd "$PROD_BASE"
+
+# 同時只允許一個部署。
+exec 9>"$PROD_BASE/.deploy.lock"
+flock 9
+
+if [ ! -f .env ]; then
+  echo "缺少 $PROD_BASE/.env（不進版控，需由 root 先放好）" >&2
+  exit 1
+fi
+
+echo "→ 取得 origin/$BRANCH"
+git fetch --quiet origin "$BRANCH"
+
+if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
+  echo "$SHA 不在 $BRANCH 上（不是它的祖先），拒絕部署" >&2
+  exit 1
+fi
+
+echo "→ 部署前備份資料庫到 $BACKUP_DIR"
+umask 077
+mkdir -p "$BACKUP_DIR"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+DUMP="$BACKUP_DIR/socrates-predeploy-$STAMP.sql.gz"
+RAW="$BACKUP_DIR/.socrates-predeploy-$STAMP.sql.tmp"
+# 先存成純文字再壓縮：空輸入壓縮後仍有檔頭，直接檢查壓縮檔大小分辨不出「備份是空的」。
+if ! docker exec "$DB_CONTAINER" pg_dump -U socrates socrates > "$RAW" || [ ! -s "$RAW" ] \
+  || ! gzip -c "$RAW" > "$DUMP" || ! gzip -t "$DUMP"; then
+  rm -f "$RAW" "$DUMP"
+  echo "資料庫備份失敗，中止部署（沒有動任何容器）" >&2
+  exit 1
+fi
+rm -f "$RAW"
+echo "   已備份：$DUMP"
+ls -1t "$BACKUP_DIR"/socrates-predeploy-*.sql.gz 2>/dev/null | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f
+
+echo "→ 切換到 $SHA"
+# --hard 只改追蹤中的檔案；被 .gitignore 的 .env 不會被動到。
+git reset --hard --quiet "$SHA"
+
+TAG="prod-$(git rev-parse --short=12 HEAD)"
+echo "→ 建置映像 $IMAGE_REPO:$TAG"
+docker build --quiet -t "$IMAGE_REPO:$TAG" .
+
+echo "→ 更新正式服務（APP_IMAGE_TAG=$TAG；不使用 down、不使用 -v）"
+APP_IMAGE_TAG="$TAG" docker compose "${COMPOSE_FILES[@]}" "${PROFILES[@]}" up -d --no-build
+
+echo "→ 健康檢查（經 proxy 的 /ready）"
+ok=0
+for _ in $(seq 1 45); do
+  if curl -fsS -o /dev/null "http://127.0.0.1:$PROXY_PORT/ready"; then
+    ok=1
+    break
+  fi
+  sleep 2
+done
+if [ "$ok" -ne 1 ]; then
+  echo "健康檢查失敗：http://127.0.0.1:$PROXY_PORT/ready 90 秒內沒有回 200" >&2
+  APP_IMAGE_TAG="$TAG" docker compose "${COMPOSE_FILES[@]}" "${PROFILES[@]}" ps >&2 || true
+  echo "部署前備份：$DUMP" >&2
+  exit 1
+fi
+
+echo "→ 清理舊的正式映像（保留最近 $KEEP_IMAGES 個；正在使用的會留下）"
+docker image ls --filter "reference=$IMAGE_REPO:prod-*" --format '{{.Repository}}:{{.Tag}}' \
+  | tail -n +"$((KEEP_IMAGES + 1))" \
+  | xargs -r docker image rm >/dev/null 2>&1 || true
+
+APP_IMAGE_TAG="$TAG" docker compose "${COMPOSE_FILES[@]}" "${PROFILES[@]}" ps
+echo "完成：正式環境已部署 $SHA（$TAG）；部署前備份 $DUMP"

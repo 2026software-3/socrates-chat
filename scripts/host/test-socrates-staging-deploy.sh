@@ -14,7 +14,6 @@ LOG="$WORK/calls.log"
 mkdir -p "$BIN" "$BASE"
 : > "$LOG"
 echo secret > "$BASE/.env.staging"
-echo key > "$BASE/.apikeylist"
 
 cat > "$BIN/git" <<'STUB'
 #!/usr/bin/env bash
@@ -99,10 +98,10 @@ fi
 check "健康檢查失敗回非零" 1 "$(FAKE_CURL_FAIL=1 FAKE_ANCESTOR=1 run "$GOOD_SHA")"
 
 # 5. 缺少密鑰檔要失敗，而且不能碰 docker
-mv "$BASE/.apikeylist" "$WORK/key.bak"
+mv "$BASE/.env.staging" "$WORK/env.bak"
 : > "$LOG"
-check "缺少 .apikeylist 失敗" 1 "$(FAKE_ANCESTOR=1 run "$GOOD_SHA")"
-mv "$WORK/key.bak" "$BASE/.apikeylist"
+check "缺少 .env.staging 失敗" 1 "$(FAKE_ANCESTOR=1 run "$GOOD_SHA")"
+mv "$WORK/env.bak" "$BASE/.env.staging"
 if grep -q '^docker' "$LOG"; then
   fail=$((fail + 1)); echo "FAIL - 缺少密鑰時仍呼叫了 docker"
 else
