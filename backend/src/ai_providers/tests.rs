@@ -279,6 +279,181 @@ async fn verify_key_unreachable_or_hanging_service_is_connection_failed() {
     assert!(started.elapsed() < Duration::from_millis(1200));
 }
 
+// ---- list_models ----
+
+fn openai_models(ids: &[&str]) -> String {
+    json!({"object":"list","data": ids.iter().map(|id| json!({"id": id, "object": "model"})).collect::<Vec<_>>()})
+        .to_string()
+}
+
+#[tokio::test]
+async fn list_models_returns_sorted_deduplicated_chat_models_and_hides_non_chat_ones() {
+    let body = openai_models(&[
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4o",
+        "text-embedding-3-small",
+        "whisper-1",
+        "tts-1",
+        "dall-e-3",
+        "gpt-image-1",
+        "omni-moderation-latest",
+        "has space",
+        "",
+        &"x".repeat(201),
+    ]);
+    let (endpoint, seen) = spawn(Arc::new(move |s| {
+        if authenticated(AdapterKind::OpenAI, &s.headers) {
+            reply(200, "application/json", body.clone())
+        } else {
+            reply(401, "application/json", "{}")
+        }
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Ok(vec!["gpt-4o".to_owned(), "gpt-4o-mini".to_owned()])
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].method, Method::GET);
+    assert!(seen[0].uri.starts_with("/api/v1/models"), "{}", seen[0].uri);
+    assert!(seen[0].body.is_empty());
+    // key 只放在標頭，不放在網址
+    assert!(!seen[0].uri.contains(KEY));
+}
+
+#[tokio::test]
+async fn list_models_asks_anthropic_and_gemini_for_a_full_page_and_reads_their_formats() {
+    let (endpoint, seen) = spawn(Arc::new(|s| {
+        if !authenticated(AdapterKind::Anthropic, &s.headers) {
+            return reply(401, "application/json", "{}");
+        }
+        reply(
+            200,
+            "application/json",
+            r#"{"data":[{"id":"claude-b","type":"model"},{"id":"claude-a","type":"model"}],"has_more":false}"#,
+        )
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::Anthropic, KEY, SHORT).await,
+        Ok(vec!["claude-a".to_owned(), "claude-b".to_owned()])
+    );
+    assert!(seen.lock().unwrap()[0].uri.contains("limit=1000"));
+
+    let (endpoint, seen) = spawn(Arc::new(|s| {
+        if !authenticated(AdapterKind::Gemini, &s.headers) {
+            return reply(401, "application/json", "{}");
+        }
+        reply(
+            200,
+            "application/json",
+            json!({"models":[
+                {"name":"models/gemini-pro","supportedGenerationMethods":["generateContent","countTokens"]},
+                {"name":"models/text-embedding-004","supportedGenerationMethods":["embedContent"]},
+                {"name":"models/gemini-flash","supportedGenerationMethods":["generateContent"]},
+                {"name":"models/legacy-no-methods"}
+            ]})
+            .to_string(),
+        )
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::Gemini, KEY, SHORT).await,
+        Ok(vec![
+            "gemini-flash".to_owned(),
+            "gemini-pro".to_owned(),
+            "legacy-no-methods".to_owned()
+        ])
+    );
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].uri.contains("pageSize=1000"));
+    assert!(!seen[0].uri.contains(KEY));
+}
+
+#[tokio::test]
+async fn list_models_keeps_at_most_the_cap() {
+    let ids: Vec<String> = (0..MODEL_LIST_MAX + 100)
+        .map(|i| format!("m-{i:04}"))
+        .collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let body = openai_models(&refs);
+    let (endpoint, _) = spawn(Arc::new(move |_| {
+        reply(200, "application/json", body.clone())
+    }))
+    .await;
+    let listed = list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), MODEL_LIST_MAX);
+    assert_eq!(listed[0], "m-0000");
+}
+
+#[tokio::test]
+async fn list_models_is_unavailable_for_rejections_bad_bodies_and_a_silent_service() {
+    for status in [400, 401, 403, 404, 429, 500, 503] {
+        let (endpoint, _) = spawn(fixed(status)).await;
+        assert_eq!(
+            list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+            Err(ListUnavailable),
+            "{status}"
+        );
+    }
+    for body in ["not json", "<html></html>", ""] {
+        let (endpoint, _) = spawn(Arc::new(move |_| reply(200, "application/json", body))).await;
+        assert_eq!(
+            list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+            Err(ListUnavailable),
+            "{body:?}"
+        );
+    }
+    // 200 但沒有預期的欄位：視為空清單，不是錯誤
+    let (endpoint, _) = spawn(Arc::new(|_| reply(200, "application/json", "{}"))).await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Ok(Vec::new())
+    );
+    // 沒有人在聽的埠
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = format!("http://{}/v1/", listener.local_addr().unwrap());
+    drop(listener);
+    assert_eq!(
+        list_models_at(&dead, AdapterKind::OpenAI, KEY, SHORT).await,
+        Err(ListUnavailable)
+    );
+    // 一直不回應：必須在逾時內回來
+    let endpoint = hanging().await;
+    let started = std::time::Instant::now();
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Err(ListUnavailable)
+    );
+    assert!(started.elapsed() < Duration::from_millis(1200));
+}
+
+#[tokio::test]
+async fn list_models_does_not_follow_redirects() {
+    let (target, target_seen) = spawn(Arc::new(|_| {
+        reply(200, "application/json", r#"{"data":[{"id":"leak"}]}"#)
+    }))
+    .await;
+    let location = format!("{target}models");
+    let (endpoint, _) = spawn(Arc::new(move |_| {
+        Response::builder()
+            .status(StatusCode::FOUND)
+            .header(header::LOCATION, location.clone())
+            .body(Body::empty())
+            .unwrap()
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Err(ListUnavailable)
+    );
+    assert!(target_seen.lock().unwrap().is_empty());
+}
+
 // ---- verify_model ----
 
 fn sse(data: Value) -> String {
