@@ -34,9 +34,10 @@ export type RealtimePhase = 'connecting' | 'listening' | 'transcribing' | 'waiti
  * - `unreachable`：連不上（服務沒開、另一個分頁在用、權限不符），可改用其他語音方式
  * - `lost`：對話中斷線
  * - `replyFailed`：這一輪沒有存成回覆，要先重試才能繼續
+ * - `classroomUnavailable`：教室的 AI 服務暫時無法使用（教師沒有可用的 key），也要先重試才能繼續
  * - `permission`／`device`／`unavailable`：麥克風或瀏覽器問題
  */
-export type RealtimeCloseReason = 'unreachable' | 'lost' | 'replyFailed' | 'permission' | 'device' | 'unavailable'
+export type RealtimeCloseReason = 'unreachable' | 'lost' | 'replyFailed' | 'classroomUnavailable' | 'permission' | 'device' | 'unavailable'
 
 export type RealtimeCallbacks = {
   onPhase: (phase: RealtimePhase) => void
@@ -80,6 +81,8 @@ type ServerEvent = {
   response?: { id?: string; status?: string }
   sglang?: { fatal?: boolean }
   error?: { code?: string }
+  /** `socrates.turn.failed` 帶的失敗原因（目前只有 `classroom_ai_unavailable`） */
+  code?: string
 }
 
 export function realtimeUrl(conversationId: string, location: Pick<Location, 'protocol' | 'host'> = window.location): string {
@@ -261,7 +264,7 @@ export function createRealtimeSession(conversationId: string, cb: RealtimeCallba
         break
       case 'socrates.turn.failed':
         cb.onReplyFailed()
-        fail('replyFailed')
+        fail(event.code === 'classroom_ai_unavailable' ? 'classroomUnavailable' : 'replyFailed')
         break
       case 'error':
         console.warn('[voice] realtime error:', loggableCode(event.error?.code))
