@@ -415,7 +415,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - 只部署 `deploy/msi-cubi-intel` 目前的 head；舊 commit 與分支外 commit 都會被包裝腳本拒絕（避免別的 workflow 跑在 prod runner 上時繞過核准回滾）。回滾是 root 的緊急手段：`sudo PROD_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-prod-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。**migration 只往前**，舊映像不一定相容新 schema；回滾前先確認，必要時用部署前備份還原。
 - runner 隔離：prod runner 只該跑 `prod-deploy.yml`。repo 設定要關閉 fork PR 觸發 self-hosted runner；若 repo 之後搬到 organization，把 runner 放進限定 `prod-deploy.yml@refs/heads/deploy/msi-cubi-intel` 的 runner group。runner 上線後，**不要以 root 執行 runner 目錄裡的腳本**（`svc.sh` 等由 runner 使用者擁有），改用 `systemctl`。
 - 信任邊界：同 staging。防線是分支保護（只能經 PR、禁止 force push）、environment `prod-deploy` 的 Required reviewers、workflow 只接 `push`（不要加 `pull_request`）。
-- 主機端一次性設定：合併 PR 後在 msi_cubi 執行 `sudo bash /home/ray520/socrates-intel/scripts/host/setup-prod-autodeploy.sh`（互動式；若該目錄尚未更新，先 `git pull` 或從 repo 複製這支腳本）。它建立目錄、複製 `.env`（缺 `TEACHER_KEY_ENCRYPTION_KEYS` 會產生並要你存好）、安裝包裝腳本與 sudoers、建立 runner。
+- 主機端一次性設定：合併 PR 後在 msi_cubi 用 `scripts/host/setup-prod-autodeploy.sh`（`~/socrates-intel` 不是 git clone，要先 `scp` 過去；檔頭有一行指令版本，token 由本機 `gh` 產生並自動帶入，runner 固定 v2.338.2 並驗 SHA256）。它建立目錄、複製 `.env`（缺 `TEACHER_KEY_ENCRYPTION_KEYS` 會產生並要你存好）、安裝包裝腳本與 sudoers、建立 runner。
 - **AI key 淘汰（2026-11-19）**：後端不再讀 `.apikeylist`／`OPENAI_API_KEYS`。升級後管理者第一件事是到「系統 AI」設定模型與 key，在那之前系統用途的 AI（個人練習、翻譯、主張分組、公告翻譯等）不可用；教師 key 與教室 AI 不受影響。`TEACHER_KEY_ENCRYPTION_KEYS` 遺失就解不開資料庫裡所有 key，要另存。主機上舊的 `.apikeylist` 可在確認 AI 正常後刪除。
 
 ## 狀態紀錄
