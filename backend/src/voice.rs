@@ -122,6 +122,8 @@ pub struct OpenAiVoice {
     http: reqwest::Client,
     base_url: String,
     stt_base_url: String,
+    /// 辨識走自架服務時不取也不送 OpenAI 金鑰（與合成同一個原則）
+    stt_self_hosted: bool,
     tts_base_url: Option<String>,
     keys: Arc<KeyPool>,
     stt_model: Option<String>,
@@ -143,6 +145,7 @@ impl OpenAiVoice {
                 .unwrap_or(&c.openai_base_url)
                 .trim_end_matches('/')
                 .to_string(),
+            stt_self_hosted: c.openai_stt_base_url.is_some(),
             tts_base_url: c
                 .openai_tts_base_url
                 .as_deref()
@@ -177,7 +180,11 @@ impl VoiceProvider for OpenAiVoice {
     ) -> Result<String, VoiceError> {
         let model = self.stt_model.as_deref().ok_or(VoiceError::Unavailable)?;
         // 語音端點的錯誤（例如模型沒開放給這把 key）不回報給 pool，免得連累對話用的 key
-        let lease = self.keys.acquire().ok_or(VoiceError::Failed)?;
+        let lease = if self.stt_self_hosted {
+            None
+        } else {
+            Some(self.keys.acquire().ok_or(VoiceError::Failed)?)
+        };
         let part = multipart::Part::bytes(audio)
             .file_name(format!("speech.{}", extension_for(mime)))
             .mime_str(mime.split(';').next().unwrap_or("audio/webm"))
@@ -186,16 +193,20 @@ impl VoiceProvider for OpenAiVoice {
             .part("file", part)
             .text("model", model.to_string())
             .text("language", language.to_string());
-        let res = self
+        let mut req = self
             .http
             .post(format!("{}/audio/transcriptions", self.stt_base_url))
-            .bearer_auth(&lease.key)
-            .multipart(form)
+            .multipart(form);
+        if let Some(lease) = &lease {
+            req = req.bearer_auth(&lease.key);
+        }
+        let res = req
             .send()
             .await
             .map_err(|error| VoiceError::classified(crate::ai::AiError::transport(&error)))?;
         if !res.status().is_success() {
-            tracing::warn!(status = %res.status(), key = lease.index + 1, "speech-to-text returned an error status");
+            let key = lease.as_ref().map(|lease| lease.index + 1);
+            tracing::warn!(status = %res.status(), key, "speech-to-text returned an error status");
             return Err(VoiceError::classified(
                 crate::ai::AiError::response(res).await,
             ));

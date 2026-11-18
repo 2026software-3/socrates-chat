@@ -163,9 +163,9 @@
 
 ### AI 用量（F-40.8，S-03.1）
 
-- **系統 AI（管理者，`/api/admin/system-ai`）**：系統用途（沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度、公告翻譯）使用的供應商、模型與多把系統 key；沒設定或沒有可用 key 時用主機的 `.apikeylist`。只有管理者（未登入 `401`、其他角色 `403`），寫入需同源（CSRF）。
+- **系統 AI（管理者，`/api/admin/system-ai`）**：系統用途（沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度、公告翻譯）使用的供應商、模型與多把系統 key；沒設定或沒有可用 key 時這些用途的 AI 無法使用（主機的 `.apikeylist` 已淘汰，後端不再讀取）。只有管理者（未登入 `401`、其他角色 `403`），寫入需同源（CSRF）。
   - `GET /api/admin/system-ai`：`{ source: "database" | "host_file", routing_enabled, encryption_configured, setting, host_model, keys[], providers[] }`；`keys[]` 只有遮蔽識別、狀態與近 30 天用量（請求數、輸入／輸出 token、未回報請求數），不含 key。
-  - `PUT /api/admin/system-ai/model` `{ provider, model }`：用該供應商的一把系統 key 送一次最小串流與 JSON 請求驗證（少量費用）後儲存；沒有該供應商的 key 回 `400 no_key_for_provider`，驗證失敗的代碼同教室 AI 設定；驗證太頻繁 `429 key_test_rate_limited`（沿用 key 測試額度）。`DELETE` 清除設定（回到 `.apikeylist`）。
+  - `PUT /api/admin/system-ai/model` `{ provider, model }`：用該供應商的一把系統 key 送一次最小串流與 JSON 請求驗證（少量費用）後儲存；沒有該供應商的 key 回 `400 no_key_for_provider`，驗證失敗的代碼同教室 AI 設定；驗證太頻繁 `429 key_test_rate_limited`（沿用 key 測試額度）。`DELETE` 清除設定（key 保留，系統用途的 AI 暫時無法使用，直到重新設定）。
   - `GET /api/admin/system-ai/models?provider=`：用該供應商的系統 key 取模型清單，只當模型欄位的輸入建議（不是白名單，儲存時仍會驗證）。回應與 `GET /api/teacher/keys/models` 相同（`ok`／`no_key`／`unavailable`，取不到仍回 `200`）；供應商不在名單 `400 invalid_provider`，太頻繁 `429 model_list_rate_limited`（與教師共用額度設定）。不使用教師的 key，也不改動 key 狀態。
   - `GET /api/admin/system-ai/usage?range=`：系統用途的 AI 用量，依（供應商、模型）細分並加總各系統 key，格式同 `GET /api/classrooms/{id}/ai-usage`（`range` 為 `today`、`7d`（預設）、`30d`、`all`，其他值 `400 invalid_range`）。只計次數與 token，不計金額；供應商沒回報 token 的請求標示未回報。刪除 key 時該 key 的用量一併刪除。
   - `POST /api/admin/system-ai/keys` `{ provider, key }` → `201`；`PUT …/keys/{id}` `{ key }` 更換（供應商與歷史用量不變、狀態重設）；`DELETE …/keys/{id}` → `204`（用量一併刪除）；`POST …/keys/{id}/test` → `{ result: "usable" | "connection_failed" }`（只呼叫模型清單端點）。錯誤代碼同教師 key（`invalid_provider`、`invalid_key`、`key_already_exists`——與教師 key 全域不得重複、`503 teacher_keys_unavailable`）。
@@ -291,7 +291,7 @@
 ```bash
 docker compose up -d db
 cp .env.example .env   # 專案根目錄，整個系統共用；填入 GOOGLE_CLIENT_ID／SECRET、OPENAI_MODEL、ADMIN_EMAILS
-cp .apikeylist.example .apikeylist   # 一行一把 AI API key；後端從 ./.apikeylist 或 ../.apikeylist 讀取
+# AI API key 不放檔案：啟動後以管理者登入，在「系統 AI」頁設定（需要先設定 TEACHER_KEY_ENCRYPTION_KEYS）
 set -a && . ./.env && set +a   # 後端不會自行讀取 .env，需先載入環境變數
 cd backend
 cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration

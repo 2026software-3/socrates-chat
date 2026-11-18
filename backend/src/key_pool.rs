@@ -71,6 +71,21 @@ impl KeyPool {
         })
     }
 
+    /// 沒有任何 key 的池：`acquire` 永遠是 `None`。應用程式不再從主機讀 key（系統 AI），
+    /// 對話用的 key 來自資料庫；語音若走 OpenAI 備援就會因為沒有 key 而失敗。
+    pub fn empty() -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                cooling_until: Vec::new(),
+                rejected: Vec::new(),
+                next: 0,
+            }),
+            keys: Vec::new(),
+            default_cooldown: DEFAULT_COOLDOWN,
+            auth_cooldown: DEFAULT_AUTH_COOLDOWN,
+        }
+    }
+
     /// 同一批 key、同樣的冷卻設定，但冷卻狀態全新而且互不影響。備援模型用自己的池子，
     /// 這樣主模型的 429（整個模型被限流，不是 key 的問題）不會讓備援模型拿不到 key。
     pub fn fork(&self) -> KeyPool {

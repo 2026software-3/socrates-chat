@@ -1,6 +1,6 @@
 # NTNU 正式環境維運說明
 
-本文件描述 NTNU 正式環境（主機 `msi_cubi`）與同一台主機上 staging 的維運做法。部署用的 compose 疊加檔在版控內（`docker-compose.intel.yml`、`docker-compose.msi-prod.yml`、`docker-compose.tunnel.yml`、`docker-compose.staging.yml`）；`.env`、`.apikeylist` 等秘密只存在主機上，不進版控。
+本文件描述 NTNU 正式環境（主機 `msi_cubi`）與同一台主機上 staging 的維運做法。部署用的 compose 疊加檔在版控內（`docker-compose.intel.yml`、`docker-compose.msi-prod.yml`、`docker-compose.tunnel.yml`、`docker-compose.staging.yml`）；`.env` 等秘密只存在主機上，不進版控。
 
 **NTNU 自 2026-11-07 起視為正式環境**（[S-09.3](specs/S-09.3-ops-procedures.md)）：資料要保留，migration 只往前（已套用的 migration 檔不能改，改 schema 一律新增 migration），不重建資料庫。這不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
 
@@ -16,7 +16,7 @@
   ```
 
 - 服務：`db`、`app`、`proxy`（nginx）、`cloudflared`、四個 cascade 容器（`cascade`、`cascade-adapter`、`cascade-whisper`、`cascade-tts`）。
-- 秘密與設定：`~/socrates-intel/.env`（含 `APP_PUBLIC_URL`、`APP_IMAGE_TAG`、`CASCADE_INTEL_TAG`、`TRUSTED_PROXIES`、`CLOUDFLARE_TUNNEL_TOKEN`、`CASCADE_LLM_TOKEN`、`TEACHER_KEY_ENCRYPTION_KEYS` 等）與 `.apikeylist`。
+- 秘密與設定：`~/socrates-intel/.env`（含 `APP_PUBLIC_URL`、`APP_IMAGE_TAG`、`CASCADE_INTEL_TAG`、`TRUSTED_PROXIES`、`CLOUDFLARE_TUNNEL_TOKEN`、`CASCADE_LLM_TOKEN`、`TEACHER_KEY_ENCRYPTION_KEYS` 等）。
 - 資料庫：Docker 命名 volume `socrates-ntnu_pgdata_v2`（見下一節）。
 - 公開網址：`https://se3socrateschat.ntnu.cc`，由 `.env` 的 `APP_PUBLIC_URL` 設定為容器的 `APP_BASE_URL`。CSRF 檢查要求 `Origin` 標頭等於這個網址，所以用 curl 或腳本呼叫 API 時，`Origin` 要填它。
 - 備用網址 `https://socrates.ray-dev.stream` 也連到同一個服務，但寫入請求會因 `Origin` 不符被 CSRF 擋掉，只能拿來看頁面。
@@ -340,7 +340,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 ### msi_cubi 瀏覽器測試環境（空資料庫，不碰正式環境）
 
-`docker/cascade-intel/browser-test/compose.yml` 疊在上面兩個檔案之上，專案名稱 `socrates-intel-test`（獨立 volume 與網路）。平常沒有在跑；它的 `cascade_hf`、`cascade_cache` volume 正式環境也在用，`pgdata` volume 只有測試資料。設定範本 `browser-test/env.example`：模型設定與正式一致，Google 憑證填佔位值，`CASCADE_LLM_TOKEN` 在主機上用 `openssl rand -hex 32` 產生，`.apikeylist` 只放一把（正式 `.apikeylist` 啟用中的那一把，其餘是註解）。`DEMO_MODE=true`：登入頁列出公開的示範帳號，所以**只能透過 `tailscale serve`（tailnet 內）提供，不可開 funnel**。
+`docker/cascade-intel/browser-test/compose.yml` 疊在上面兩個檔案之上，專案名稱 `socrates-intel-test`（獨立 volume 與網路）。平常沒有在跑；它的 `cascade_hf`、`cascade_cache` volume 正式環境也在用，`pgdata` volume 只有測試資料。設定範本 `browser-test/env.example`：模型設定與正式一致，Google 憑證填佔位值，`CASCADE_LLM_TOKEN` 在主機上用 `openssl rand -hex 32` 產生；AI key 不放檔案，測試堆疊起來後在「系統 AI」頁設定。`DEMO_MODE=true`：登入頁列出公開的示範帳號，所以**只能透過 `tailscale serve`（tailnet 內）提供，不可開 funnel**。
 
 - 測試堆疊的設定與正式不同（正式的推理強度是 `high`）：`OPENAI_REASONING_EFFORT=medium`；app 映像 `socrates-ntnu-app:intel-test-diag`（`.env` 的 `APP_IMAGE_TAG`）含語音診斷日誌（`voice event`：事件種類、狀態、播放毫秒數，不含音訊與文字；`voice turn received`：回合數與是否併句）與「重連後接著說不再回 409」的改動（見 `docs/specs/cascade-voice-spike.md`），這個改動需求方尚未確認，不要部署到正式。
 - 起動：`docker compose -p socrates-intel-test -f docker-compose.yml -f docker-compose.intel.yml -f docker/cascade-intel/browser-test/compose.yml --profile app --profile cascade up -d --no-build`。
@@ -355,9 +355,9 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 實際合計約 50 MB。網址 `https://staging.se3socrateschat.ntnu.cc`，作法與正式相同（Cloudflare for SaaS 自訂主機名稱＋學校 DNS 記錄，
 進**同一條** tunnel）。
 
-- 檔案：`docker-compose.staging.yml`、`docker/proxy/staging.conf`、`scripts/seed-staging.sh`，在分支 `deploy/msi-cubi-staging`。部署目錄是 `/var/lib/socrates-staging`（root 擁有，由自動部署更新，見下一節）；`.env.staging`、`.staging-credentials`、`.apikeylist` 放在那裡（root 0600），不進版控。
+- 檔案：`docker-compose.staging.yml`、`docker/proxy/staging.conf`、`scripts/seed-staging.sh`，在分支 `deploy/msi-cubi-staging`。部署目錄是 `/var/lib/socrates-staging`（root 擁有，由自動部署更新，見下一節）；`.env.staging`、`.staging-credentials` 放在那裡（root 0600），不進版控。
 - `.env.staging` 由正式 `.env` 衍生，**拿掉** SMTP／客訴信箱（staging 不寄信）、語音（CASCADE_*、STT／TTS）、tunnel token；管理者初始密碼另外產生。
-  OpenAI 用同一份 `.apikeylist`，會吃正式環境同一個每日免費額度。`TEACHER_KEY_ENCRYPTION_KEYS` 要用 staging 自己的值，不要與正式共用。
+  AI key 在 staging 介面自己設定（與正式的資料庫分開）。`TEACHER_KEY_ENCRYPTION_KEYS` 要用 staging 自己的值，不要與正式共用。
 - 改 `.env.staging` 後要重建 `staging-app` 才會生效（用下面〈注意〉的 root compose 指令加 `--force-recreate staging-app`）。
 - 服務名是 `staging-app`／`staging-db`／`staging-proxy`，不叫 `app`／`db`／`proxy`：staging-proxy 同時加入正式環境的網路（別名 `staging-proxy`）讓既有 cloudflared 連得到，
   若叫 `proxy`，正式網路裡的 `app` 解析會被 staging 干擾。tunnel remote ingress 的 `staging.se3socrateschat.ntnu.cc` → `http://staging-proxy:80`。
@@ -377,10 +377,10 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 - 流程：推送 `deploy/msi-cubi-staging` → GitHub Actions「Staging deploy (msi_cubi)」（`.github/workflows/staging-deploy.yml`，需 environment `staging-deploy` 核准）→ msi_cubi 上的 self-hosted runner（使用者 `gha-runner`，label `msi-cubi-staging`）執行 `sudo -n /usr/local/sbin/socrates-staging-deploy <sha>` → 包裝腳本（原始檔 `scripts/host/socrates-staging-deploy`）：驗證 SHA 格式、確認 SHA 是 `origin/deploy/msi-cubi-staging` 的祖先（含 head）、在 `/var/lib/socrates-staging` 切到該 commit、`docker build -t socrates-ntnu-app:staging-<sha12>`、`STAGING_APP_IMAGE_TAG=… docker compose -f docker-compose.staging.yml up -d --no-build`、經 `127.0.0.1:3081/ready` 健康檢查（60 秒內要回 200），最後只保留最近 5 個 staging 映像。
 - 權限模型：
-  - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支的祖先。
+  - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支目前的 head。
   - 部署邏輯來自主機上 root 擁有的 `/usr/local/sbin/socrates-staging-deploy`，**不取自被推送的 commit**。
-  - 密鑰（`.env.staging`、`.apikeylist`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。
-  - 允許回滾：對舊的 run 按 Re-run，會部署該 commit（只要它仍是分支的祖先）。
+  - 密鑰（`.env.staging`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。
+  - 只部署分支目前的 head；舊 commit 與分支外 commit 會被拒絕。回滾是 root 的緊急手段：`sudo STAGING_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-staging-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。
 - 不碰正式環境：沒有 `down`、沒有 `-v`，不動 `socrates-ntnu`。不設 `STAGING_DEMO_MODE`，自動部署不會開示範帳號。
 - 同一時間只跑一個部署：workflow 的 concurrency 加上包裝腳本的 `flock`。部署中途不取消；排隊中的舊執行會被較新的 push 取代。
 - **信任邊界（重要）**：包裝腳本不能防止能 push 到 `deploy/msi-cubi-staging` 的人。部署的 app 原始碼與 Dockerfile 來自該分支，`docker build` 與 compose 會在主機上執行它們，等同 root。真正的防線是：
@@ -389,20 +389,34 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
   3. fork PR 不觸發：公開 repo，workflow 只接 `push`，不要加 `pull_request` 觸發。
   4. 包裝腳本與 sudoers 只限制 runner 行程的權限，不取代上面三項。
 - 主機設定（root，一次性；檔案在 repo 的 `scripts/host/`）：
-  1. 建立部署目錄：`git clone -b deploy/msi-cubi-staging https://github.com/2026software-3/socrates-chat.git /var/lib/socrates-staging`，再把 `.env.staging`、`.apikeylist`、`.staging-credentials` 以 `install -o root -g root -m 0600` 放進去。
+  1. 建立部署目錄：`git clone -b deploy/msi-cubi-staging https://github.com/2026software-3/socrates-chat.git /var/lib/socrates-staging`，再把 `.env.staging`、`.staging-credentials` 以 `install -o root -g root -m 0600` 放進去。
   2. 安裝包裝腳本：`install -o root -g root -m 0755 scripts/host/socrates-staging-deploy /usr/local/sbin/socrates-staging-deploy`。它不會隨 commit 自動更新，之後每次改動都要 root 重新安裝。
   3. 安裝 sudoers：先 `visudo -cf scripts/host/gha-runner-staging.sudoers`，通過後 `install -o root -g root -m 0440 scripts/host/gha-runner-staging.sudoers /etc/sudoers.d/gha-runner-staging`。
-  4. 移除 runner 的 docker 群組：`gpasswd -d gha-runner docker`，然後以 root 在 runner 安裝目錄執行 `./svc.sh stop` 與 `./svc.sh start`，群組變更才會生效。
+  4. 移除 runner 的 docker 群組：`gpasswd -d gha-runner docker`，然後用 `systemctl restart "actions.runner.*msi-cubi-staging*"` 重啟 runner 服務，群組變更才會生效（不要以 root 執行 runner 目錄裡由 runner 使用者擁有的 `svc.sh`）。
   5. 驗證：`runuser -u gha-runner -- docker ps` 應該失敗；`runuser -u gha-runner -- sudo -n /usr/local/sbin/socrates-staging-deploy 0000000000000000000000000000000000000000` 應該被拒絕（SHA 不在分支上）。
-  - runner 註冊：repo 的 Settings → Actions → Runners 取得 registration token（約 1 小時失效），用 `--labels msi-cubi-staging --unattended` 以 `gha-runner` 身份註冊，再由 root 執行 `svc.sh install gha-runner` 與 `svc.sh start`。
+  - runner 註冊：repo 的 Settings → Actions → Runners 取得 registration token（約 1 小時失效），用 `--labels msi-cubi-staging --unattended` 以 `gha-runner` 身份註冊，再由 root 在 runner 剛註冊、還沒啟動時執行一次 `svc.sh install gha-runner` 與 `svc.sh start`（之後不要再以 root 執行它，改用 `systemctl`）。
   - repo 設定：environment `staging-deploy`（Required reviewers、deployment branch 限定為 `deploy/msi-cubi-staging`），以及 ruleset「Protect deploy/msi-cubi-staging」。
 - 注意：
   - `/var/lib/socrates-staging` 會被包裝腳本 `git reset --hard`，**不要在那裡手動改程式**。
   - 手動部署：`sudo /usr/local/sbin/socrates-staging-deploy <sha>`，sha 必須在 deploy 分支上。
   - 手動跑 compose（例如示範資料或 DEMO_MODE 操作）要用 root，並先設 tag：`sudo -H bash -c 'cd /var/lib/socrates-staging && export STAGING_APP_IMAGE_TAG=staging-$(git rev-parse --short=12 HEAD) && docker compose -f docker-compose.staging.yml up -d --no-build'`。上面「首次建立與重置合成資料」的指令都要照這個方式執行。
-  - 要重跑同一個 commit：在 Actions 頁面對該次執行按 Re-run（會再次需要 environment 核准）。
+  - 要重跑目前 head 的部署：在 Actions 頁面對該次執行按 Re-run（會再次需要 environment 核准）。
   - 健康檢查失敗時新版容器可能已經取代舊的：看 `docker logs socrates-staging-staging-app-1`，修好後推新 commit 或 Re-run。
-  - runner 離線時新的執行會排隊、不會失敗；以 root 在 runner 安裝目錄執行 `./svc.sh status` 查看。
+  - runner 離線時新的執行會排隊、不會失敗；用 `systemctl status "actions.runner.*msi-cubi-staging*"` 查看。
+
+## 正式環境自動部署（推送到 deploy/msi-cubi-intel 即更新）
+
+與 staging 同一套做法，但完全獨立：**從 `deploy/msi-cubi-staging` 開 PR 合併到 `deploy/msi-cubi-intel`**，合併（push）後由 GitHub Actions「Production deploy (msi_cubi)」（`.github/workflows/prod-deploy.yml`，environment `prod-deploy` 需人工核准）部署。
+
+- 流程：核准後 msi_cubi 的 self-hosted runner（使用者 `gha-runner-prod`，label `msi-cubi-prod`，與 staging 的 `gha-runner` 不同人）執行 `sudo -n /usr/local/sbin/socrates-prod-deploy <sha>`。
+- 包裝腳本（`scripts/host/socrates-prod-deploy`，root 擁有，不取自被推送的 commit）：只接受 40 位小寫十六進位 SHA 且必須是 `deploy/msi-cubi-intel` 的祖先；**先 pg_dump 備份到 `/var/backups/socrates-prod`（保留 14 份，備份失敗就中止，不動容器）**；`git reset --hard` 到該 commit；建置 `socrates-ntnu-app:prod-<sha12>`；以 `APP_IMAGE_TAG` 覆寫並 `up -d --no-build`（四個 compose 檔、四個 profile）；經 proxy 的 `/ready` 健康檢查（最多 90 秒）；只保留最近 5 個 prod 映像。不使用 `down`、不使用 `-v`，不碰資料庫 volume 與 cascade 映像。
+- 部署目錄 `/var/lib/socrates-prod`（root 擁有的 clone）；秘密只有 `.env`（root 0600，runner 讀不到）。**不要在那裡手動改程式**。`~/socrates-intel` 是舊的手動部署目錄，切換後不再使用（保留作退路，勿再用它啟動，以免兩邊搶同一個 compose 專案）。
+- 注意：第一次從新目錄部署時，bind mount 路徑變了，proxy 與 cascade 容器會被重建（cascade 模型載入需要數分鐘，語音暫時不可用）。
+- 只部署 `deploy/msi-cubi-intel` 目前的 head；舊 commit 與分支外 commit 都會被包裝腳本拒絕（避免別的 workflow 跑在 prod runner 上時繞過核准回滾）。回滾是 root 的緊急手段：`sudo PROD_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-prod-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。**migration 只往前**，舊映像不一定相容新 schema；回滾前先確認，必要時用部署前備份還原。
+- runner 隔離：prod runner 只該跑 `prod-deploy.yml`。repo 設定要關閉 fork PR 觸發 self-hosted runner；若 repo 之後搬到 organization，把 runner 放進限定 `prod-deploy.yml@refs/heads/deploy/msi-cubi-intel` 的 runner group。runner 上線後，**不要以 root 執行 runner 目錄裡的腳本**（`svc.sh` 等由 runner 使用者擁有），改用 `systemctl`。
+- 信任邊界：同 staging。防線是分支保護（只能經 PR、禁止 force push）、environment `prod-deploy` 的 Required reviewers、workflow 只接 `push`（不要加 `pull_request`）。
+- 主機端一次性設定：合併 PR 後在 msi_cubi 執行 `sudo bash /home/ray520/socrates-intel/scripts/host/setup-prod-autodeploy.sh`（互動式；若該目錄尚未更新，先 `git pull` 或從 repo 複製這支腳本）。它建立目錄、複製 `.env`（缺 `TEACHER_KEY_ENCRYPTION_KEYS` 會產生並要你存好）、安裝包裝腳本與 sudoers、建立 runner。
+- **AI key 淘汰（2026-11-19）**：後端不再讀 `.apikeylist`／`OPENAI_API_KEYS`。升級後管理者第一件事是到「系統 AI」設定模型與 key，在那之前系統用途的 AI（個人練習、翻譯、主張分組、公告翻譯等）不可用；教師 key 與教室 AI 不受影響。`TEACHER_KEY_ENCRYPTION_KEYS` 遺失就解不開資料庫裡所有 key，要另存。主機上舊的 `.apikeylist` 可在確認 AI 正常後刪除。
 
 ## 狀態紀錄
 

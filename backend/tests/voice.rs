@@ -672,3 +672,35 @@ async fn openai_voice_failures_never_change_the_shared_key_state() {
         assert!(c.openai_keys.acquire().is_some(), "{status}");
     }
 }
+
+#[tokio::test]
+async fn self_hosted_transcription_needs_no_openai_key_and_sends_none() {
+    // 主機 key 淘汰後：自架 Whisper 不需要也不會收到任何 OpenAI 金鑰
+    let (stt_base, stt_calls) = spawn_fake_openai().await;
+    let mut c = test_config();
+    c.openai_keys = std::sync::Arc::new(socrates_chat_backend::key_pool::KeyPool::empty());
+    c.openai_stt_base_url = Some(stt_base);
+    c.openai_stt_model = Some("stt-test".into());
+    let text = OpenAiVoice::from_config(&c)
+        .transcribe(vec![5; 20], "audio/webm", "en")
+        .await
+        .unwrap();
+    assert_eq!(text, "辨識結果");
+    assert_eq!(stt_calls.lock().unwrap()[0].1, "");
+}
+
+#[tokio::test]
+async fn openai_transcription_fails_cleanly_without_any_host_key() {
+    let (base, calls) = spawn_fake_openai().await;
+    let mut c = test_config();
+    c.openai_keys = std::sync::Arc::new(socrates_chat_backend::key_pool::KeyPool::empty());
+    c.openai_base_url = base;
+    c.openai_stt_model = Some("stt-test".into());
+    assert_eq!(
+        OpenAiVoice::from_config(&c)
+            .transcribe(vec![1], "audio/webm", "en")
+            .await,
+        Err(VoiceError::Failed)
+    );
+    assert!(calls.lock().unwrap().is_empty());
+}

@@ -16,6 +16,15 @@ async fn main() {
         .init();
 
     let config = Config::from_env().expect("invalid configuration");
+    let retired = socrates_chat_backend::config::retired_key_variables(|name| {
+        std::env::var(name).is_ok_and(|v| !v.is_empty())
+    });
+    if !retired.is_empty() {
+        tracing::warn!(
+            variables = ?retired,
+            "host API key settings are no longer used; manage AI keys in the admin and teacher UI"
+        );
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
