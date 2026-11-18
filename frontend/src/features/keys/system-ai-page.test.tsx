@@ -36,7 +36,7 @@ const key = {
 
 const noUsage = { range: '7d', totals: { requests: 0, input_tokens: 0, output_tokens: 0, unreported_requests: 0 }, items: [] }
 
-async function open(data: SystemAiOverview, usage: (range: string) => unknown = () => noUsage) {
+async function open(data: SystemAiOverview, usage: (range: string) => Record<string, unknown> = () => noUsage) {
   server.use(
     http.get('/api/admin/system-ai', () => HttpResponse.json(data)),
     http.get('/api/admin/system-ai/usage', ({ request }) => HttpResponse.json(usage(new URL(request.url).searchParams.get('range') ?? ''))),
