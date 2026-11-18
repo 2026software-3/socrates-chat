@@ -190,7 +190,7 @@ async fn malformed_model_output_is_not_saved_and_failure_can_be_retried(pool: Pg
 
 #[sqlx::test]
 async fn concurrent_clicks_start_only_one_generation(pool: PgPool) {
-    let ai = FakeAi::with(vec![Paced(vec![GOOD], Duration::from_millis(60))]);
+    let ai = FakeAi::with(vec![Paced(vec![GOOD], Duration::from_millis(400))]);
     let (app, a, conv) = fixture(&pool, ai.clone()).await;
     let (one, two) = tokio::join!(
         request(&app, "POST", Some(&a.student), &conv),
