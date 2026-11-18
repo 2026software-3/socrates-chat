@@ -16,8 +16,10 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ModelFields } from '@/features/keys/ai-settings-page'
 import { StatusBadge } from '@/features/keys/keys-page'
+import { UsagePanel } from '@/features/keys/usage-panel'
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { SystemAiKey, SystemAiOverview } from '@/lib/types'
@@ -118,106 +120,121 @@ export function SystemAiPage() {
             </Alert>
           ) : null}
 
-          <form onSubmit={onSaveModel} className="space-y-3" aria-label={t('systemAi.model.title')}>
-            <h2 className="text-base font-medium">{t('systemAi.model.title')}</h2>
-            <ModelFields
-              listPath={`${BASE}/models`}
-              idPrefix="sys"
-              value={{ provider: settingProvider, model: settingModel }}
-              providers={overview.providers}
-              disabled={busy !== undefined}
-              onChange={(patch) => {
-                if (patch.provider !== undefined) setProvider(patch.provider)
-                if (patch.model !== undefined) setModel(patch.model)
-              }}
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button type="submit" disabled={busy !== undefined || !settingProvider || !settingModel.trim()}>
-                {busy === 'model' ? t('systemAi.model.saving') : t('systemAi.model.save')}
-              </Button>
-              {overview.setting ? (
-                <Button type="button" variant="outline" disabled={busy !== undefined} onClick={() => void run('clear', () => api.delete(`${BASE}/model`), t('systemAi.modelCleared'))}>
-                  {t('systemAi.model.clear')}
+          <Tabs defaultValue="model" className="gap-4">
+            <TabsList variant="line" aria-label={t('systemAi.tabs')}>
+              <TabsTrigger value="model">{t('systemAi.tab.model')}</TabsTrigger>
+              <TabsTrigger value="keys">{t('systemAi.tab.keys')}</TabsTrigger>
+              <TabsTrigger value="usage">{t('systemAi.tab.usage')}</TabsTrigger>
+            </TabsList>
+            <TabsContent value="model" className="space-y-4">
+              <form onSubmit={onSaveModel} className="space-y-3" aria-label={t('systemAi.model.title')}>
+                <h2 className="text-base font-medium">{t('systemAi.model.title')}</h2>
+                <ModelFields
+                  listPath={`${BASE}/models`}
+                  idPrefix="sys"
+                  value={{ provider: settingProvider, model: settingModel }}
+                  providers={overview.providers}
+                  disabled={busy !== undefined}
+                  onChange={(patch) => {
+                    if (patch.provider !== undefined) setProvider(patch.provider)
+                    if (patch.model !== undefined) setModel(patch.model)
+                  }}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button type="submit" disabled={busy !== undefined || !settingProvider || !settingModel.trim()}>
+                    {busy === 'model' ? t('systemAi.model.saving') : t('systemAi.model.save')}
+                  </Button>
+                  {overview.setting ? (
+                    <Button type="button" variant="outline" disabled={busy !== undefined} onClick={() => void run('clear', () => api.delete(`${BASE}/model`), t('systemAi.modelCleared'))}>
+                      {t('systemAi.model.clear')}
+                    </Button>
+                  ) : null}
+                </div>
+                <p className="text-muted-foreground text-xs">{t('systemAi.model.note')}</p>
+              </form>
+            </TabsContent>
+            <TabsContent value="keys" className="space-y-6">
+              <section className="space-y-2">
+                <h2 className="text-base font-medium">{t('systemAi.keys.title')}</h2>
+                {overview.keys.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">{t('systemAi.keys.empty')}</p>
+                ) : (
+                  <ul aria-label={t('systemAi.keys.title')} className="divide-y rounded-md border">
+                    {overview.keys.map((k) => (
+                      <li key={k.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="font-medium">{k.provider_name}</span>
+                          <code className="text-muted-foreground text-sm">{k.mask}</code>
+                          <StatusBadge status={k.status} />
+                          <span className="text-muted-foreground text-xs">
+                            {t('systemAi.usage', { requests: nf.format(k.requests_30d), input: nf.format(k.input_tokens_30d), output: nf.format(k.output_tokens_30d) })}
+                          </span>
+                          {results[k.id] ? <span className="text-xs">{results[k.id]}</span> : null}
+                        </div>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" aria-label={t('keys.test.label', { provider: k.provider_name, mask: k.mask })} onClick={() => void onTest(k)}>
+                            <FlaskConical aria-hidden />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={t('keys.replace.label', { provider: k.provider_name, mask: k.mask })}
+                            onClick={() => {
+                              setError(undefined)
+                              setReplaceSecret('')
+                              setToReplace(k)
+                            }}
+                          >
+                            <RefreshCw aria-hidden />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={t('keys.delete.label', { provider: k.provider_name, mask: k.mask })}
+                            onClick={() => {
+                              setError(undefined)
+                              setToDelete(k)
+                            }}
+                          >
+                            <Trash2 aria-hidden />
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+              <form onSubmit={onAdd} className="space-y-3" aria-label={t('keys.add.title')}>
+                <h2 className="text-base font-medium">{t('keys.add.title')}</h2>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="sys-add-provider">{t('keys.add.provider')}</Label>
+                    <select id="sys-add-provider" className={nativeSelectClass} value={provider} onChange={(e) => setProvider(e.target.value)}>
+                      <option value="">{t('keys.add.providerPlaceholder')}</option>
+                      {overview.providers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="sys-add-key">{t('keys.add.key')}</Label>
+                    <Input id="sys-add-key" type="password" autoComplete="off" spellCheck={false} maxLength={512} value={secret} onChange={(e) => setSecret(e.target.value)} />
+                  </div>
+                </div>
+                <Button type="submit" disabled={busy !== undefined || !provider || !secret.trim()}>
+                  {busy === 'add' ? t('keys.add.submitting') : t('keys.add.submit')}
                 </Button>
-              ) : null}
-            </div>
-            <p className="text-muted-foreground text-xs">{t('systemAi.model.note')}</p>
-          </form>
-
-          <section className="space-y-2">
-            <h2 className="text-base font-medium">{t('systemAi.keys.title')}</h2>
-            {overview.keys.length === 0 ? (
-              <p className="text-muted-foreground text-sm">{t('systemAi.keys.empty')}</p>
-            ) : (
-              <ul aria-label={t('systemAi.keys.title')} className="divide-y rounded-md border">
-                {overview.keys.map((k) => (
-                  <li key={k.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="font-medium">{k.provider_name}</span>
-                      <code className="text-muted-foreground text-sm">{k.mask}</code>
-                      <StatusBadge status={k.status} />
-                      <span className="text-muted-foreground text-xs">
-                        {t('systemAi.usage', { requests: nf.format(k.requests_30d), input: nf.format(k.input_tokens_30d), output: nf.format(k.output_tokens_30d) })}
-                      </span>
-                      {results[k.id] ? <span className="text-xs">{results[k.id]}</span> : null}
-                    </div>
-                    <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" aria-label={t('keys.test.label', { provider: k.provider_name, mask: k.mask })} onClick={() => void onTest(k)}>
-                        <FlaskConical aria-hidden />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={t('keys.replace.label', { provider: k.provider_name, mask: k.mask })}
-                        onClick={() => {
-                          setError(undefined)
-                          setReplaceSecret('')
-                          setToReplace(k)
-                        }}
-                      >
-                        <RefreshCw aria-hidden />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={t('keys.delete.label', { provider: k.provider_name, mask: k.mask })}
-                        onClick={() => {
-                          setError(undefined)
-                          setToDelete(k)
-                        }}
-                      >
-                        <Trash2 aria-hidden />
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <form onSubmit={onAdd} className="space-y-3" aria-label={t('keys.add.title')}>
-            <h2 className="text-base font-medium">{t('keys.add.title')}</h2>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="sys-add-provider">{t('keys.add.provider')}</Label>
-                <select id="sys-add-provider" className={nativeSelectClass} value={provider} onChange={(e) => setProvider(e.target.value)}>
-                  <option value="">{t('keys.add.providerPlaceholder')}</option>
-                  {overview.providers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="sys-add-key">{t('keys.add.key')}</Label>
-                <Input id="sys-add-key" type="password" autoComplete="off" spellCheck={false} maxLength={512} value={secret} onChange={(e) => setSecret(e.target.value)} />
-              </div>
-            </div>
-            <Button type="submit" disabled={busy !== undefined || !provider || !secret.trim()}>
-              {busy === 'add' ? t('keys.add.submitting') : t('keys.add.submit')}
-            </Button>
-          </form>
+              </form>
+            </TabsContent>
+            <TabsContent value="usage" className="space-y-4">
+              <section className="space-y-2" aria-label={t('systemAi.usage.title')}>
+                <h2 className="text-base font-medium">{t('systemAi.usage.title')}</h2>
+                <UsagePanel idPrefix="system" path={`${BASE}/usage`} providers={overview.providers} />
+              </section>
+            </TabsContent>
+          </Tabs>
         </>
       ) : null}
 

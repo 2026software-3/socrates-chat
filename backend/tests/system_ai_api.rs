@@ -544,3 +544,62 @@ async fn model_suggestions_come_from_the_system_keys_only(pool: PgPool) {
         );
     }
 }
+
+#[sqlx::test]
+async fn system_usage_is_listed_by_model_for_admins_only(pool: PgPool) {
+    let app = build(pool.clone(), true, Arc::new(Fake::default()));
+    let a = seed_actors(&app).await;
+    let (_, item) = add(&app, &a.admin, "openai", KEY_A).await;
+    let id: uuid::Uuid = item["id"].as_str().unwrap().parse().unwrap();
+    let url = format!("{BASE}/usage");
+    let (s, v) = call(&app, "GET", &url, Some(&a.admin), None).await;
+    assert_eq!(
+        (s, v["range"].as_str(), v["totals"]["requests"].as_i64()),
+        (StatusCode::OK, Some("7d"), Some(0))
+    );
+    for (model, tokens) in [
+        ("gpt-a", Some((10, 5))),
+        ("gpt-a", Some((1, 1))),
+        ("gpt-b", None),
+    ] {
+        socrates_chat_backend::system_key_store::record_usage(&pool, id, "openai", model, tokens)
+            .await
+            .unwrap();
+    }
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("{url}?range=all"),
+        Some(&a.admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        v["totals"],
+        json!({"requests": 3, "input_tokens": 11, "output_tokens": 6, "unreported_requests": 1})
+    );
+    assert_eq!(
+        v["items"][0],
+        json!({"provider":"openai","model":"gpt-a","requests":2,"input_tokens":11,"output_tokens":6,"unreported_requests":0})
+    );
+    assert_eq!(v["items"][1]["model"], "gpt-b");
+    let (s, e) = call(
+        &app,
+        "GET",
+        &format!("{url}?range=bad"),
+        Some(&a.admin),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_range"));
+    assert_eq!(
+        call(&app, "GET", &url, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for cookie in [&a.teacher, &a.student, &a.outsider] {
+        assert_eq!(
+            call(&app, "GET", &url, Some(cookie), None).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+}

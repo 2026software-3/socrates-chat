@@ -34,12 +34,19 @@ const key = {
   unreported_requests_30d: 0,
 }
 
-async function open(data: SystemAiOverview) {
-  server.use(http.get('/api/admin/system-ai', () => HttpResponse.json(data)))
+const noUsage = { range: '7d', totals: { requests: 0, input_tokens: 0, output_tokens: 0, unreported_requests: 0 }, items: [] }
+
+async function open(data: SystemAiOverview, usage: (range: string) => Record<string, unknown> = () => noUsage) {
+  server.use(
+    http.get('/api/admin/system-ai', () => HttpResponse.json(data)),
+    http.get('/api/admin/system-ai/usage', ({ request }) => HttpResponse.json(usage(new URL(request.url).searchParams.get('range') ?? ''))),
+  )
   mockMe(makeMe({ admin: true }))
   renderApp(null, { route: '/admin/system-ai' })
   await screen.findByRole('heading', { name: '系統 AI' })
 }
+
+const goTo = async (name: string) => userEvent.setup().click(await screen.findByRole('tab', { name }))
 
 describe('SystemAiPage', () => {
   it('says the host key list is in use and warns when the feature is not enabled', async () => {
@@ -48,8 +55,25 @@ describe('SystemAiPage', () => {
     expect(screen.getByText(/後端尚未啟用教師 key 功能/)).toBeInTheDocument()
   })
 
+  it('splits the page into model, keys and usage tabs and shows one at a time', async () => {
+    await open(overview({ keys: [key] }))
+    const tabs = await screen.findAllByRole('tab')
+    expect(tabs.map((t) => t.textContent)).toEqual(['供應商與模型', '系統 key', '用量'])
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: '驗證並儲存' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: '系統 key' })).not.toBeInTheDocument()
+    await goTo('系統 key')
+    expect(await screen.findByRole('list', { name: '系統 key' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '驗證並儲存' })).not.toBeInTheDocument()
+    await goTo('用量')
+    expect(await screen.findByLabelText('期間')).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: '系統 key' })).not.toBeInTheDocument()
+  })
+
   it('lists keys with their usage but never a full key', async () => {
     await open(overview({ source: 'database', setting: { provider: 'openai', provider_name: 'OpenAI', model: 'gpt-x' }, keys: [key] }))
+    await goTo('系統 key')
     const row = (await screen.findByRole('list', { name: '系統 key' })).querySelector('li')!
     expect(row).toHaveTextContent('…aaaa')
     expect(row).toHaveTextContent('近 30 天 1,200 次')
@@ -65,6 +89,7 @@ describe('SystemAiPage', () => {
       }),
     )
     await open(overview())
+    await goTo('系統 key')
     const user = userEvent.setup()
     await user.selectOptions(await screen.findByLabelText('供應商', { selector: '#sys-add-provider' }), 'openai')
     await user.type(screen.getByLabelText('API key', { selector: '#sys-add-key' }), ' sk-synthetic-1 ')
@@ -103,6 +128,23 @@ describe('SystemAiPage', () => {
     await waitFor(() => expect(deleted).toBe(true))
   })
 
+  it('shows the system usage by provider and model with a range selector', async () => {
+    const ranges: string[] = []
+    await open(overview({ keys: [key] }), (range) => {
+      ranges.push(range)
+      return {
+        range,
+        totals: { requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 },
+        items: [{ provider: 'openai', model: 'gpt-a', requests: 3, input_tokens: 11, output_tokens: 6, unreported_requests: 0 }],
+      }
+    })
+    await goTo('用量')
+    expect(await screen.findByText('OpenAI / gpt-a')).toBeInTheDocument()
+    expect(ranges[0]).toBe('7d')
+    await userEvent.setup().selectOptions(screen.getByLabelText('期間'), '30d')
+    await waitFor(() => expect(ranges).toContain('30d'))
+  })
+
   it('suggests models from the system keys and still accepts any typed model', async () => {
     const asked: string[] = []
     server.use(
@@ -136,6 +178,7 @@ describe('SystemAiPage', () => {
       }),
     )
     await open(overview({ keys: [key] }))
+    await goTo('系統 key')
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '測試 OpenAI …aaaa 的 key' }))
     expect(await screen.findByText('可用')).toBeInTheDocument()
