@@ -43,6 +43,7 @@ pub mod achievement_admin;
 pub mod achievements;
 pub mod activity_store;
 pub mod ai;
+pub mod ai_providers;
 pub mod ai_usage;
 pub mod announcements;
 pub mod argument_tree;
