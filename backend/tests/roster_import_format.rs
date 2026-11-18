@@ -142,13 +142,11 @@ async fn teacher_import_creates_one_account_and_credential_per_student(pool: PgP
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(response.headers()["cache-control"], "no-store");
     let result = json_body(response).await;
+    // 只比對有哪些欄位；JSON 物件的鍵序不是契約（genai 讓 serde_json 保留插入順序）
+    let mut keys: Vec<String> = result.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
     assert_eq!(
-        result
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>(),
+        keys,
         ["added", "credentials", "errors", "existing", "invalid"]
     );
     assert_eq!(result["added"], 1);

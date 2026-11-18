@@ -6,12 +6,13 @@ use socrates_chat_backend::{
     summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
     logging::json_subscriber()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(logging::env_filter(
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .init();
 
     let config = Config::from_env().expect("invalid configuration");

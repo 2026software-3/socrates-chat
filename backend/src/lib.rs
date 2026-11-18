@@ -61,6 +61,7 @@ pub mod dashboard;
 pub mod demo;
 pub mod diagnostics;
 pub mod error;
+pub mod genai_provider;
 mod google_translation;
 pub mod identity;
 pub mod key_pool;
