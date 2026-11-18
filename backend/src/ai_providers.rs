@@ -265,16 +265,30 @@ async fn list_models_at(
     Ok(parse_models(adapter, &body))
 }
 
-/// 供應商清單裡明顯不是對話模型的名稱片段；只是建議用的過濾，漏掉或多列都不影響儲存時的驗證。
-const NON_CHAT_MARKERS: [&str; 8] = [
+/// 供應商清單裡明顯不是文字對話的模型名稱片段（嵌入、語音、即時／音訊、圖片、影片、審核、重排，
+/// 以及舊的補全模型）。教師 key 只用在文字對話，所以不列出這些；只是建議用的過濾，
+/// 漏掉或多列都不影響儲存時的驗證（仍可手動輸入）。
+const NON_CHAT_MARKERS: [&str; 20] = [
     "embed",
     "whisper",
     "tts",
-    "dall-e",
-    "moderation",
+    "speech",
+    "audio",
+    "realtime",
+    "-live",
     "transcribe",
-    "rerank",
+    "dall-e",
     "image",
+    "imagen",
+    "sora",
+    "video",
+    "veo",
+    "moderation",
+    "rerank",
+    "instruct",
+    "davinci",
+    "babbage",
+    "aqa",
 ];
 
 /// 從供應商的回應取出模型 ID：Gemini 是 `models[].name`（去掉 `models/`，且要支援 `generateContent`），
