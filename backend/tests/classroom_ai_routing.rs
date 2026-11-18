@@ -604,6 +604,43 @@ async fn rate_limited_primary_switches_to_the_fallback_and_the_conversation_stay
 }
 
 #[sqlx::test]
+async fn changing_the_settings_restarts_conversations_on_the_primary_model(pool: PgPool) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    w.fake.set(
+        KEY_1,
+        Behavior::Status(429, r#"{"error":{"message":"slow"}}"#),
+    );
+    assert_eq!(error_code(&w.say().await), None);
+    assert_eq!(w.position().await, 1);
+    // 教師改了設定、拿掉備援：這場對話不能卡在已不存在的位置
+    w.fake.set(KEY_1, Behavior::Ok);
+    w.configure().await;
+    assert_eq!(w.position().await, 0);
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.models_seen().last().map(String::as_str), Some(MODEL));
+}
+
+#[sqlx::test]
+async fn a_stored_position_beyond_the_current_list_starts_from_the_primary(pool: PgPool) {
+    let w = world(pool).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.add_key(w.owner, "deepseek", KEY_2).await;
+    w.configure_with_fallback().await;
+    sqlx::query("UPDATE conversations SET ai_fallback_position = 3 WHERE id = $1")
+        .bind(Uuid::parse_str(&w.conv).unwrap())
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let events = w.say().await;
+    assert_eq!(error_code(&events), None, "{events:?}");
+    assert_eq!(w.models_seen(), vec![MODEL]);
+}
+
+#[sqlx::test]
 async fn invalid_or_exhausted_primary_keys_also_trigger_the_switch(pool: PgPool) {
     for (i, behavior) in [
         Behavior::Status(401, "{}"),

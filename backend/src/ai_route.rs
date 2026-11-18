@@ -123,6 +123,12 @@ impl AppState {
         };
         let mut models = vec![setting.primary.clone()];
         models.extend(setting.fallbacks.iter().cloned());
+        // 記下的位置超出目前清單（不應發生，設定變更時會歸零）：從主模型開始，不讓對話卡住
+        let start_position = if usize::try_from(start_position).is_ok_and(|p| p < models.len()) {
+            start_position
+        } else {
+            0
+        };
         let mut targets = Vec::new();
         for (position, m) in models.into_iter().enumerate() {
             let position = position as i16;
