@@ -291,12 +291,38 @@ fn failed_body(error: &genai::Error) -> Option<&str> {
 fn status_class(status: u16, body: Option<&str>) -> Failure {
     match status {
         401 | 403 => Failure::InvalidKey,
+        // Gemini 對無效或已撤銷的 key 回 400（原因 API_KEY_INVALID）
+        400 if body_reason(body, "API_KEY_INVALID") => Failure::InvalidKey,
         402 => Failure::QuotaExceeded,
         408 | 504 => Failure::Timeout,
         429 if is_quota_body(body) => Failure::QuotaExceeded,
         429 => Failure::RateLimited,
+        // 容量錯誤（Anthropic 529 overloaded_error）與限流同等看待：換 key，再換備援模型（S-03.1）
+        529 => Failure::RateLimited,
+        _ if body_error_type(body, "overloaded_error") => Failure::RateLimited,
         _ => Failure::ServiceError,
     }
+}
+
+fn body_json(body: Option<&str>) -> Option<serde_json::Value> {
+    body.and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+}
+
+/// 只比對固定的錯誤類型代碼，本文其餘部分不看也不留。
+fn body_error_type(body: Option<&str>, kind: &str) -> bool {
+    body_json(body).is_some_and(|v| v.pointer("/error/type").and_then(|t| t.as_str()) == Some(kind))
+}
+
+/// Google 的錯誤細節：`error.details[].reason`。
+fn body_reason(body: Option<&str>, reason: &str) -> bool {
+    body_json(body).is_some_and(|v| {
+        v.pointer("/error/details")
+            .and_then(|d| d.as_array())
+            .is_some_and(|d| {
+                d.iter()
+                    .any(|x| x.get("reason").and_then(|r| r.as_str()) == Some(reason))
+            })
+    })
 }
 
 /// 只認固定的供應商代碼 `insufficient_quota`，本文其餘部分不看也不留。

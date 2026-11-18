@@ -321,6 +321,43 @@ async fn status_records_reason_and_time_and_ok_clears_them(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn status_from_a_call_on_the_old_secret_does_not_land_on_a_replaced_key(pool: PgPool) {
+    let t = teacher(&pool, "t1@example.com").await;
+    let c = cipher();
+    let k = store::add(&pool, &c, t, "openai", KEY_A).await.unwrap();
+    // 呼叫開始時讀到的是 KEY_A
+    let in_flight = store::keys_for(&pool, &c, t, "openai")
+        .await
+        .unwrap()
+        .remove(0);
+    // 呼叫進行中，教師把它換成 KEY_B
+    store::replace(&pool, &c, t, k.id, KEY_B)
+        .await
+        .unwrap()
+        .unwrap();
+    // 舊 key 的失敗回來了：不能把新 key 標成失效
+    assert!(
+        !store::set_status_for(&pool, &in_flight, KeyStatus::Invalid)
+            .await
+            .unwrap()
+    );
+    let got = &store::list_for_owner(&pool, t).await.unwrap()[0];
+    assert_eq!((got.status, got.status_at), (KeyStatus::Ok, None));
+    // 用新 key 的呼叫照常記錄
+    let current = store::keys_for(&pool, &c, t, "openai")
+        .await
+        .unwrap()
+        .remove(0);
+    assert!(
+        store::set_status_for(&pool, &current, KeyStatus::RateLimited)
+            .await
+            .unwrap()
+    );
+    let got = &store::list_for_owner(&pool, t).await.unwrap()[0];
+    assert_eq!(got.status, KeyStatus::RateLimited);
+}
+
+#[sqlx::test]
 async fn database_guards_status_provider_and_fingerprint_shape(pool: PgPool) {
     let t = teacher(&pool, "t1@example.com").await;
     for (provider, status, fp_len) in [

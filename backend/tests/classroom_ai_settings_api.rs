@@ -26,6 +26,7 @@ const KEY_ANTHROPIC: &str = "sk-synthetic-BBBB-1111-2222-3333-bbbb";
 struct FakeModels {
     failures: Mutex<HashMap<(String, String), ModelCheckError>>,
     calls: Mutex<Vec<(String, String, String)>>,
+    delay: Mutex<std::time::Duration>,
 }
 
 #[async_trait]
@@ -40,6 +41,8 @@ impl ModelVerifier for FakeModels {
             .lock()
             .unwrap()
             .push((provider.id.into(), model.into(), key.into()));
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
         match self
             .failures
             .lock()
@@ -59,8 +62,16 @@ struct World {
 }
 
 fn build(pool: PgPool, cipher: bool, limit: Option<usize>) -> (Router, Arc<FakeModels>) {
+    build_with(pool, cipher, limit, test_config())
+}
+
+fn build_with(
+    pool: PgPool,
+    cipher: bool,
+    limit: Option<usize>,
+    mut config: socrates_chat_backend::config::Config,
+) -> (Router, Arc<FakeModels>) {
     register_fixture_pool(&pool);
-    let mut config = test_config();
     if cipher {
         config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
         config.classroom_ai_routing = true;
@@ -123,6 +134,31 @@ async fn put(w: &World, body: Value) -> (StatusCode, Value) {
 
 fn code(v: &Value) -> &str {
     v["error"]["code"].as_str().unwrap_or("")
+}
+
+#[sqlx::test]
+async fn slow_model_checks_are_not_cut_off_by_the_general_request_timeout(pool: PgPool) {
+    let mut config = test_config();
+    config.request_timeout = std::time::Duration::from_millis(100);
+    let (app, models) = build_with(pool, true, None, config);
+    *models.delay.lock().unwrap() = std::time::Duration::from_millis(300);
+    let a = seed_actors(&app).await;
+    for (p, k) in [("openai", KEY_OPENAI), ("anthropic", KEY_ANTHROPIC)] {
+        call(
+            &app,
+            "POST",
+            "/api/teacher/keys",
+            Some(&a.teacher),
+            Some(json!({"provider": p, "key": k})),
+        )
+        .await;
+    }
+    let w = World { app, a, models };
+    let fb =
+        json!([{"provider":"anthropic","model":"claude-x"},{"provider":"openai","model":"gpt-b"}]);
+    let (s, v) = put(&w, put_body("openai", "gpt-a", fb, true)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(w.models.calls.lock().unwrap().len(), 3);
 }
 
 #[sqlx::test]

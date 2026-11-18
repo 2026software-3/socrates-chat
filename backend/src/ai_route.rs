@@ -41,6 +41,8 @@ use crate::{
 pub const COOLDOWN_RATE_LIMITED: Duration = Duration::from_secs(60);
 pub const COOLDOWN_QUOTA: Duration = Duration::from_secs(600);
 pub const COOLDOWN_INVALID: Duration = Duration::from_secs(600);
+/// 供應商的 `Retry-After` 最多採信這麼久，避免一個異常值讓 key 長期停用。
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 /// 解析結果：要用的 provider，以及供診斷記錄的模型名稱。
 pub(crate) struct Route {
@@ -170,7 +172,11 @@ impl AppState {
 fn is_eligible(key: &UsableKey) -> bool {
     let cooldown = match key.status {
         KeyStatus::Ok => return true,
-        KeyStatus::RateLimited => COOLDOWN_RATE_LIMITED,
+        // 供應商要求等更久就照它的（最多一小時），否則固定冷卻
+        KeyStatus::RateLimited => key
+            .retry_after
+            .map_or(COOLDOWN_RATE_LIMITED, |d| d.min(MAX_RETRY_AFTER))
+            .max(COOLDOWN_RATE_LIMITED),
         KeyStatus::QuotaExhausted => COOLDOWN_QUOTA,
         KeyStatus::Invalid => COOLDOWN_INVALID,
     };
@@ -237,9 +243,10 @@ impl Routed {
         }
     }
 
-    /// 這把 key 失敗了：記錄狀態並換下一把。
-    async fn mark(&self, key: &UsableKey, status: KeyStatus) {
-        if let Err(e) = keys::set_status(&self.pool, key.id, status).await {
+    /// 這把 key 失敗了：記錄狀態（含供應商要求的等待時間）並換下一把。只寫到同一把 key 上，
+    /// 呼叫期間教師更換了 key 時不覆寫新 key 的狀態。
+    async fn mark(&self, key: &UsableKey, status: KeyStatus, retry_after: Option<Duration>) {
+        if let Err(e) = keys::set_status_after(&self.pool, key, status, retry_after).await {
             tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record key status");
         }
     }
@@ -247,7 +254,7 @@ impl Routed {
     /// 這把 key 成功了：之前非正常的狀態恢復。
     async fn recovered(&self, key: &UsableKey) {
         if key.status != KeyStatus::Ok {
-            self.mark(key, KeyStatus::Ok).await;
+            self.mark(key, KeyStatus::Ok, None).await;
         }
     }
 
@@ -323,7 +330,7 @@ impl AiProvider for Routed {
                     Ok(s) => s,
                     Err(e) => match failover_status(&e) {
                         Some(status) => {
-                            self.mark(key, status).await;
+                            self.mark(key, status, e.retry_after()).await;
                             continue;
                         }
                         None => return Err(e),
@@ -333,7 +340,7 @@ impl AiProvider for Routed {
                 match stream.next().await {
                     Some(Err(e)) => match failover_status(&e) {
                         Some(status) => {
-                            self.mark(key, status).await;
+                            self.mark(key, status, e.retry_after()).await;
                             continue;
                         }
                         None => return Err(e),
@@ -376,7 +383,7 @@ impl AiProvider for Routed {
                         return Ok(done);
                     }
                     Err(e) => match failover_status(&e) {
-                        Some(status) => self.mark(key, status).await,
+                        Some(status) => self.mark(key, status, e.retry_after()).await,
                         None => return Err(e),
                     },
                 }
