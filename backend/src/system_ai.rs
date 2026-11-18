@@ -2,7 +2,7 @@
 //!
 //! 系統用途 = 沒有教室的個人練習、過渡中的教室、翻譯、主張分組、維度與公告翻譯等不屬於任何教師的 AI 呼叫。
 //! key 以與教師 key 相同的方式加密存資料庫（`TEACHER_KEY_ENCRYPTION_KEYS`）；回應、錯誤與日誌都不含 key 或密文，
-//! 只回遮蔽識別。沒有設定時照舊使用主機上的 `.apikeylist`（`AppState::system_route`）。
+//! 只回遮蔽識別。沒有設定時系統用途的 AI 無法使用（主機上的 `.apikeylist` 已淘汰）。
 //! 稽核只記操作者與供應商識別碼，不記 key、遮蔽識別或模型內容。語音（STT／TTS）不在這裡。
 
 use axum::{
@@ -75,7 +75,7 @@ pub(crate) struct SystemKeyItem {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Overview {
-    /// `database`：系統用途用這裡設定的模型與 key；`host_file`：用主機上的 `.apikeylist`
+    /// `database`：系統用途用這裡設定的模型與 key；`host_file`：尚未設定（主機 key 已淘汰，系統用途的 AI 無法使用）
     source: &'static str,
     /// 後端有沒有開教師 key 與路由功能（`CLASSROOM_AI_ROUTING`）；沒開時這裡的設定不會生效
     routing_enabled: bool,
@@ -296,12 +296,12 @@ pub(crate) async fn set_model(
     Ok(Json(overview_of(&state).await?))
 }
 
-/// 清除設定：系統用途回到主機上的 `.apikeylist`。key 保留。
+/// 清除設定：系統用途的 AI 暫時無法使用，直到重新設定。key 保留。
 #[utoipa::path(
     delete,
     path = "/api/admin/system-ai/model",
     tag = "admin",
-    summary = "清除系統用途的模型設定（回到主機的 .apikeylist）",
+    summary = "清除系統用途的模型設定（key 保留）",
     responses((status = 200, body = Overview), crate::error::CommonErrors)
 )]
 pub(crate) async fn clear_model(
@@ -399,7 +399,7 @@ pub(crate) async fn replace_key(
     Ok(Json(item(replaced, &usage)))
 }
 
-/// 刪除一把系統 key；該 key 的用量紀錄一併刪除。刪光目前模型供應商的 key 後，系統用途自動回到 `.apikeylist`。
+/// 刪除一把系統 key；該 key 的用量紀錄一併刪除。刪光目前模型供應商的 key 後，系統用途的 AI 暫時無法使用。
 #[utoipa::path(
     delete,
     path = "/api/admin/system-ai/keys/{id}",

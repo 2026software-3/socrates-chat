@@ -27,7 +27,7 @@ import { useFetch } from '@/lib/use-fetch'
 
 const BASE = '/api/admin/system-ai'
 
-/** 管理者在介面管理系統 AI：供應商、模型與多把系統 key（加密存資料庫，沒設定時用主機的 .apikeylist）。 */
+/** 管理者在介面管理系統 AI：供應商、模型與多把系統 key（加密存資料庫，沒設定時系統用途的 AI 無法使用）。 */
 export function SystemAiPage() {
   const t = useT()
   const { lang } = useI18n()

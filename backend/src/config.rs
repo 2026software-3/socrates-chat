@@ -41,7 +41,7 @@ pub struct Config {
     pub ai_usage_window: Duration,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
-    /// AI 服務的 API key 池（`OPENAI_API_KEYS`、`.apikeylist`）；對話與語音共用，冷卻狀態也共用。
+    /// 主機 key 池，已淘汰所以永遠是空的（`KeyPool::empty`）；只剩語音走 OpenAI 備援時會用到它，沒有 key 就失敗。
     pub openai_keys: Arc<KeyPool>,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
@@ -175,15 +175,13 @@ pub fn load_openai_keys() -> Result<Vec<String>, ConfigError> {
     )
 }
 
-/// 沒有任何 key 時的啟動錯誤；舊的 `OPENAI_API_KEY` 還設著就明講它已改名，免得部署時摸不著頭緒。
-fn no_key_error(legacy_variable_set: bool) -> ConfigError {
-    ConfigError(if legacy_variable_set {
-        "OPENAI_API_KEY is no longer used: put the key in the .apikeylist file (one per line) \
-         or in OPENAI_API_KEYS"
-            .into()
-    } else {
-        "no AI API key: set OPENAI_API_KEYS or fill the .apikeylist file".into()
-    })
+/// 已淘汰的主機 key 設定：應用程式不再讀取，設了也只會被忽略；啟動時列出來，免得以為還有效。
+/// `is_set` 回報該環境變數是否設了非空值。
+pub fn retired_key_variables(is_set: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    ["OPENAI_API_KEY", "OPENAI_API_KEYS", "OPENAI_API_KEYS_FILE"]
+        .into_iter()
+        .filter(|name| is_set(name))
+        .collect()
 }
 
 fn gather_keys(
@@ -302,9 +300,8 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .map(Into::into),
-            openai_keys: Arc::new(KeyPool::new(load_openai_keys()?).ok_or_else(|| {
-                no_key_error(env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty()))
-            })?),
+            // 主機上的 key 已淘汰（對話 key 在資料庫，由管理者與教師在介面管理）；這個池永遠是空的
+            openai_keys: Arc::new(KeyPool::empty()),
             openai_model: required("OPENAI_MODEL")?,
             openai_fallback_models: parse_model_list(
                 &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
@@ -395,11 +392,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_key_error_points_to_the_renamed_variable() {
-        let legacy = no_key_error(true).to_string();
-        assert!(legacy.contains("OPENAI_API_KEY"), "{legacy}");
-        assert!(legacy.contains(".apikeylist"), "{legacy}");
-        assert!(!no_key_error(false).to_string().contains("OPENAI_API_KEY "));
+    fn retired_key_variables_are_reported_when_set() {
+        let set = |name: &str| matches!(name, "OPENAI_API_KEY" | "OPENAI_API_KEYS_FILE");
+        assert_eq!(
+            retired_key_variables(set),
+            ["OPENAI_API_KEY", "OPENAI_API_KEYS_FILE"]
+        );
+        assert!(retired_key_variables(|_| false).is_empty());
     }
 
     #[test]
