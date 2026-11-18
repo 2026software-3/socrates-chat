@@ -94,9 +94,11 @@ if step "4/5 建立 runner 使用者並註冊 self-hosted runner" "使用者 $RU
     rm -rf "$tmp"
     chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR"
     runuser -u "$RUNNER_USER" -- bash -c "cd '$RUNNER_DIR' && ./config.sh --url '$REPO_URL' --token '$TOKEN' --labels msi-cubi-prod --name msi-cubi-prod --unattended --replace"
+    # 只在剛設定完、runner 還沒啟動時以 root 執行一次 svc.sh（它由 runner 使用者擁有，runner 上線後
+    # 就不要再以 root 執行它，否則等於讓 runner 使用者取得 root）。之後用 systemctl 管理服務。
     (cd "$RUNNER_DIR" && ./svc.sh install "$RUNNER_USER" && ./svc.sh start)
   fi
-  (cd "$RUNNER_DIR" && ./svc.sh status | head -5) || true
+  systemctl status "actions.runner.*msi-cubi-prod*" --no-pager 2>&1 | head -5 || true
 fi
 
 if step "5/5 驗證權限" "runner 使用者不能用 docker；包裝腳本要拒絕不在分支上的 SHA"; then
