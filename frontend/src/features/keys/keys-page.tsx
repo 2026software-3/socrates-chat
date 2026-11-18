@@ -84,6 +84,13 @@ export function KeysPage() {
     try {
       await api.put(`/api/teacher/keys/${encodeURIComponent(toReplace.id)}`, { key: replaceSecret })
       setNotice(t('keys.replace.done', { provider: nameOf(toReplace.provider) }))
+      // 舊 key 的測試結果不適用於新 key
+      const replaced = toReplace.id
+      setResults((r) => {
+        const next = { ...r }
+        delete next[replaced]
+        return next
+      })
       setToReplace(undefined)
       setReplaceSecret('')
       keys.reload()
@@ -115,6 +122,8 @@ export function KeysPage() {
     try {
       const res = await api.post<{ result: 'usable' | 'connection_failed' }>(`/api/teacher/keys/${encodeURIComponent(key.id)}/test`)
       setResults((r) => ({ ...r, [key.id]: res.result }))
+      // 測試可用時後端會清掉先前記下的失敗狀態：重新載入清單，狀態標籤才會更新
+      if (res.result === 'usable') keys.reload()
     } catch (err) {
       setResults((r) => ({ ...r, [key.id]: { error: err } }))
     } finally {

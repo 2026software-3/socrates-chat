@@ -145,6 +145,36 @@ describe('KeysPage', () => {
     expect(document.body.textContent).not.toContain(SECRET)
   })
 
+  it('clears the previous test result after the key is replaced', async () => {
+    mockKeys([key()])
+    server.use(http.post('/api/teacher/keys/:id/test', () => HttpResponse.json({ result: 'usable' })))
+    render()
+    await userEvent.click(await screen.findByRole('button', { name: '測試 OpenAI …aaaa 的 key' }))
+    expect(await screen.findByText('可用')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '更換 OpenAI …aaaa 的 key' }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('API key'), SECRET)
+    await userEvent.click(within(dialog).getByRole('button', { name: '更換' }))
+    expect(await screen.findByText('已更換 OpenAI 的 key。')).toBeInTheDocument()
+    expect(screen.queryByText('可用')).not.toBeInTheDocument()
+  })
+
+  it('reloads the list after a usable test so a cleared status shows', async () => {
+    const { keys } = mockKeys([key({ status: 'invalid', status_at: '2026-11-18T02:00:00Z' })])
+    server.use(
+      http.post('/api/teacher/keys/:id/test', () => {
+        // 後端在測試可用時把狀態清為 ok
+        keys[0] = key()
+        return HttpResponse.json({ result: 'usable' })
+      }),
+    )
+    render()
+    expect(await screen.findByText('失效或已被撤銷')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '測試 OpenAI …aaaa 的 key' }))
+    expect(await screen.findByText('可用')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('失效或已被撤銷')).not.toBeInTheDocument())
+  })
+
   it('confirms before deleting and explains that usage is deleted too', async () => {
     const { calls } = mockKeys([key()])
     render()
