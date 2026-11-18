@@ -1,6 +1,6 @@
 //! 教師查看自己 key 與教室的 AI 用量（F-40.8-BE，#603；S-03.1）。
 //!
-//! 只有教師本人：系統管理者不能查教師 key 的用量（規格）；管理者查教室用量規格未明，預設不開放（待確認）。
+//! key 的用量只有持有的教師本人看得到，系統管理者不能查（規格）；教室用量教師看自己建立的教室，管理者可看任何教室（需求方已確認）。
 //! 只回次數與 token，不計金額。
 
 use axum::{
@@ -140,7 +140,7 @@ pub(crate) async fn key_usage(
     )))
 }
 
-/// 自己建立的教室的用量（各 key 加總）。
+/// 教室的用量（各 key 加總）：教師看自己建立的教室，管理者看任何教室。
 #[utoipa::path(
     get,
     path = "/api/classrooms/{id}/ai-usage",
@@ -155,15 +155,9 @@ pub(crate) async fn classroom_usage(
     Path(raw_id): Path<String>,
     Query(q): Query<RangeQuery>,
 ) -> Result<Json<UsageReport>, ApiError> {
-    if !cu.roles.teacher {
-        return Err(ApiError::forbidden(
-            "forbidden",
-            "只有教室的教師可查看 AI 用量",
-        ));
-    }
     let id = parse_id(&raw_id)?;
-    // 只有建立者：不論管理者身分都不放行，他人的教室與不存在相同 404
-    classroom_store::get_visible(&state.pool, id, cu.user.id, false)
+    // 教師只能看自己建立的教室（他人的教室與不存在相同 404）；管理者可以看任何教室的用量
+    classroom_store::get_visible(&state.pool, id, cu.user.id, cu.roles.admin)
         .await?
         .ok_or_else(ApiError::not_found)?;
     let (range, name) = parse_range(&q)?;
