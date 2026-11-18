@@ -166,3 +166,16 @@ pub async fn clear_transitional(pool: &PgPool, classroom: Uuid) -> Result<bool, 
     .rows_affected()
         > 0)
 }
+
+/// 已確認過資料流的供應商，依識別碼排序。
+pub async fn confirmed_providers(
+    pool: &PgPool,
+    classroom: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT provider FROM classroom_ai_provider_confirmations WHERE classroom_id = $1 ORDER BY provider",
+    )
+    .bind(classroom)
+    .fetch_all(pool)
+    .await
+}

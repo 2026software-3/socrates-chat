@@ -162,6 +162,14 @@
 - 回 `{ range, totals, items }`；`totals` 與每個 `items`（依供應商、模型細分，備援模型歸在它自己的列）都是 `{ requests, input_tokens, output_tokens, unreported_requests }`。`unreported_requests` 是供應商沒回報 token 的請求數，這些請求不估算 token。不計金額。刪除 key 後該 key 的用量消失、教室總計扣除；更換 key 用量延續。
 - 權限：未登入 `401`；學生與名單外帳號 `403`。`/api/teacher/keys/{id}/usage` 只有 key 的持有教師，只有管理者身分的人也是 `403`（管理者看不到教師 key 的用量）。`/api/classrooms/{id}/ai-usage` 教師看自己建立的教室，管理者可看任何教室（需求方已確認）；其他教師查他人的 key 或教室與不存在相同 `404`。
 
+### 教室的 AI 模型設定（F-40.4，S-03.1）
+
+- `GET /api/classrooms/{id}/ai-settings`：只有教室建立者（教師）。回 `{ transitional, primary: { provider, model } | null, fallbacks: [{ provider, model }], confirmed_providers: [...] }`。`transitional` 為真代表 NTNU 上線前已存在、尚未設定的教室，沿用系統 key。
+- `PUT /api/classrooms/{id}/ai-settings`：`{ provider, model, fallbacks: [{ provider, model }] (至多 3 個，依嘗試順序), data_flow_confirmed }`。流程：格式與供應商名單檢查 → 教師必須有每個供應商的 key（`400 no_key_for_provider`）→ 第一次選定某家供應商（含備援）時 `data_flow_confirmed` 必須為真（`400 data_flow_confirmation_required`；已確認過的供應商之後不必再帶）→ 對每個模型同時呼叫 F-40.3 的模型驗證（此路由使用長逾時；會對供應商送出少量請求、可能產生少量費用，前端送出前要提示；與「測試 key」共用每人頻率限制，超過 `429 key_test_rate_limited`）→ 全部通過才儲存（備援整組取代）、記錄確認，並清除「過渡中」旗標。任何一步失敗都不儲存。
+- 錯誤碼：`invalid_provider`、`invalid_model`（空白或超過 200 字元）、`too_many_fallbacks`、`model_auth_failed`、`model_not_found`、`model_streaming_unsupported`、`model_structured_output_unsupported`、`model_check_failed`；與請求中某一項有關的錯誤帶 `error.target`（`primary`、`fallback_1`…`fallback_3`）。封存的教室不能修改（`409 classroom_archived`）；沒設定加密金鑰回 `503 teacher_keys_unavailable`。
+- 權限：未登入 `401`；學生、名單外帳號、只有管理者身分的人 `403`（管理者能否檢視規格未明，預設不開放，待確認）；其他教師與不存在的教室相同 `404`。
+- `GET /api/classrooms/{id}/ai-provider`：教室名單內的學生，回 `{ provider: { id, name } | null }`，供顯示「本教室的 AI 由 {供應商} 提供」；尚未設定或過渡中為 `null`，看不到模型 ID、備援或 key。不在該教室名單內的學生與不存在相同 `404`。
+
 ## 教師檢視
 
 教師檢視學生的總結，並可打開自己教室內已結束的活動對話原文（S-02.1，2026-11 需求方決定）。總結列表本身不含原文。`GET /api/summaries?classroom_id=` 只列出自己建立的教室內的活動對話總結（管理者為全部教室，內容遮蔽），每筆有 `classroom_id` 與對話快照的 `language`；個人練習永遠不在其中。帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。管理者身分的敏感欄位一律看到固定字串 `message`（S-02.2）。

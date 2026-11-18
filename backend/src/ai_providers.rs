@@ -126,6 +126,31 @@ impl KeyVerifier for HttpKeyVerifier {
     }
 }
 
+/// 讓路由可以在測試中換掉真正的模型驗證（會對供應商送出少量請求）。
+#[async_trait::async_trait]
+pub trait ModelVerifier: Send + Sync {
+    async fn verify_model(
+        &self,
+        provider: &Provider,
+        model: &str,
+        key: &str,
+    ) -> Result<(), ModelCheckError>;
+}
+
+pub struct HttpModelVerifier;
+
+#[async_trait::async_trait]
+impl ModelVerifier for HttpModelVerifier {
+    async fn verify_model(
+        &self,
+        provider: &Provider,
+        model: &str,
+        key: &str,
+    ) -> Result<(), ModelCheckError> {
+        verify_model(provider, model, key).await
+    }
+}
+
 async fn verify_key_at(
     endpoint: &str,
     adapter: AdapterKind,
