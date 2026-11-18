@@ -483,7 +483,10 @@ async fn generate(
     let mut outcome = None;
     let activity = AiActivity::new("chat_reply", Some(user), conv.classroom_id).statuses(200, 200);
     // 教室內的對話只用教室建立者的 key，不退回系統 key（F-40.5）
-    let route = match state.ai_for(conv.classroom_id).await {
+    let route = match state
+        .ai_for_conversation(conv.classroom_id, Some(conv.id))
+        .await
+    {
         Ok(route) => route,
         Err(_) => return Err(event("error", json!({"code": "classroom_ai_unavailable"}))),
     };
