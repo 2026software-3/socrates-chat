@@ -512,7 +512,7 @@ pub(crate) async fn translate(
         })?;
         let translation = AiActivity::new("summary_translation", Some(cu.user.id), Some(classroom))
             .run(&state, Some(&state.config.openai_model), 0, async {
-                via_ai(&state, &language, fields, Some(classroom)).await
+                via_ai(&state, &language, fields).await
             })
             .await;
         let Ok(translation) = translation else {
