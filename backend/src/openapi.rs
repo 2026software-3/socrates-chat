@@ -148,6 +148,8 @@ impl Modify for SessionCookie {
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
         announcements::public_list, announcements::list, announcements::create, announcements::update,
         announcements::remove, announcements::get_maintenance, announcements::set_maintenance,
+        crate::admin_teacher_keys::list_keys, crate::admin_teacher_keys::delete_key,
+        crate::student_notifications::list_unread, crate::student_notifications::mark_read,
         complaints::submit, complaints::list, complaints::update, complaints::resend,
         argument_tree::read,
         argument_tree::create,
