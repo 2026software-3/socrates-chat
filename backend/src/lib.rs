@@ -52,6 +52,7 @@ pub mod cascade;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_ai_store;
 pub mod classroom_store;
 pub mod classrooms;
 pub mod client_ip;
@@ -61,6 +62,7 @@ pub mod dashboard;
 pub mod demo;
 pub mod diagnostics;
 pub mod error;
+pub mod genai_provider;
 mod google_translation;
 pub mod identity;
 pub mod key_pool;
@@ -480,7 +482,15 @@ async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Nex
                 .insert(auth::MaintenanceAuthenticatedUser(user));
             next.run(Request::from_parts(parts, body)).await
         }
-        _ => announcements::MAINTENANCE_ERROR.into_response(),
+        Ok(_) => announcements::MAINTENANCE_ERROR.into_response(),
+        Err(e) => {
+            // 驗證失敗（含資料庫錯誤）對外仍是維護中，但留下 code 方便診斷；不記 token 或使用者資料
+            tracing::debug!(
+                code = e.code,
+                "maintenance gate could not resolve the session"
+            );
+            announcements::MAINTENANCE_ERROR.into_response()
+        }
     }
 }
 

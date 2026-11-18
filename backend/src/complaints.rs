@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     auth::{CurrentUser, RequireAdmin},
+    auth_store::display_name_sql,
     error::ApiError,
     mail::{self, ComplaintMail},
 };
@@ -173,7 +174,9 @@ macro_rules! view_select {
     ($tail:literal) => {
         concat!(
             "SELECT c.id, c.category, c.description, c.conversation_id, c.created_at, c.status, c.mail_status,
-                    u.display_name AS submitter_name, c.submitter_role, cl.name AS classroom_name
+                    ",
+            display_name_sql!("u"),
+            " AS submitter_name, c.submitter_role, cl.name AS classroom_name
              FROM complaints c
              JOIN users u ON u.id = c.user_id
              LEFT JOIN conversations cv ON cv.id = c.conversation_id
@@ -388,15 +391,16 @@ pub async fn deliver(state: &AppState, id: Uuid) {
         tracing::info!(complaint_id = %id, result = "skipped", "complaint mail not sent");
         return;
     };
-    let row: Option<MailRow> = match sqlx::query_as(
-        "SELECT c.id, c.category, c.description, c.created_at, c.conversation_id,
-                u.display_name AS submitter_name, c.submitter_role, cl.name AS classroom_name
+    let row: Option<MailRow> = match sqlx::query_as(concat!(
+        "SELECT c.id, c.category, c.description, c.created_at, c.conversation_id, ",
+        display_name_sql!("u"),
+        " AS submitter_name, c.submitter_role, cl.name AS classroom_name
          FROM complaints c
          JOIN users u ON u.id = c.user_id
          LEFT JOIN conversations cv ON cv.id = c.conversation_id
          LEFT JOIN classrooms cl ON cl.id = cv.classroom_id
-         WHERE c.id = $1",
-    )
+         WHERE c.id = $1"
+    ))
     .bind(id)
     .fetch_optional(&state.pool)
     .await

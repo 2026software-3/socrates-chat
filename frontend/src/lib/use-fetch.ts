@@ -37,7 +37,11 @@ export function useFetch<T>(path: string | null): FetchState<T> {
     return () => ctrl.abort()
   }, [path, tick])
 
-  const reload = useCallback(() => setTick((n) => n + 1), [])
+  const reload = useCallback(() => {
+    // 與 tick 同批更新，呼叫端在同一次 render 就會看到 loading，不會出現刷新前的空檔
+    if (path !== null) setLoading(true)
+    setTick((n) => n + 1)
+  }, [path])
   return { data, error, loading, reload }
 }
 

@@ -142,13 +142,11 @@ async fn teacher_import_creates_one_account_and_credential_per_student(pool: PgP
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(response.headers()["cache-control"], "no-store");
     let result = json_body(response).await;
+    // 只比對有哪些欄位；JSON 物件的鍵序不是契約（genai 讓 serde_json 保留插入順序）
+    let mut keys: Vec<String> = result.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
     assert_eq!(
-        result
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>(),
+        keys,
         ["added", "credentials", "errors", "existing", "invalid"]
     );
     assert_eq!(result["added"], 1);
@@ -178,8 +176,8 @@ async fn existing_student_can_join_another_class_without_a_new_account(pool: PgP
 
     assert_eq!(joined["added"], 1);
     assert_eq!(joined["credentials"], json!([]));
-    let row: (String, i64) = sqlx::query_as("SELECT u.display_name, count(e.user_id) FROM users u JOIN enrollments e ON e.user_id = u.id WHERE u.student_id = '12345678A' GROUP BY u.id").fetch_one(&pool).await.unwrap();
-    assert_eq!(row, ("甲".into(), 2));
+    let row: (String, Option<String>, i64) = sqlx::query_as("SELECT u.imported_name, u.display_name, count(e.user_id) FROM users u JOIN enrollments e ON e.user_id = u.id WHERE u.student_id = '12345678A' GROUP BY u.id").fetch_one(&pool).await.unwrap();
+    assert_eq!(row, ("甲".into(), None, 2));
 }
 
 #[sqlx::test]
