@@ -378,8 +378,67 @@ async fn verify_model_at(
     let client = GenaiClient::new().map_err(|_| ModelCheckError::Other)?;
     let provider = client.provider(AiTarget::new(adapter, endpoint, model, key));
 
-    // 串流
-    let stream_step = async {
+    // 供應商偶發的 503／429／連線中斷不代表模型不能用：每一步最多嘗試 `PROBE_ATTEMPTS` 次，
+    // 認證失敗、模型不存在這類確定的結果不重試。
+    retry_transient(|| probe_stream(&provider, step_timeout)).await?;
+    retry_transient(|| probe_json(&provider, step_timeout)).await
+}
+
+const PROBE_ATTEMPTS: usize = 3;
+/// 重試前的等待；測試裡不等，讓失敗情境不拖慢測試。
+const PROBE_RETRY_DELAY: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_millis(800)
+};
+
+/// 一次探測的失敗：驗證原因，以及是否為值得重試的暫時性錯誤。
+struct ProbeFailure {
+    reason: ModelCheckError,
+    transient: bool,
+}
+
+impl ProbeFailure {
+    fn definitive(reason: ModelCheckError) -> Self {
+        Self {
+            reason,
+            transient: false,
+        }
+    }
+
+    /// 暫時性錯誤：供應商 5xx／429／連線失敗（不含逾時，逾時已等滿一個步驟時限）。
+    fn from_ai_error(e: &crate::ai::AiError, reason: ModelCheckError) -> Self {
+        let transient = e.class == Failure::ConnectionFailed
+            || e.http_status
+                .is_some_and(|s| s == 429 || ((500..=599).contains(&s) && s != 504));
+        Self { reason, transient }
+    }
+}
+
+async fn retry_transient<F, Fut>(mut attempt: F) -> Result<(), ModelCheckError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), ProbeFailure>>,
+{
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match attempt().await {
+            Ok(()) => return Ok(()),
+            Err(f) if f.transient && tries < PROBE_ATTEMPTS => {
+                tokio::time::sleep(PROBE_RETRY_DELAY).await;
+            }
+            Err(f) => return Err(f.reason),
+        }
+    }
+}
+
+/// 串流探測：要有事件串流與至少一段文字。
+async fn probe_stream(
+    provider: &crate::genai_provider::GenaiProvider,
+    step_timeout: Duration,
+) -> Result<(), ProbeFailure> {
+    let step = async {
         let mut stream = provider
             .stream_chat(AiRequest {
                 system: "Reply with the single word OK.".into(),
@@ -397,24 +456,32 @@ async fn verify_model_at(
         }
         Ok::<_, crate::ai::AiError>(got_text)
     };
-    match tokio::time::timeout(step_timeout, stream_step).await {
-        Err(_) => return Err(ModelCheckError::Other),
-        Ok(Ok(true)) => {}
+    match tokio::time::timeout(step_timeout, step).await {
+        Err(_) => Err(ProbeFailure::definitive(ModelCheckError::Other)),
+        Ok(Ok(true)) => Ok(()),
         // 串流結束卻沒有任何文字：視為不支援串流
-        Ok(Ok(false)) => return Err(ModelCheckError::StreamingUnsupported),
+        Ok(Ok(false)) => Err(ProbeFailure::definitive(
+            ModelCheckError::StreamingUnsupported,
+        )),
         Ok(Err(e)) => {
-            return Err(match (e.class, e.http_status) {
+            let reason = match (e.class, e.http_status) {
                 (Failure::InvalidKey, _) => ModelCheckError::AuthFailed,
                 (_, Some(404)) => ModelCheckError::ModelNotFound,
                 // 供應商回 200 卻不是事件串流
                 (Failure::InvalidOutput, _) => ModelCheckError::StreamingUnsupported,
                 _ => ModelCheckError::Other,
-            });
+            };
+            Err(ProbeFailure::from_ai_error(&e, reason))
         }
     }
+}
 
-    // JSON 結構化輸出
-    let json_step = provider.complete_json(StructuredRequest {
+/// JSON 結構化輸出探測。
+async fn probe_json(
+    provider: &crate::genai_provider::GenaiProvider,
+    step_timeout: Duration,
+) -> Result<(), ProbeFailure> {
+    let step = provider.complete_json(StructuredRequest {
         system: "Return the JSON object {\"ok\": true}.".into(),
         input: json!({"probe": "ping"}),
         schema: json!({
@@ -425,25 +492,30 @@ async fn verify_model_at(
         }),
         name: "probe".into(),
     });
-    match tokio::time::timeout(step_timeout, json_step).await {
-        Err(_) => Err(ModelCheckError::Other),
+    match tokio::time::timeout(step_timeout, step).await {
+        Err(_) => Err(ProbeFailure::definitive(ModelCheckError::Other)),
         Ok(Ok(done)) => {
             if serde_json::from_str::<serde_json::Value>(&done.content).is_ok_and(|v| v.is_object())
             {
                 Ok(())
             } else {
-                Err(ModelCheckError::StructuredOutputUnsupported)
+                Err(ProbeFailure::definitive(
+                    ModelCheckError::StructuredOutputUnsupported,
+                ))
             }
         }
-        Ok(Err(e)) => Err(match (e.class, e.http_status) {
-            (Failure::InvalidKey, _) => ModelCheckError::AuthFailed,
-            (_, Some(404)) => ModelCheckError::ModelNotFound,
-            // 400 多半是參數不被接受（例如 response_format）
-            (_, Some(400)) | (Failure::InvalidOutput, _) => {
-                ModelCheckError::StructuredOutputUnsupported
-            }
-            _ => ModelCheckError::Other,
-        }),
+        Ok(Err(e)) => {
+            let reason = match (e.class, e.http_status) {
+                (Failure::InvalidKey, _) => ModelCheckError::AuthFailed,
+                (_, Some(404)) => ModelCheckError::ModelNotFound,
+                // 400 多半是參數不被接受（例如 response_format）
+                (_, Some(400)) | (Failure::InvalidOutput, _) => {
+                    ModelCheckError::StructuredOutputUnsupported
+                }
+                _ => ModelCheckError::Other,
+            };
+            Err(ProbeFailure::from_ai_error(&e, reason))
+        }
     }
 }
 
