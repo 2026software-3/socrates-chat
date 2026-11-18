@@ -300,9 +300,18 @@ pub(crate) async fn test_key(
 ) -> Result<Json<KeyTestResult>, ApiError> {
     teacher_only(&cu)?;
     let id = parse_id(&raw_id)?;
-    let (provider_id, key) = store::get_secret(&state.pool, cipher(&state)?, cu.user.id, id)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let cipher = cipher(&state)?;
+    let Some((provider_id, key)) = store::get_secret(&state.pool, cipher, cu.user.id, id).await?
+    else {
+        // 清單裡看得到、但解不開（加密金鑰已輪替掉）的 key 一律算連線失敗，不當成不存在
+        return if store::owns(&state.pool, cu.user.id, id).await? {
+            Ok(Json(KeyTestResult {
+                result: "connection_failed",
+            }))
+        } else {
+            Err(ApiError::not_found())
+        };
+    };
     let provider = ai_providers::find(&provider_id).ok_or_else(ApiError::not_found)?;
     if state.key_test_limit.try_acquire(cu.user.id).is_none() {
         return Err(ApiError::new(
@@ -312,7 +321,12 @@ pub(crate) async fn test_key(
         ));
     }
     let result = match state.key_verifier.verify_key(provider, key.secret()).await {
-        KeyCheck::Usable => "usable",
+        KeyCheck::Usable => {
+            // 測試可用就清掉先前記下的失效／額度／限流狀態，路由不必等冷卻結束；
+            // 連線失敗可能只是網路問題，不改寫狀態
+            store::set_status_for(&state.pool, &key, store::KeyStatus::Ok).await?;
+            "usable"
+        }
         KeyCheck::ConnectionFailed => "connection_failed",
     };
     Ok(Json(KeyTestResult { result }))
