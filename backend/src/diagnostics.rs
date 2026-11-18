@@ -113,6 +113,10 @@ pub enum Failure {
     ServiceError,
     /// 供應商正常回應，但內容無法解析；不算供應商失敗
     InvalidOutput,
+    /// 教室的 AI 服務無法使用（沒有可用的教師 key、建立者停用或不再是教師等），不退回系統 key（S-03.1）
+    /// 名稱與存進資料庫、回給學生的代碼一致，管理者才能用它篩選
+    #[serde(rename = "classroom_ai_unavailable")]
+    ClassroomUnavailable,
     InvalidCredentials,
     AccountDisabled,
     AccountLocked,
@@ -128,6 +132,7 @@ impl Failure {
             Self::RateLimited => "rate_limited",
             Self::ServiceError => "service_error",
             Self::InvalidOutput => "invalid_output",
+            Self::ClassroomUnavailable => "classroom_ai_unavailable",
             Self::InvalidCredentials => "invalid_credentials",
             Self::AccountDisabled => "account_disabled",
             Self::AccountLocked => "account_locked",
@@ -377,6 +382,18 @@ impl AiActivity {
         self
     }
 
+    /// 還沒呼叫供應商就失敗（例如教室的 AI 路由不可用）：記一筆沒有耗時與模型的失敗。
+    pub(crate) fn record_unreached(self, state: &AppState, error: &crate::ai::AiError) {
+        self.record(
+            state,
+            None,
+            0,
+            Instant::now(),
+            Some(error),
+            &AiSnapshot::default(),
+        );
+    }
+
     /// 執行一次 AI 嘗試並記錄結果。`retry` 是這次之前已重試的次數。
     pub(crate) async fn run<T>(
         self,
@@ -424,7 +441,11 @@ impl AiActivity {
                 } else {
                     self.success_status
                 },
-                error_code: error.map(|_| self.failure_code),
+                // 教室 AI 不可用時學生拿到的是 classroom_ai_unavailable，診斷也記同一個代碼
+                error_code: error.map(|error| match error.class {
+                    Failure::ClassroomUnavailable => Failure::ClassroomUnavailable.code(),
+                    _ => self.failure_code,
+                }),
                 user: self.user,
                 classroom: self.classroom,
                 ai: Some(ai),

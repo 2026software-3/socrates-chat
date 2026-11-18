@@ -187,13 +187,7 @@ async fn builtin_trolley_problem_is_seeded_once_and_respects_edits(pool: PgPool)
     let topics = avail["topics"].as_array().unwrap();
     assert_eq!(topics.len(), 1, "重複啟動不會重複建立");
     assert_eq!(topics[0]["title"], "電車難題");
-    // 內建題目的內容寫在引導問題（S-04.8 修訂：不再寫 description）
-    assert!(
-        topics[0]["guiding_questions"][0]
-            .as_str()
-            .unwrap()
-            .contains("拉桿")
-    );
+    assert!(topics[0]["description"].as_str().unwrap().contains("拉桿"));
 
     // 教師停用並改名後，再次啟動不會被覆寫或復活
     let id = topics[0]["id"].as_str().unwrap();

@@ -286,15 +286,23 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
         radar_scoring::build_request(&job.title, &job.guiding_questions, &job.dimensions, &turns);
     // 逾時、失敗或結果無效時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut scores = None;
+    // 教室內的對話只用教室建立者的 key（F-40.5）
+    let route = state.ai_for_conversation(job.classroom, Some(id)).await;
+    if let Err(error) = &route {
+        AiActivity::new("radar_scoring", Some(job.owner), job.classroom)
+            .statuses(202, 202)
+            .record_unreached(state, error);
+    }
     for retry in 0..2 {
+        let Ok(route) = &route else { break };
         let scored = AiActivity::new("radar_scoring", Some(job.owner), job.classroom)
             .statuses(202, 202)
             .run(
                 state,
-                Some(&state.config.openai_model),
+                Some(&route.model),
                 retry,
                 radar_scoring::score(
-                    state.ai.as_ref(),
+                    route.ai.as_ref(),
                     request.clone(),
                     &rubric,
                     state.config.ai_total_timeout,

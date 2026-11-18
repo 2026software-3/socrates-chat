@@ -1,4 +1,4 @@
-# NTNU 正式環境在 msi_cubi 上的疊加檔（2026-11-17 起取代 Windows 端的 docker-compose.ntnu.yml）。
+# NTNU 正式環境在 msi_cubi 上的疊加檔。
 # 使用（在 ~/socrates-intel）：
 #   F="-f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml"
 #   docker compose $F --profile app --profile cascade --profile proxy --profile tunnel up -d --no-build
@@ -26,17 +26,18 @@ services:
       # 備用網址 https://socrates.ray-dev.stream 也能到同一個服務，但寫入請求會因 Origin 不符被 CSRF 擋掉。
       APP_BASE_URL: ${APP_PUBLIC_URL:?設定 .env 的 APP_PUBLIC_URL}
       COOKIE_SECURE: "true"
-      # compose 網段（nginx、cloudflared）＋ Funnel 入口節點的 tailnet 位址（/32），.env 的 TRUSTED_PROXIES 覆寫；
-      # 後端由右往左跳過受信任代理取得真實來源。不要放整段 100.64.0.0/10，否則 tailnet 內任何裝置都能偽造來源
-      # 必填：沒設就不要啟動。預設值若漏掉入口節點，所有學生會共用同一個來源 IP，登入限流會把整班一起鎖住
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:?設定 .env 的 TRUSTED_PROXIES（172.16.0.0/12 加 Funnel 入口節點的 /32）}
+      # compose 網段（nginx、cloudflared），由 .env 的 TRUSTED_PROXIES 設定（目前 172.16.0.0/12）；
+      # 後端由右往左跳過受信任代理取得 Cloudflare 帶來的真實來源。不要放整段 100.64.0.0/10，否則 tailnet 內任何裝置都能偽造來源
+      # 必填：沒設就不要啟動。漏掉代理所在網段時，所有學生會共用同一個來源 IP，登入限流會把整班一起鎖住
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:?設定 .env 的 TRUSTED_PROXIES（compose 網段 172.16.0.0/12）}
       CASCADE_REALTIME_URL: ws://cascade:8110/v1/realtime
       # 語音訊息的 STT：沿用 NPU 上的 Whisper（OpenAI 相容的 /v1/audio/transcriptions）
       OPENAI_STT_BASE_URL: http://cascade-whisper:8101/v1
 
   proxy:
     restart: unless-stopped
-    # 127.0.0.1 給本機測試；tailnet 位址給 Windows 端的 Funnel（http://${PROXY_TAILNET_IP}:3080）。不綁 0.0.0.0（宿舍網路內其他人不該連到）
+    # 對外流量走 cloudflared → proxy:80（compose 網路內），不經這兩個埠。127.0.0.1 給本機測試；tailnet 位址給 tailnet 內的裝置測試
+    # （http://${PROXY_TAILNET_IP}:3080）。不綁 0.0.0.0（宿舍網路內其他人不該連到）
     ports: !override
       - "127.0.0.1:${PROXY_PORT:-3080}:80"
       - "${PROXY_TAILNET_IP:-100.71.164.60}:${PROXY_PORT:-3080}:80"

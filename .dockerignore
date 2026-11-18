@@ -8,3 +8,4 @@ docs
 **/.env.*
 !**/.env.example
 **/.apikeylist
+.staging-credentials

@@ -96,33 +96,29 @@ pub(crate) struct TopicPatch {
     guiding_questions: Option<Vec<String>>,
 }
 
-/// 驗證引導問題並回傳去除前後空白後的內容；長度與空白判斷都以去空白後為準，
-/// 寫入資料庫的也是這份結果，避免前後空白讓單題超過 200 字的上限。
-fn validate_guiding_questions(qs: &[String]) -> Result<Vec<String>, ApiError> {
+fn validate_guiding_questions(qs: &[String]) -> Result<(), ApiError> {
     if qs.len() > 5 {
         return Err(ApiError::bad_request(
             "invalid_guiding_questions",
             "引導問題最多 5 個",
         ));
     }
-    qs.iter()
-        .map(|q| {
-            let trimmed = q.trim();
-            if trimmed.is_empty() {
-                return Err(ApiError::bad_request(
-                    "invalid_guiding_questions",
-                    "單一引導問題不可為空白",
-                ));
-            }
-            if trimmed.chars().count() > 200 {
-                return Err(ApiError::bad_request(
-                    "invalid_guiding_questions",
-                    "引導問題單一最多 200 字",
-                ));
-            }
-            Ok(trimmed.to_string())
-        })
-        .collect()
+    for q in qs {
+        let trimmed = q.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request(
+                "invalid_guiding_questions",
+                "單一引導問題不可為空白",
+            ));
+        }
+        if trimmed.chars().count() > 200 {
+            return Err(ApiError::bad_request(
+                "invalid_guiding_questions",
+                "引導問題單一最多 200 字",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[utoipa::path(
@@ -173,14 +169,14 @@ async fn insert_topic(
     if !valid_text(&b.title) {
         return Err(ApiError::invalid_title());
     }
-    let guiding_questions = validate_guiding_questions(&b.guiding_questions)?;
+    validate_guiding_questions(&b.guiding_questions)?;
     let t = sqlx::query_as(
         "INSERT INTO topics (title, description, guiding_questions) VALUES ($1, $2, $3)
          RETURNING id, title, description, is_active, guiding_questions",
     )
     .bind(b.title.trim())
     .bind(b.description)
-    .bind(guiding_questions)
+    .bind(&b.guiding_questions)
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
@@ -214,10 +210,9 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::invalid_title());
     }
-    let guiding_questions = match p.guiding_questions {
-        Some(ref qs) => Some(validate_guiding_questions(qs)?),
-        None => None,
-    };
+    if let Some(ref qs) = p.guiding_questions {
+        validate_guiding_questions(qs)?;
+    }
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
                 is_active = COALESCE($4, is_active),
@@ -243,7 +238,7 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
     .bind(p.is_active)
-    .bind(guiding_questions)
+    .bind(p.guiding_questions)
     .fetch_optional(&state.pool)
     .await?
     .map(Json)
@@ -254,19 +249,17 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
 pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
 
 /// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
-/// 直接寫入引導問題（S-04.8 修訂：不再寫 description），內容與遷移既有題目的轉換結果相同。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO topics (id, title, guiding_questions) VALUES ($1, $2, $3)
+        "INSERT INTO topics (id, title, description) VALUES ($1, $2, $3)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(TROLLEY_TOPIC_ID)
     .bind("電車難題")
-    .bind(vec![
+    .bind(
         "一輛失控的電車正衝向軌道上的五個人。你站在轉轍器旁，只要拉下拉桿，電車就會轉向另一條軌道，\
-         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。"
-            .to_string(),
-    ])
+         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。",
+    )
     .execute(pool)
     .await?;
     Ok(())

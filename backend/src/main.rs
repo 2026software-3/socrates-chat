@@ -6,15 +6,25 @@ use socrates_chat_backend::{
     summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
     logging::json_subscriber()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(logging::env_filter(
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .init();
 
     let config = Config::from_env().expect("invalid configuration");
+    let retired = socrates_chat_backend::config::retired_key_variables(|name| {
+        std::env::var(name).is_ok_and(|v| !v.is_empty())
+    });
+    if !retired.is_empty() {
+        tracing::warn!(
+            variables = ?retired,
+            "host API key settings are no longer used; manage AI keys in the admin and teacher UI"
+        );
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)

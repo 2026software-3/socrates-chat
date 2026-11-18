@@ -35,10 +35,6 @@ services:
     environment:
       DATABASE_URL: postgres://socrates:socrates@db:5432/socrates
       RUN_MIGRATIONS: "true"
-      OPENAI_API_KEYS_FILE: /run/secrets/apikeylist
-    # .apikeylist 以 secret 掛入；容器內是非 root 使用者，主機上的檔案要 chmod 644，且必須存在
-    secrets:
-      - apikeylist
     depends_on:
       db:
         condition: service_healthy
@@ -147,10 +143,10 @@ services:
 
   # ---- 反向代理（S-16，docker/proxy/）----
   # 預設不啟動。啟用：docker compose --profile app --profile proxy up -d proxy。
-  # 把後端前面的入口（例如 Tailscale Funnel）改指向 127.0.0.1:${PROXY_PORT:-3080}，代理轉發到 app:3000；
+  # 對外入口（NTNU 是 Cloudflare Tunnel 的 cloudflared → proxy:80）接到代理，代理轉發到 app:3000；本機可用 127.0.0.1:${PROXY_PORT:-3080} 測試；
   # 後端連不上時回三語靜態停機頁（503）。刻意不 depends_on app：app 停掉時代理要還活著。
   # 後端的 TRUSTED_PROXIES 要包含 compose 網段（例如 172.16.0.0/12），登入限流才看得到真實來源 IP。
-  # 切換與回退步驟見 docs/ntnu-ops.md；驗證見 scripts/verify-proxy.sh。
+  # 維運與回退步驟見 docs/ntnu-ops.md；驗證見 scripts/verify-proxy.sh。
   proxy:
     profiles: ["proxy"]
     image: nginx:1.27-alpine
@@ -171,10 +167,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
-
-secrets:
-  apikeylist:
-    file: ./.apikeylist
 
 volumes:
   pgdata:

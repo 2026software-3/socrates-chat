@@ -1,0 +1,36 @@
+name: Staging deploy (msi_cubi)
+
+# 推送到 deploy/msi-cubi-staging 時，msi_cubi 上的 self-hosted runner 透過 sudo 呼叫 root 部署包裝腳本，更新 staging。
+# - runner 由主機主動連到 GitHub，不需要對外開任何 port；staging 網址經同一條 Cloudflare Tunnel。
+# - runner 使用者 gha-runner 不在 docker 群組。它只能執行 /usr/local/sbin/socrates-staging-deploy <sha>（見 sudoers），
+#   部署邏輯與 secrets 都在主機上 root 擁有的檔案中，不取自這個 commit。
+# - 包裝腳本只會部署 deploy/msi-cubi-staging 上的 commit（只接受目前的 head；舊 commit 與分支外的 commit 會被拒絕，回滾要 root 手動）。
+# - 信任邊界：能 push 到 deploy/msi-cubi-staging 的人，仍可以讓 app 原始碼與 Dockerfile 在主機上被建置並執行，
+#   所以真正的防線是分支保護與 environment 的人工核准（見 docs/ntnu-ops.md「自動部署」）。
+# - 這個 job 掛在 environment `staging-deploy` 下，請在 repo 設定該 environment 的 Required reviewers，
+#   並把 deployment branch 限制為 deploy/msi-cubi-staging。
+# - 設定與故障排除見 docs/ntnu-ops.md 的「staging 自動部署」。
+on:
+  push:
+    branches: [deploy/msi-cubi-staging]
+
+permissions:
+  contents: read
+
+# 同一時間只跑一個部署；部署中途不取消（避免 compose 被打斷），排隊中的舊執行會被較新的取代。
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy staging to msi_cubi
+    environment: staging-deploy
+    runs-on: [self-hosted, linux, msi-cubi-staging]
+    timeout-minutes: 30
+    steps:
+      - name: Deploy staging (root wrapper via sudo)
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        # 不 checkout：部署腳本與 secrets 都在主機上，不執行 workspace 裡來自 commit 的程式。
+        run: sudo -n /usr/local/sbin/socrates-staging-deploy "$DEPLOY_SHA"

@@ -60,9 +60,6 @@ const REPLY_WAIT_STEP: Duration = Duration::from_millis(200);
 const SOURCE: &str = "speech-cascade";
 const ENDED_REPLY: &str = "這次的討論到這裡告一段落，謝謝你。";
 const FAILED_REPLY: &str = "抱歉，我這邊出了點問題，語音對話先停在這裡。";
-/// 這一輪沒有成功：瀏覽器要結束語音，讓學生重試。這是後端自己發的，不經過 cascade。
-const TURN_FAILED: &str = "{\"type\":\"socrates.turn.failed\"}";
-
 const UNAVAILABLE: ApiError = ApiError::new(
     StatusCode::SERVICE_UNAVAILABLE,
     "voice_unavailable",
@@ -159,10 +156,16 @@ impl VoiceSessions {
             .map(|live| live.turn.clone())
     }
 
-    /// 告訴瀏覽器這一輪失敗；會話已結束時沒有人要聽。
-    fn turn_failed(&self, token: &str) {
+    /// 告訴瀏覽器這一輪沒有成功：瀏覽器要結束語音，讓學生重試。這是後端自己發的，不經過 cascade；
+    /// 會話已結束時沒有人要聽。
+    /// `code` 是學生端要顯示的原因（例如教室的 AI 不可用），沒有就是一般失敗。
+    fn turn_failed(&self, token: &str, code: Option<&str>) {
         if let Some(live) = lock(&self.0).by_token.get(token) {
-            let _ = live.notices.send(TURN_FAILED.to_string());
+            let notice = match code {
+                Some(code) => json!({"type": "socrates.turn.failed", "code": code}),
+                None => json!({"type": "socrates.turn.failed"}),
+            };
+            let _ = live.notices.send(notice.to_string());
         }
     }
 
@@ -579,7 +582,7 @@ fn streamed_reply(
                     watch.sent_any = true;
                     return Some((delta_chunk(&delta), (text, state, token, watch)));
                 }
-                Some(ReplyText::Failed) => state.voice_sessions.turn_failed(&token),
+                Some(ReplyText::Failed(code)) => state.voice_sessions.turn_failed(&token, code),
                 None if watch.sent_any => {
                     watch.finished = true;
                     let end = Bytes::from_static(END_OF_REPLY.as_bytes());
@@ -656,7 +659,7 @@ async fn chat(
         .ok_or(ApiError::not_found())?;
     let turn = spoken_turn(&state, &token, user, id, &body.messages).await;
     if turn.is_err() {
-        state.voice_sessions.turn_failed(&token);
+        state.voice_sessions.turn_failed(&token, None);
     }
     turn
 }

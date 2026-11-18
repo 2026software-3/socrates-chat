@@ -130,20 +130,4 @@ describe('student topic detail page', () => {
     const act = await screen.findByRole('region', { name: '教室活動' })
     expect(within(act).getByRole('link', { name: '查看題目：Trolley problem' })).toHaveAttribute('href', '/topics/top-1?activity=act-1')
   })
-
-  it('offers to continue instead of starting again when this activity topic already has a conversation', async () => {
-    mockCatalog([topic()], [
-      {
-        id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
-        classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
-        created_at: '2026-01-01T00:00:00Z', completed: false,
-        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: 'c9', conversation_status: 'active', summary_ready: false }],
-      },
-    ])
-    renderDetail('/topics/top-1?activity=act-1')
-    await screen.findByRole('heading', { level: 1, name: 'Trolley problem' })
-    expect(screen.queryByRole('button', { name: '開始討論' })).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /Trolley problem/ }))
-    expect(await screen.findByText('chat page')).toBeInTheDocument()
-  })
 })

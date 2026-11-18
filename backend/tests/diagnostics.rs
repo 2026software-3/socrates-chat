@@ -535,3 +535,30 @@ async fn http_quota_on_the_primary_model_still_falls_back(pool: PgPool) {
 async fn streamed_quota_before_content_still_falls_back(pool: PgPool) {
     quota_on_primary_still_uses_fallback(pool, Primary::StreamQuota).await;
 }
+
+#[sqlx::test]
+async fn classroom_ai_unavailability_can_be_filtered_and_counts_as_a_failure(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    sqlx::query(
+        "INSERT INTO diagnostic_events
+            (request_id, kind, failure_class, function, route, status, error_code,
+             duration_ms, retry_count, model)
+         VALUES (gen_random_uuid(), 'ai', 'classroom_ai_unavailable', 'chat_reply',
+                 '/api/conversations/{id}/messages', 200, 'classroom_ai_unavailable', 0, 0, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let status = admin_json(&app, &actors.admin, "/api/admin/status").await;
+    assert_eq!(status["statistics"]["ai_failures"], 1);
+    let listed = admin_json(
+        &app,
+        &actors.admin,
+        "/api/admin/diagnostics?failure_class=classroom_ai_unavailable",
+    )
+    .await;
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{listed}");
+    assert_eq!(items[0]["failure_class"], "classroom_ai_unavailable");
+}

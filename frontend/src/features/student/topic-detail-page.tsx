@@ -56,17 +56,6 @@ export function TopicDetailPage() {
     )
   }
   const questions = topic.guiding_questions ?? []
-  // 從活動進來時，這位學生在此活動此題是否已有對話（與活動頁的 TopicAction 判斷一致）
-  const progress = activityId
-    ? data.activities.find((a) => a.id === activityId)?.topics.find((p) => p.topic_id === topicId)
-    : undefined
-  const existing =
-    progress?.conversation_id
-      ? {
-          conversation_id: progress.conversation_id,
-          ended: progress.conversation_status === 'ended',
-        }
-      : undefined
 
   return (
     <div className="flex max-w-2xl flex-col gap-6">
@@ -94,23 +83,9 @@ export function TopicDetailPage() {
         </Alert>
       ) : null}
       <div>
-        {existing ? (
-          // 每題在一個活動裡只有一場對話：已開始過就只能繼續或查看總結，不能再開始（後端會回 409）
-          <Button
-            variant="outline"
-            onClick={() => navigate(`/conversations/${existing.conversation_id}`)}
-            aria-label={t(
-              existing.ended ? 'student.available.viewSummaryNamed' : 'student.available.continueNamed',
-              { title: topic.title },
-            )}
-          >
-            {t(existing.ended ? 'chat.list.viewSummary' : 'student.available.continue')}
-          </Button>
-        ) : (
-          <Button onClick={() => void start()} disabled={starting}>
-            {starting ? t('student.available.starting') : t('student.available.start')}
-          </Button>
-        )}
+        <Button onClick={() => void start()} disabled={starting}>
+          {starting ? t('student.available.starting') : t('student.available.start')}
+        </Button>
       </div>
     </div>
   )

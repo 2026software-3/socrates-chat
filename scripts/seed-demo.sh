@@ -12,8 +12,7 @@
 #   ./scripts/seed-demo.sh
 # 可用環境變數：
 #   DEMO_PSQL   執行 SQL 的指令，預設 docker compose exec -T db psql -U socrates -d socrates
-#               NTNU 試用環境：
-#               DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compose.ntnu.yml exec -T db psql -U socrates -d socrates'
+#               NTNU 正式環境不要執行（見 docs/ntnu-ops.md）；staging 用 scripts/seed-staging.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -36,8 +35,9 @@ DELETE FROM enrollments WHERE classroom_id IN (SELECT id FROM classrooms WHERE d
 DELETE FROM classrooms WHERE description LIKE '[demo]%';
 DELETE FROM topics WHERE id::text LIKE '00000000-0000-4000-8000-0000000001%';
 
-INSERT INTO classrooms (name, year_label, description, created_by)
-SELECT n, y, d, (SELECT id FROM users WHERE email = 'demo.teacher@example.com')
+-- 示範教師沒有自己的 AI key：示範教室標為過渡中，沿用系統 key（F-40.5）
+INSERT INTO classrooms (name, year_label, description, created_by, ai_transitional)
+SELECT n, y, d, (SELECT id FROM users WHERE email = 'demo.teacher@example.com'), true
 FROM (VALUES
   ('哲學導論 週一班', '115 學年度', '[demo] 週一上午班，6 位學生'),
   ('哲學導論 週三班', '115 學年度', '[demo] 週三下午班，6 位學生（含 2 位外語學生）'),
@@ -62,16 +62,15 @@ JOIN demo_student d ON d.alias = e0.alias
 JOIN users u ON u.student_id = d.student_id
 WHERE c.description LIKE '[demo]%';
 
--- 示範題目直接寫入引導問題（S-04.8 修訂：不再寫 description）
-INSERT INTO topics (id, title, guiding_questions) VALUES
+INSERT INTO topics (id, title, description) VALUES
   ('00000000-0000-4000-8000-000000000101', '說謊是否永遠不對？',
-   ARRAY['康德主張說謊永遠是錯的，即使是對想傷害朋友的人說謊。你同意嗎？請說明你的理由，並想想有沒有例外。']),
+   '康德主張說謊永遠是錯的，即使是對想傷害朋友的人說謊。你同意嗎？請說明你的理由，並想想有沒有例外。'),
   ('00000000-0000-4000-8000-000000000102', '我們能確定自己不是在做夢嗎？',
-   ARRAY['笛卡兒懷疑我們的感官經驗可能全是夢境。你有什麼理由相信眼前的世界是真實的？']),
+   '笛卡兒懷疑我們的感官經驗可能全是夢境。你有什麼理由相信眼前的世界是真實的？'),
   ('00000000-0000-4000-8000-000000000103', '電腦程式能擁有心靈嗎？',
-   ARRAY['如果一個 AI 能完美通過對話測試，我們是否該說它「理解」語言、甚至有意識？']),
+   '如果一個 AI 能完美通過對話測試，我們是否該說它「理解」語言、甚至有意識？'),
   ('00000000-0000-4000-8000-000000000104', '自由意志是幻覺嗎？',
-   ARRAY['如果我們的每個決定都由先前的原因決定，我們還能為自己的行為負責嗎？']);
+   '如果我們的每個決定都由先前的原因決定，我們還能為自己的行為負責嗎？');
 COMMIT;
 SQL
 

@@ -264,6 +264,8 @@ export type ClassDashboard = {
 export type EmailList = { emails: string[] }
 
 export type Classroom = {
+  /** 只有 `GET /api/classrooms`（列表）會回：教室不是過渡中、沒封存、也還沒設定對話模型，學生目前無法使用 AI */
+  ai_model_missing?: boolean
   is_archived: boolean
   id: string
   name: string
@@ -306,4 +308,93 @@ export type AiUsage = {
   window_secs: number
   /** 最早那一次呼叫還要幾秒滑出時間窗（多久後會空出一個額度）；尚未使用時為 null。 */
   resets_in_secs: number | null
+}
+
+/** 教師 API key 的狀態（F-40.1）：`ok` 之外都是無法使用或受限制的原因類別。 */
+export type KeyStatus = 'ok' | 'invalid' | 'rate_limited' | 'quota_exhausted'
+
+/** `GET /api/teacher/ai-providers`：可綁定 key 的供應商。 */
+export type AiProvider = { id: string; name: string }
+
+/**
+ * `GET /api/teacher/keys/models?provider=…`：供應商的模型清單，只當輸入建議（不是白名單）。
+ * `no_key`：沒有該供應商的 key；`unavailable`：有 key 但取不到清單。這兩種都退回手動輸入。
+ */
+export type ModelList = { provider: string; status: 'ok' | 'no_key' | 'unavailable'; models: string[] }
+
+/** `GET /api/teacher/keys`：自己的 key，只有遮蔽識別，沒有完整 key。 */
+export type TeacherKey = {
+  id: string
+  provider: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** `GET /api/admin/teacher-keys`：管理者看到的 key 設定狀態（沒有用量）。 */
+export type AdminTeacherKey = {
+  id: string
+  owner_email: string
+  provider: string
+  /** 供應商的顯示名稱（管理者不能呼叫教師的供應商名單，所以由後端附上） */
+  provider_name: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+}
+
+export type UsageRange = 'today' | '7d' | '30d' | 'all'
+
+export type UsageNumbers = {
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  /** 供應商沒有回報 token 的請求數；這些請求不估算 token。 */
+  unreported_requests: number
+}
+
+/** 教師 key 或教室的 AI 用量（F-40.8）。 */
+export type UsageReport = {
+  range: UsageRange
+  totals: UsageNumbers
+  items: (UsageNumbers & { provider: string; model: string })[]
+}
+
+export type ModelRef = { provider: string; model: string }
+
+/** `GET /api/classrooms/{id}/ai-settings`（F-40.4）。 */
+export type ClassroomAiSettings = {
+  transitional: boolean
+  primary: ModelRef | null
+  fallbacks: ModelRef[]
+  confirmed_providers: string[]
+}
+
+/** `GET /api/admin/system-ai`：系統用途的模型、key 與近 30 天用量。 */
+export type SystemAiKey = {
+  id: string
+  provider: string
+  provider_name: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+  requests_30d: number
+  input_tokens_30d: number
+  output_tokens_30d: number
+  unreported_requests_30d: number
+}
+
+export type SystemAiOverview = {
+  /** `database`：用這裡設定的模型與 key；`host_file`：尚未設定（主機 key 已淘汰，系統用途的 AI 無法使用） */
+  source: 'database' | 'host_file'
+  routing_enabled: boolean
+  encryption_configured: boolean
+  setting: { provider: string; provider_name: string; model: string } | null
+  host_model: string
+  keys: SystemAiKey[]
+  providers: AiProvider[]
 }

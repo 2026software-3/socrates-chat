@@ -310,7 +310,8 @@ async fn translate(state: &AppState, language: &str, text: &str) -> Option<Strin
             content: text.to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), request, state.config.ai_total_timeout)
+    let system = state.system_route().await;
+    let raw = collect_background(system.ai.as_ref(), request, state.config.ai_total_timeout)
         .await
         .ok()?;
     let translated = raw.trim();

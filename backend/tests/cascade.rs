@@ -1078,3 +1078,153 @@ fn the_session_token_never_reaches_the_browser() {
     assert!(allow_server_event("session.closed"));
     assert!(allow_server_event("response.output_audio.delta"));
 }
+
+// ---- 教室的語音對話走教室的教師 key（F-40.7、#601）----
+
+fn routed() -> Config {
+    Config {
+        classroom_ai_routing: true,
+        ..enabled()
+    }
+}
+
+#[sqlx::test]
+async fn a_classroom_without_a_usable_teacher_key_pauses_voice_and_never_uses_the_system_key(
+    pool: PgPool,
+) {
+    let mut v = voice_with(pool, vec![Reply(REPLY.to_vec())], routed()).await;
+    let mut notices = v.session.take_notices().unwrap();
+    let res = v.say(&[("user", "合成的第一句")]).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    // 學生聽到固定的失敗句子，瀏覽器收到帶有原因的通知（與文字對話同一個代碼）
+    assert!(!deltas(&text_of(res).await).is_empty());
+    let notice: Value = serde_json::from_str(&notices.recv().await.unwrap()).unwrap();
+    assert_eq!(notice["type"], "socrates.turn.failed");
+    assert_eq!(notice["code"], "classroom_ai_unavailable");
+    assert_eq!(v.r.ai.request_count(), 0, "不得使用系統 key");
+}
+
+#[sqlx::test]
+async fn a_transitional_classroom_keeps_voice_on_the_system_key(pool: PgPool) {
+    let v = voice_with(pool.clone(), vec![Reply(REPLY.to_vec())], routed()).await;
+    sqlx::query("UPDATE classrooms SET ai_transitional = true")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = v.say(&[("user", "合成的第一句")]).await;
+    assert_eq!(deltas(&text_of(res).await), "你為什麼這樣認為？");
+    assert_eq!(v.r.ai.request_count(), 1);
+}
+
+#[sqlx::test]
+async fn voice_in_a_configured_classroom_uses_the_creators_key_and_model(pool: PgPool) {
+    use axum::{extract::State, http::HeaderMap, response::Response};
+    use socrates_chat_backend::{
+        classroom_ai_store::{self, ModelRef},
+        teacher_key_crypto::KeyCipher,
+        teacher_key_store as keys,
+    };
+    use std::sync::Mutex;
+
+    const ENC: &str = "k1:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+    const KEY: &str = "sk-synthetic-VOIC-1111-2222-3333-vvvv";
+    type Seen = Arc<Mutex<Vec<(String, String)>>>;
+    async fn handle(
+        State(seen): State<Seen>,
+        headers: HeaderMap,
+        body: axum::body::Bytes,
+    ) -> Response {
+        let key = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .trim_start_matches("Bearer ")
+            .to_owned();
+        let model = serde_json::from_slice::<Value>(&body).unwrap_or_default()["model"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        seen.lock().unwrap().push((key, model));
+        let chunk = |d: Value| format!("data: {d}\n\n");
+        let mut b = String::new();
+        for t in ["你為什麼", "這樣認為？"] {
+            b += &chunk(
+                json!({"id":"c","object":"chat.completion.chunk","model":"m",
+                "choices":[{"index":0,"delta":{"role":"assistant","content":t}}]}),
+            );
+        }
+        b += &chunk(
+            json!({"id":"c","object":"chat.completion.chunk","model":"m",
+            "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+        );
+        b += "data: [DONE]\n\n";
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from(b))
+            .unwrap()
+    }
+    let seen: Seen = Arc::default();
+    let provider = Router::new().fallback(handle).with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
+
+    register_fixture_pool(&pool);
+    let mut config = routed();
+    config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+    let ai = FakeAi::with(vec![Reply(REPLY.to_vec())]);
+    let state = AppState::new(pool.clone(), config, Arc::new(FakeIdentity), ai.clone())
+        .with_route_endpoint(format!("http://{addr}/v1/"));
+    let app = app(state.clone());
+    let a = seed_actors(&app).await;
+    let classroom: Uuid = a.classroom.parse().unwrap();
+    let teacher: Uuid = sqlx::query_scalar("SELECT created_by FROM classrooms WHERE id = $1")
+        .bind(classroom)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    keys::add(
+        &pool,
+        &KeyCipher::parse(ENC).unwrap(),
+        teacher,
+        "openai",
+        KEY,
+    )
+    .await
+    .unwrap();
+    classroom_ai_store::set(
+        &pool,
+        classroom,
+        ModelRef {
+            provider: "openai".into(),
+            model: "voice-classroom-model".into(),
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    let conv = start_conversation(&app, &a).await;
+    let session = state
+        .voice_sessions
+        .open(owner(&pool, &conv).await, conv.parse().unwrap())
+        .unwrap();
+    let mut body = history(&[("user", "合成的第一句")]);
+    body["messages"][0]["content"] = json!(voice_session_prompt(session.token()));
+    let res = send(&app, llm_req(Some(SECRET), body)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(deltas(&text_of(res).await), "你為什麼這樣認為？");
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        vec![(KEY.to_string(), "voice-classroom-model".to_string())]
+    );
+    assert_eq!(ai.request_count(), 0, "不得使用系統 key");
+}
+
+#[sqlx::test]
+async fn the_shared_secret_still_guards_the_endpoint_when_routing_is_on(pool: PgPool) {
+    let r = rig(pool, vec![], routed());
+    let res = send(&r.app, llm_req(Some("wrong"), turn("x", "y"))).await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let res = send(&r.app, llm_req(None, turn("x", "y"))).await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}

@@ -452,8 +452,9 @@ pub fn build_request(title: &str, guiding_questions: &[String], source: &str) ->
 }
 
 async fn ask(state: &AppState, request: AiRequest) -> Result<String, crate::ai::AiError> {
+    let system = state.system_route().await;
     collect(
-        state.ai.as_ref(),
+        system.ai.as_ref(),
         request,
         state.config.ai_first_token_timeout,
         state.config.ai_total_timeout,

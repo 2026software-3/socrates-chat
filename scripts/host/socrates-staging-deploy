@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# msi_cubi 上 staging（compose 專案 socrates-staging）的部署包裝腳本。
+#
+# 安裝位置：/usr/local/sbin/socrates-staging-deploy（root:root 0755）。runner 使用者 gha-runner 不在 docker 群組，
+# 只能透過 /etc/sudoers.d/gha-runner-staging 以 root 執行這一個腳本，而且只能傳一個參數。
+# 這支腳本「不」從被部署的 commit 取得，部署邏輯來自主機上的 root 檔案；要更新它必須由 root 重新安裝。
+#
+#   用法：sudo /usr/local/sbin/socrates-staging-deploy <commit-sha>
+#   規則：
+#     - <commit-sha> 必須是 40 位小寫十六進位，而且「就是」origin/deploy/msi-cubi-staging 目前的 head。
+#       分支外的 commit、以及分支上較舊的 commit 一律拒絕：就算有人讓別的 workflow 跑在 staging runner 上，
+#       也只能重新部署目前的 head，不能用舊版本繞過核准來回滾。
+#       回滾是 root 的緊急手段：sudo STAGING_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-staging-deploy <祖先 sha>
+#       （sudoers 不保留環境變數，runner 設不了它）。
+#     - 部署目錄 $STAGING_BASE（預設 /var/lib/socrates-staging）由 root 擁有，內含不進版控的
+#       .env.staging（root 0600）。runner 讀不到。
+#     - 同時只會有一個部署（flock）。
+#
+# 只動 staging：不碰正式環境（socrates-ntnu）的容器、volume 與 .env；不使用 down、不使用 -v。
+# 沒有 STAGING_DEMO_MODE，所以自動部署不會把示範帳號打開。
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "用法：socrates-staging-deploy <commit-sha>（只接受一個參數）" >&2
+  exit 2
+fi
+SHA="$1"
+if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "commit SHA 格式不正確（需要 40 位小寫十六進位）" >&2
+  exit 2
+fi
+
+STAGING_BASE="${STAGING_BASE:-/var/lib/socrates-staging}"
+BRANCH="deploy/msi-cubi-staging"
+PROXY_PORT="${STAGING_PROXY_PORT:-3081}"
+IMAGE_REPO="socrates-ntnu-app"
+KEEP_IMAGES=5
+
+cd "$STAGING_BASE"
+
+# 同時只允許一個部署。
+exec 9>"$STAGING_BASE/.deploy.lock"
+flock 9
+
+for f in .env.staging; do
+  if [ ! -f "$f" ]; then
+    echo "缺少 $STAGING_BASE/$f（不進版控，需由 root 先放好）" >&2
+    exit 1
+  fi
+done
+
+echo "→ 取得 origin/$BRANCH"
+git fetch --quiet origin "$BRANCH"
+
+if [ "${STAGING_ALLOW_ROLLBACK:-0}" = 1 ]; then
+  if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
+    echo "$SHA 不在 $BRANCH 上（不是它的祖先），拒絕部署" >&2
+    exit 1
+  fi
+else
+  HEAD_SHA="$(git rev-parse "origin/$BRANCH")"
+  if [ "$SHA" != "$HEAD_SHA" ]; then
+    echo "$SHA 不是 $BRANCH 目前的 head（$HEAD_SHA），拒絕部署；回滾需 root 設 STAGING_ALLOW_ROLLBACK=1" >&2
+    exit 1
+  fi
+fi
+
+echo "→ 切換到 $SHA"
+# --hard 只改追蹤中的檔案；被 .gitignore 的 .env.staging、.staging-credentials 不會被動到。
+git reset --hard --quiet "$SHA"
+
+TAG="staging-$(git rev-parse --short=12 HEAD)"
+echo "→ 建置映像 $IMAGE_REPO:$TAG"
+docker build --quiet -t "$IMAGE_REPO:$TAG" .
+
+echo "→ 更新 staging 服務（STAGING_APP_IMAGE_TAG=$TAG）"
+STAGING_APP_IMAGE_TAG="$TAG" docker compose -f docker-compose.staging.yml up -d --no-build
+
+echo "→ 健康檢查（經 staging-proxy 的 /ready）"
+ok=0
+for _ in $(seq 1 30); do
+  if curl -fsS -o /dev/null "http://127.0.0.1:$PROXY_PORT/ready"; then
+    ok=1
+    break
+  fi
+  sleep 2
+done
+if [ "$ok" -ne 1 ]; then
+  echo "健康檢查失敗：http://127.0.0.1:$PROXY_PORT/ready 60 秒內沒有回 200" >&2
+  STAGING_APP_IMAGE_TAG="$TAG" docker compose -f docker-compose.staging.yml ps >&2 || true
+  exit 1
+fi
+
+echo "→ 清理舊的 staging 映像（保留最近 $KEEP_IMAGES 個；正在使用的會留下）"
+docker image ls --filter "reference=$IMAGE_REPO:staging-*" --format '{{.Repository}}:{{.Tag}}' \
+  | tail -n +"$((KEEP_IMAGES + 1))" \
+  | xargs -r docker image rm >/dev/null 2>&1 || true
+
+STAGING_APP_IMAGE_TAG="$TAG" docker compose -f docker-compose.staging.yml ps
+echo "完成：staging 已部署 $SHA（$TAG）"

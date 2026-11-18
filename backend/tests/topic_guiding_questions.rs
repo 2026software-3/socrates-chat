@@ -6,7 +6,6 @@ mod common;
 use axum::http::StatusCode;
 use common::*;
 use serde_json::json;
-use socrates_chat_backend::catalog::{TROLLEY_TOPIC_ID, seed_builtin_topics};
 use sqlx::PgPool;
 
 #[sqlx::test]
@@ -421,56 +420,4 @@ async fn student_cannot_modify_guiding_questions_but_can_view_in_catalog(pool: P
         .find(|item| item["id"] == topic_id)
         .expect("topic found in catalog");
     assert_eq!(t["guiding_questions"], json!(["問題一", "問題二"]));
-}
-
-#[sqlx::test]
-async fn padded_guiding_question_is_length_checked_and_stored_trimmed(pool: PgPool) {
-    let app = test_app(pool);
-    let a = seed_actors(&app).await;
-
-    // 去掉前後空白後恰為 200 字，應通過；儲存的也必須是去空白後的內容
-    let question = "字".repeat(200);
-    let padded = format!("{}{question}{}", " ".repeat(50), " ".repeat(50));
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/topics",
-            Some(&a.teacher),
-            Some(json!({"title": "空白題目", "guiding_questions": [padded]})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
-    let created = json_body(res).await;
-    assert_eq!(created["guiding_questions"], json!([question]));
-
-    // 去空白後仍超過 200 字，依舊回 400（空白不能讓上限失效，也不能讓合法內容被誤拒）
-    let too_long = format!("{}{}", " ".repeat(50), "字".repeat(201));
-    let res = send(
-        &app,
-        json_req(
-            "POST",
-            "/api/topics",
-            Some(&a.teacher),
-            Some(json!({"title": "超長題目", "guiding_questions": [too_long]})),
-        ),
-    )
-    .await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-}
-
-#[sqlx::test]
-async fn builtin_trolley_topic_is_seeded_with_guiding_question_and_no_description(pool: PgPool) {
-    // 全新資料庫的內建題目直接寫入引導問題（S-04.8 修訂：description 不再寫入）
-    seed_builtin_topics(&pool).await.unwrap();
-    let (description, questions): (String, Vec<String>) =
-        sqlx::query_as("SELECT description, guiding_questions FROM topics WHERE id = $1")
-            .bind(TROLLEY_TOPIC_ID)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(description, "");
-    assert_eq!(questions.len(), 1);
-    assert!(questions[0].contains("電車"));
 }
