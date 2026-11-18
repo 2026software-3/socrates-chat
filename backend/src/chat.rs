@@ -61,6 +61,12 @@ pub struct Conversation {
     pub classroom_name: Option<String>,
     /// 來源教室已封存（顯示「已封存」）；個人練習為 false（S-14）
     pub classroom_archived: bool,
+    /// 該題目目前的引導問題（S-04.8）：給 AI 提示、總結、論證樹、雷達評分用，也供詳情 API 回傳；
+    /// 不隨對話列表輸出；只有單場與 AI 路徑會讀取，其他查詢不含此欄時為空。
+    #[serde(skip)]
+    #[schema(ignore)]
+    #[sqlx(default)]
+    pub guiding_questions: Vec<String>,
 }
 
 /// 來源教室名稱與封存旗標：以一次 LATERAL JOIN 取同一列教室。子查詢只輸出這兩欄，
@@ -73,18 +79,38 @@ macro_rules! classroom_join {
     };
 }
 
+macro_rules! conversation_columns {
+    () => {
+        "SELECT id, activity_id, topic_id, classroom_id,
+                (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
+                title, description, language, status, stage,
+                turn_count, converge_ready, created_at,
+                COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
+                ended_at,
+                archived_at IS NOT NULL AS is_archived,
+                src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived"
+    };
+}
+
+/// 列表與單場共用的欄位；不讀題目的引導問題（列表不輸出，省掉每列一次子查詢）。
 macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
-            "SELECT id, activity_id, topic_id, classroom_id,
-                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
-                    title, description, language, status, stage,
-                    turn_count, converge_ready, created_at,
-                    COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
-                    ended_at,
-                    archived_at IS NOT NULL AS is_archived,
-                    src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived
-             FROM conversations",
+            conversation_columns!(),
+            " FROM conversations",
+            classroom_join!(),
+            $tail
+        )
+    };
+}
+
+/// 同 [`conversation_select`]，另外取出題目給 AI 用的引導問題（S-04.8，含無引導問題時的說明回退）。
+/// 只給 AI 路徑與單場讀取用。
+macro_rules! conversation_select_with_guiding {
+    ($tail:literal) => {
+        concat!(
+            conversation_columns!(),
+            ", COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions FROM conversations",
             classroom_join!(),
             $tail
         )
@@ -136,6 +162,8 @@ pub(crate) struct Detail {
     generating: bool,
     /// 伺服器端語音對話已啟用，可連 `GET /api/conversations/{id}/voice`
     voice_realtime: bool,
+    /// 該題目目前的引導問題（S-04.8）；題目已不存在或沒有引導問題時為空
+    guiding_questions: Vec<String>,
 }
 
 #[utoipa::path(
@@ -295,12 +323,14 @@ pub(crate) async fn owned_conversation_in<'e>(
     user_id: Uuid,
     id: Uuid,
 ) -> Result<Conversation, ApiError> {
-    sqlx::query_as(conversation_select!("WHERE id = $1 AND user_id = $2"))
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await?
-        .ok_or_else(ApiError::not_found)
+    sqlx::query_as(conversation_select_with_guiding!(
+        "WHERE id = $1 AND user_id = $2"
+    ))
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(ApiError::not_found)
 }
 
 /// 學生實際聽到的訊息內容與條件：被打斷的語音回覆只算聽到的部分，一個字都沒聽到就不算存在。
@@ -348,15 +378,17 @@ pub(crate) async fn detail(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Detail>, ApiError> {
-    let conversation = owned_conversation(&state, cu.user.id, id).await?;
+    let mut conversation = owned_conversation(&state, cu.user.id, id).await?;
     // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
     let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;
+    let guiding_questions = std::mem::take(&mut conversation.guiding_questions);
     Ok(Json(Detail {
         conversation,
         messages,
         generating,
         voice_realtime: state.config.cascade_voice_url().is_some(),
+        guiding_questions,
     }))
 }
 

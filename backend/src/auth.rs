@@ -163,18 +163,17 @@ pub struct CurrentUser {
 }
 
 /// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
+#[derive(Clone)]
 pub struct AnyCurrentUser(pub CurrentUser);
 
-/// middleware 已經查好的登入者，放在 request extensions 給 handler 的 extractor 沿用，
-/// 同一個請求不必再查一次 session（#529）。目前只有維護模式的 `maintenance_gate` 會放；
-/// 欄位與建構子都限在 crate 內，外部程式碼無法繞過 session 驗證塞入身分。
 #[derive(Clone)]
-pub(crate) struct ResolvedUser(CurrentUser);
+pub(crate) struct MaintenanceAuthenticatedUser(pub AnyCurrentUser);
 
-impl ResolvedUser {
-    pub(crate) fn new(user: CurrentUser) -> Self {
-        Self(user)
-    }
+fn cached_maintenance_user(parts: &Parts) -> Option<AnyCurrentUser> {
+    parts
+        .extensions
+        .get::<MaintenanceAuthenticatedUser>()
+        .map(|cached| cached.0.clone())
 }
 
 impl FromRequestParts<AppState> for CurrentUser {
@@ -202,10 +201,10 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // middleware 已經查過這個請求的 session（例如維護模式的 gate）就直接沿用，省一次資料庫往返
-        if let Some(ResolvedUser(cu)) = parts.extensions.get::<ResolvedUser>() {
-            return Ok(AnyCurrentUser(cu.clone()));
+        if let Some(user) = cached_maintenance_user(parts) {
+            return Ok(user);
         }
+
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
         // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
         let SessionUser {
@@ -1069,6 +1068,7 @@ pub(crate) async fn reset_password(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
 
     fn pick(value: &str) -> &'static str {
         let mut headers = HeaderMap::new();
@@ -1094,5 +1094,38 @@ mod tests {
         // 沒有可接受的支援語言時回到繁體中文
         assert_eq!(pick("es;q=0"), "zh-TW");
         assert_eq!(pick("fr, *;q=0.5"), "zh-TW");
+    }
+
+    #[test]
+    fn maintenance_user_is_reused_from_request_extensions() {
+        let expected = AnyCurrentUser(CurrentUser {
+            user: auth_store::User {
+                id: Uuid::nil(),
+                google_sub: None,
+                email: Some("admin@example.com".to_string()),
+                student_number: None,
+                display_name: None,
+                language: "zh-TW".to_string(),
+                is_admin: true,
+                must_change_password: false,
+                created_at: Utc::now(),
+                disabled: false,
+            },
+            roles: Roles {
+                admin: true,
+                teacher: false,
+                student: false,
+            },
+            must_change_password: false,
+        });
+        let mut parts = axum::http::Request::new(Body::empty()).into_parts().0;
+        parts
+            .extensions
+            .insert(MaintenanceAuthenticatedUser(expected));
+
+        let first = cached_maintenance_user(&parts).unwrap();
+        let second = cached_maintenance_user(&parts).unwrap();
+        assert!(first.0.roles.admin);
+        assert!(second.0.roles.admin);
     }
 }
