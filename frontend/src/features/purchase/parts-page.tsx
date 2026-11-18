@@ -13,10 +13,11 @@ export function PartsPage() {
   const balance = useFetch<{ balance: number }>('/api/points')
   const [busy, setBusy] = useState<string>()
   const [purchaseError, setPurchaseError] = useState<unknown>()
-  const purchaseDisabled = busy !== undefined || loading || error !== undefined || balance.loading || balance.error !== undefined
+  const canPurchase = (part: PartView) =>
+    part.enabled && busy === undefined && !loading && error === undefined && !balance.loading && balance.error === undefined
 
   async function buy(part: PartView) {
-    if (purchaseDisabled || !part.enabled) return
+    if (!canPurchase(part)) return
     setBusy(part.id); setPurchaseError(undefined)
     try {
       await api.post(`/api/parts/${encodeURIComponent(part.id)}/purchase`)
@@ -35,7 +36,7 @@ export function PartsPage() {
     {data?.map((part) => <section key={part.id} className="space-y-2 rounded-md border p-4">
       <h2 className="font-medium">{partName(part, lang)}</h2>
       <p>{t('parts.price', { points: part.price })}</p>
-      {part.owned ? <span>{t('parts.owned')}</span> : <Button disabled={purchaseDisabled || !part.enabled} onClick={() => void buy(part)}>{busy === part.id ? t('parts.buying') : t('parts.buy')}</Button>}
+      {part.owned ? <span>{t('parts.owned')}</span> : <Button disabled={!canPurchase(part)} onClick={() => void buy(part)}>{busy === part.id ? t('parts.buying') : t('parts.buy')}</Button>}
       {!part.enabled ? <p>{t('parts.disabled')}</p> : null}
     </section>)}
   </Page>
