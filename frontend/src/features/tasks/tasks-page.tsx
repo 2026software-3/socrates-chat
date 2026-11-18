@@ -13,9 +13,10 @@ export function TasksPage() {
   const { data, loading, error, reload } = useFetch<TaskView[]>('/api/tasks')
   const [busy, setBusy] = useState<string>()
   const [claimError, setClaimError] = useState<unknown>()
+  const claimDisabled = busy !== undefined || loading || error !== undefined
 
   async function claim(task: TaskView) {
-    if (busy) return
+    if (claimDisabled) return
     setBusy(task.id)
     setClaimError(undefined)
     try {
@@ -39,7 +40,7 @@ export function TasksPage() {
       <p>{t('tasks.progress', { current: task.progress, goal: task.goal })}</p>
       <p>{t('tasks.reward', { points: task.reward })}</p>
       {task.claimed ? <span>{t('tasks.claimed')}</span> : task.progress < task.goal ? <span>{t('tasks.incomplete')}</span> :
-        <Button disabled={Boolean(busy)} onClick={() => void claim(task)}>{busy === task.id ? t('tasks.claiming') : t('tasks.claim')}</Button>}
+        <Button disabled={claimDisabled} onClick={() => void claim(task)}>{busy === task.id ? t('tasks.claiming') : t('tasks.claim')}</Button>}
     </section>)}
   </Page>
 }
