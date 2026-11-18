@@ -1,6 +1,6 @@
 //! 教室對話呼叫的 AI 路由（F-40.5，#599；S-03.1「教室 AI 呼叫」）。
 //!
-//! 所有「為教室內對話內容所做的 AI 呼叫」都先經 `AppState::ai_for(教室)`，由這一個函式決定用誰的 key：
+//! 所有「為教室內對話內容所做的 AI 呼叫」都先經 `AppState::ai_for_conversation(教室, 對話)`，由這一個函式決定用誰的 key：
 //! - 沒有教室（個人練習與全域操作）→ 系統 key（`state.ai`）。
 //! - 「過渡中」的教室（NTNU 上線前已存在、教師還沒設定）→ 系統 key，行為不變。
 //! - 其他教室 → 只用該教室建立者在該供應商的 key，以教室設定的模型呼叫；**絕不退回系統 key，也絕不用別人的 key**。
@@ -62,12 +62,8 @@ fn client() -> Result<&'static GenaiClient, AiError> {
 }
 
 impl AppState {
-    /// 這次呼叫該用哪個 AI。`classroom` 是對話所屬的教室（個人練習與全域操作傳 `None`）。
-    pub(crate) async fn ai_for(&self, classroom: Option<Uuid>) -> Result<Route, AiError> {
-        self.ai_for_conversation(classroom, None).await
-    }
-
-    /// 同上，並且依對話目前用到的備援位置開始，換用備援後記回對話（同場持續用備援，F-40.6）。
+    /// 這次呼叫該用哪個 AI。`classroom` 是對話所屬的教室（個人練習與全域操作傳 `None`）；
+    /// `conversation` 讓路由依對話目前用到的備援位置開始，換用備援後記回對話（同場持續用備援，F-40.6）。
     pub(crate) async fn ai_for_conversation(
         &self,
         classroom: Option<Uuid>,
