@@ -389,7 +389,7 @@ export type SystemAiKey = {
 }
 
 export type SystemAiOverview = {
-  /** `database`：用這裡設定的模型與 key；`host_file`：用主機上的 .apikeylist */
+  /** `database`：用這裡設定的模型與 key；`host_file`：尚未設定（主機 key 已淘汰，系統用途的 AI 無法使用） */
   source: 'database' | 'host_file'
   routing_enabled: boolean
   encryption_configured: boolean

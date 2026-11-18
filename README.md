@@ -53,7 +53,7 @@ flowchart LR
 git clone https://github.com/2026software-3/socrates-chat.git
 cd socrates-chat
 cp .env.example .env    # 填入 GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET、ADMIN_EMAILS、OPENAI_MODEL
-cp .apikeylist.example .apikeylist    # 一行一把 AI API key，會輪流使用（可只放一把）
+# AI API key 不放檔案：啟動後以管理者登入，在「系統 AI」頁設定供應商、模型與 key
 ```
 
 ### 本地執行（需要 Rust、Node.js、Docker）
