@@ -110,6 +110,22 @@ pub async fn verify_key(provider: &Provider, key: &str) -> KeyCheck {
     verify_key_at(provider.endpoint, provider.adapter, key, KEY_CHECK_TIMEOUT).await
 }
 
+/// 讓路由可以在測試中換掉真正的對外探測。
+#[async_trait::async_trait]
+pub trait KeyVerifier: Send + Sync {
+    async fn verify_key(&self, provider: &Provider, key: &str) -> KeyCheck;
+}
+
+/// 實際呼叫供應商模型清單端點的探測。
+pub struct HttpKeyVerifier;
+
+#[async_trait::async_trait]
+impl KeyVerifier for HttpKeyVerifier {
+    async fn verify_key(&self, provider: &Provider, key: &str) -> KeyCheck {
+        verify_key(provider, key).await
+    }
+}
+
 async fn verify_key_at(
     endpoint: &str,
     adapter: AdapterKind,

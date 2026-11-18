@@ -283,3 +283,43 @@ pub async fn set_status(pool: &PgPool, id: Uuid, status: KeyStatus) -> Result<bo
     .rows_affected()
         > 0)
 }
+
+/// 取出自己的一把 key（解密後）與其供應商；不存在、不是自己的或解密失敗回 `None`。
+pub async fn get_secret(
+    pool: &PgPool,
+    cipher: &KeyCipher,
+    owner: Uuid,
+    id: Uuid,
+) -> Result<Option<(String, UsableKey)>, sqlx::Error> {
+    let row: Option<(String, Vec<u8>, String, String)> = sqlx::query_as(
+        "SELECT provider, ciphertext, encryption_key_id, status FROM teacher_api_keys
+          WHERE id = $1 AND owner_id = $2",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(provider, ct, key_id, status)| {
+        cipher.decrypt(&key_id, &ct).ok().map(|secret| {
+            (
+                provider,
+                UsableKey {
+                    id,
+                    status: KeyStatus::parse(&status),
+                    secret,
+                },
+            )
+        })
+    }))
+}
+
+/// 這把 key 是否屬於該教師。
+pub async fn owns(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM teacher_api_keys WHERE id = $1 AND owner_id = $2)",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_one(pool)
+    .await
+}
