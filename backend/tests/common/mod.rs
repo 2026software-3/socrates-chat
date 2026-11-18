@@ -105,6 +105,7 @@ pub fn test_config() -> Config {
         request_timeout: Duration::from_secs(10),
         demo_mode: false,
         smtp: None,
+        teacher_key_cipher: None,
     }
 }
 
