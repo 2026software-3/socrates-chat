@@ -684,16 +684,16 @@ async fn model_list_tries_the_next_key_when_the_first_fails_but_not_more_than_th
     // 四把都失敗：只試前三把
     let lister = lister_with(&[]);
     let app = build_with_lister(pool, true, lister.clone(), None);
-    add(&app, &a.teacher, "anthropic", KEY_A).await;
-    add(&app, &a.teacher, "anthropic", KEY_B).await;
-    add(&app, &a.teacher, "anthropic", KEY_C).await;
-    add(
-        &app,
-        &a.teacher,
-        "anthropic",
-        "sk-synthetic-DDDD-1111-2222-3333-dddd",
-    )
-    .await;
+    // 同一把 key 不能重複綁定，所以這裡用另外四把
+    for k in ["EEEE", "FFFF", "GGGG", "HHHH"] {
+        add(
+            &app,
+            &a.teacher,
+            "anthropic",
+            &format!("sk-synthetic-{k}-1111-2222-3333-aaaa"),
+        )
+        .await;
+    }
     let (_, body) = call(
         &app,
         "GET",
