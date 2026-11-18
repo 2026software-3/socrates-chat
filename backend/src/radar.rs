@@ -288,6 +288,11 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
     let mut scores = None;
     // 教室內的對話只用教室建立者的 key（F-40.5）
     let route = state.ai_for_conversation(job.classroom, Some(id)).await;
+    if let Err(error) = &route {
+        AiActivity::new("radar_scoring", Some(job.owner), job.classroom)
+            .statuses(202, 202)
+            .record_unreached(state, error);
+    }
     for retry in 0..2 {
         let Ok(route) = &route else { break };
         let scored = AiActivity::new("radar_scoring", Some(job.owner), job.classroom)
