@@ -397,7 +397,7 @@ async fn forward_migration_preserves_existing_users_and_is_repeatable(pool: PgPo
     let legacy = Migrator {
         migrations: Cow::Owned(
             all.iter()
-                .filter(|m| m.version < 20261118000000)
+                .filter(|m| m.version < 20261118000050)
                 .cloned()
                 .collect(),
         ),
