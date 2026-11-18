@@ -20,7 +20,7 @@ use crate::{
     AppState,
     accounts::audit,
     auth_store,
-    auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
+    auth_store::{SESSION_ABSOLUTE_TTL, SessionUser, display_name_sql},
     catalog::nullable,
     client_ip,
     error::ApiError,
@@ -741,14 +741,17 @@ pub(crate) async fn update_me(
         return Ok(Json(MeResponse::build(&state, cu).await?));
     }
     // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
-    let (display_name, language): (Option<String>, String) = sqlx::query_as(
+    // 清除名稱時存 NULL，回應的名稱由 display_name_sql! 解析（學生會回到匯入姓名）
+    let (display_name, language): (Option<String>, String) = sqlx::query_as(concat!(
         "UPDATE users SET
-             display_name = CASE WHEN $2 THEN COALESCE($3, imported_name) ELSE display_name END,
+             display_name = CASE WHEN $2 THEN $3 ELSE display_name END,
              language = COALESCE($4::text, language),
              language_initialized = language_initialized OR $4::text IS NOT NULL,
              updated_at = now()
-         WHERE id = $1 RETURNING display_name, language",
-    )
+         WHERE id = $1 RETURNING ",
+        display_name_sql!(),
+        ", language"
+    ))
     .bind(cu.user.id)
     .bind(name.is_some())
     .bind(name.flatten())
