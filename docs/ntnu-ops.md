@@ -414,6 +414,23 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - Google 登入要在 Google Cloud Console 加 `https://staging.se3socrateschat.ntnu.cc/api/auth/google/callback`。
 - 學校 DNS（名稱相對於 `se3socrateschat.ntnu.cc`）：CNAME `staging` → `socrates.ray-dev.stream`（灰雲）、TXT `_cf-custom-hostname.staging`、兩筆 TXT `_acme-challenge.staging`。
 
+### 自動部署（推送到 deploy/msi-cubi-staging 即更新）
+
+- 流程：推送 `deploy/msi-cubi-staging` → GitHub Actions「Staging deploy (msi_cubi)」（`.github/workflows/staging-deploy.yml`）→ msi_cubi 上的 self-hosted runner（label `msi-cubi-staging`）執行 `scripts/deploy-staging.sh <sha>`：把 `$STAGING_DIR`（預設 `$HOME/socrates-staging`）切到該 commit → `docker build -t socrates-ntnu-app:staging-<sha12>` → `STAGING_APP_IMAGE_TAG=staging-<sha12> docker compose -f docker-compose.staging.yml up -d --no-build` → 經 `127.0.0.1:3081/ready` 健康檢查（60 秒內要回 200）→ 只保留最近 5 個 staging 映像。
+- 不碰正式環境：沒有 `down`、沒有 `-v`，不動 `socrates-ntnu` 的容器與 volume。自動部署不設 `STAGING_DEMO_MODE`，不會開示範帳號。
+- 同一時間只跑一個部署，部署中途不取消；排隊中的舊執行會被較新的 push 取代。分支若在執行前又被推進，這次執行會略過（由較新的執行部署）。
+- 主機一次性設定（只做一次，要在 msi_cubi 上做）：
+  1. 部署目錄：`git clone -b deploy/msi-cubi-staging https://github.com/2026software-3/socrates-chat.git ~/socrates-staging`，再把 `~/socrates-intel` 裡的 `.env.staging`、`.apikeylist`、`.staging-credentials` **複製**過來（不要移動，正式環境還在用 `~/socrates-intel`）。腳本缺少 `.env.staging` 或 `.apikeylist` 會直接失敗。
+  2. runner：repo 的 Settings → Actions → Runners → New self-hosted runner，取得安裝指令與 registration token（約 1 小時失效）。建議用專用系統使用者（例如 `gha-runner`）安裝，參數 `--labels msi-cubi-staging --unattended`，再用 `sudo ./svc.sh install <user>` 與 `sudo ./svc.sh start` 做成服務。這個使用者要能執行 docker；docker 群組等同 root，所以只能用在這台專用的 runner，且 push 到這條分支的人都要是可信的 maintainer。
+  3. （選用）repo variable `STAGING_DEPLOY_DIR`：只有部署目錄不在 `$HOME/socrates-staging` 時才要設。
+- 注意：
+  - 腳本會 `git reset --hard` 部署目錄裡的追蹤檔，**不要在 `~/socrates-staging` 上手動改程式**；`.env.staging` 等被忽略的檔案不受影響。
+  - 手動跑 compose 前要先設 `STAGING_APP_IMAGE_TAG`（否則 compose 會報必填），值用目前部署的 commit：`export STAGING_APP_IMAGE_TAG=staging-$(cd ~/socrates-staging && git rev-parse --short=12 HEAD)`。上面「首次建立與重置合成資料」的指令都要先做這一行。
+  - 要重跑同一個 commit：在 Actions 頁面對該次執行按 Re-run。
+  - 健康檢查失敗時新版容器可能已經取代舊的：看 `docker compose -f docker-compose.staging.yml logs staging-app`，修好後推新 commit 或 Re-run。
+  - runner 離線時新的執行會排隊、不會失敗；在主機上看 `sudo ./svc.sh status`（於 runner 安裝目錄）。
+  - 這是公開 repo：workflow 只接 `push` 到這條分支，不要加 `pull_request` 觸發，否則 fork 的 PR 會跑在這台機器上。
+
 ## 狀態紀錄
 
 | 日期 | 事件 |
