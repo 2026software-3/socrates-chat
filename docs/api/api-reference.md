@@ -162,6 +162,7 @@
 
 ### AI 用量（F-40.8，S-03.1）
 
+- `GET /api/teacher/keys/models?provider=`：用自己該供應商的 key 向供應商取模型清單，只當教室 AI 設定的輸入建議（不是白名單，儲存時仍以模型驗證為準）。回 `{ provider, status: "ok" | "no_key" | "unavailable", models: [string] }`：`ok` 時 `models` 已排序、去重、排除名稱明顯不是對話模型的項目，最多 500 個；`no_key` 是沒有該供應商的 key；`unavailable` 是有 key 但取不到清單（key 無效、供應商不提供、逾時；同一供應商最多依序試 3 把 key）。後兩者都回 `200`，前端退回純文字輸入。供應商不在名單或缺少 `provider` 回 `400`（`invalid_provider`）；每位教師每分鐘最多 30 次（暫定值，待需求方確認），超過回 `429 model_list_rate_limited`；沒有設定加密金鑰回 `503 teacher_keys_unavailable`。不改動 key 的狀態，回應與日誌不含 key。只有教師本人（管理者身分也是 `403`）。
 - `GET /api/teacher/keys/{id}/usage?range=`：自己某把 key 的用量。
 - `GET /api/classrooms/{id}/ai-usage?range=`：自己建立的教室的用量（各 key 加總；封存的教室仍可看）。
 - `range` 為 `today`、`7d`（預設，暫定）、`30d` 或 `all`，其他值回 `400 invalid_range`；「日」以 Asia/Taipei 日曆日計，`7d`、`30d` 含今天（待需求方確認）。

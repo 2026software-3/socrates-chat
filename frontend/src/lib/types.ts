@@ -314,6 +314,12 @@ export type KeyStatus = 'ok' | 'invalid' | 'rate_limited' | 'quota_exhausted'
 /** `GET /api/teacher/ai-providers`：可綁定 key 的供應商。 */
 export type AiProvider = { id: string; name: string }
 
+/**
+ * `GET /api/teacher/keys/models?provider=…`：供應商的模型清單，只當輸入建議（不是白名單）。
+ * `no_key`：沒有該供應商的 key；`unavailable`：有 key 但取不到清單。這兩種都退回手動輸入。
+ */
+export type ModelList = { provider: string; status: 'ok' | 'no_key' | 'unavailable'; models: string[] }
+
 /** `GET /api/teacher/keys`：自己的 key，只有遮蔽識別，沒有完整 key。 */
 export type TeacherKey = {
   id: string

@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label'
 import { UsagePanel } from '@/features/keys/usage-panel'
 import { errorText, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
-import type { AiProvider, Classroom, ClassroomAiSettings, ModelRef, TeacherKey } from '@/lib/types'
+import type { AiProvider, Classroom, ClassroomAiSettings, ModelList, ModelRef, TeacherKey } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 const MAX_FALLBACKS = 3
@@ -274,6 +274,14 @@ function ModelFields({
   onChange: (patch: Partial<ModelRef>) => void
 }) {
   const t = useT()
+  // 模型清單只是輸入建議：取不到（沒有 key、供應商不提供、逾時）就是純文字輸入，儲存時仍由後端驗證
+  const list = useFetch<ModelList>(
+    value.provider ? `/api/teacher/keys/models?provider=${encodeURIComponent(value.provider)}` : null,
+  )
+  const suggestions = value.provider && list.data?.provider === value.provider && list.data.status === 'ok' ? list.data.models : []
+  const listUnavailable = Boolean(value.provider) && list.data?.provider === value.provider && list.data.status === 'unavailable'
+  const listId = `${idPrefix}-model-list`
+  const noteId = `${idPrefix}-model-note`
   return (
     <fieldset className="space-y-3" disabled={disabled}>
       {legend ? <legend className="text-base font-medium">{legend}</legend> : null}
@@ -298,8 +306,26 @@ function ModelFields({
             maxLength={200}
             value={value.model}
             placeholder={t('aiSettings.modelPlaceholder')}
+            list={suggestions.length > 0 ? listId : undefined}
+            aria-describedby={suggestions.length > 0 || listUnavailable ? noteId : undefined}
             onChange={(e) => onChange({ model: e.target.value })}
           />
+          {suggestions.length > 0 ? (
+            <datalist id={listId}>
+              {suggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          ) : null}
+          {suggestions.length > 0 ? (
+            <p id={noteId} className="text-muted-foreground text-xs">
+              {t('aiSettings.modelListHint')}
+            </p>
+          ) : listUnavailable ? (
+            <p id={noteId} className="text-muted-foreground text-xs">
+              {t('aiSettings.modelListUnavailable')}
+            </p>
+          ) : null}
         </div>
       </div>
     </fieldset>
