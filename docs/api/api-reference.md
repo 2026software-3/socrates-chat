@@ -151,7 +151,7 @@
 - `POST /api/teacher/keys`：`{ provider, key }` → `201`（同上項目）。供應商不在名單回 `400 invalid_provider`；key 去掉前後空白後為空、超過 512 字元或含空白／控制字元回 `400 invalid_key`；同一把 key（不論哪位教師、哪個供應商）已存在回 `409 key_already_exists`（前端顯示「這把 key 已經存在」）。後端沒有設定 `TEACHER_KEY_ENCRYPTION_KEYS` 時回 `503 teacher_keys_unavailable`。
 - `PUT /api/teacher/keys/{id}`：`{ key }` 更換自己的 key；`id`、供應商與歷史用量不變，狀態重設為 `ok`。body 帶 `provider` 或其他欄位會被拒絕（要換供應商請新增另一把）。錯誤同新增。
 - `DELETE /api/teacher/keys/{id}`：`204`；該 key 的用量統計連帶刪除，教室統計隨之扣除。
-- `POST /api/teacher/keys/{id}/test`：只呼叫供應商的模型清單端點、不送對話內容，可能產生 API 請求與費用；回 `{ result: "usable" | "connection_failed" }`，額度不足或頻率限制算可用，key 無效或已撤銷、逾時算連線失敗。每位教師 10 分鐘最多 10 次（暫定值，待需求方確認），超過回 `429 key_test_rate_limited`。測試結果目前不改寫 key 的 `status`。
+- `POST /api/teacher/keys/{id}/test`：只呼叫供應商的模型清單端點、不送對話內容，可能產生 API 請求與費用；回 `{ result: "usable" | "connection_failed" }`，額度不足或頻率限制算可用，key 無效或已撤銷、逾時算連線失敗。每位教師 10 分鐘最多 10 次（暫定值，待需求方確認），超過回 `429 key_test_rate_limited`。測試可用時把 key 的 `status` 清為 `ok`（路由不必等冷卻結束）；連線失敗不改寫 `status`（可能只是網路問題）。清單裡看得到、但伺服器已解不開（加密金鑰已輪替掉）的 key 回 `connection_failed`。
 
 ## 教師檢視
 
