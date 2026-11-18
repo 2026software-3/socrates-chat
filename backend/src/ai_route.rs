@@ -37,6 +37,7 @@ use crate::{
     diagnostics::Failure,
     genai_provider::{AiTarget, GenaiClient, GenaiProvider},
     pii::MaskingAi,
+    system_key_store,
     teacher_key_store::{self as keys, KeyStatus, UsableKey},
     teacher_key_usage,
 };
@@ -57,8 +58,10 @@ pub(crate) struct Route {
 /// 教室的 AI 不可用。`reason` 只記在日誌（不含 key 或對話內容），讓維運者知道是哪一項沒設好：
 /// `classroom_not_found`、`owner_disabled`、`owner_not_teacher`、`key_encryption_not_configured`、
 /// `model_not_configured`、`no_key_for_provider`、`keys_cooling_down`、`all_keys_failed`、`lookup_failed`。
-fn unavailable(classroom: Uuid, reason: &'static str) -> AiError {
-    tracing::warn!(%classroom, reason, "classroom AI unavailable");
+fn unavailable(scope: impl Into<Option<Uuid>>, reason: &'static str) -> AiError {
+    // 沒有教室編號的是系統用途的路由
+    let classroom = scope.into();
+    tracing::warn!(?classroom, reason, "classroom AI unavailable");
     AiError::classified(Failure::ClassroomUnavailable)
 }
 
@@ -79,12 +82,8 @@ impl AppState {
         classroom: Option<Uuid>,
         conversation: Option<Uuid>,
     ) -> Result<Route, AiError> {
-        let system = || Route {
-            ai: self.ai.clone(),
-            model: self.config.openai_model.clone(),
-        };
         let Some(classroom) = classroom.filter(|_| self.config.classroom_ai_routing) else {
-            return Ok(system());
+            return Ok(self.system_route().await);
         };
         let row: Option<(Uuid, bool, bool, bool)> = sqlx::query_as(
             "SELECT c.created_by, c.ai_transitional, u.disabled_at IS NOT NULL,
@@ -103,7 +102,7 @@ impl AppState {
             return Err(unavailable(classroom, "classroom_not_found"));
         };
         if transitional {
-            return Ok(system());
+            return Ok(self.system_route().await);
         }
         if disabled {
             return Err(unavailable(classroom, "owner_disabled"));
@@ -186,7 +185,7 @@ impl AppState {
             .clone();
         let routed = Routed {
             pool: self.pool.clone(),
-            classroom,
+            classroom: Some(classroom),
             conversation,
             endpoint: self.route_endpoint.clone(),
             targets,
@@ -198,6 +197,92 @@ impl AppState {
             ai: Arc::new(MaskingAi::new(Arc::new(routed))),
             model: first_model,
         })
+    }
+
+    /// 系統用途的 AI：沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度與公告翻譯等。
+    /// 管理者在介面設定了供應商、模型與系統 key 就用它們（多把輪流、失效或限流自動換下一把）；
+    /// 沒有設定、沒有可用的 key 或全部失敗時，退回主機上的 `.apikeylist`（`self.ai`），行為與以前相同。
+    pub(crate) async fn system_route(&self) -> Route {
+        match self.configured_system_route().await {
+            Some(route) => route,
+            None => Route {
+                ai: self.ai.clone(),
+                model: self.config.openai_model.clone(),
+            },
+        }
+    }
+
+    async fn configured_system_route(&self) -> Option<Route> {
+        if !self.config.classroom_ai_routing {
+            return None;
+        }
+        let cipher = self.config.teacher_key_cipher.as_deref()?;
+        let setting = system_key_store::get_setting(&self.pool).await.ok()??;
+        let provider = ai_providers::find(&setting.provider)?;
+        let mut usable: Vec<UsableKey> =
+            system_key_store::keys_for(&self.pool, cipher, provider.id)
+                .await
+                .ok()?
+                .into_iter()
+                .filter(is_eligible)
+                .collect();
+        if usable.is_empty() {
+            return None;
+        }
+        let start = self.key_rotation.fetch_add(1, Ordering::Relaxed) % usable.len();
+        usable.rotate_left(start);
+        let model = setting.model;
+        let routed = Routed {
+            pool: self.pool.clone(),
+            classroom: None,
+            conversation: None,
+            endpoint: self.route_endpoint.clone(),
+            targets: vec![Target {
+                position: 0,
+                provider,
+                model: model.clone(),
+                keys: usable,
+            }],
+            client: client().ok()?,
+            failed: Mutex::default(),
+            settled: AtomicI16::new(0),
+        };
+        Some(Route {
+            ai: Arc::new(WithFallback {
+                primary: Arc::new(MaskingAi::new(Arc::new(routed))),
+                fallback: self.ai.clone(),
+            }),
+            model,
+        })
+    }
+}
+
+/// 系統用途：管理者設定的 key 都不能用時，退回主機上的 `.apikeylist`。
+struct WithFallback {
+    primary: Arc<dyn AiProvider>,
+    fallback: Arc<dyn AiProvider>,
+}
+
+#[async_trait]
+impl AiProvider for WithFallback {
+    async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
+        match self.primary.stream_chat(req.clone()).await {
+            Err(e) if e.class == Failure::ClassroomUnavailable => {
+                tracing::warn!("system AI keys unavailable; using the host key list");
+                self.fallback.stream_chat(req).await
+            }
+            other => other,
+        }
+    }
+
+    async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        match self.primary.complete_json(req.clone()).await {
+            Err(e) if e.class == Failure::ClassroomUnavailable => {
+                tracing::warn!("system AI keys unavailable; using the host key list");
+                self.fallback.complete_json(req).await
+            }
+            other => other,
+        }
     }
 }
 
@@ -243,7 +328,8 @@ struct Target {
 
 struct Routed {
     pool: PgPool,
-    classroom: Uuid,
+    /// 對話所屬的教室；`None` 是系統用途（用系統 key，用量記在系統用量）
+    classroom: Option<Uuid>,
     conversation: Option<Uuid>,
     /// 測試用：把所有供應商端點換成假服務
     endpoint: Option<String>,
@@ -295,7 +381,12 @@ impl Routed {
         {
             failed.insert(key.id);
         }
-        if let Err(e) = keys::set_status_after(&self.pool, key, status, retry_after).await {
+        let recorded = if self.classroom.is_some() {
+            keys::set_status_after(&self.pool, key, status, retry_after).await
+        } else {
+            system_key_store::set_status_after(&self.pool, key, status, retry_after).await
+        };
+        if let Err(e) = recorded {
             tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record key status");
         }
     }
@@ -309,13 +400,13 @@ impl Routed {
         status: KeyStatus,
     ) {
         tracing::warn!(
-            classroom = %self.classroom,
+            classroom = ?self.classroom,
             key_id = %key.id,
             provider = target.provider.id,
             model = %target.model,
             class = error.class.code(),
             status = status.as_str(),
-            "teacher API key failed; trying the next"
+            "API key failed; trying the next"
         );
         self.mark(key, status, error.retry_after()).await;
     }
@@ -354,7 +445,8 @@ impl Routed {
 struct UsageGuard {
     pool: PgPool,
     key_id: Uuid,
-    classroom: Uuid,
+    /// `None` 是系統用途
+    classroom: Option<Uuid>,
     provider: &'static str,
     model: String,
     gp: Arc<GenaiProvider>,
@@ -379,7 +471,13 @@ impl Drop for UsageGuard {
         );
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Err(e) = teacher_key_usage::record(&pool, key, classroom, provider, &model, tokens).await {
+                let recorded = match classroom {
+                    Some(classroom) => {
+                        teacher_key_usage::record(&pool, key, classroom, provider, &model, tokens).await
+                    }
+                    None => system_key_store::record_usage(&pool, key, provider, &model, tokens).await,
+                };
+                if let Err(e) = recorded {
                     tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record AI usage");
                 }
             });

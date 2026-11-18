@@ -16,7 +16,7 @@ use crate::{
     },
     auth::{CurrentUser, RequireTeacher},
     catalog::nullable,
-    classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError},
+    classroom_store::{self, Classroom, ClassroomChanges, ClassroomStoreError, ListedClassroom},
     error::ApiError,
 };
 
@@ -168,12 +168,12 @@ pub(crate) async fn visible_classroom(
     path = "/api/classrooms",
     tag = "classrooms",
     summary = "列出可管理的教室",
-    responses((status = 200, description = "教室列表", body = Vec<Classroom>), crate::error::CommonErrors)
+    responses((status = 200, description = "教室列表", body = Vec<ListedClassroom>), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_classrooms(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
-) -> Result<Json<Vec<Classroom>>, ApiError> {
+) -> Result<Json<Vec<ListedClassroom>>, ApiError> {
     Ok(Json(
         classroom_store::list(&state.pool, cu.user.id, cu.roles.admin).await?,
     ))

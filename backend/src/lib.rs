@@ -90,6 +90,8 @@ pub mod roster_store;
 pub mod student_notifications;
 pub mod summary;
 pub mod summary_translation;
+pub mod system_ai;
+pub mod system_key_store;
 pub mod tasks;
 pub mod teacher_key_crypto;
 pub mod teacher_key_store;
@@ -107,7 +109,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 11] = [
+pub const LONG_RUNNING_ROUTES: [&str; 15] = [
     "/api/topics/{id}/dimensions/retry",
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
@@ -128,6 +130,12 @@ pub const LONG_RUNNING_ROUTES: [&str; 11] = [
     "/api/teacher/keys/{id}/test",
     // 儲存教室 AI 設定前，對主模型與每個備援各送一次最小串流與 JSON 請求
     "/api/classrooms/{id}/ai-settings",
+    // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
+    "/api/teacher/keys/models",
+    // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
+    "/api/admin/system-ai/model",
+    "/api/admin/system-ai/models",
+    "/api/admin/system-ai/keys/{id}/test",
 ];
 
 /// 所有 handler 共用的狀態。
@@ -161,6 +169,10 @@ pub struct AppState {
     pub(crate) model_verifier: Arc<dyn ai_providers::ModelVerifier>,
     /// 教師按「測試 key」的每人頻率限制（暫定值，待需求方確認）。
     pub(crate) key_test_limit: Arc<user_limit::UserLimiter>,
+    /// 向供應商取模型清單（只當輸入建議）；測試時以 `with_model_lister` 換成假的。
+    pub(crate) model_lister: Arc<dyn ai_providers::ModelLister>,
+    /// 取模型清單的每人頻率限制（不產生費用，但仍會對外送請求；暫定值，待需求方確認）。
+    pub(crate) model_list_limit: Arc<user_limit::UserLimiter>,
     /// 教室 AI 路由的輪流計數：每次呼叫從同供應商的下一把教師 key 開始。
     pub(crate) key_rotation: Arc<std::sync::atomic::AtomicUsize>,
     /// 把所有供應商端點換成這個位址（測試用，指向假服務）；正式環境一律是 `None`。
@@ -205,6 +217,11 @@ impl AppState {
                 teacher_keys::KEY_TEST_MAX,
                 teacher_keys::KEY_TEST_WINDOW,
             )),
+            model_lister: Arc::new(ai_providers::HttpModelLister),
+            model_list_limit: Arc::new(user_limit::UserLimiter::new(
+                teacher_keys::MODEL_LIST_MAX_CALLS,
+                teacher_keys::MODEL_LIST_WINDOW,
+            )),
             key_rotation: Arc::default(),
             route_endpoint: None,
         }
@@ -222,6 +239,17 @@ impl AppState {
 
     pub fn with_key_verifier(mut self, verifier: Arc<dyn ai_providers::KeyVerifier>) -> Self {
         self.key_verifier = verifier;
+        self
+    }
+
+    pub fn with_model_lister(mut self, lister: Arc<dyn ai_providers::ModelLister>) -> Self {
+        self.model_lister = lister;
+        self
+    }
+
+    /// 換掉取模型清單的頻率限制（測試用）。
+    pub fn with_model_list_limit(mut self, max: usize, window: std::time::Duration) -> Self {
+        self.model_list_limit = Arc::new(user_limit::UserLimiter::new(max, window));
         self
     }
 
@@ -297,6 +325,7 @@ pub fn app(state: AppState) -> Router {
         .merge(ai_usage::routes())
         .merge(teacher_keys::routes())
         .merge(admin_teacher_keys::routes())
+        .merge(system_ai::routes())
         .merge(usage_api::routes())
         .merge(announcements::routes())
         .merge(student_notifications::routes())

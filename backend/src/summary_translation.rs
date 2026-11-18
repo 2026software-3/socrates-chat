@@ -155,7 +155,8 @@ pub(crate) async fn via_ai(
             content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+    let system = state.system_route().await;
+    let raw = collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
     let result = parse_summary_translation(&raw).ok_or_else(AiError::invalid_output)?;
     preserves_tokens(fields, &result)
         .then_some(result)

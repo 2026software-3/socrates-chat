@@ -14,6 +14,10 @@ export const server = setupServer(
   http.get('/api/conversations/:id/radar', () =>
     HttpResponse.json({ status: 'summary_not_ready', retryable: false, scores: null, dimensions: null, rules_version: null, completed_at: null }),
   ),
+  // 教室 AI 設定的模型欄位：沒有特別要測模型清單的測試，視為沒有 key（純文字輸入）
+  http.get('/api/teacher/keys/models', ({ request }) =>
+    HttpResponse.json({ provider: new URL(request.url).searchParams.get('provider'), status: 'no_key', models: [] }),
+  ),
   // 沒開示範模式的後端：登入頁的示範帳號面板找不到清單就不顯示
   http.get('/api/demo/accounts', () => HttpResponse.json({ error: { code: 'not_found', request_id: 'test' } }, { status: 404 })),
 )

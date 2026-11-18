@@ -69,6 +69,13 @@ describe('ClassroomAiSettingsPage', () => {
     mockSettings(transitional)
     await open()
     expect(await screen.findByText(/目前沿用系統 key，請設定教師 key 與模型/)).toBeInTheDocument()
+    expect(screen.queryByText('這間教室還沒有設定模型')).not.toBeInTheDocument()
+  })
+
+  it('warns that students cannot use AI when a non-transitional classroom has no model', async () => {
+    mockSettings({ transitional: false, primary: null, fallbacks: [], confirmed_providers: [] })
+    await open()
+    expect(await screen.findByRole('alert')).toHaveTextContent('這間教室還沒有設定模型')
   })
 
   it('shows the current primary and fallbacks, and the model disclaimer', async () => {
@@ -78,6 +85,69 @@ describe('ClassroomAiSettingsPage', () => {
     expect(screen.getByDisplayValue('claude-fb')).toBeInTheDocument()
     expect(screen.getByText(/系統不保證自由輸入的模型的表現/)).toBeInTheDocument()
     expect(screen.queryByText(/目前沿用系統 key/)).not.toBeInTheDocument()
+    expect(screen.queryByText('這間教室還沒有設定模型')).not.toBeInTheDocument()
+  })
+
+  it('suggests the provider’s models in the model field but still accepts any typed ID', async () => {
+    const puts = mockSettings(transitional)
+    const asked: string[] = []
+    server.use(
+      http.get('/api/teacher/keys/models', ({ request }) => {
+        const provider = new URL(request.url).searchParams.get('provider') ?? ''
+        asked.push(provider)
+        return HttpResponse.json({ provider, status: 'ok', models: provider === 'openai' ? ['gpt-4o', 'gpt-4o-mini'] : ['claude-x'] })
+      }),
+    )
+    await open()
+    // 還沒選供應商：不取清單、沒有建議
+    const model = await screen.findByLabelText('模型 ID')
+    expect(asked).toEqual([])
+    expect(model).not.toHaveAttribute('list')
+
+    await userEvent.selectOptions(screen.getByLabelText('供應商'), 'openai')
+    expect(await screen.findByText(/可從供應商目前列出的模型中選擇/)).toBeInTheDocument()
+    expect(asked).toEqual(['openai'])
+    const listId = model.getAttribute('list') ?? ''
+    const options = Array.from(document.querySelectorAll(`datalist#${listId} option`)).map((o) => o.getAttribute('value'))
+    expect(options).toEqual(['gpt-4o', 'gpt-4o-mini'])
+
+    // 清單以外的模型 ID 照樣能輸入並儲存；儲存內容與沒有清單時相同
+    await userEvent.type(model, 'my-new-model')
+    await userEvent.click(screen.getByRole('checkbox', { name: /我已確認符合我的授課與隱私需求/ }))
+    await userEvent.click(screen.getByRole('button', { name: '驗證並儲存' }))
+    expect(await screen.findByText('已儲存。')).toBeInTheDocument()
+    expect(puts).toEqual([{ provider: 'openai', model: 'my-new-model', fallbacks: [], data_flow_confirmed: true }])
+  })
+
+  it('falls back to a plain text field when the list is missing or cannot be fetched', async () => {
+    mockSettings(transitional)
+    server.use(
+      http.get('/api/teacher/keys/models', ({ request }) => {
+        const provider = new URL(request.url).searchParams.get('provider') ?? ''
+        return provider === 'anthropic'
+          ? HttpResponse.json({ provider, status: 'unavailable', models: [] })
+          : provider === 'deepseek'
+            ? apiError(500, 'internal', 'req-m')
+            : HttpResponse.json({ provider, status: 'no_key', models: [] })
+      }),
+    )
+    await open()
+    const model = await screen.findByLabelText('模型 ID')
+    // 取不到清單：說明並可直接輸入
+    await userEvent.selectOptions(screen.getByLabelText('供應商'), 'anthropic')
+    expect(await screen.findByText(/暫時無法取得這個供應商的模型清單，請直接輸入模型 ID/)).toBeInTheDocument()
+    expect(model).not.toHaveAttribute('list')
+    await userEvent.type(model, 'claude-typed')
+    expect(model).toHaveValue('claude-typed')
+    // 沒有 key：不顯示額外說明，仍可輸入
+    await userEvent.selectOptions(screen.getByLabelText('供應商'), 'openai')
+    await waitFor(() => expect(screen.queryByText(/暫時無法取得這個供應商的模型清單/)).not.toBeInTheDocument())
+    expect(model).not.toHaveAttribute('list')
+    // 請求失敗：整頁不受影響，仍可輸入
+    await userEvent.selectOptions(screen.getByLabelText('供應商'), 'deepseek')
+    expect(screen.getByRole('heading', { name: '教室 AI 設定' })).toBeInTheDocument()
+    expect(model).not.toHaveAttribute('list')
+    expect(model).toBeEnabled()
   })
 
   it('requires the data-flow confirmation the first time a provider is chosen, then saves', async () => {

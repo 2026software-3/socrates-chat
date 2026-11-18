@@ -9,7 +9,7 @@ use common::*;
 use serde_json::{Value, json};
 use socrates_chat_backend::{
     AppState,
-    ai_providers::{KeyCheck, KeyVerifier, Provider},
+    ai_providers::{KeyCheck, KeyVerifier, ListUnavailable, ModelLister, Provider},
     app,
     teacher_key_crypto::KeyCipher,
 };
@@ -523,5 +523,274 @@ async fn without_an_encryption_key_the_feature_is_unavailable(pool: PgPool) {
             .await
             .0,
         StatusCode::OK
+    );
+}
+
+// ---- GET /api/teacher/keys/models（F-40 模型清單，只當輸入建議）----
+
+/// 依 key 回固定結果；沒登記的 key 一律取不到清單。
+#[derive(Default)]
+struct FakeLister {
+    by_key: Mutex<std::collections::HashMap<String, Vec<String>>>,
+    calls: Mutex<Vec<(String, String)>>,
+}
+
+#[async_trait]
+impl ModelLister for FakeLister {
+    async fn list_models(
+        &self,
+        provider: &Provider,
+        key: &str,
+    ) -> Result<Vec<String>, ListUnavailable> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((provider.id.into(), key.into()));
+        self.by_key
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or(ListUnavailable)
+    }
+}
+
+fn lister_with(entries: &[(&str, &[&str])]) -> Arc<FakeLister> {
+    let l = Arc::new(FakeLister::default());
+    for (key, models) in entries {
+        l.by_key.lock().unwrap().insert(
+            (*key).into(),
+            models.iter().map(|m| (*m).to_owned()).collect(),
+        );
+    }
+    l
+}
+
+fn build_with_lister(
+    pool: PgPool,
+    with_cipher: bool,
+    lister: Arc<FakeLister>,
+    limit: Option<usize>,
+) -> Router {
+    register_fixture_pool(&pool);
+    let mut config = test_config();
+    if with_cipher {
+        config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+        config.classroom_ai_routing = true;
+    }
+    let mut state = AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
+        .with_model_lister(lister);
+    if let Some(max) = limit {
+        state = state.with_model_list_limit(max, std::time::Duration::from_secs(60));
+    }
+    app(state)
+}
+
+const MODELS: &str = "/api/teacher/keys/models";
+
+#[sqlx::test]
+async fn model_list_uses_the_teachers_own_key_for_the_chosen_provider(pool: PgPool) {
+    let lister = lister_with(&[(KEY_A, &["gpt-a", "gpt-b"])]);
+    let app = build_with_lister(pool, true, lister.clone(), None);
+    let a = seed_actors(&app).await;
+    add(&app, &a.teacher, "openai", KEY_A).await;
+    let (s, body) = call(
+        &app,
+        "GET",
+        &format!("{MODELS}?provider=openai"),
+        Some(&a.teacher),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body["provider"], "openai");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["models"], json!(["gpt-a", "gpt-b"]));
+    assert_eq!(
+        *lister.calls.lock().unwrap(),
+        vec![("openai".to_owned(), KEY_A.to_owned())]
+    );
+    // key 不會出現在回應裡
+    assert!(!body.to_string().contains(KEY_A));
+}
+
+#[sqlx::test]
+async fn model_list_without_a_key_for_that_provider_says_so_and_never_calls_out(pool: PgPool) {
+    let lister = lister_with(&[(KEY_A, &["x"]), (KEY_B, &["y"])]);
+    let app = build_with_lister(pool, true, lister.clone(), None);
+    let a = seed_actors(&app).await;
+    let t2 = second_teacher(&app, &a.admin).await;
+    // 別位教師的 openai key 與自己的另一家供應商 key 都不能拿來用
+    add(&app, &t2, "openai", KEY_A).await;
+    add(&app, &a.teacher, "anthropic", KEY_B).await;
+    let (s, body) = call(
+        &app,
+        "GET",
+        &format!("{MODELS}?provider=openai"),
+        Some(&a.teacher),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body["status"], "no_key");
+    assert_eq!(body["models"], json!([]));
+    assert!(lister.calls.lock().unwrap().is_empty());
+}
+
+#[sqlx::test]
+async fn model_list_that_cannot_be_fetched_is_a_status_not_an_error_and_keeps_key_state(
+    pool: PgPool,
+) {
+    // 沒登記清單的 key：取不到
+    let lister = lister_with(&[]);
+    let app = build_with_lister(pool, true, lister.clone(), None);
+    let a = seed_actors(&app).await;
+    add(&app, &a.teacher, "openai", KEY_A).await;
+    let (s, body) = call(
+        &app,
+        "GET",
+        &format!("{MODELS}?provider=openai"),
+        Some(&a.teacher),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body["status"], "unavailable");
+    assert_eq!(body["models"], json!([]));
+    // 取清單不影響 key 的狀態
+    let (_, list) = call(&app, "GET", "/api/teacher/keys", Some(&a.teacher), None).await;
+    assert_eq!(list[0]["status"], "ok");
+}
+
+#[sqlx::test]
+async fn model_list_tries_the_next_key_when_the_first_fails_but_not_more_than_three(pool: PgPool) {
+    let lister = lister_with(&[(KEY_B, &["from-b"])]);
+    let app = build_with_lister(pool.clone(), true, lister.clone(), None);
+    let a = seed_actors(&app).await;
+    add(&app, &a.teacher, "openai", KEY_A).await;
+    add(&app, &a.teacher, "openai", KEY_B).await;
+    let (_, body) = call(
+        &app,
+        "GET",
+        &format!("{MODELS}?provider=openai"),
+        Some(&a.teacher),
+        None,
+    )
+    .await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["models"], json!(["from-b"]));
+    assert_eq!(lister.calls.lock().unwrap().len(), 2);
+
+    // 四把都失敗：只試前三把
+    let lister = lister_with(&[]);
+    let app = build_with_lister(pool, true, lister.clone(), None);
+    // 同一把 key 不能重複綁定，所以這裡用另外四把
+    for k in ["EEEE", "FFFF", "GGGG", "HHHH"] {
+        add(
+            &app,
+            &a.teacher,
+            "anthropic",
+            &format!("sk-synthetic-{k}-1111-2222-3333-aaaa"),
+        )
+        .await;
+    }
+    let (_, body) = call(
+        &app,
+        "GET",
+        &format!("{MODELS}?provider=anthropic"),
+        Some(&a.teacher),
+        None,
+    )
+    .await;
+    assert_eq!(body["status"], "unavailable");
+    assert_eq!(lister.calls.lock().unwrap().len(), 3);
+}
+
+#[sqlx::test]
+async fn model_list_rejects_an_unknown_or_missing_provider(pool: PgPool) {
+    let lister = lister_with(&[]);
+    let app = build_with_lister(pool, true, lister.clone(), None);
+    let a = seed_actors(&app).await;
+    for provider in ["ollama", "OpenAI", ""] {
+        let (s, e) = call(
+            &app,
+            "GET",
+            &format!("{MODELS}?provider={provider}"),
+            Some(&a.teacher),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (s, code(&e)),
+            (StatusCode::BAD_REQUEST, "invalid_provider"),
+            "{provider:?}"
+        );
+    }
+    let (s, _) = call(&app, "GET", MODELS, Some(&a.teacher), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(lister.calls.lock().unwrap().is_empty());
+}
+
+#[sqlx::test]
+async fn model_list_is_rate_limited_per_teacher(pool: PgPool) {
+    let lister = lister_with(&[(KEY_A, &["m"]), (KEY_B, &["n"])]);
+    let app = build_with_lister(pool, true, lister.clone(), Some(2));
+    let a = seed_actors(&app).await;
+    let t2 = second_teacher(&app, &a.admin).await;
+    add(&app, &a.teacher, "openai", KEY_A).await;
+    add(&app, &t2, "openai", KEY_B).await;
+    let path = format!("{MODELS}?provider=openai");
+    for _ in 0..2 {
+        assert_eq!(
+            call(&app, "GET", &path, Some(&a.teacher), None).await.0,
+            StatusCode::OK
+        );
+    }
+    let (s, e) = call(&app, "GET", &path, Some(&a.teacher), None).await;
+    assert_eq!(
+        (s, code(&e)),
+        (StatusCode::TOO_MANY_REQUESTS, "model_list_rate_limited")
+    );
+    assert_eq!(lister.calls.lock().unwrap().len(), 2);
+    // 別的教師不受影響
+    assert_eq!(
+        call(&app, "GET", &path, Some(&t2), None).await.0,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn model_list_is_for_teachers_only(pool: PgPool) {
+    let lister = lister_with(&[(KEY_A, &["m"])]);
+    let app = build_with_lister(pool, true, lister.clone(), None);
+    let a = seed_actors(&app).await;
+    add(&app, &a.teacher, "openai", KEY_A).await;
+    let path = format!("{MODELS}?provider=openai");
+    let (s, e) = call(&app, "GET", &path, None, None).await;
+    assert_eq!((s, code(&e)), (StatusCode::UNAUTHORIZED, "unauthorized"));
+    for cookie in [&a.student, &a.outsider, &a.admin] {
+        assert_eq!(
+            call(&app, "GET", &path, Some(cookie), None).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert!(lister.calls.lock().unwrap().is_empty());
+}
+
+#[sqlx::test]
+async fn model_list_without_an_encryption_key_is_unavailable(pool: PgPool) {
+    let app = build_with_lister(pool, false, lister_with(&[]), None);
+    let a = seed_actors(&app).await;
+    let (s, b) = call(
+        &app,
+        "GET",
+        &format!("{MODELS}?provider=openai"),
+        Some(&a.teacher),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, code(&b)),
+        (StatusCode::SERVICE_UNAVAILABLE, "teacher_keys_unavailable")
     );
 }

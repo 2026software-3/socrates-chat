@@ -811,3 +811,51 @@ async fn create_and_update_responses_include_student_statistics(pool: PgPool) {
     assert_eq!(updated["joined_count"], 1);
     assert_eq!(updated["never_logged_in_count"], 0);
 }
+
+#[sqlx::test]
+async fn the_list_flags_classrooms_that_have_no_ai_model_yet(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let (teacher, _admin) = teacher_and_admin(&app).await;
+    let room = create_classroom(&app, &teacher, "Flag room").await;
+    let id = room["id"].as_str().unwrap().to_owned();
+    let flag = |list: &Value| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id.as_str())
+            .unwrap()["ai_model_missing"]
+            .as_bool()
+            .unwrap()
+    };
+    let list =
+        || async { json_body(send(&app, get("/api/classrooms", Some(&teacher))).await).await };
+    // 新教室還沒設模型：學生無法使用 AI
+    assert!(flag(&list().await));
+    // 過渡中的教室沿用系統 key，不算缺模型
+    sqlx::query("UPDATE classrooms SET ai_transitional = true")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!flag(&list().await));
+    sqlx::query("UPDATE classrooms SET ai_transitional = false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 封存的教室唯讀，不提醒
+    sqlx::query("UPDATE classrooms SET is_archived = true")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!flag(&list().await));
+    sqlx::query("UPDATE classrooms SET is_archived = false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 設定了模型就不再提醒
+    sqlx::query("INSERT INTO classroom_ai_models (classroom_id, provider, model) VALUES ($1::uuid, 'openai', 'gpt-x')")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!flag(&list().await));
+}

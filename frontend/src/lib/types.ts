@@ -264,6 +264,8 @@ export type ClassDashboard = {
 export type EmailList = { emails: string[] }
 
 export type Classroom = {
+  /** 只有 `GET /api/classrooms`（列表）會回：教室不是過渡中、沒封存、也還沒設定對話模型，學生目前無法使用 AI */
+  ai_model_missing?: boolean
   is_archived: boolean
   id: string
   name: string
@@ -314,6 +316,12 @@ export type KeyStatus = 'ok' | 'invalid' | 'rate_limited' | 'quota_exhausted'
 /** `GET /api/teacher/ai-providers`：可綁定 key 的供應商。 */
 export type AiProvider = { id: string; name: string }
 
+/**
+ * `GET /api/teacher/keys/models?provider=…`：供應商的模型清單，只當輸入建議（不是白名單）。
+ * `no_key`：沒有該供應商的 key；`unavailable`：有 key 但取不到清單。這兩種都退回手動輸入。
+ */
+export type ModelList = { provider: string; status: 'ok' | 'no_key' | 'unavailable'; models: string[] }
+
 /** `GET /api/teacher/keys`：自己的 key，只有遮蔽識別，沒有完整 key。 */
 export type TeacherKey = {
   id: string
@@ -363,4 +371,30 @@ export type ClassroomAiSettings = {
   primary: ModelRef | null
   fallbacks: ModelRef[]
   confirmed_providers: string[]
+}
+
+/** `GET /api/admin/system-ai`：系統用途的模型、key 與近 30 天用量。 */
+export type SystemAiKey = {
+  id: string
+  provider: string
+  provider_name: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+  requests_30d: number
+  input_tokens_30d: number
+  output_tokens_30d: number
+  unreported_requests_30d: number
+}
+
+export type SystemAiOverview = {
+  /** `database`：用這裡設定的模型與 key；`host_file`：用主機上的 .apikeylist */
+  source: 'database' | 'host_file'
+  routing_enabled: boolean
+  encryption_configured: boolean
+  setting: { provider: string; provider_name: string; model: string } | null
+  host_model: string
+  keys: SystemAiKey[]
+  providers: AiProvider[]
 }
