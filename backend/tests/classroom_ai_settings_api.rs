@@ -138,22 +138,17 @@ fn code(v: &Value) -> &str {
 
 #[sqlx::test]
 async fn slow_model_checks_are_not_cut_off_by_the_general_request_timeout(pool: PgPool) {
+    // 登入（密碼雜湊）與綁定 key 用一般逾時的 app；session 存在資料庫，換 app 照樣有效
+    let seeded = world(pool.clone()).await;
     let mut config = test_config();
     config.request_timeout = std::time::Duration::from_millis(100);
     let (app, models) = build_with(pool, true, None, config);
     *models.delay.lock().unwrap() = std::time::Duration::from_millis(300);
-    let a = seed_actors(&app).await;
-    for (p, k) in [("openai", KEY_OPENAI), ("anthropic", KEY_ANTHROPIC)] {
-        call(
-            &app,
-            "POST",
-            "/api/teacher/keys",
-            Some(&a.teacher),
-            Some(json!({"provider": p, "key": k})),
-        )
-        .await;
-    }
-    let w = World { app, a, models };
+    let w = World {
+        app,
+        a: seeded.a,
+        models,
+    };
     let fb =
         json!([{"provider":"anthropic","model":"claude-x"},{"provider":"openai","model":"gpt-b"}]);
     let (s, v) = put(&w, put_body("openai", "gpt-a", fb, true)).await;
