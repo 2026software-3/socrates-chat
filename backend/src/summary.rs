@@ -28,6 +28,7 @@ use crate::{
         format_transcript, parse_summary, rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
+    auth_store::display_name_sql,
     chat::{Message, load_messages, owned_conversation},
     classrooms::{ClassroomFilter, filtered_classroom},
     diagnostics::{self, AiActivity},
@@ -598,14 +599,16 @@ pub(crate) async fn transcript(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ConversationTranscript>, ApiError> {
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
-    let head: TranscriptHead = sqlx::query_as(
+    let head: TranscriptHead = sqlx::query_as(concat!(
         "SELECT c.classroom_id, c.title, c.language, c.ended_at,
-                u.id AS student_user_id, u.display_name AS student_name
+                u.id AS student_user_id, ",
+        display_name_sql!("u"),
+        " AS student_name
          FROM conversations c
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($2 OR cl.created_by = $3)
          JOIN users u ON u.id = c.user_id
-         WHERE c.id = $1 AND c.ended_at IS NOT NULL",
-    )
+         WHERE c.id = $1 AND c.ended_at IS NOT NULL"
+    ))
     .bind(id)
     .bind(cu.roles.admin)
     .bind(cu.user.id)
@@ -779,7 +782,7 @@ pub(crate) async fn list(
     let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
     // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
-    let mut rows: Vec<SummaryRow> = sqlx::query_as(
+    let mut rows: Vec<SummaryRow> = sqlx::query_as(concat!(
         "SELECT s.conversation_id, c.classroom_id, c.activity_id, c.topic_id,
                 (
                     c.activity_id IS NOT NULL
@@ -803,8 +806,9 @@ pub(crate) async fn list(
                     )
                 ) AS activity_completed,
                 c.title, c.ended_at, s.completed_at,
-                u.id AS student_user_id, u.student_id AS student_number,
-                u.display_name AS student_name, u.email AS student_email,
+                u.id AS student_user_id, u.student_id AS student_number, ",
+        display_name_sql!("u"),
+        " AS student_name, u.email AS student_email,
                 c.language,
                 s.stance, s.reasons, s.claim,
                 CASE WHEN t.stance IS NOT NULL THEN
@@ -822,15 +826,17 @@ pub(crate) async fn list(
            AND ($4::uuid IS NULL OR u.id = $4)
            AND ($5::text IS NULL OR lower(c.title) = lower($5))
            AND ($6::text IS NULL
-                OR u.display_name ILIKE $6 ESCAPE '\\'
+                OR ",
+        display_name_sql!("u"),
+        " ILIKE $6 ESCAPE '\\'
                 OR u.email ILIKE $6 ESCAPE '\\'
                 OR c.title ILIKE $6 ESCAPE '\\')
            AND ($7::timestamptz IS NULL
                 OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
            AND ($9::uuid IS NULL OR c.activity_id = $9)
          ORDER BY s.completed_at DESC, s.conversation_id ASC
-         LIMIT $10",
-    )
+         LIMIT $10"
+    ))
     .bind(cu.roles.admin)
     .bind(cu.user.id)
     .bind(classroom)
