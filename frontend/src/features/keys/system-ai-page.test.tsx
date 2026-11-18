@@ -92,7 +92,7 @@ describe('SystemAiPage', () => {
     await open(overview({ keys: [key] }))
     const user = userEvent.setup()
     await user.selectOptions(await screen.findByLabelText('供應商', { selector: '#sys-provider' }), 'openai')
-    await user.type(screen.getByLabelText('模型', { selector: '#sys-model' }), 'gpt-x')
+    await user.type(screen.getByLabelText('模型 ID', { selector: '#sys-model' }), 'gpt-x')
     await user.click(screen.getByRole('button', { name: '驗證並儲存' }))
     await waitFor(() => expect(puts).toEqual([{ provider: 'openai', model: 'gpt-x' }]))
     expect(await screen.findByText('已儲存系統模型。')).toBeInTheDocument()
