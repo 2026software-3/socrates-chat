@@ -23,6 +23,7 @@ const KEY_C: &str = "sk-synthetic-CCCC-1111-2222-3333-cccc";
 struct FakeVerifier {
     result: Mutex<KeyCheck>,
     calls: Mutex<Vec<(String, String)>>,
+    delay: Mutex<std::time::Duration>,
 }
 
 #[async_trait]
@@ -32,6 +33,8 @@ impl KeyVerifier for FakeVerifier {
             .lock()
             .unwrap()
             .push((provider.id.into(), key.into()));
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
         *self.result.lock().unwrap()
     }
 }
@@ -40,6 +43,7 @@ fn verifier(result: KeyCheck) -> Arc<FakeVerifier> {
     Arc::new(FakeVerifier {
         result: Mutex::new(result),
         calls: Mutex::default(),
+        delay: Mutex::default(),
     })
 }
 
@@ -331,6 +335,69 @@ async fn test_endpoint_reports_usable_or_connection_failed_without_leaking_the_k
         (StatusCode::OK, Some("connection_failed"))
     );
     assert!(!r.to_string().contains(KEY_A));
+}
+
+#[sqlx::test]
+async fn usable_test_clears_a_recorded_failure_but_connection_failure_keeps_it(pool: PgPool) {
+    let v = verifier(KeyCheck::ConnectionFailed);
+    let app = build(pool.clone(), true, v.clone(), None);
+    let a = seed_actors(&app).await;
+    let (_, item) = add(&app, &a.teacher, "openai", KEY_A).await;
+    sqlx::query("UPDATE teacher_api_keys SET status='invalid', status_at=now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let path = format!("/api/teacher/keys/{}/test", item["id"].as_str().unwrap());
+    let status = || async {
+        let (_, list) = call(&app, "GET", "/api/teacher/keys", Some(&a.teacher), None).await;
+        list[0]["status"].as_str().unwrap().to_owned()
+    };
+    // 連線失敗可能只是網路問題：不改寫狀態
+    call(&app, "POST", &path, Some(&a.teacher), None).await;
+    assert_eq!(status().await, "invalid");
+    // 教師補足額度後測試可用：狀態清為可用，路由不必等冷卻結束
+    *v.result.lock().unwrap() = KeyCheck::Usable;
+    let (_, r) = call(&app, "POST", &path, Some(&a.teacher), None).await;
+    assert_eq!(r["result"], "usable");
+    assert_eq!(status().await, "ok");
+}
+
+#[sqlx::test]
+async fn a_listed_key_that_can_no_longer_be_decrypted_tests_as_connection_failed(pool: PgPool) {
+    let v = verifier(KeyCheck::Usable);
+    let app = build(pool.clone(), true, v.clone(), None);
+    let a = seed_actors(&app).await;
+    let (_, item) = add(&app, &a.teacher, "openai", KEY_A).await;
+    // 以已輪替掉的加密金鑰保存的 key：清單看得到，但解不開
+    sqlx::query("UPDATE teacher_api_keys SET encryption_key_id = 'retired'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let path = format!("/api/teacher/keys/{}/test", item["id"].as_str().unwrap());
+    let (s, r) = call(&app, "POST", &path, Some(&a.teacher), None).await;
+    assert_eq!(
+        (s, r["result"].as_str()),
+        (StatusCode::OK, Some("connection_failed"))
+    );
+    assert!(v.calls.lock().unwrap().is_empty());
+}
+
+#[sqlx::test]
+async fn a_slow_provider_test_is_not_cut_off_by_the_general_request_timeout(pool: PgPool) {
+    register_fixture_pool(&pool);
+    let v = verifier(KeyCheck::Usable);
+    *v.delay.lock().unwrap() = std::time::Duration::from_millis(400);
+    let mut config = test_config();
+    config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+    config.request_timeout = std::time::Duration::from_millis(100);
+    let state = AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
+        .with_key_verifier(v);
+    let app = app(state);
+    let a = seed_actors(&app).await;
+    let (_, item) = add(&app, &a.teacher, "openai", KEY_A).await;
+    let path = format!("/api/teacher/keys/{}/test", item["id"].as_str().unwrap());
+    let (s, r) = call(&app, "POST", &path, Some(&a.teacher), None).await;
+    assert_eq!((s, r["result"].as_str()), (StatusCode::OK, Some("usable")));
 }
 
 #[sqlx::test]

@@ -252,6 +252,27 @@ pub async fn keys_for(
         .collect())
 }
 
+/// 以實際用過的 key 記錄狀態：只有那筆項目的 key 還是同一把（指紋相同）才寫入。
+/// 呼叫進行中教師更換了 key 時，舊 key 的失敗不會蓋到新 key 上；沒寫入回 `false`。
+pub async fn set_status_for(
+    pool: &PgPool,
+    key: &UsableKey,
+    status: KeyStatus,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE teacher_api_keys
+            SET status = $2, status_at = CASE WHEN $2 = 'ok' THEN NULL ELSE now() END
+          WHERE id = $1 AND fingerprint = $3",
+    )
+    .bind(key.id)
+    .bind(status.as_str())
+    .bind(fingerprint(key.secret()))
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
 /// 記錄 key 的狀態；`Ok` 會清除狀態時間。key 不存在回 `false`。
 pub async fn set_status(pool: &PgPool, id: Uuid, status: KeyStatus) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query(
