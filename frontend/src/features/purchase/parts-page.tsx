@@ -13,7 +13,7 @@ export function PartsPage() {
   const balance = useFetch<{ balance: number }>('/api/points')
   const [busy, setBusy] = useState<string>()
   const [purchaseError, setPurchaseError] = useState<unknown>()
-  const purchaseDisabled = busy !== undefined || loading || error !== undefined
+  const purchaseDisabled = busy !== undefined || loading || error !== undefined || balance.loading || balance.error !== undefined
 
   async function buy(part: PartView) {
     if (purchaseDisabled || !part.enabled) return

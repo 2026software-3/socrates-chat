@@ -193,6 +193,22 @@ async fn only_admin_can_change_price_and_status_and_changes_are_audited(pool: Pg
     )
     .await;
     assert_json_error(fractional, StatusCode::UNPROCESSABLE_ENTITY, "invalid_body").await;
+    let non_boolean = send(
+        &app,
+        json_req(
+            "PATCH",
+            "/api/admin/parts/synthetic_part",
+            Some(&a.admin),
+            Some(json!({"price": 30, "enabled": "yes"})),
+        ),
+    )
+    .await;
+    assert_json_error(
+        non_boolean,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_body",
+    )
+    .await;
     let audits_before: i64 =
         sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE action='part_updated'")
             .fetch_one(&pool)

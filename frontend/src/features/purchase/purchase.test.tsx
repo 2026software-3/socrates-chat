@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -54,6 +54,57 @@ describe('part purchase', () => {
       finishRefresh()
     }
     expect(await screen.findByText('已擁有')).toBeInTheDocument()
+  })
+  it('disables purchase while the balance refreshes after a purchase', async () => {
+    let owned = false
+    let balanceRefreshing = false
+    let finishBalance = () => {}
+    const balanceRefresh = new Promise<void>((resolve) => { finishBalance = resolve })
+    const other = { ...part, id: 'other', name_zh_tw: '其他部件', owned: false }
+    server.use(
+      http.get('/api/parts', () => HttpResponse.json([{ ...part, owned }, other])),
+      http.get('/api/points', async () => {
+        if (owned) {
+          balanceRefreshing = true
+          await balanceRefresh
+        }
+        return HttpResponse.json({ balance: owned ? 20 : 50 })
+      }),
+      http.post('/api/parts/synthetic/purchase', () => {
+        owned = true
+        return HttpResponse.json({ ...part, owned })
+      }),
+    )
+    renderApp(null, { route: '/parts' })
+    await userEvent.click((await screen.findAllByRole('button', { name: '解鎖' }))[0])
+    try {
+      await waitFor(() => expect(balanceRefreshing).toBe(true))
+      expect(await screen.findByText('已擁有')).toBeInTheDocument()
+      const otherSection = screen.getByRole('heading', { name: '其他部件' }).closest('section') as HTMLElement
+      expect(within(otherSection).getByRole('button', { name: '解鎖' })).toBeDisabled()
+    } finally {
+      finishBalance()
+    }
+  })
+  it('disables purchase when the catalog refresh fails after a purchase', async () => {
+    let owned = false
+    let failRefresh = false
+    server.use(
+      http.get('/api/parts', () => {
+        if (failRefresh) return HttpResponse.json({ error: { code: 'internal', request_id: 'r1' } }, { status: 500 })
+        return HttpResponse.json([{ ...part, owned }])
+      }),
+      http.get('/api/points', () => HttpResponse.json({ balance: owned ? 20 : 50 })),
+      http.post('/api/parts/synthetic/purchase', () => {
+        owned = true
+        failRefresh = true
+        return HttpResponse.json({ ...part, owned })
+      }),
+    )
+    renderApp(null, { route: '/parts' })
+    await userEvent.click(await screen.findByRole('button', { name: '解鎖' }))
+    expect(await screen.findByRole('button', { name: /重試|retry/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '解鎖' })).toBeDisabled()
   })
   it('shows an actionable error when points are insufficient', async () => {
     server.use(
