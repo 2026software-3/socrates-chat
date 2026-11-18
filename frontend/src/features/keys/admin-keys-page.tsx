@@ -56,7 +56,11 @@ export function AdminKeysPage() {
   }
 
   return (
-    <Page title={t('adminKeys.title')} description={t('adminKeys.intro')}>
+    <Page
+      title={t('adminKeys.title')}
+      description={t('adminKeys.intro')}
+      crumbs={[{ label: t('admin.teachers.title'), to: '/admin/teachers' }, { label: t('adminKeys.title') }]}
+    >
       <div aria-live="polite">
         {notice ? (
           <p role="status" className="text-sm text-green-700 dark:text-green-400">
