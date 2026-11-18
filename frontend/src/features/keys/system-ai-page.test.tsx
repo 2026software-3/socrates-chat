@@ -79,24 +79,26 @@ describe('SystemAiPage', () => {
   it('verifies and saves the model, and clears it', async () => {
     const puts: unknown[] = []
     let deleted = false
+    let current = overview({ keys: [key] })
     server.use(
       http.put('/api/admin/system-ai/model', async ({ request }) => {
         puts.push(await request.json())
-        return HttpResponse.json(overview({ source: 'database', keys: [key], setting: { provider: 'openai', provider_name: 'OpenAI', model: 'gpt-x' } }))
+        current = overview({ source: 'database', keys: [key], setting: { provider: 'openai', provider_name: 'OpenAI', model: 'gpt-x' } })
+        return HttpResponse.json(current)
       }),
       http.delete('/api/admin/system-ai/model', () => {
         deleted = true
         return HttpResponse.json(overview({ keys: [key] }))
       }),
     )
-    await open(overview({ keys: [key] }))
+    await open(current)
+    server.use(http.get('/api/admin/system-ai', () => HttpResponse.json(current)))
     const user = userEvent.setup()
     await user.selectOptions(await screen.findByLabelText('供應商', { selector: '#sys-provider' }), 'openai')
     await user.type(screen.getByLabelText('模型 ID', { selector: '#sys-model' }), 'gpt-x')
     await user.click(screen.getByRole('button', { name: '驗證並儲存' }))
     await waitFor(() => expect(puts).toEqual([{ provider: 'openai', model: 'gpt-x' }]))
     expect(await screen.findByText('已儲存系統模型。')).toBeInTheDocument()
-    server.use(http.get('/api/admin/system-ai', () => HttpResponse.json(overview({ source: 'database', keys: [key], setting: { provider: 'openai', provider_name: 'OpenAI', model: 'gpt-x' } }))))
     await user.click(await screen.findByRole('button', { name: /清除設定/ }))
     await waitFor(() => expect(deleted).toBe(true))
   })
