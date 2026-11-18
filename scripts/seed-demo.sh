@@ -36,8 +36,9 @@ DELETE FROM enrollments WHERE classroom_id IN (SELECT id FROM classrooms WHERE d
 DELETE FROM classrooms WHERE description LIKE '[demo]%';
 DELETE FROM topics WHERE id::text LIKE '00000000-0000-4000-8000-0000000001%';
 
-INSERT INTO classrooms (name, year_label, description, created_by)
-SELECT n, y, d, (SELECT id FROM users WHERE email = 'demo.teacher@example.com')
+-- 示範教師沒有自己的 AI key：示範教室標為過渡中，沿用系統 key（F-40.5）
+INSERT INTO classrooms (name, year_label, description, created_by, ai_transitional)
+SELECT n, y, d, (SELECT id FROM users WHERE email = 'demo.teacher@example.com'), true
 FROM (VALUES
   ('哲學導論 週一班', '115 學年度', '[demo] 週一上午班，6 位學生'),
   ('哲學導論 週三班', '115 學年度', '[demo] 週三下午班，6 位學生（含 2 位外語學生）'),
