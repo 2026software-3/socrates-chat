@@ -427,7 +427,7 @@ async fn only_admins_can_manage_system_ai(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn csrf_origin_is_required_and_the_feature_needs_an_encryption_key(pool: PgPool) {
+async fn csrf_origin_is_required(pool: PgPool) {
     let app = build(pool.clone(), true, Arc::new(Fake::default()));
     let a = seed_actors(&app).await;
     let req = axum::http::Request::builder()
@@ -440,7 +440,10 @@ async fn csrf_origin_is_required_and_the_feature_needs_an_encryption_key(pool: P
         ))
         .unwrap();
     assert_eq!(send(&app, req).await.status(), StatusCode::FORBIDDEN);
+}
 
+#[sqlx::test]
+async fn without_an_encryption_key_keys_cannot_be_added(pool: PgPool) {
     let app = build(pool, false, Arc::new(Fake::default()));
     let a = seed_actors(&app).await;
     let (s, e) = add(&app, &a.admin, "openai", KEY_A).await;

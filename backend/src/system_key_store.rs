@@ -64,7 +64,7 @@ pub async fn add(
         return Err(AddError::Duplicate);
     }
     let sealed = cipher.encrypt(key);
-    Ok(sqlx::query_as(concat!(
+    sqlx::query_as(concat!(
         "INSERT INTO system_api_keys (provider, ciphertext, encryption_key_id, mask, fingerprint, created_by)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING ",
         columns!()
@@ -85,7 +85,7 @@ pub async fn add(
         } else {
             AddError::Db(e)
         }
-    })?)
+    })
 }
 
 pub async fn list(pool: &PgPool) -> Result<Vec<SystemKey>, sqlx::Error> {
