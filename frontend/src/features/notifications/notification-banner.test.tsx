@@ -68,4 +68,24 @@ describe('student number correction notifications', () => {
     await userEvent.click(dismiss)
     await removed
   })
+
+  it('shows teachers the notice that an administrator deleted one of their keys, in their language', async () => {
+    mockMe(makeMe({ teacher: true }, { language: 'en' }))
+    const teacherNotice = { id: 'b1e0f5c2-6a54-4d7e-9a8e-3a2d1c0b9f11', kind: 'teacher_api_key_deleted', created_at: '2026-11-18T06:30:00Z' }
+    let read = false
+    server.use(
+      http.get('/api/classrooms', () => HttpResponse.json([])),
+      http.get('/api/notifications', () => HttpResponse.json(read ? [] : [teacherNotice])),
+      http.post(`/api/notifications/${teacherNotice.id}/read`, () => {
+        read = true
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    renderApp(null, { lang: 'en' })
+    const message = await screen.findByText(/An administrator deleted one of your API keys/)
+    const removed = waitForElementToBeRemoved(message)
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    await removed
+    expect(read).toBe(true)
+  })
 })

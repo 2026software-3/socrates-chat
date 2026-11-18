@@ -56,6 +56,11 @@ function ClassroomBody({ classroom }: { classroom: Classroom }) {
           <Button asChild variant="outline">
             <Link to={`${base}/${classroom.id}/students`}>{t('classrooms.students')}</Link>
           </Button>
+          {isAdmin ? null : (
+            <Button asChild variant="outline">
+              <Link to={`${base}/${classroom.id}/ai`}>{t('aiSettings.link')}</Link>
+            </Button>
+          )}
           {isAdmin ? (
             <Button asChild variant="outline">
               <Link to={`/admin/diagnostics?classroom_id=${encodeURIComponent(classroom.id)}`}>

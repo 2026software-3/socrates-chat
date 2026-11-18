@@ -28,11 +28,11 @@ pub fn routes() -> Router<AppState> {
 
 #[derive(Deserialize)]
 pub(crate) struct RangeQuery {
-    range: Option<String>,
+    pub(crate) range: Option<String>,
 }
 
 /// 沒帶 `range` 時預設最近 7 天（暫定，待需求方確認）。
-fn parse_range(q: &RangeQuery) -> Result<(Range, &'static str), ApiError> {
+pub(crate) fn parse_range(q: &RangeQuery) -> Result<(Range, &'static str), ApiError> {
     match q.range.as_deref().unwrap_or("7d") {
         "today" => Ok((Range::Today, "today")),
         "7d" => Ok((Range::Last7Days, "7d")),
@@ -82,7 +82,7 @@ pub(crate) struct UsageReport {
     items: Vec<ModelUsageItem>,
 }
 
-fn report(range: &'static str, rows: Vec<ModelUsage>) -> UsageReport {
+pub(crate) fn report(range: &'static str, rows: Vec<ModelUsage>) -> UsageReport {
     let mut sum = Totals::default();
     for r in &rows {
         sum.requests += r.totals.requests;

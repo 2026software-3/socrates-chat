@@ -103,7 +103,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
         {/* 公告橫幅（S-15）：每一頁最上方；沒有公告時不佔位 */}
         <div className={cn('flex w-full flex-col gap-2 empty:hidden', fullBleed ? 'shrink-0 px-4 pt-3' : 'mx-auto max-w-5xl px-4 pt-4 md:px-8 md:pt-8')}>
           <AnnouncementBar />
-          {student ? <NotificationBanner key={me.id} /> : null}
+          {student || me.roles.teacher ? <NotificationBanner key={me.id} /> : null}
         </div>
         {fullBleed ? <main className="flex min-h-0 flex-1 flex-col">{children}</main> : <main className="mx-auto w-full max-w-5xl p-4 md:p-8">{children}</main>}
       </div>

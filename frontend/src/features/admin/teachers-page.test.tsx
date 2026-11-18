@@ -33,6 +33,12 @@ function mockTeachers(initial: string[]) {
 const render = () => renderApp(<TeachersPage />)
 
 describe('TeachersPage', () => {
+  it('links to the teacher API keys page nested under teachers', async () => {
+    mockTeachers([])
+    renderApp(<TeachersPage />)
+    expect(await screen.findByRole('link', { name: '教師 API key' })).toHaveAttribute('href', '/admin/teachers/keys')
+  })
+
   it('lists teachers sorted by email with a count and the explanation', async () => {
     mockTeachers(['b@example.com', 'a@example.com'])
     render()

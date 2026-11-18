@@ -118,6 +118,26 @@ describe('classroom management', () => {
     expect(await screen.findByText('2026 春季哲學班')).toBeInTheDocument()
   })
 
+  it('warns a teacher on the list about classrooms without an AI model and links to their AI settings', async () => {
+    server.use(
+      http.get('/api/classrooms', () =>
+        HttpResponse.json([existing, { ...existing, id: '00000000-0000-4000-8000-000000000103', name: '已設定班', ai_model_missing: false }, { ...existing, ai_model_missing: true }]),
+      ),
+    )
+    renderTeacher()
+    expect(await screen.findByRole('alert')).toHaveTextContent('有 1 間教室還沒有設定 AI 模型')
+    const link = screen.getByRole('link', { name: '尚未設定 AI 模型，前往設定' })
+    expect(link).toHaveAttribute('href', `/teacher/classrooms/${existing.id}/ai`)
+    expect(screen.getAllByRole('link', { name: '尚未設定 AI 模型，前往設定' })).toHaveLength(1)
+  })
+
+  it('shows no missing-model warning when every classroom has a model', async () => {
+    server.use(http.get('/api/classrooms', () => HttpResponse.json([{ ...existing, ai_model_missing: false }])))
+    renderTeacher()
+    expect(await screen.findByText('2026 春季班')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('allows admin-only users to manage classrooms without a create action', async () => {
     mockMe(makeMe({ admin: true }))
     server.use(http.get('/api/classrooms', () => HttpResponse.json([existing])))

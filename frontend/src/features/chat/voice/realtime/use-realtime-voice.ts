@@ -21,7 +21,7 @@ export type RealtimeHost = {
   onSettled: () => void
 }
 
-export type RealtimeNotice = 'realtimeLost' | 'replyFailed' | 'permission' | 'device' | 'unavailable'
+export type RealtimeNotice = 'realtimeLost' | 'replyFailed' | 'classroomUnavailable' | 'permission' | 'device' | 'unavailable'
 
 /**
  * 伺服器端語音對話（S-05.5）。連不上時回傳 `failed`，由呼叫端改用瀏覽器語音；
@@ -91,7 +91,7 @@ export function useRealtimeVoice(host: RealtimeHost | undefined, interruptible: 
             fallbackRef.current()
           } else {
             setNotice(reason === 'lost' ? 'realtimeLost' : reason)
-            if (reason === 'lost' || reason === 'replyFailed') host.onSettled()
+            if (reason === 'lost' || reason === 'replyFailed' || reason === 'classroomUnavailable') host.onSettled()
           }
         },
       },

@@ -9,7 +9,7 @@ import { useFetch } from '@/lib/use-fetch'
 
 type StudentNotification = {
   id: string
-  kind: 'student_number_corrected'
+  kind: 'student_number_corrected' | 'teacher_api_key_deleted'
   created_at: string
 }
 

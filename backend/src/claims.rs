@@ -106,11 +106,12 @@ async fn try_assign(
             content: claim.to_string(),
         }],
     };
+    let system = state.system_route().await;
     let grouped = AiActivity::new("claim_group", user, classroom)
         .statuses(202, 202)
-        .run(state, Some(&state.config.openai_model), 0, async {
+        .run(state, Some(&system.model), 0, async {
             let raw =
-                collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+                collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
             parse_group_name(&raw, &existing).ok_or(AiError::invalid_output())
         })
         .await;
@@ -216,14 +217,16 @@ pub(crate) async fn regroup(
     };
     // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
     let usage_slot = state.charge_ai(cu.user.id)?;
+    let system = state.system_route().await;
     let groups = AiActivity::new(
         "claim_regroup",
         Some(cu.user.id),
         Some(activity.classroom_id),
     )
     .statuses(204, 502)
-    .run(&state, Some(&state.config.openai_model), 0, async {
-        let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+    .run(&state, Some(&system.model), 0, async {
+        let raw =
+            collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
         parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
     })
     .await

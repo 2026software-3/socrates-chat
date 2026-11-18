@@ -29,7 +29,7 @@ impl KeyStatus {
         }
     }
 
-    fn parse(s: &str) -> Self {
+    pub(crate) fn parse(s: &str) -> Self {
         match s {
             "invalid" => Self::Invalid,
             "rate_limited" => Self::RateLimited,
@@ -99,6 +99,23 @@ pub struct UsableKey {
 impl UsableKey {
     pub fn secret(&self) -> &str {
         &self.secret
+    }
+
+    /// 給系統 key 的資料存取組出同一種型別（路由共用）。
+    pub(crate) fn from_parts(
+        id: Uuid,
+        status: KeyStatus,
+        status_at: Option<DateTime<Utc>>,
+        retry_after: Option<std::time::Duration>,
+        secret: String,
+    ) -> Self {
+        Self {
+            id,
+            status,
+            status_at,
+            retry_after,
+            secret,
+        }
     }
 }
 

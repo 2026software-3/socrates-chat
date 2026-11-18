@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post, put},
 };
@@ -27,12 +27,18 @@ use crate::{
 /// 每位教師在一個時間窗內最多按幾次「測試 key」（會對供應商發出請求）。暫定值，待需求方確認。
 pub const KEY_TEST_MAX: usize = 10;
 pub const KEY_TEST_WINDOW: Duration = Duration::from_secs(600);
+/// 每位教師每分鐘最多取幾次模型清單（取清單不產生費用，只擋重複點擊與腳本）。暫定值，待需求方確認。
+pub const MODEL_LIST_MAX_CALLS: usize = 30;
+pub const MODEL_LIST_WINDOW: Duration = Duration::from_secs(60);
+/// 同一供應商有多把 key 時，最多依序試幾把。
+const MODEL_LIST_MAX_KEYS: usize = 3;
 const MAX_KEY_CHARS: usize = 512;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/teacher/ai-providers", get(list_providers))
         .route("/api/teacher/keys", get(list_keys).post(add_key))
+        .route("/api/teacher/keys/models", get(list_models))
         .route(
             "/api/teacher/keys/{id}",
             put(replace_key).delete(delete_key),
@@ -52,7 +58,7 @@ fn teacher_only(cu: &CurrentUser) -> Result<(), ApiError> {
     }
 }
 
-fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
+pub(crate) fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
     state
         .config
         .teacher_key_cipher
@@ -64,7 +70,7 @@ fn cipher(state: &AppState) -> Result<&KeyCipher, ApiError> {
         ))
 }
 
-fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
+pub(crate) fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::not_found())
 }
 
@@ -72,7 +78,7 @@ const INVALID_KEY: ApiError = ApiError::bad_request("invalid_key", "API key 格�
 const DUPLICATE: ApiError = ApiError::conflict("key_already_exists", "這把 key 已經存在");
 
 /// 去掉前後空白後，必須非空、不超過上限，且不含空白或控制字元。
-fn clean_key(raw: &str) -> Result<&str, ApiError> {
+pub(crate) fn clean_key(raw: &str) -> Result<&str, ApiError> {
     let key = raw.trim();
     if key.is_empty()
         || key.chars().count() > MAX_KEY_CHARS
@@ -83,7 +89,7 @@ fn clean_key(raw: &str) -> Result<&str, ApiError> {
     Ok(key)
 }
 
-fn add_error(e: AddError) -> ApiError {
+pub(crate) fn add_error(e: AddError) -> ApiError {
     match e {
         AddError::Duplicate => DUPLICATE,
         AddError::Db(e) => e.into(),
@@ -93,9 +99,9 @@ fn add_error(e: AddError) -> ApiError {
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct ProviderItem {
     #[schema(example = "openai")]
-    id: &'static str,
+    pub(crate) id: &'static str,
     #[schema(example = "OpenAI")]
-    name: &'static str,
+    pub(crate) name: &'static str,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -130,9 +136,9 @@ impl From<TeacherKey> for KeyItem {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewKey {
     #[schema(example = "openai")]
-    provider: String,
+    pub(crate) provider: String,
     #[schema(max_length = 512)]
-    key: String,
+    pub(crate) key: String,
 }
 
 /// 更換 key：供應商不可變更，要換供應商請新增另一把。
@@ -140,13 +146,13 @@ pub(crate) struct NewKey {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplaceKey {
     #[schema(max_length = 512)]
-    key: String,
+    pub(crate) key: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct KeyTestResult {
     /// `usable` 或 `connection_failed`；額度不足仍算可用，key 無效或已撤銷算連線失敗
-    result: &'static str,
+    pub(crate) result: &'static str,
 }
 
 /// 開放給教師的供應商名單。
@@ -330,4 +336,81 @@ pub(crate) async fn test_key(
         KeyCheck::ConnectionFailed => "connection_failed",
     };
     Ok(Json(KeyTestResult { result }))
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ModelsQuery {
+    /// 供應商識別碼，例如 `openai`
+    pub(crate) provider: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ModelList {
+    pub(crate) provider: String,
+    /// `ok`：`models` 是供應商目前列出的模型；`no_key`：這位教師沒有該供應商的 key；
+    /// `unavailable`：有 key 但取不到清單（key 無效、供應商不提供清單、逾時等）。後兩者前端退回手動輸入。
+    pub(crate) status: &'static str,
+    /// 只是輸入建議，不是白名單：儲存時仍以模型驗證為準。已排序、去重，最多 500 個。
+    pub(crate) models: Vec<String>,
+}
+
+/// 用自己的 key 向供應商取模型清單，給教室 AI 設定的模型欄位當輸入建議。
+/// 清單只是建議，教師仍可輸入清單以外的模型 ID；取不到時回 200 與 `status`，不是錯誤。
+/// 不改動 key 的狀態，回應與日誌都不含 key。
+#[utoipa::path(
+    get,
+    path = "/api/teacher/keys/models",
+    tag = "teacher-keys",
+    summary = "供應商的模型清單（輸入建議）",
+    params(ModelsQuery),
+    responses(
+        (status = 200, description = "模型清單，或沒有 key／取不到的狀態", body = ModelList),
+        (status = 400, description = "不支援的供應商（invalid_provider）"),
+        (status = 429, description = "太頻繁（model_list_rate_limited）"),
+        crate::error::CommonErrors
+    )
+)]
+pub(crate) async fn list_models(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Query(query): Query<ModelsQuery>,
+) -> Result<Json<ModelList>, ApiError> {
+    teacher_only(&cu)?;
+    let provider = ai_providers::find(&query.provider).ok_or(ApiError::bad_request(
+        "invalid_provider",
+        "不支援這個供應商",
+    ))?;
+    let cipher = cipher(&state)?;
+    if state.model_list_limit.try_acquire(cu.user.id).is_none() {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "model_list_rate_limited",
+            "操作太頻繁，請稍後再試",
+        ));
+    }
+    let keys = store::keys_for(&state.pool, cipher, cu.user.id, provider.id).await?;
+    Ok(Json(model_list_for(&state, provider, &keys).await))
+}
+
+/// 依序用最多 `MODEL_LIST_MAX_KEYS` 把 key 向供應商取清單；教師與管理者（系統 key）共用。
+pub(crate) async fn model_list_for(
+    state: &AppState,
+    provider: &'static ai_providers::Provider,
+    keys: &[store::UsableKey],
+) -> ModelList {
+    let respond = |status, models| ModelList {
+        provider: provider.id.to_owned(),
+        status,
+        models,
+    };
+    if keys.is_empty() {
+        return respond("no_key", Vec::new());
+    }
+    for key in keys.iter().take(MODEL_LIST_MAX_KEYS) {
+        if let Ok(models) = state.model_lister.list_models(provider, key.secret()).await {
+            return respond("ok", models);
+        }
+    }
+    respond("unavailable", Vec::new())
 }

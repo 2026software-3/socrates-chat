@@ -153,6 +153,23 @@ describe('DiagnosticsPage', () => {
     expect(new Date(query.get('to') ?? '').getTime()).toBe(new Date('2026-11-02T08:00').getTime())
   })
 
+  it('names classroom AI unavailability and lets the admin filter by it', async () => {
+    mockMe(makeMe({ admin: true }))
+    const queries = mockDiagnostics(() =>
+      pageOf([{ ...aiEvent, failure_class: 'classroom_ai_unavailable', error_code: 'classroom_ai_unavailable', duration_ms: 0, model: null }]),
+    )
+    const user = userEvent.setup()
+
+    renderApp(<DiagnosticsPage />, { route: '/admin/diagnostics' })
+
+    const table = await screen.findByRole('table', { name: '診斷事件' })
+    const row = within(table).getAllByRole('row')[1]
+    expect(within(row).getByText('教室 AI 無法使用')).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('失敗分類'), 'classroom_ai_unavailable')
+    await user.click(screen.getByRole('button', { name: '查詢' }))
+    await waitFor(() => expect(last(queries).get('failure_class')).toBe('classroom_ai_unavailable'))
+  })
+
   it('limits failure classes to those of the selected type and drops one that no longer fits', async () => {
     mockMe(makeMe({ admin: true }))
     mockDiagnostics()
