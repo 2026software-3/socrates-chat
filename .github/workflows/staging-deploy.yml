@@ -2,8 +2,11 @@ name: Staging deploy (msi_cubi)
 
 # 推送到 deploy/msi-cubi-staging 時，在 msi_cubi 上的 self-hosted runner 更新 staging（socrates-staging）。
 # - runner 由主機主動連到 GitHub，不需要對外開任何 port；staging 網址經同一條 Cloudflare Tunnel。
-# - 只接 push 事件、只接這一條分支：fork 的 PR 不會跑在這台機器上。
-# - 這個 workflow 檔只在 deploy/msi-cubi-staging 上生效（push 事件用的是被推送 commit 裡的 workflow 定義）。
+# - 信任邊界：這個 workflow 檔與要建置的 Dockerfile、compose 檔都來自被推送的分支，任何能 push 到
+#   deploy/msi-cubi-staging 的人都能讓這台主機執行任意指令（含 docker，等同 root）。fork 的 PR 不會觸發這個 workflow，
+#   但這不是防線；真正的防線是分支保護與 environment 的人工核准，見 docs/ntnu-ops.md「自動部署」的安全設定。
+# - 這個 job 掛在 environment `staging-deploy` 下，請在 repo 設定該 environment 的 Required reviewers，
+#   並把 deployment branch 限制為 deploy/msi-cubi-staging。
 # - 設定與故障排除見 docs/ntnu-ops.md 的「staging 自動部署」。
 on:
   push:
@@ -20,6 +23,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy staging to msi_cubi
+    environment: staging-deploy
     runs-on: [self-hosted, linux, msi-cubi-staging]
     timeout-minutes: 30
     steps:

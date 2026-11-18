@@ -421,7 +421,14 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - 同一時間只跑一個部署，部署中途不取消；排隊中的舊執行會被較新的 push 取代。分支若在執行前又被推進，這次執行會略過（由較新的執行部署）。
 - 主機一次性設定（只做一次，要在 msi_cubi 上做）：
   1. 部署目錄：`git clone -b deploy/msi-cubi-staging https://github.com/2026software-3/socrates-chat.git ~/socrates-staging`，再把 `~/socrates-intel` 裡的 `.env.staging`、`.apikeylist`、`.staging-credentials` **複製**過來（不要移動，正式環境還在用 `~/socrates-intel`）。腳本缺少 `.env.staging` 或 `.apikeylist` 會直接失敗。
-  2. runner：repo 的 Settings → Actions → Runners → New self-hosted runner，取得安裝指令與 registration token（約 1 小時失效）。建議用專用系統使用者（例如 `gha-runner`）安裝，參數 `--labels msi-cubi-staging --unattended`，再用 `sudo ./svc.sh install <user>` 與 `sudo ./svc.sh start` 做成服務。這個使用者要能執行 docker；docker 群組等同 root，所以只能用在這台專用的 runner，且 push 到這條分支的人都要是可信的 maintainer。
+  2. runner：repo 的 Settings → Actions → Runners → New self-hosted runner，取得安裝指令與 registration token（約 1 小時失效）。建議用專用系統使用者（例如 `gha-runner`）安裝，參數 `--labels msi-cubi-staging --unattended`，再用 `sudo ./svc.sh install <user>` 與 `sudo ./svc.sh start` 做成服務。
+     - 目前的設定讓 runner 使用者能跑 docker（等同 root），而 workflow 與 Dockerfile 都來自分支，所以**能 push 到 `deploy/msi-cubi-staging` 的人實際上就能控制這台主機**。這是已知的信任邊界，不能靠 workflow 檔本身擋住。
+     - 在啟用前要先做的安全設定（都在 GitHub 設定裡，需要 repo admin）：
+       1. **分支保護（ruleset）**：`deploy/msi-cubi-staging` 禁止直接 push（或要求 PR＋至少一位他人核准），禁止 force push 與刪除。
+       2. **environment `staging-deploy`**：設定 Required reviewers（至少一位不是推送者的 maintainer），deployment branch 限制為 `deploy/msi-cubi-staging`。workflow 的 job 已掛在這個 environment 下，每次部署都要人工核准。
+       3. **runner 限定**：如果組織方案支援 runner group，把 runner 放進只允許 `staging-deploy.yml` 使用的 group；否則靠第 2 點的 environment 把關。
+       4. **fork PR**：公開 repo 維持預設（fork 的 PR 不跑 self-hosted runner）；不要改成允許。
+     - 更強的做法（尚未實作）：runner 使用者不進 docker 群組，改由 root 擁有的部署包裝腳本，經 sudoers 只允許以 root 執行、只接受一個 commit SHA，並只部署該 SHA 已通過分支保護的 commit。這樣 runner 本身不持有 docker 權限。
   3. （選用）repo variable `STAGING_DEPLOY_DIR`：只有部署目錄不在 `$HOME/socrates-staging` 時才要設。
 - 注意：
   - 腳本會 `git reset --hard` 部署目錄裡的追蹤檔，**不要在 `~/socrates-staging` 上手動改程式**；`.env.staging` 等被忽略的檔案不受影響。
