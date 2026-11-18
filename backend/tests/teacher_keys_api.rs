@@ -384,17 +384,19 @@ async fn a_listed_key_that_can_no_longer_be_decrypted_tests_as_connection_failed
 
 #[sqlx::test]
 async fn a_slow_provider_test_is_not_cut_off_by_the_general_request_timeout(pool: PgPool) {
-    register_fixture_pool(&pool);
+    // 登入（密碼雜湊）用一般逾時的 app 準備資料；session 存在資料庫，換 app 照樣有效
+    let (seed, _) = setup(pool.clone());
+    let a = seed_actors(&seed).await;
+    let (_, item) = add(&seed, &a.teacher, "openai", KEY_A).await;
     let v = verifier(KeyCheck::Usable);
     *v.delay.lock().unwrap() = std::time::Duration::from_millis(400);
     let mut config = test_config();
     config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
     config.request_timeout = std::time::Duration::from_millis(100);
-    let state = AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
-        .with_key_verifier(v);
-    let app = app(state);
-    let a = seed_actors(&app).await;
-    let (_, item) = add(&app, &a.teacher, "openai", KEY_A).await;
+    let app = app(
+        AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
+            .with_key_verifier(v),
+    );
     let path = format!("/api/teacher/keys/{}/test", item["id"].as_str().unwrap());
     let (s, r) = call(&app, "POST", &path, Some(&a.teacher), None).await;
     assert_eq!((s, r["result"].as_str()), (StatusCode::OK, Some("usable")));
