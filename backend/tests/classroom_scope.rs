@@ -1,4 +1,4 @@
-//! F-28.3 活動與對話歸屬教室（S-14、S-02.1）。只使用合成資料。
+//! F-28.3／F-28.4 教室資料歸屬與範圍切換（S-14、S-02.1）。只使用合成資料。
 
 mod common;
 
@@ -499,6 +499,98 @@ fn claims(rows: &Value) -> Vec<String> {
         .collect();
     out.sort();
     out
+}
+
+#[sqlx::test]
+async fn classroom_requests_can_switch_scope_with_the_same_session(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let s = scene(&app, &pool).await;
+    let rooms = [
+        (s.a.classroom.as_str(), "A 班活動", "student@example.com"),
+        (s.room_b.as_str(), "B 班活動", "bee@example.com"),
+        (s.room_other.as_str(), "他班活動", "oh@example.com"),
+    ];
+
+    for (cookie, allowed, masked) in [
+        (&s.a.teacher, &rooms[..2], false),
+        (&s.other_teacher, &rooms[2..], false),
+        (&s.a.admin, &rooms[..], true),
+    ] {
+        let classrooms = list(&app, "/api/classrooms", cookie).await;
+        let mut ids: Vec<_> = classrooms
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        let mut expected: Vec<_> = allowed.iter().map(|(id, _, _)| *id).collect();
+        ids.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+
+        for &(id, title, email) in allowed {
+            let classroom = list(&app, &format!("/api/classrooms/{id}"), cookie).await;
+            assert_eq!(classroom["id"], id);
+            let activities =
+                list(&app, &format!("/api/activities?classroom_id={id}"), cookie).await;
+            assert_eq!(titles(&activities), [title]);
+            let roster = list(&app, &format!("/api/classrooms/{id}/roster"), cookie).await;
+            assert_eq!(roster.as_array().unwrap().len(), 1);
+            assert_eq!(roster[0]["email"], email);
+            let students = list(&app, &format!("/api/classrooms/{id}/students"), cookie).await;
+            assert_eq!(students.as_array().unwrap().len(), 1);
+            assert_eq!(students[0]["email"], email);
+            assert_eq!(students[0]["completed_conversations"], 1);
+            let summaries = list(&app, &format!("/api/summaries?classroom_id={id}"), cookie).await;
+            assert_eq!(summaries.as_array().unwrap().len(), 1);
+            assert_eq!(summaries[0]["classroom_id"], id);
+            let dashboard = list(
+                &app,
+                &format!("/api/dashboard/class?classroom_id={id}"),
+                cookie,
+            )
+            .await;
+            assert_eq!(dashboard["students_total"], 1);
+            assert_eq!(dashboard["masked"], masked);
+            if masked {
+                assert_eq!(dashboard["activities"], json!([]));
+            } else {
+                assert_eq!(titles(&dashboard["activities"]), [title]);
+            }
+        }
+    }
+}
+
+#[sqlx::test]
+async fn foreign_and_missing_classrooms_have_the_same_error_contract(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let teacher = add_teacher(&app, &a.admin, "sub-t2", "teacher2@example.com").await;
+
+    let paths = |id: &str| {
+        [
+            format!("/api/classrooms/{id}"),
+            format!("/api/classrooms/{id}/roster"),
+            format!("/api/classrooms/{id}/students"),
+            format!("/api/activities?classroom_id={id}"),
+            format!("/api/summaries?classroom_id={id}"),
+            format!("/api/dashboard/class?classroom_id={id}"),
+        ]
+    };
+    for (foreign, missing) in paths(&a.classroom).into_iter().zip(paths(NOPE)) {
+        let mut errors = Vec::new();
+        for path in [foreign, missing] {
+            let response = send(&app, get(&path, Some(&teacher))).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            let mut body = json_body(response).await;
+            assert_eq!(body["error"]["code"], "not_found", "{path}");
+            let error = body["error"].as_object_mut().unwrap();
+            // 請求識別碼每次不同，其餘錯誤欄位須相同。
+            assert!(error.remove("request_id").is_some_and(|id| id.is_string()));
+            errors.push(body);
+        }
+        assert_eq!(errors[0], errors[1]);
+    }
 }
 
 #[sqlx::test]
