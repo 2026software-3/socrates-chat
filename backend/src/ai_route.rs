@@ -54,7 +54,11 @@ pub(crate) struct Route {
     pub model: String,
 }
 
-fn unavailable() -> AiError {
+/// 教室的 AI 不可用。`reason` 只記在日誌（不含 key 或對話內容），讓維運者知道是哪一項沒設好：
+/// `classroom_not_found`、`owner_disabled`、`owner_not_teacher`、`key_encryption_not_configured`、
+/// `model_not_configured`、`no_key_for_provider`、`keys_cooling_down`、`all_keys_failed`、`lookup_failed`。
+fn unavailable(classroom: Uuid, reason: &'static str) -> AiError {
+    tracing::warn!(%classroom, reason, "classroom AI unavailable");
     AiError::classified(Failure::ClassroomUnavailable)
 }
 
@@ -93,26 +97,29 @@ impl AppState {
         .await
         .map_err(|e| {
             tracing::error!(class = %crate::error::db_error_class(&e), "classroom AI route lookup failed");
-            unavailable()
+            unavailable(classroom, "lookup_failed")
         })?;
         let Some((owner, transitional, disabled, is_teacher)) = row else {
-            return Err(unavailable());
+            return Err(unavailable(classroom, "classroom_not_found"));
         };
         if transitional {
             return Ok(system());
         }
-        if disabled || !is_teacher {
-            return Err(unavailable());
+        if disabled {
+            return Err(unavailable(classroom, "owner_disabled"));
+        }
+        if !is_teacher {
+            return Err(unavailable(classroom, "owner_not_teacher"));
         }
         let cipher = self
             .config
             .teacher_key_cipher
             .as_deref()
-            .ok_or_else(unavailable)?;
+            .ok_or_else(|| unavailable(classroom, "key_encryption_not_configured"))?;
         let setting = classroom_ai_store::get(&self.pool, classroom)
             .await
-            .map_err(|_| unavailable())?
-            .ok_or_else(unavailable)?;
+            .map_err(|_| unavailable(classroom, "lookup_failed"))?
+            .ok_or_else(|| unavailable(classroom, "model_not_configured"))?;
         // 同一場對話已換用備援就從那個位置開始，不跳回主模型
         let start_position: i16 = match conversation {
             Some(id) => {
@@ -120,7 +127,7 @@ impl AppState {
                     .bind(id)
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err(|_| unavailable())?
+                    .map_err(|_| unavailable(classroom, "lookup_failed"))?
                     .unwrap_or(0)
             }
             None => 0,
@@ -134,6 +141,8 @@ impl AppState {
             0
         };
         let mut targets = Vec::new();
+        // 有 key 但都在冷卻中，和根本沒有該供應商的 key，在日誌裡分開記
+        let mut any_key = false;
         for (position, m) in models.into_iter().enumerate() {
             let position = position as i16;
             if position < start_position {
@@ -143,12 +152,11 @@ impl AppState {
             let Some(provider) = ai_providers::find(&m.provider) else {
                 continue;
             };
-            let mut usable: Vec<UsableKey> = keys::keys_for(&self.pool, cipher, owner, provider.id)
+            let all = keys::keys_for(&self.pool, cipher, owner, provider.id)
                 .await
-                .map_err(|_| unavailable())?
-                .into_iter()
-                .filter(is_eligible)
-                .collect();
+                .map_err(|_| unavailable(classroom, "lookup_failed"))?;
+            any_key |= !all.is_empty();
+            let mut usable: Vec<UsableKey> = all.into_iter().filter(is_eligible).collect();
             if usable.is_empty() {
                 continue;
             }
@@ -162,7 +170,20 @@ impl AppState {
                 keys: usable,
             });
         }
-        let first_model = targets.first().ok_or_else(unavailable)?.model.clone();
+        let first_model = targets
+            .first()
+            .ok_or_else(|| {
+                unavailable(
+                    classroom,
+                    if any_key {
+                        "keys_cooling_down"
+                    } else {
+                        "no_key_for_provider"
+                    },
+                )
+            })?
+            .model
+            .clone();
         let routed = Routed {
             pool: self.pool.clone(),
             classroom,
@@ -279,6 +300,26 @@ impl Routed {
         }
     }
 
+    /// 這把 key 因失效、額度或限流不能用：記在日誌（只有 key 的識別碼與失敗分類），記錄狀態後換下一把。
+    async fn fail_over(
+        &self,
+        target: &Target,
+        key: &UsableKey,
+        error: &AiError,
+        status: KeyStatus,
+    ) {
+        tracing::warn!(
+            classroom = %self.classroom,
+            key_id = %key.id,
+            provider = target.provider.id,
+            model = %target.model,
+            class = error.class.code(),
+            status = status.as_str(),
+            "teacher API key failed; trying the next"
+        );
+        self.mark(key, status, error.retry_after()).await;
+    }
+
     /// 這把 key 成功了：之前非正常的狀態恢復。
     async fn recovered(&self, key: &UsableKey) {
         if key.status != KeyStatus::Ok {
@@ -365,7 +406,7 @@ impl AiProvider for Routed {
                     Ok(s) => s,
                     Err(e) => match failover_status(&e) {
                         Some(status) => {
-                            self.mark(key, status, e.retry_after()).await;
+                            self.fail_over(target, key, &e, status).await;
                             continue;
                         }
                         None => return Err(e),
@@ -375,7 +416,7 @@ impl AiProvider for Routed {
                 match stream.next().await {
                     Some(Err(e)) => match failover_status(&e) {
                         Some(status) => {
-                            self.mark(key, status, e.retry_after()).await;
+                            self.fail_over(target, key, &e, status).await;
                             continue;
                         }
                         None => return Err(e),
@@ -403,7 +444,7 @@ impl AiProvider for Routed {
                 }
             }
         }
-        Err(unavailable())
+        Err(unavailable(self.classroom, "all_keys_failed"))
     }
 
     async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
@@ -424,12 +465,12 @@ impl AiProvider for Routed {
                         return Ok(done);
                     }
                     Err(e) => match failover_status(&e) {
-                        Some(status) => self.mark(key, status, e.retry_after()).await,
+                        Some(status) => self.fail_over(target, key, &e, status).await,
                         None => return Err(e),
                     },
                 }
             }
         }
-        Err(unavailable())
+        Err(unavailable(self.classroom, "all_keys_failed"))
     }
 }

@@ -753,3 +753,75 @@ async fn fallback_without_a_key_is_skipped_and_a_missing_primary_key_uses_the_fa
     assert_eq!(error_code(&w.say().await), None);
     assert_eq!(w.models_seen(), vec![FALLBACK_MODEL]);
 }
+
+/// 等到這個功能的 AI 診斷事件出現；回傳（失敗分類、錯誤代碼、教室）。
+async fn wait_diagnostic(pool: &PgPool, function: &str) -> (String, String, Option<Uuid>) {
+    for _ in 0..200 {
+        let row: Option<(String, String, Option<Uuid>)> = sqlx::query_as(
+            "SELECT failure_class, error_code, classroom_id FROM diagnostic_events
+              WHERE kind = 'ai' AND function = $1 AND failure_class IS NOT NULL
+              ORDER BY occurred_at DESC LIMIT 1",
+        )
+        .bind(function)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if let Some(row) = row {
+            return row;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no diagnostic event for {function}");
+}
+
+#[sqlx::test]
+async fn an_unconfigured_classroom_is_recorded_in_diagnostics_for_replies_and_summaries(
+    pool: PgPool,
+) {
+    let w = world(pool.clone()).await;
+    // 教師加了 key，但還沒設定教室的模型
+    w.add_key(w.owner, "openai", KEY_1).await;
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    let expected = (
+        "classroom_ai_unavailable".to_owned(),
+        "classroom_ai_unavailable".to_owned(),
+        Some(w.classroom),
+    );
+    assert_eq!(wait_diagnostic(&pool, "chat_reply").await, expected);
+    let res = send(
+        &w.app,
+        json_req(
+            "POST",
+            &format!("/api/conversations/{}/end", w.conv),
+            Some(&w.a.student),
+            None,
+        ),
+    )
+    .await;
+    assert!(res.status().is_success(), "{}", res.status());
+    assert_eq!(
+        settled_summary(&w.app, &w.a.student, &w.conv).await["status"],
+        "failed"
+    );
+    assert_eq!(wait_diagnostic(&pool, "summary").await, expected);
+    assert!(w.fake.keys_seen().is_empty(), "沒有路由就不會呼叫供應商");
+}
+
+#[sqlx::test]
+async fn a_classroom_whose_keys_all_fail_is_recorded_with_the_classroom_code(pool: PgPool) {
+    let w = world(pool.clone()).await;
+    w.add_key(w.owner, "openai", KEY_1).await;
+    w.configure().await;
+    w.fake.set(KEY_1, Behavior::Status(401, "{}"));
+    assert_eq!(
+        error_code(&w.say().await).as_deref(),
+        Some("classroom_ai_unavailable")
+    );
+    let (class, code, classroom) = wait_diagnostic(&pool, "chat_reply").await;
+    assert_eq!(class, "classroom_ai_unavailable");
+    assert_eq!(code, "classroom_ai_unavailable");
+    assert_eq!(classroom, Some(w.classroom));
+}

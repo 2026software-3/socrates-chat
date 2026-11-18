@@ -500,7 +500,8 @@ async fn generate(
         .await
     {
         Ok(route) => route,
-        Err(_) => {
+        Err(error) => {
+            activity.record_unreached(state, &error);
             reply.fail_with(CLASSROOM_UNAVAILABLE);
             return Err(event("error", json!({"code": CLASSROOM_UNAVAILABLE})));
         }
