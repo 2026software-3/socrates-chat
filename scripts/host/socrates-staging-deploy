@@ -7,8 +7,11 @@
 #
 #   用法：sudo /usr/local/sbin/socrates-staging-deploy <commit-sha>
 #   規則：
-#     - <commit-sha> 必須是 40 位小寫十六進位，而且是 origin/deploy/msi-cubi-staging 的祖先（含 head）。
-#       分支外的 commit 一律拒絕。允許祖先，所以可以用 Re-run 回滾到分支上的舊 commit。
+#     - <commit-sha> 必須是 40 位小寫十六進位，而且「就是」origin/deploy/msi-cubi-staging 目前的 head。
+#       分支外的 commit、以及分支上較舊的 commit 一律拒絕：就算有人讓別的 workflow 跑在 staging runner 上，
+#       也只能重新部署目前的 head，不能用舊版本繞過核准來回滾。
+#       回滾是 root 的緊急手段：sudo STAGING_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-staging-deploy <祖先 sha>
+#       （sudoers 不保留環境變數，runner 設不了它）。
 #     - 部署目錄 $STAGING_BASE（預設 /var/lib/socrates-staging）由 root 擁有，內含不進版控的
 #       .env.staging（root 0600）。runner 讀不到。
 #     - 同時只會有一個部署（flock）。
@@ -49,9 +52,17 @@ done
 echo "→ 取得 origin/$BRANCH"
 git fetch --quiet origin "$BRANCH"
 
-if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
-  echo "$SHA 不在 $BRANCH 上（不是它的祖先），拒絕部署" >&2
-  exit 1
+if [ "${STAGING_ALLOW_ROLLBACK:-0}" = 1 ]; then
+  if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
+    echo "$SHA 不在 $BRANCH 上（不是它的祖先），拒絕部署" >&2
+    exit 1
+  fi
+else
+  HEAD_SHA="$(git rev-parse "origin/$BRANCH")"
+  if [ "$SHA" != "$HEAD_SHA" ]; then
+    echo "$SHA 不是 $BRANCH 目前的 head（$HEAD_SHA），拒絕部署；回滾需 root 設 STAGING_ALLOW_ROLLBACK=1" >&2
+    exit 1
+  fi
 fi
 
 echo "→ 切換到 $SHA"

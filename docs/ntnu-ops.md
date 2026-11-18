@@ -377,10 +377,10 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 - 流程：推送 `deploy/msi-cubi-staging` → GitHub Actions「Staging deploy (msi_cubi)」（`.github/workflows/staging-deploy.yml`，需 environment `staging-deploy` 核准）→ msi_cubi 上的 self-hosted runner（使用者 `gha-runner`，label `msi-cubi-staging`）執行 `sudo -n /usr/local/sbin/socrates-staging-deploy <sha>` → 包裝腳本（原始檔 `scripts/host/socrates-staging-deploy`）：驗證 SHA 格式、確認 SHA 是 `origin/deploy/msi-cubi-staging` 的祖先（含 head）、在 `/var/lib/socrates-staging` 切到該 commit、`docker build -t socrates-ntnu-app:staging-<sha12>`、`STAGING_APP_IMAGE_TAG=… docker compose -f docker-compose.staging.yml up -d --no-build`、經 `127.0.0.1:3081/ready` 健康檢查（60 秒內要回 200），最後只保留最近 5 個 staging 映像。
 - 權限模型：
-  - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支的祖先。
+  - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支目前的 head。
   - 部署邏輯來自主機上 root 擁有的 `/usr/local/sbin/socrates-staging-deploy`，**不取自被推送的 commit**。
   - 密鑰（`.env.staging`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。
-  - 允許回滾：對舊的 run 按 Re-run，會部署該 commit（只要它仍是分支的祖先）。
+  - 只部署分支目前的 head；舊 commit 與分支外 commit 會被拒絕。回滾是 root 的緊急手段：`sudo STAGING_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-staging-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。
 - 不碰正式環境：沒有 `down`、沒有 `-v`，不動 `socrates-ntnu`。不設 `STAGING_DEMO_MODE`，自動部署不會開示範帳號。
 - 同一時間只跑一個部署：workflow 的 concurrency 加上包裝腳本的 `flock`。部署中途不取消；排隊中的舊執行會被較新的 push 取代。
 - **信任邊界（重要）**：包裝腳本不能防止能 push 到 `deploy/msi-cubi-staging` 的人。部署的 app 原始碼與 Dockerfile 來自該分支，`docker build` 與 compose 會在主機上執行它們，等同 root。真正的防線是：
@@ -392,17 +392,17 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
   1. 建立部署目錄：`git clone -b deploy/msi-cubi-staging https://github.com/2026software-3/socrates-chat.git /var/lib/socrates-staging`，再把 `.env.staging`、`.staging-credentials` 以 `install -o root -g root -m 0600` 放進去。
   2. 安裝包裝腳本：`install -o root -g root -m 0755 scripts/host/socrates-staging-deploy /usr/local/sbin/socrates-staging-deploy`。它不會隨 commit 自動更新，之後每次改動都要 root 重新安裝。
   3. 安裝 sudoers：先 `visudo -cf scripts/host/gha-runner-staging.sudoers`，通過後 `install -o root -g root -m 0440 scripts/host/gha-runner-staging.sudoers /etc/sudoers.d/gha-runner-staging`。
-  4. 移除 runner 的 docker 群組：`gpasswd -d gha-runner docker`，然後以 root 在 runner 安裝目錄執行 `./svc.sh stop` 與 `./svc.sh start`，群組變更才會生效。
+  4. 移除 runner 的 docker 群組：`gpasswd -d gha-runner docker`，然後用 `systemctl restart "actions.runner.*msi-cubi-staging*"` 重啟 runner 服務，群組變更才會生效（不要以 root 執行 runner 目錄裡由 runner 使用者擁有的 `svc.sh`）。
   5. 驗證：`runuser -u gha-runner -- docker ps` 應該失敗；`runuser -u gha-runner -- sudo -n /usr/local/sbin/socrates-staging-deploy 0000000000000000000000000000000000000000` 應該被拒絕（SHA 不在分支上）。
-  - runner 註冊：repo 的 Settings → Actions → Runners 取得 registration token（約 1 小時失效），用 `--labels msi-cubi-staging --unattended` 以 `gha-runner` 身份註冊，再由 root 執行 `svc.sh install gha-runner` 與 `svc.sh start`。
+  - runner 註冊：repo 的 Settings → Actions → Runners 取得 registration token（約 1 小時失效），用 `--labels msi-cubi-staging --unattended` 以 `gha-runner` 身份註冊，再由 root 在 runner 剛註冊、還沒啟動時執行一次 `svc.sh install gha-runner` 與 `svc.sh start`（之後不要再以 root 執行它，改用 `systemctl`）。
   - repo 設定：environment `staging-deploy`（Required reviewers、deployment branch 限定為 `deploy/msi-cubi-staging`），以及 ruleset「Protect deploy/msi-cubi-staging」。
 - 注意：
   - `/var/lib/socrates-staging` 會被包裝腳本 `git reset --hard`，**不要在那裡手動改程式**。
   - 手動部署：`sudo /usr/local/sbin/socrates-staging-deploy <sha>`，sha 必須在 deploy 分支上。
   - 手動跑 compose（例如示範資料或 DEMO_MODE 操作）要用 root，並先設 tag：`sudo -H bash -c 'cd /var/lib/socrates-staging && export STAGING_APP_IMAGE_TAG=staging-$(git rev-parse --short=12 HEAD) && docker compose -f docker-compose.staging.yml up -d --no-build'`。上面「首次建立與重置合成資料」的指令都要照這個方式執行。
-  - 要重跑同一個 commit：在 Actions 頁面對該次執行按 Re-run（會再次需要 environment 核准）。
+  - 要重跑目前 head 的部署：在 Actions 頁面對該次執行按 Re-run（會再次需要 environment 核准）。
   - 健康檢查失敗時新版容器可能已經取代舊的：看 `docker logs socrates-staging-staging-app-1`，修好後推新 commit 或 Re-run。
-  - runner 離線時新的執行會排隊、不會失敗；以 root 在 runner 安裝目錄執行 `./svc.sh status` 查看。
+  - runner 離線時新的執行會排隊、不會失敗；用 `systemctl status "actions.runner.*msi-cubi-staging*"` 查看。
 
 ## 正式環境自動部署（推送到 deploy/msi-cubi-intel 即更新）
 

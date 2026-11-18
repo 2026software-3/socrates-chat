@@ -20,7 +20,11 @@ cat > "$BIN/git" <<'STUB'
 echo "git $*" >> "$TEST_LOG"
 case "$1" in
   merge-base) [ "${FAKE_ANCESTOR:-1}" = 1 ] ;;
-  rev-parse) echo "${FAKE_HEAD:-0000000000000000000000000000000000000000}" ;;
+  rev-parse)
+    case "$2" in
+      origin/*) echo "${FAKE_BRANCH_HEAD:-abcdef1234567890abcdef1234567890abcdef12}" ;;
+      *) echo "${FAKE_HEAD:-0000000000000000000000000000000000000000}" ;;
+    esac ;;
   *) exit 0 ;;
 esac
 STUB
@@ -72,7 +76,13 @@ check "含特殊字元的參數被拒" 2 "$(run "$GOOD_SHA;rm")"
 
 # 2. 不在分支上的 commit 必須被拒，而且不能碰 docker
 : > "$LOG"
-check "非分支祖先被拒" 1 "$(FAKE_ANCESTOR=0 run "$GOOD_SHA")"
+check "不是分支 head 被拒" 1 "$(FAKE_BRANCH_HEAD=1111111111111111111111111111111111111111 run "$GOOD_SHA")"
+: > "$LOG"
+check "舊的祖先 commit 在沒有 rollback 旗標時被拒" 1 "$(FAKE_BRANCH_HEAD=1111111111111111111111111111111111111111 FAKE_ANCESTOR=1 run "$GOOD_SHA")"
+: > "$LOG"
+check "root 設 STAGING_ALLOW_ROLLBACK=1 可回滾到祖先" 0 "$(STAGING_ALLOW_ROLLBACK=1 FAKE_BRANCH_HEAD=1111111111111111111111111111111111111111 FAKE_ANCESTOR=1 FAKE_HEAD=$GOOD_SHA run "$GOOD_SHA")"
+: > "$LOG"
+check "rollback 旗標仍拒絕分支外的 commit" 1 "$(STAGING_ALLOW_ROLLBACK=1 FAKE_ANCESTOR=0 run "$GOOD_SHA")"
 if grep -q '^docker' "$LOG"; then
   fail=$((fail + 1)); echo "FAIL - 被拒時仍呼叫了 docker"
 else
@@ -81,7 +91,7 @@ fi
 
 # 3. 正常部署：建置、以 staging 專屬 tag 啟動、健康檢查、清理
 : > "$LOG"
-check "分支祖先可以部署" 0 "$(FAKE_ANCESTOR=1 FAKE_HEAD=$GOOD_SHA run "$GOOD_SHA")"
+check "分支 head 可以部署" 0 "$(FAKE_ANCESTOR=1 FAKE_HEAD=$GOOD_SHA run "$GOOD_SHA")"
 if grep -q "STAGING_APP_IMAGE_TAG=staging-abcdef123456" "$LOG" && grep -q 'docker build' "$LOG"; then
   pass=$((pass + 1)); echo "ok   - 建置並以 staging 專屬 tag 啟動"
 else
