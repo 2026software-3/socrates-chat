@@ -22,6 +22,7 @@ fn build(pool: PgPool) -> Router {
     register_fixture_pool(&pool);
     let mut config = test_config();
     config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+    config.classroom_ai_routing = true;
     app(AppState::new(
         pool,
         config,

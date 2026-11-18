@@ -166,11 +166,14 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
     let activity = AiActivity::new("summary", Some(owner), classroom).statuses(202, 202);
+    // 教室內的對話只用教室建立者的 key（F-40.5）；沒有可用 key 時這次不產生，總結標記失敗、可重試
+    let route = state.ai_for(classroom).await;
     for retry in 0..2 {
+        let Ok(route) = &route else { break };
         let generated = activity
-            .run(state, Some(&state.config.openai_model), retry, async {
+            .run(state, Some(&route.model), retry, async {
                 let raw = collect_background(
-                    state.ai.as_ref(),
+                    route.ai.as_ref(),
                     req.clone(),
                     state.config.ai_total_timeout,
                 )

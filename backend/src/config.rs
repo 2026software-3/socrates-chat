@@ -83,6 +83,9 @@ pub struct Config {
     /// 教師 API key 的加密金鑰（`TEACHER_KEY_ENCRYPTION_KEYS`，S-03.1）；沒設定就是 `None`，教師 key 功能不可用。
     /// 設定了但格式錯誤時啟動失敗（錯誤訊息不含設定內容）。
     pub teacher_key_cipher: Option<Arc<crate::teacher_key_crypto::KeyCipher>>,
+    /// 教室對話是否依教室設定走教師 key（F-40.5）。正式環境一律為 `true`，沒有對應的環境變數；
+    /// 只有既有測試把它設為 `false`，讓教室內的對話繼續用假的系統 AI。
+    pub classroom_ai_routing: bool,
 }
 
 #[derive(Debug)]
@@ -343,6 +346,7 @@ impl Config {
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             smtp: crate::mail::SmtpConfig::from_env()?,
             teacher_key_cipher: teacher_key_cipher_from_env()?,
+            classroom_ai_routing: true,
             app_base_url,
         })
     }

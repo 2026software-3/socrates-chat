@@ -44,6 +44,7 @@ pub mod achievements;
 pub mod activity_store;
 pub mod ai;
 pub mod ai_providers;
+mod ai_route;
 pub mod ai_usage;
 pub mod announcements;
 pub mod argument_tree;
@@ -158,6 +159,10 @@ pub struct AppState {
     pub(crate) model_verifier: Arc<dyn ai_providers::ModelVerifier>,
     /// 教師按「測試 key」的每人頻率限制（暫定值，待需求方確認）。
     pub(crate) key_test_limit: Arc<user_limit::UserLimiter>,
+    /// 教室 AI 路由的輪流計數：每次呼叫從同供應商的下一把教師 key 開始。
+    pub(crate) key_rotation: Arc<std::sync::atomic::AtomicUsize>,
+    /// 把所有供應商端點換成這個位址（測試用，指向假服務）；正式環境一律是 `None`。
+    pub(crate) route_endpoint: Option<String>,
 }
 
 impl AppState {
@@ -198,6 +203,8 @@ impl AppState {
                 teacher_keys::KEY_TEST_MAX,
                 teacher_keys::KEY_TEST_WINDOW,
             )),
+            key_rotation: Arc::default(),
+            route_endpoint: None,
         }
     }
 
@@ -218,6 +225,12 @@ impl AppState {
 
     pub fn with_model_verifier(mut self, verifier: Arc<dyn ai_providers::ModelVerifier>) -> Self {
         self.model_verifier = verifier;
+        self
+    }
+
+    /// 把教室 AI 路由的供應商端點換成假服務（測試用）。
+    pub fn with_route_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.route_endpoint = Some(endpoint.into());
         self
     }
 

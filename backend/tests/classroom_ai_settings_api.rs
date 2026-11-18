@@ -74,6 +74,7 @@ fn build_with(
     register_fixture_pool(&pool);
     if cipher {
         config.teacher_key_cipher = Some(Arc::new(KeyCipher::parse(ENC).unwrap()));
+        config.classroom_ai_routing = true;
     }
     let models = Arc::new(FakeModels::default());
     let mut state = AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
