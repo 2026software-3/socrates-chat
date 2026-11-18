@@ -106,21 +106,13 @@ async fn try_assign(
             content: claim.to_string(),
         }],
     };
-    // 教室內的對話只用教室建立者的 key（F-40.5）
-    let route = state.ai_for(classroom).await;
     let grouped = AiActivity::new("claim_group", user, classroom)
         .statuses(202, 202)
-        .run(
-            state,
-            route.as_ref().ok().map(|r| r.model.as_str()),
-            0,
-            async {
-                let route = route.as_ref().map_err(Clone::clone)?;
-                let raw = collect_background(route.ai.as_ref(), req, state.config.ai_total_timeout)
-                    .await?;
-                parse_group_name(&raw, &existing).ok_or(AiError::invalid_output())
-            },
-        )
+        .run(state, Some(&state.config.openai_model), 0, async {
+            let raw =
+                collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+            parse_group_name(&raw, &existing).ok_or(AiError::invalid_output())
+        })
         .await;
     let Ok(name) = grouped else {
         return Ok(()); // 分組失敗：這場暫時沒有群組
@@ -224,25 +216,16 @@ pub(crate) async fn regroup(
     };
     // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
     let usage_slot = state.charge_ai(cu.user.id)?;
-    // 教室內的對話只用教室建立者的 key（F-40.5）
-    let route = state.ai_for(Some(activity.classroom_id)).await;
     let groups = AiActivity::new(
         "claim_regroup",
         Some(cu.user.id),
         Some(activity.classroom_id),
     )
     .statuses(204, 502)
-    .run(
-        &state,
-        route.as_ref().ok().map(|r| r.model.as_str()),
-        0,
-        async {
-            let route = route.as_ref().map_err(Clone::clone)?;
-            let raw =
-                collect_background(route.ai.as_ref(), req, state.config.ai_total_timeout).await?;
-            parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
-        },
-    )
+    .run(&state, Some(&state.config.openai_model), 0, async {
+        let raw = collect_background(state.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+        parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
+    })
     .await
     .map_err(|_| {
         state.refund_ai(cu.user.id, usage_slot);
