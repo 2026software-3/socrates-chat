@@ -1,20 +1,29 @@
-# NTNU 試用環境維運說明
+# NTNU 正式環境維運說明
 
-本文件只描述在 NTNU 試用機器上的維運做法。部署設定檔 `docker-compose.ntnu.yml` 與 `scripts/deploy-ntnu.sh` 不進版控，只存在這台機器上。
+本文件描述 NTNU 正式環境（主機 `msi_cubi`）與同一台主機上 staging 的維運做法。部署用的 compose 疊加檔在版控內（`docker-compose.intel.yml`、`docker-compose.msi-prod.yml`、`docker-compose.tunnel.yml`、`docker-compose.staging.yml`）；`.env`、`.apikeylist` 等秘密只存在主機上，不進版控。
 
-**NTNU 自 2026-11-07 起視為正式環境**（[S-09.3](specs/S-09.3-ops-procedures.md)）：資料要保留，migration 只往前（已套用的 migration 檔不能改，改 schema 一律新增 migration），不再重建資料庫。這不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
+**NTNU 自 2026-11-07 起視為正式環境**（[S-09.3](specs/S-09.3-ops-procedures.md)）：資料要保留，migration 只往前（已套用的 migration 檔不能改，改 schema 一律新增 migration），不重建資料庫。這不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
 
 ## 基本資訊
 
-- Compose 專案名稱：`socrates-ntnu`（與開發用的 `socrates-chat` 分開）。
-- 資料庫資料放在 Docker 命名 volume `socrates-ntnu_pgdata_v2`（2026-11-12 起，由 `docker-compose.ntnu.yml` 的 `db.volumes` 指定；見下一節）。舊 volume `socrates-ntnu_pgdata` 是 2026-11-10 的資料，只當退路。
-- 設定檔：`docker-compose.yml` + `docker-compose.ntnu.yml`，所有 compose 指令都要帶上 `-f` 與 `-p socrates-ntnu`。
-- 公開網址：`https://ray-nb.tail5fc9fe.ts.net`（Windows 端 Tailscale Funnel，見下一節）。這個值由 `docker-compose.ntnu.yml` 設定在容器的 `APP_BASE_URL`。
-- `.env` 的 `APP_BASE_URL` 是 `http://localhost:3000`，但容器實際使用的是覆寫後的公開網址。CSRF 檢查要求 `Origin` 標頭等於容器的 `APP_BASE_URL`，所以用 curl 或腳本呼叫 API 時，`Origin` 要填公開網址，不能填 `.env` 的值。
+- 主機：`ssh msi_cubi`（Ubuntu、Core Ultra 5 322、14 GB；Intel iGPU＋NPU，沒有 NVIDIA）。ssh 卡住時，多半是 Tailscale SSH 要在瀏覽器重新驗證。
+- 部署目錄：`~/socrates-intel`（分支 `deploy/msi-cubi-intel`）。Compose 專案名稱 `socrates-ntnu`（由 `docker-compose.msi-prod.yml` 的 `name:` 指定）。
+- 所有 compose 指令都帶同一組檔案：
+
+  ```bash
+  F="-f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml"
+  docker compose $F --profile app --profile cascade --profile proxy --profile tunnel ps
+  ```
+
+- 服務：`db`、`app`、`proxy`（nginx）、`cloudflared`、四個 cascade 容器（`cascade`、`cascade-adapter`、`cascade-whisper`、`cascade-tts`）。
+- 秘密與設定：`~/socrates-intel/.env`（含 `APP_PUBLIC_URL`、`APP_IMAGE_TAG`、`CASCADE_INTEL_TAG`、`TRUSTED_PROXIES`、`CLOUDFLARE_TUNNEL_TOKEN`、`CASCADE_LLM_TOKEN`、`TEACHER_KEY_ENCRYPTION_KEYS` 等）與 `.apikeylist`。
+- 資料庫：Docker 命名 volume `socrates-ntnu_pgdata_v2`（見下一節）。
+- 公開網址：`https://se3socrateschat.ntnu.cc`，由 `.env` 的 `APP_PUBLIC_URL` 設定為容器的 `APP_BASE_URL`。CSRF 檢查要求 `Origin` 標頭等於這個網址，所以用 curl 或腳本呼叫 API 時，`Origin` 要填它。
+- 備用網址 `https://socrates.ray-dev.stream` 也連到同一個服務，但寫入請求會因 `Origin` 不符被 CSRF 擋掉，只能拿來看頁面。
 
 ## 資料庫位置（Docker 命名 volume）
 
-2026-11-12 起，`db` 的資料放在 Docker 命名 volume `socrates-ntnu_pgdata_v2`。`docker-compose.ntnu.yml`（不進版控）的 `db` 以 `!override` 覆寫掉 `docker-compose.yml` 的 `pgdata` volume，並在檔案底部宣告它：
+`db` 的資料放在命名 volume `socrates-ntnu_pgdata_v2`，由 `docker-compose.msi-prod.yml` 的 `db` 以 `!override` 覆寫 `docker-compose.yml` 的 `pgdata`，並在檔案底部宣告：
 
 ```yaml
     volumes: !override
@@ -24,157 +33,112 @@ volumes:
   pgdata_v2:
 ```
 
-- **不要再把資料庫放在 D 槽的 bind mount。** 2026-11-10 曾搬到 `D:\socrates-ntnu\pgdata`（來源 `/run/desktop/mnt/host/d/...`），但 2026-11-12 09:16 WSL／Docker Desktop 重啟後，Docker 看到的 `/run/desktop/mnt/host/d` 變成一個 **tmpfs**（記憶體檔案系統，不是真的 D 槽），`D:\socrates-ntnu\pgdata` 也不見了（從 WSL 與 Windows 都看是空的；資源回收筒與 D 槽也找不到 `PG_VERSION`，**消失原因不明**）。`db` 啟動時資料目錄是空的，Postgres 建了全新資料庫，網站變成只有示範帳號。bind mount 到「Docker Desktop 可能沒掛上的主機路徑」沒有失敗保護：沒掛上時不會報錯，而是悄悄在別處建空目錄。
-- 命名 volume 放在 Docker 虛擬機的磁碟內，歷次重開機（2026-10-30 起到 2026-11-10）都正常；缺點是佔 C 槽或 Docker 的磁碟。要把資料放 D 槽，改用**備份**放 D 槽，不要放原始資料目錄。
-- 備份、`pg_dump`、`docker exec ... psql` 的指令不變。volume 不是備份：Docker 或磁碟壞掉就沒了，備份仍要另外做（見「部署前檢查」）。
-- 舊 volume `socrates-ntnu_pgdata` 是 2026-11-10 13:53 的資料（約 64.6 MB），目前沒有容器使用，只當退路，經試用負責人同意才刪。
-- **每次 WSL／Docker Desktop 重啟後，除了 `/health`、`/ready`，還要數一下資料**：`docker exec socrates-ntnu-db-1 psql -U socrates -d socrates -At -c "select count(*) from users"`（2026-11-12 的數字是 40，且不應該突然變成只有示範帳號的 12）。這次事故就是 `/health`、`/ready` 都回 200，資料卻已經空了。
+- 不要把資料庫改成 bind mount 到可能沒掛上的主機路徑：沒掛上時 Docker 不會報錯，而是悄悄建一個空目錄，Postgres 就會初始化一個全新的資料庫。
+- volume 不是備份：Docker 或磁碟壞掉就沒了，備份仍要另外做（見「部署前檢查」）。
+- `msi_cubi` 上的 `socrates-intel-test_pgdata` 是瀏覽器測試堆疊的測試資料，與正式資料無關；`socrates-intel-test_cascade_hf`、`socrates-intel-test_cascade_cache` 是正式 cascade 也在用的模型與編譯快取（`docker-compose.msi-prod.yml` 以 `name:` 指定），不要刪。
+- **主機或 Docker 重啟後，除了 `/health`、`/ready`，還要數一下資料**：`docker exec socrates-ntnu-db-1 psql -U socrates -d socrates -At -c "select count(*) from users"`，和上次記錄的數字比對。資料庫被重新初始化時，`/health`、`/ready` 仍會回 200。
 
-### 資料庫被重新初始化時的還原（2026-11-12 的做法）
+### 資料庫被重新初始化時的還原
 
 1. 先確認真的是空的：`users`、`conversations` 筆數，`pg_postmaster_start_time()` 是不是剛剛，`_sqlx_migrations` 是不是從頭套用。
-2. 不要再重啟 `db`。用最新的 `pg_dump` 備份（`~/ntnu-backup-YYYY-MM-DD.sql`）還原；備份是 `--no-owner` 的純文字，含 `_sqlx_migrations`，還原進**空的**資料庫即可：
-   - `docker stop socrates-ntnu-app-1`；移除壞掉的 `db` 容器（`docker compose ... rm -sf db`，不加 `-v`）。
-   - 把 `docker-compose.ntnu.yml` 的 `db.volumes` 改成**新的**命名 volume（例如 `pgdata_v3`），`up -d --no-deps db`，等 healthy，確認 `information_schema.tables` 為 0。
-   - `docker exec -i socrates-ntnu-db-1 psql -U socrates -d socrates -v ON_ERROR_STOP=1 -q < ~/ntnu-backup-YYYY-MM-DD.sql`。
-   - `up -d --no-deps --no-build app`（啟動時會套用備份之後新增的 migration），核對 `users`、`conversations`、`audit_logs`、`_sqlx_migrations` 與 `/health`、`/ready`。
+2. 不要再重啟 `db`。用最新的 `pg_dump` 備份（`~/ntnu-backups/`）還原；備份是 `--no-owner` 的純文字（gzip），含 `_sqlx_migrations`，還原進**空的**資料庫即可：
+   - `docker stop socrates-ntnu-app-1`；移除壞掉的 `db` 容器（`docker compose $F rm -sf db`，不加 `-v`）。
+   - 把 `docker-compose.msi-prod.yml` 的 `db.volumes` 改成**新的**命名 volume（例如 `pgdata_v3`，並在底部宣告），`docker compose $F up -d --no-deps db`，等 healthy，確認 `information_schema.tables` 為 0。
+   - `gunzip -c ~/ntnu-backups/<備份>.sql.gz | docker exec -i socrates-ntnu-db-1 psql -U socrates -d socrates -v ON_ERROR_STOP=1 -q`。
+   - `docker compose $F --profile app up -d --no-deps --no-build app`（啟動時會套用備份之後新增的 migration），核對 `users`、`conversations`、`audit_logs`、`_sqlx_migrations` 與 `/health`、`/ready`。
 3. 還原不回來的是「備份之後到事故之間」的資料；所以備份頻率決定損失，部署前與每次重啟後都要先有一份。
 
-## 對外入口（Windows 端 Tailscale Funnel）
+## 對外入口（Cloudflare Tunnel）
 
-2026-11-08 起，對外入口由 **Windows 的 Tailscale** 提供，WSL 裡不再有 Tailscale 節點（舊節點 `raynb` 已離線，舊網址 `raynb.tail5fc9fe.ts.net` 失效）。
+- 路徑：網際網路 → Cloudflare（`se3socrateschat.ntnu.cc`）→ Cloudflare Tunnel → `cloudflared` 容器 → `proxy:80`（nginx）→ `app:3000`。
+- `se3socrateschat.ntnu.cc` 在學校的 DNS，用 Cloudflare for SaaS 的自訂主機名稱接到 `socrates.ray-dev.stream`（同時是 fallback origin）。tunnel 與 `ray-dev.stream` 在同一個 Cloudflare 帳號；tunnel 不能直接用學校帳號下的網域（`cfargotunnel.com` 只代理同一帳號內的 DNS 記錄）。
+- 學校 DNS 介面的名稱是相對於 `se3socrateschat.ntnu.cc` 的（`@` 代表它自己）：CNAME 指到 `socrates.ray-dev.stream`（灰雲），驗證用的 TXT 填 `_cf-custom-hostname`、`_acme-challenge`，不要再加 `.se3socrateschat`。
+- tunnel 的 ingress 是遠端設定（Cloudflare Zero Trust → Networks → Tunnels）：`se3socrateschat.ntnu.cc`、`socrates.ray-dev.stream` → `http://proxy:80`，`staging.se3socrateschat.ntnu.cc` → `http://staging-proxy:80`。`cloudflared` 只需要 `.env` 的 `CLOUDFLARE_TUNNEL_TOKEN`。
+- `proxy` 綁 `127.0.0.1:3080` 與主機的 tailnet 位址（`PROXY_TAILNET_IP`，埠 3080）；`app` 綁 `127.0.0.1:3000`。都不對區網開放。主機上可以直接 `curl http://127.0.0.1:3000/ready` 或 `curl http://127.0.0.1:3080/ready` 驗證。
 
-- 路徑：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3000` → `app` 容器。`~/.wslconfig` 設 `networkingMode=mirrored`，Windows 的 `127.0.0.1` 與 WSL 共用，所以不需要 portproxy。`app` 只綁 `127.0.0.1:3000`，不對區網開放。
-- 網域是「Tailscale 機器名稱」加 tailnet 後綴：機器名稱 `Ray_NB` → `ray-nb.tail5fc9fe.ts.net`。**機器名稱一改，網域就跟著變。**
-- 在 WSL 裡操作 Windows 的 Tailscale，用完整路徑：
+### 換公開網址時
 
-  ```bash
-  TS="/mnt/c/Program Files/Tailscale/tailscale.exe"
-  "$TS" funnel --bg 3000        # 公開 443，轉到 127.0.0.1:3000（會公開到網際網路）
-  "$TS" serve status            # 應該只有一條：https://ray-nb.tail5fc9fe.ts.net (Funnel on) → http://127.0.0.1:3000
-  ```
+CSRF 只認一個網址，換網址要同步改：
 
-- 從這台機器連自己的 Funnel 網址會被拒絕（`Connection refused`），要驗證外部可達，得用另一台裝置在行動網路下開網址。
-
-### 改 Tailscale 機器名稱或網域時
-
-serve／funnel 設定是綁在舊網域上的，改名後不會跟著搬。依序處理：
-
-1. 到 Tailscale 確認新的網域（`"$TS" status --json` 的 `Self.DNSName`）。
-2. 把 `docker-compose.ntnu.yml` 的 `APP_BASE_URL` 改成新網址，重建 `app`（`up -d --no-deps --no-build --force-recreate app`）。不改的話 CSRF 的 `Origin` 檢查會擋掉登入與所有寫入。
-3. 重設 funnel：`"$TS" serve reset`，再 `"$TS" funnel --bg 3000`。CLI 沒辦法依主機名單獨刪舊條目，所以只在設定裡沒有別的服務時才用 `reset`（先看 `serve status`）；會中斷幾秒。確認 `serve status` 不再出現舊網域。
-4. 到 Google Cloud Console，把 OAuth 的重新導向 URI 與授權來源換成新網域，否則 Google 登入會失敗。
-5. 通知使用者新網址。
+1. 在 Cloudflare 建好新的主機名稱（自訂主機名稱或同帳號的 DNS 記錄）與 tunnel ingress，先確認新網址的首頁回 200。
+2. 改 `.env` 的 `APP_PUBLIC_URL`，重建 `app`（`docker compose $F --profile app up -d --no-deps --no-build --force-recreate app`）。不改的話 CSRF 的 `Origin` 檢查會擋掉登入與所有寫入。
+3. 到 Google Cloud Console，把 OAuth 的重新導向 URI（`<網址>/api/auth/google/callback`）與授權來源換成新網址，否則 Google 登入會失敗。
+4. 通知使用者新網址。
 
 ### 驗證 TRUSTED_PROXIES（來源 IP）
 
-登入限流以來源 IP 為鍵；`TRUSTED_PROXIES: 172.16.0.0/12`（`docker-compose.ntnu.yml`）讓後端信任 Docker bridge 閘道送來的 `X-Forwarded-For`。改變入口後要重驗：
+登入限流以來源 IP 為鍵；`.env` 的 `TRUSTED_PROXIES=172.16.0.0/12`（compose 網段：nginx 與 cloudflared）讓後端由右往左跳過受信任代理，取得 Cloudflare 帶來的真實來源。`TRUSTED_PROXIES` 是必填，沒設 `app` 不會啟動。改變入口後要重驗：
 
-1. 用手機在行動網路（關 Wi-Fi）先查自己的 IPv6，馬上開公開網址，故意輸入錯誤密碼登入一次。
+1. 用手機在行動網路（關 Wi-Fi）先查自己的 IP，馬上開公開網址，故意輸入錯誤密碼登入一次。
 2. 查 `login_failures`：
 
    ```bash
    docker exec socrates-ntnu-db-1 psql -U socrates -d socrates -c "select left(login_key,8), ip, failures, last_failed_at from login_failures order by last_failed_at"
    ```
 
-3. `ip` 應該是手機的公網位址，不是 `172.x`（Docker 閘道）或 `100.x`（Tailscale）。IPv6 來源會合併成 `/64` 網段，所以只會看到前四段，例如 `2a09:bac3:5808:323::/64`。行動網路的位址會變動，查 IP 與登入要在同一分鐘內做。
+3. `ip` 應該是手機的公網位址，不是 `172.x`（Docker 網段）。IPv6 來源會合併成 `/64` 網段，所以只會看到前四段，例如 `2a09:bac3:5808:323::/64`。行動網路的位址會變動，查 IP 與登入要在同一分鐘內做。
 4. 測完刪掉測試紀錄（`login_key` 若是真實帳號輸入也要刪，避免殘留失敗次數）：`delete from login_failures where login_key like '<前 8 碼>%'`。
 
-## 反向代理與停機說明頁（S-16，選用）
+## 反向代理與停機說明頁（S-16）
 
-`docker-compose.yml` 有一個 `proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）。啟用後路徑變成：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3080` → `proxy` 容器 → `app:3000`。後端連不上（容器停掉、重建中、WSL 剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。這一層**預設沒有啟用**；是否上線由維護者決定。
+`proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）在正式環境的路徑上：`cloudflared` → `proxy:80` → `app:3000`。後端連不上（容器停掉、重建中、主機剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。
 
-- `proxy` 只綁 `127.0.0.1:3080`（`PROXY_PORT` 可改）。`app` 仍然綁 `127.0.0.1:3000`，所以**切換與回退都只是改 funnel 指向哪個埠**，兩條路可以同時存在。
 - 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
 - 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態與耗時；不記 Cookie、Referer、User-Agent。
-
-### 上線前驗證
-
-1. 在任何有 Docker 的機器上跑 `scripts/verify-proxy.sh`（用假後端，不碰 `socrates-ntnu`）：檢查轉發、`X-Forwarded-For`、後端自己的 503 原樣轉發、SSE、WebSocket 升級、大請求，以及後端停掉時的停機頁與回來後的自動恢復。
-2. 在 NTNU 機器上，**先不動 funnel**，只啟動代理，直接打代理的埠確認它轉得到真的後端：
-
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile app --profile proxy up -d --no-deps proxy
-   curl -s http://127.0.0.1:3080/proxy-health            # ok
-   curl -s http://127.0.0.1:3080/ready                   # {"status":"ok"}
-   ```
-
-3. 確認 `docker-compose.ntnu.yml` 的 `TRUSTED_PROXIES` 包含 compose 網路（目前 `172.16.0.0/12`）。代理的對端是 compose 網路內的位址，沒包含的話所有人在登入限流眼裡都是同一個來源。
-4. SSE 與語音要用真的後端確認：`verify-proxy.sh` 用的是假後端。切換後立刻開一場對話（回覆要逐段出現）並試一次語音；有問題就照下面〈回退〉。
-
-### 切換
-
-```bash
-TS="/mnt/c/Program Files/Tailscale/tailscale.exe"
-"$TS" funnel --bg 3080         # 公開 443 改轉到 127.0.0.1:3080（代理）
-"$TS" serve status             # 應該只有一條：https://ray-nb.tail5fc9fe.ts.net (Funnel on) → http://127.0.0.1:3080
-```
-
-切換後馬上重跑上面〈驗證 TRUSTED_PROXIES（來源 IP）〉的步驟：`login_failures.ip` 要是手機的公網位址，不是 `172.x`。再用 `docker stop socrates-ntnu-app-1` 短暫停掉 app（先告知使用者，會中斷服務）確認公開網址出現停機頁，之後 `docker start socrates-ntnu-app-1`。
-
-### 回退
-
-出任何問題（回覆不逐段、語音連不上、來源 IP 不對），直接把 funnel 改回後端，不需要改容器：
-
-```bash
-"$TS" funnel --bg 3000
-"$TS" serve status             # → http://127.0.0.1:3000
-```
-
-要完全移除代理：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy rm -sf proxy`。
+- 改代理設定前，先在任何有 Docker 的機器上跑 `scripts/verify-proxy.sh`（用假後端，不碰 `socrates-ntnu`）：檢查轉發、`X-Forwarded-For`、後端自己的 503 原樣轉發、SSE、WebSocket 升級、大請求，以及後端停掉時的停機頁與回來後的自動恢復。SSE 與語音要另外用真的後端確認（開一場對話，回覆要逐段出現；試一次語音）。
+- 確認停機頁：先告知使用者（會中斷服務），`docker stop socrates-ntnu-app-1`，公開網址應出現停機頁，之後 `docker start socrates-ntnu-app-1`。
+- 代理出問題時的回退：把 tunnel ingress 的服務從 `http://proxy:80` 改成 `http://app:3000`（Cloudflare Zero Trust 的遠端設定，不用動容器）。這時沒有停機頁，`TRUSTED_PROXIES` 仍包含 cloudflared 所在的 compose 網段，來源 IP 照常。
 
 ### 已知限制
 
 - 代理只在**後端連不上或逾時**（nginx 自己產生的 502、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
-- WSL 或 Docker Desktop 重啟後，`proxy` 與 `app` 都要回來；`app` 的 bind mount 失效時（見〈重啟後的恢復〉）代理仍會顯示停機頁，直到 `app` 重建。
 - 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）；摘要論證樹在背景產生，有自己的上限（`ARGUMENT_TREE_TIMEOUT_SECS` 預設 300 秒，見 `docs/specs/summary-argument-tree.md`）。
 
 ## 部署
 
+`app` 用預先建好的映像（`docker-compose.msi-prod.yml` 的 `image: socrates-ntnu-app:${APP_IMAGE_TAG}`，沒有 `build`）。在 `~/socrates-intel`：
+
 ```bash
-SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
+git pull --ff-only                                     # 分支 deploy/msi-cubi-intel
+TAG=<名稱>-$(date +%Y%m%d)
+docker build -t socrates-ntnu-app:$TAG .               # 先建好映像，服務不中斷
+# 先做「部署前檢查」的備份，再把 .env 的 APP_IMAGE_TAG 改成 $TAG
+docker compose $F --profile app up -d --no-deps --no-build app
 ```
 
-- 不要把腳本接在管線後面（例如 `| tail`），管線會遮蔽失敗的退出碼。
-- `exit=0` 且 `curl http://127.0.0.1:3000/health` 與 `curl http://127.0.0.1:3000/ready` 都回 200 才算部署成功；`exit=1` 時，`deploy.log` 最後會有 app 最近 30 行日誌。`/health` 只表示程序存活；`/ready` 以 `SELECT 1` 檢查資料庫（最多等 3 秒），正常回 200 `{"status":"ok"}`，不通回 503 `database_unavailable`。尚未重新部署包含 #473 的映像之前，舊映像沒有 `/ready` 路由，對它發請求會拿到前端首頁 HTML 的 200（SPA fallback），所以要確認回應本文是 JSON `{"status":"ok"}`，不能只看狀態碼。migration 是否全部套用仍要另外用 `_sqlx_migrations` 確認。
+- 換版只重建 `app`，中斷約數秒（期間代理回停機頁）。上一版映像的 tag 留著，退回時把 `APP_IMAGE_TAG` 改回去再跑同一行 `up`；migration 只往前，退回映像不要還原資料庫。
+- 成功的標準：`curl http://127.0.0.1:3000/health` 與 `/ready` 都回 200，且 `/ready` 的本文是 JSON `{"status":"ok"}`。`/health` 只表示程序存活；`/ready` 以 `SELECT 1` 檢查資料庫（最多等 3 秒），不通回 503 `database_unavailable`。migration 是否全部套用要另外用 `_sqlx_migrations` 確認，並看 `docker logs socrates-ntnu-app-1` 有沒有 WARN、ERROR。
 - 日誌出現 `failed to run migrations` 時，表示資料庫的 migration 紀錄與程式不一致。先比對 `_sqlx_migrations` 的 checksum，不要直接 `down -v`。
-- `docker-compose.ntnu.yml` 或 `docker-compose.yml` 中 `db` 的設定有變動時，下一次部署會重建 `db` 容器（資料在 volume 裡不會丟，但會中斷幾秒）。
+- cascade 換版時改 `CASCADE_INTEL_TAG`（映像建置見下方〈Intel 版 cascade〉），再 `docker compose $F --profile app --profile cascade up -d --no-build`。
+- compose 檔中 `db` 的設定有變動時，下一次 `up` 會重建 `db` 容器（資料在 volume 裡不會丟，但會中斷幾秒）。
 
 ### 部署前檢查（含 migration 的版本）
 
 1. **備份**（只讀，不影響執行中的資料庫）。備份含真實使用者資料：不進版控、權限限本人、用完要刪除（`shred -u`）。每日加密備份與保存方式見 [S-09.3 第 3 節](specs/S-09.3-ops-procedures.md)（是否適用 NTNU 待決定）。
 
    ```bash
-   (umask 077; docker exec socrates-ntnu-db-1 pg_dump -U socrates -d socrates --no-owner > ~/ntnu-backup-$(date +%F).sql)
+   mkdir -p ~/ntnu-backups && (umask 077; docker exec socrates-ntnu-db-1 pg_dump -U socrates -d socrates --no-owner | gzip > ~/ntnu-backups/socrates-pre-<名稱>-$(date +%Y%m%d-%H%M%S).sql.gz)
    ```
 
 2. **migration 有變動時，先在還原的備份上演練**：另起臨時 PostgreSQL（不要用 `socrates-ntnu` 的 db，也不要共用它的 volume），還原備份，用新版後端加上 `RUN_MIGRATIONS=true` 啟動（`LISTEN_ADDR` 改到別的連接埠），確認沒有 `VersionMismatch`，並檢查資料搬移結果。用完以 `docker rm -fv` 移除，連同 volume。
    - `sqlx::migrate!()` 在編譯時才嵌入 migration 檔；新增或還原 migration 後，要 touch `backend/src/main.rs` 強制重編，否則會跑到舊的 migration 內容。
 3. **不要修改已套用的 migration 檔。** 要修正 schema，新增一個 migration。
+4. 主機磁碟空間有限，建映像前先看 `df -h /`；用不到的舊映像可以 `docker image rm`（保留目前與上一版）。
 
 ## 重啟後的恢復
 
-`db` 與 `app` 都設 `restart: unless-stopped`（`docker-compose.ntnu.yml` 的 `db` 必須保留這一行）。WSL 或 Docker Desktop 重啟後，先用 `docker ps -a --filter name=socrates-ntnu` 確認 `db`、`app`、四個 cascade 容器都在，且 `/health` 與 `/ready` 都回 200（`/ready` 的本文要是 JSON `{"status":"ok"}`，見上）。
+所有服務都設 `restart: unless-stopped`，主機開機後 Docker 會自己拉起來。重啟後確認：
 
-- `app` 若是 `Exited (127)`，用 `docker inspect socrates-ntnu-app-1 --format '{{.State.Error}}'` 看原因。訊息是 `failed to fulfil mount request ... docker-desktop-bind-mounts ... no such file or directory` 時，表示容器指向的 bind mount 路徑已失效，`docker start` 沒用，要重建容器（不重建映像、不動其他服務）：
-
-  ```bash
-  docker compose -f docker-compose.yml -f docker-compose.ntnu.yml --profile app up -d --no-deps --no-build --force-recreate app
-  ```
-
+- `docker compose $F --profile app --profile cascade --profile proxy --profile tunnel ps`：`db`、`app`、`proxy`、`cloudflared`、四個 cascade 容器都在，且 healthy。
+- `/health` 與 `/ready` 都回 200（`/ready` 的本文要是 JSON `{"status":"ok"}`），並照上面數一次 `users`。
+- 公開網址首頁回 200。不通時看 `docker logs socrates-ntnu-cloudflared-1`（tunnel 連線）與 `proxy` 的狀態。
 - `app` 停著時，`socrates-ntnu-cascade-1` 會不斷重啟（它啟動時要探測 `http://app:3000/internal/cascade/v1/models`，連不到就結束）。這是正常現象，`app` 回來後會自己恢復，不用動 cascade。
-- 如果 `app` 正常、`cascade-1` 仍重啟，先看 `docker logs socrates-ntnu-cascade-1`。`cascade` 要等 `cascade-tts`（Kokoro）healthy 才會起來；Kokoro 啟動時會先載入並預熱模型（首次還要下載權重），這段期間 healthcheck 未過屬正常，約兩分鐘內不用處理。日誌若是 Docker Desktop 的 bind mount 失效（例如 `CASCADE_HF_CACHE` 指向的主機目錄），重建 `cascade`（要帶 `--profile cascade`）：
-
-  ```bash
-  docker compose -f docker-compose.yml -f docker-compose.ntnu.yml --profile app --profile cascade up -d --no-deps --no-build --force-recreate cascade
-  ```
-
-- 對外入口也要確認：`"/mnt/c/Program Files/Tailscale/tailscale.exe" serve status` 應該有 `https://ray-nb.tail5fc9fe.ts.net (Funnel on)`。Windows 或 Tailscale 重啟後設定通常會保留，沒有的話重跑 `funnel --bg 3000`。
-- WSL 重開機後，已開著的終端機不一定有 `docker` 群組；`docker` 出現 `permission denied ... docker.sock` 時，開新的終端機。
+- 如果 `app` 正常、`cascade-1` 仍重啟，先看 `docker logs socrates-ntnu-cascade-1`。`cascade` 要等 `cascade-tts`（Kokoro，iGPU）healthy 才會起來；第一次啟動要載入模型並編譯 SYCL 核心（healthcheck 的 `start_period` 是 240 秒），這段期間 healthcheck 未過屬正常。
+- staging 的 `staging-proxy` 掛在正式環境的網路上，正式環境沒起來時它也起不來；正式恢復後再看一次 staging（見〈staging 環境〉）。
 
 ## 客訴通知信（SMTP）
 
-客訴表單（`/complaint`）與管理者的「客訴」頁（`/admin/complaints`）不需要設定就能用；沒設定 SMTP 時客訴照常存資料庫，寄信狀態顯示「未寄信（尚未設定 SMTP）」。要讓管理者收到通知信，在 `.env` 加上（變數說明見 `.env.example`）：
+客訴表單（`/complaint`）與管理者的「客訴」頁（`/admin/complaints`）不需要設定就能用；沒設定 SMTP 時客訴照常存資料庫，寄信狀態顯示「未寄信（尚未設定 SMTP）」。要讓管理者收到通知信，在 `~/socrates-intel/.env` 加上（變數說明見 `.env.example`）：
 
 ```
 SMTP_HOST=...
@@ -186,21 +150,21 @@ SMTP_PASSWORD=...
 
 - `SMTP_HOST`、`SMTP_FROM`、`COMPLAINT_TO` 缺任何一項就視為沒啟用；格式錯誤時後端啟動會失敗並指出是哪個變數（不印出位址或密碼）。
 - 預設用 STARTTLS（埠 587）；Gmail 這類服務要用應用程式密碼。`SMTP_SECURITY=tls` 走埠 465；`none` 只給本機測試。
-- 改 `.env` 後要重建後端容器才會生效。這是設定變更，不含 migration，但新版本本身含一個 migration（`create_complaints`），部署照「部署前檢查」。
+- 改 `.env` 後要重建 `app`（`--force-recreate`）才會生效。
 - 寄信失敗不影響提交者；管理者在「客訴」頁看到「寄信失敗」、一直停在「寄送中」（寄送途中後端重啟）或「未寄信」（設定 SMTP 之前送出的）時，可按「重寄通知信」；已寄出的沒有這個按鈕。注意：「寄送中」其實仍在寄的時候按重寄可能寄出兩封。日誌只會有客訴編號與失敗類別（`build`／`timeout`／`transport`），要查原因請直接測 SMTP 連線。
 - 信件不含學號、電子郵件與對話原文；描述的原文只在信件內文與管理者的「客訴」頁。
 
 ## 刪除資料庫的限制
 
-- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料：它會刪掉所有命名 volume，包含現在的資料庫 `socrates-ntnu_pgdata_v2` 與保留當退路的舊 volume `socrates-ntnu_pgdata`。
+- NTNU 是正式環境。不要對 `socrates-ntnu` 執行 `down -v`，除非試用負責人明確同意刪除資料：它會刪掉專案的命名 volume，包含資料庫 `socrates-ntnu_pgdata_v2`。
 - 刪除前要先告知試用負責人，並留下 `_sqlx_migrations` 與 `users` 的摘要以便核對。
 
 ## 管理者帳號與密碼
 
 啟動時，`.env` 的 `ADMIN_EMAILS` 指定的信箱會建立管理者帳號，初始密碼來自 `ADMIN_INITIAL_PASSWORD`，且首次登入必須改密碼。
 
-- `ADMIN_INITIAL_PASSWORD` 已於 2026-10-27 從 `.env` 移除。移除後不影響既有帳號；啟動時也不會重設既有帳號的密碼。
-- 重建資料庫後，管理者帳號是以初始密碼建立的（`must_change_password = true`），**尚未改密碼**。需要由管理者登入後改密碼，見下一節。
+- 正式的 `.env` 沒有 `ADMIN_INITIAL_PASSWORD`。它只在建立新帳號時使用；啟動時不會重設既有帳號的密碼。
+- 以初始密碼建立的管理者帳號 `must_change_password = true`，要由管理者登入後改密碼，見下一節。
 
 ### 更改自己的密碼（已登入）
 
@@ -221,15 +185,12 @@ SMTP_PASSWORD=...
 
 ## 示範模式與 seed-demo.sh
 
-NTNU 需要發表時可以開 `DEMO_MODE=true`（寫在未納入版控的 `docker-compose.ntnu.yml`），**2026-11-12 起已關閉**。注意它是**公開網址**：
+正式環境**沒有開** `DEMO_MODE`（`.env` 沒有這一項）。需要發表時可以在 `.env` 加 `DEMO_MODE=true` 並重建 `app`，但注意它是**公開網址**：
 
-- 示範教師與學生的密碼寫在原始碼裡、登入頁也會列出來，任何人都能用它們登入，看到所有示範資料。示範帳號不含管理者。
-- 發表完成後把 `DEMO_MODE` 拿掉並重新部署：端點會回 404、登入頁不再列出帳號，但既有的示範帳號仍帶著公開密碼。要停用就把它們停用或刪除（管理者介面），或乾脆重建資料庫（先告知試用負責人）。
-- `scripts/seed-demo.sh` 會刪除並重建 `[demo]` 開頭的示範教室、活動與對話，不會碰其他資料。它的預設資料庫指令 `DEMO_PSQL` 是對目前目錄的 compose 專案（開發用的 `socrates-chat`）執行，對 NTNU 必須明確指定：
-
-```bash
-DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compose.ntnu.yml exec -T db psql -U socrates -d socrates' ./scripts/seed-demo.sh
-```
+- 示範教師與學生的密碼寫在原始碼裡、登入頁也會列出來，任何人都能用它們登入，看到所有示範資料。示範帳號不含管理者。以 `DEMO_MODE=true` 啟動會把既有的示範帳號重新啟用並重設成公開密碼。
+- 發表完成後把 `DEMO_MODE` 拿掉並重建 `app`：端點會回 404、登入頁不再列出帳號，但示範帳號仍帶著公開密碼，要在管理者介面停用或重設密碼。
+- 正式資料庫裡的 10 位示範學生目前是停用的；示範教師 `demo.teacher@example.com` 啟用中，顯示名稱「測試用教師」，密碼已由管理者重設為非公開值。
+- `scripts/seed-demo.sh` 跟不上目前的資料表（活動改為多題目後沒有 `topic_id` 欄位，第二段會中止），正式環境不要執行；staging 用 `scripts/seed-staging.sh`（見〈staging 環境〉）。
 
 ## 雲端部署評估（2026-11-10）
 
@@ -339,8 +300,8 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 | 方案 | 費用 | 到 DB 的延遲 | 是否依賴這台電腦 | 結論 |
 | --- | --- | --- | --- | --- |
-| 現況：本機部署加 Tailscale Funnel | 免費 | 低（同機） | 是 | **維持** |
-| 本機部署加 Cloudflare Tunnel | 免費，加網域約 10 美元／年 | 低（同機；入口走最近的 Cloudflare 機房，未實測） | 是 | 想要穩定網址或 WAF 時採用；Funnel 與 Tunnel 可並行，確認新網址正常再關 Funnel |
+| 本機部署加 Tailscale Funnel | 免費 | 低（同機） | 是 | 不採用 |
+| 現況：本機部署加 Cloudflare Tunnel | 免費，加網域約 10 美元／年 | 低（同機；入口走最近的 Cloudflare 機房，未實測） | 是 | **採用**（見〈對外入口〉） |
 | Docker cloud sandbox 當正式環境 | 按秒計費（單價文件未載明） | 高，170–200 ms | 是 | 不採用 |
 | Cloudflare Containers，DB 經 Tunnel 回本機 | 約 9.6–21 美元／月 | 未知，要實測 | 是 | 暫不採用 |
 | 後端改寫成 Worker 加 Workers Paid，資料庫經 Hyperdrive 回本機 | 約 5 美元／月（加網域約 10 美元／年），另加數週的重寫成本 | 未知，要實測 | 是 | 不採用；要先走規格決策 |
@@ -348,17 +309,15 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 重新評估的條件：S-09 決定正式環境的 DB 方案，或需要不依賴這台電腦的可用性。
 
-## Intel 版 cascade（msi_cubi：iGPU＋NPU，2026-11-16）
+## Intel 版 cascade（msi_cubi：iGPU＋NPU）
 
-要把 NTNU 搬到沒有 NVIDIA 的 `msi_cubi`（`ssh msi_cubi`；Core Ultra 5 322、14 GB、Ubuntu 26.04）時，語音 cascade 用 `docker-compose.intel.yml` 疊在 `docker-compose.yml` 上。**目前只完成映像與測試，沒有切換正式環境。**
+正式環境的語音 cascade 用 `docker-compose.intel.yml` 疊在 `docker-compose.yml` 上（`msi_cubi` 沒有 NVIDIA）。映像 tag 由 `.env` 的 `CASCADE_INTEL_TAG` 指定。
 
-| 服務 | 裝置 | 映像（tag `intel-20261116`） |
+| 服務 | 裝置 | 映像（tag `CASCADE_INTEL_TAG`，目前 `intel-20261116`） |
 | --- | --- | --- |
 | `cascade-whisper` | NPU（OpenVINO GenAI，`OpenVINO/whisper-small-int8-ov`） | `socrates-cascade-whisper-npu`（約 2 GB） |
 | `cascade-tts` | iGPU（PyTorch XPU，Kokoro 同一支 `kokoro_server.py`，`KOKORO_DEVICE=xpu`） | `socrates-cascade-tts-xpu`（約 11 GB） |
 | `cascade`、`cascade-adapter` | CPU（本來就沒用 GPU） | `socrates-cascade-core`（約 20 GB，Ubuntu 24.04 底，不含 CUDA 基底） |
-
-不會動到 NVIDIA 版的 `socrates-cascade:latest`。
 
 **建置前提**：NPU 的使用者空間驅動不在 Ubuntu 倉庫。要把 Intel linux-npu-driver 發行檔的 `intel-level-zero-npu`、`intel-driver-compiler-npu`、PPA 的 `libze1` 三個 `.deb`（版本與主機一致，msi_cubi 在 `~/npu_driver`）放進 `docker/cascade-intel/npu-debs/`（`.gitignore` 排除）。主機要能用 `/dev/dri/renderD128`、`/dev/accel/accel0`，`RENDER_GID` 填主機 render 群組（msi_cubi 是 991）。
 
@@ -378,33 +337,33 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - 取不到功耗（RAPL／hwmon 要 root）；「省電」只以 CPU 秒數佐證：Whisper 一句 4.2 → 0.12 CPU 秒（NPU），Kokoro 一句 10.4 → 1.1 CPU 秒（iGPU）。
 - Kokoro 遇到新長度的句子首次會多 0.1–0.7 秒（SYCL 核心編譯，`SYCL_CACHE_PERSISTENT=1`，快取在 `cascade_cache` volume）。
 - cascade 日誌有 mooncake／nixl 的 ERROR：可選的傳輸層沒裝，不影響功能。
-- 尚未用真人從瀏覽器走完整語音（含打斷），也沒有接真的 Rust 後端。
 
 ### msi_cubi 瀏覽器測試環境（空資料庫，不碰正式環境）
 
-`docker/cascade-intel/browser-test/compose.yml` 疊在上面兩個檔案之上，專案名稱 `socrates-intel-test`（獨立 volume 與網路），用現行 NTNU 的 app 映像（`docker save | ssh … docker load`，標成 `socrates-ntnu-app:intel-test`，不在 msi_cubi 重編）。設定範本 `browser-test/env.example`：模型設定與正式一致，Google 憑證填佔位值，`CASCADE_LLM_TOKEN` 在主機上用 `openssl rand -hex 32` 產生，`.apikeylist` 只放一把（正式 `.apikeylist` 啟用中的那一把，其餘是註解）。`DEMO_MODE=true`：登入頁列出公開的示範帳號，所以**只能透過 `tailscale serve`（tailnet 內）提供，不可開 funnel**。
+`docker/cascade-intel/browser-test/compose.yml` 疊在上面兩個檔案之上，專案名稱 `socrates-intel-test`（獨立 volume 與網路）。平常沒有在跑；它的 `cascade_hf`、`cascade_cache` volume 正式環境也在用，`pgdata` volume 只有測試資料。設定範本 `browser-test/env.example`：模型設定與正式一致，Google 憑證填佔位值，`CASCADE_LLM_TOKEN` 在主機上用 `openssl rand -hex 32` 產生，`.apikeylist` 只放一把（正式 `.apikeylist` 啟用中的那一把，其餘是註解）。`DEMO_MODE=true`：登入頁列出公開的示範帳號，所以**只能透過 `tailscale serve`（tailnet 內）提供，不可開 funnel**。
 
-- 2026-11-16 語音實測後的調整（只在這個測試堆疊，**正式 NTNU 沒動**，推理強度仍是 `high`）：`OPENAI_REASONING_EFFORT=medium`（實測首字曾超過 16 秒）；app 映像改成 msi_cubi 自己用目前原始碼建的 `socrates-ntnu-app:intel-test-diag`（`.env` 的 `APP_IMAGE_TAG`），內含語音診斷日誌（`voice event`：事件種類、狀態、播放毫秒數，不含音訊與文字；`voice turn received`：回合數與是否併句）與「重連後接著說不再回 409」的改動（見 `docs/specs/cascade-voice-spike.md`）。
+- 測試堆疊的設定與正式不同（正式的推理強度是 `high`）：`OPENAI_REASONING_EFFORT=medium`；app 映像 `socrates-ntnu-app:intel-test-diag`（`.env` 的 `APP_IMAGE_TAG`）含語音診斷日誌（`voice event`：事件種類、狀態、播放毫秒數，不含音訊與文字；`voice turn received`：回合數與是否併句）與「重連後接著說不再回 409」的改動（見 `docs/specs/cascade-voice-spike.md`），這個改動需求方尚未確認，不要部署到正式。
 - 起動：`docker compose -p socrates-intel-test -f docker-compose.yml -f docker-compose.intel.yml -f docker/cascade-intel/browser-test/compose.yml --profile app --profile cascade up -d --no-build`。
 - cascade 啟動時會先探測 app 的內部 LLM 端點，app 還沒起來它會乾淨退出並被 `restart: unless-stopped` 反覆重啟；app 起來後即穩定。
 - `scripts/seed-demo.sh` 的第二段已跟不上目前資料表（活動改為多題目後沒有 `topic_id` 欄位，會中止），第一段（教室、名單、題目）可用；活動改用 API 建（示範教師登入 → `POST /api/activities` → `/publish`）。
 - 經 app 代理的鏈路測試：`smoke/chain_client.py` 設 `CASCADE_URL=ws://app:3000/api/conversations/<id>/voice`、`COOKIE`、`ORIGIN`。
 
-## staging 環境（msi_cubi，2026-11-17）
+## staging 環境（msi_cubi）
 
 只有 app＋db＋proxy，**不接語音**（沒有 cascade／Whisper／TTS），空資料庫加合成資料。與正式環境（專案 `socrates-ntnu`）獨立：
 專案名 `socrates-staging`、db volume `socrates-staging_pgdata_staging`、自己的網路；記憶體上限 app 768 MB、db 512 MB、proxy 64 MB，
 實際合計約 50 MB。網址 `https://staging.se3socrateschat.ntnu.cc`，作法與正式相同（Cloudflare for SaaS 自訂主機名稱＋學校 DNS 記錄，
 進**同一條** tunnel）。
 
-- 檔案：`docker-compose.staging.yml`、`docker/proxy/staging.conf`、`scripts/seed-staging.sh`；`.env.staging`、`.staging-credentials`、`.apikeylist` 在 `~/socrates-intel`，不進版控。
+- 檔案：`docker-compose.staging.yml`、`docker/proxy/staging.conf`、`scripts/seed-staging.sh`，在分支 `deploy/msi-cubi-staging`。部署目錄是 `/var/lib/socrates-staging`（root 擁有，由自動部署更新，見下一節）；`.env.staging`、`.staging-credentials`、`.apikeylist` 放在那裡（root 0600），不進版控。
 - `.env.staging` 由正式 `.env` 衍生，**拿掉** SMTP／客訴信箱（staging 不寄信）、語音（CASCADE_*、STT／TTS）、tunnel token；管理者初始密碼另外產生。
-  OpenAI 用同一份 `.apikeylist`，會吃正式環境同一個每日免費額度。
+  OpenAI 用同一份 `.apikeylist`，會吃正式環境同一個每日免費額度。`TEACHER_KEY_ENCRYPTION_KEYS` 要用 staging 自己的值，不要與正式共用。
+- 改 `.env.staging` 後要重建 `staging-app` 才會生效（用下面〈注意〉的 root compose 指令加 `--force-recreate staging-app`）。
 - 服務名是 `staging-app`／`staging-db`／`staging-proxy`，不叫 `app`／`db`／`proxy`：staging-proxy 同時加入正式環境的網路（別名 `staging-proxy`）讓既有 cloudflared 連得到，
   若叫 `proxy`，正式網路裡的 `app` 解析會被 staging 干擾。tunnel remote ingress 的 `staging.se3socrateschat.ntnu.cc` → `http://staging-proxy:80`。
   正式環境沒在跑時 staging-proxy 起不來（網路不存在）。
-- 啟動／更新：`docker compose -f docker-compose.staging.yml up -d --no-build`（`STAGING_APP_IMAGE_TAG` 必填、沒有預設值，要寫在專案目錄的 `.env`（與 compose 檔同一層）或命令列環境變數；compose 做 `${}` 替換時不讀 `.env.staging`，只有它的 `env_file` 會讀）。不要用 `down -v`。
-- 首次建立與重置合成資料：
+- 更新：推送到 `deploy/msi-cubi-staging` 並核准部署（見下一節）。手動跑 compose 時 `STAGING_APP_IMAGE_TAG` 必填、沒有預設值，要用命令列環境變數給（compose 做 `${}` 替換時不讀 `.env.staging`，只有它的 `env_file` 會讀），指令見下一節〈注意〉。不要用 `down -v`。
+- 首次建立與重置合成資料（每一步的 compose 指令都要以 root 在 `/var/lib/socrates-staging` 執行並帶 `STAGING_APP_IMAGE_TAG`，見下一節〈注意〉）：
   0. **ingress 已上線後重播時，先 `docker compose -f docker-compose.staging.yml stop staging-proxy`**，做完第 3 步再 `start`；DEMO_MODE 開著時登入頁會列出公開的示範帳號與密碼，不能在公網可達時開。
   1. `STAGING_DEMO_MODE=true docker compose -f docker-compose.staging.yml up -d --no-build`（讓後端建立示範帳號）。
   2. `DEMO_PSQL='docker exec -i socrates-staging-staging-db-1 psql -U socrates -d socrates' ./scripts/seed-staging.sh`（可重複執行）。
@@ -435,7 +394,6 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
   3. 安裝 sudoers：先 `visudo -cf scripts/host/gha-runner-staging.sudoers`，通過後 `install -o root -g root -m 0440 scripts/host/gha-runner-staging.sudoers /etc/sudoers.d/gha-runner-staging`。
   4. 移除 runner 的 docker 群組：`gpasswd -d gha-runner docker`，然後以 root 在 runner 安裝目錄執行 `./svc.sh stop` 與 `./svc.sh start`，群組變更才會生效。
   5. 驗證：`runuser -u gha-runner -- docker ps` 應該失敗；`runuser -u gha-runner -- sudo -n /usr/local/sbin/socrates-staging-deploy 0000000000000000000000000000000000000000` 應該被拒絕（SHA 不在分支上）。
-  6. 刪除舊的部署目錄 `/home/gha-runner/socrates-staging`（含舊的 secrets 副本）。
   - runner 註冊：repo 的 Settings → Actions → Runners 取得 registration token（約 1 小時失效），用 `--labels msi-cubi-staging --unattended` 以 `gha-runner` 身份註冊，再由 root 執行 `svc.sh install gha-runner` 與 `svc.sh start`。
   - repo 設定：environment `staging-deploy`（Required reviewers、deployment branch 限定為 `deploy/msi-cubi-staging`），以及 ruleset「Protect deploy/msi-cubi-staging」。
 - 注意：
@@ -480,5 +438,4 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 | 2026-11-15 | 把 `origin/main`（到 #569）合進 `deploy/ntnu-integration`（合併提交 `f5e090b`，需求方指示）並部署，帶入 F-24 單場對話雷達圖：#568 AI 評分、#569 後端計算與重試 API（`GET /api/conversations/{id}/radar`、`POST .../radar/retry`）與前端計算狀態、雷達圖；另有 #565 只改文件。總結完成後自動計算雷達（失敗自動重試 1 次，仍失敗才標記 failed，不影響總結），學生端可手動重算。**沒有新的 migration**（相關的表在先前部署已建立，`_sqlx_migrations` 仍 27 筆）。合併無衝突；與 main 的差異維持在先前盤點的整合分支專屬內容（示範模式快速回覆、`profile.hintStaff`、本文件）。**這次沒有在部署樹跑 sbx-test**（以 main 上 #568、#569 的 CI 與 #571 分支預覽的人工驗證為準）。預覽驗證（不含正式環境）：個人練習結束後雷達自動算出並顯示；注入 AI 500 後前端顯示失敗訊息與重試按鈕，故障中重試再度失敗，排除後重試成功。部署前 `pg_dump` 備份 `~/ntnu-backups/socrates-pre-f24-radar-20261115-120626.sql.gz`（gzip 檢查通過）；回滾映像 `socrates-ntnu-app:pre-f24-radar-20261115`。先建好映像再只重建 `app`。驗證：`/health`、`/ready`（本機與公開網址）200，openapi 含兩個雷達路由；`users` 40、`conversations` 73、`messages` 685、`_sqlx_migrations` 27、`conversation_radar_results` 0，與部署前一致；新容器沒有 WARN、ERROR 日誌與 5xx。正式環境尚未有人實際跑過雷達，第一場正式對話結束後要看一次 `conversation_radar_results` 與日誌。退回時把 `pre-f24-radar-20261115` 改標回 `latest` 再以 `--no-build --force-recreate app` 重建，不需要還原資料庫。 |
 | 2026-11-16 | 為 msi_cubi 建 Intel 版 cascade 映像（Whisper→NPU、Kokoro→iGPU），在 msi_cubi 以獨立專案 `socrates-intel-test` 與獨立 tag 驗證通過，測試容器已拆除；沒有動現行 NTNU，也沒有切換。細節見上節。公開網址搬遷後沿用 `raynb.tail5fc9fe.ts.net`（需求：使用者 2026-11-16 指示）。 |
 | 待辦 | 管理者改掉初始密碼（`must_change_password` 仍為 true）。 |
-| 待辦 | 部署含 `20261107000000` 的版本前，依「部署前檢查」備份並演練；合併 `origin/main` 前先處理 NTNU 分支上尚未進 main 的 commit。 |
 | 待辦 | 維運負責人決定 NTNU 是否改為「部署前單獨執行 migrate」、以及是否採用每日加密備份與還原演練。 |
