@@ -164,7 +164,7 @@
 ### 教室的 AI 模型設定（F-40.4，S-03.1）
 
 - `GET /api/classrooms/{id}/ai-settings`：只有教室建立者（教師）。回 `{ transitional, primary: { provider, model } | null, fallbacks: [{ provider, model }], confirmed_providers: [...] }`。`transitional` 為真代表 NTNU 上線前已存在、尚未設定的教室，沿用系統 key。
-- `PUT /api/classrooms/{id}/ai-settings`：`{ provider, model, fallbacks: [{ provider, model }] (至多 3 個，依嘗試順序), data_flow_confirmed }`。流程：格式與供應商名單檢查 → 教師必須有每個供應商的 key（`400 no_key_for_provider`）→ 第一次選定某家供應商（含備援）時 `data_flow_confirmed` 必須為真（`400 data_flow_confirmation_required`；已確認過的供應商之後不必再帶）→ 對每個模型呼叫 F-40.3 的模型驗證（會對供應商送出少量請求、可能產生少量費用，前端送出前要提示；與「測試 key」共用每人頻率限制，超過 `429 key_test_rate_limited`）→ 全部通過才儲存（備援整組取代）、記錄確認，並清除「過渡中」旗標。任何一步失敗都不儲存。
+- `PUT /api/classrooms/{id}/ai-settings`：`{ provider, model, fallbacks: [{ provider, model }] (至多 3 個，依嘗試順序), data_flow_confirmed }`。流程：格式與供應商名單檢查 → 教師必須有每個供應商的 key（`400 no_key_for_provider`）→ 第一次選定某家供應商（含備援）時 `data_flow_confirmed` 必須為真（`400 data_flow_confirmation_required`；已確認過的供應商之後不必再帶）→ 對每個模型同時呼叫 F-40.3 的模型驗證（此路由使用長逾時；會對供應商送出少量請求、可能產生少量費用，前端送出前要提示；與「測試 key」共用每人頻率限制，超過 `429 key_test_rate_limited`）→ 全部通過才儲存（備援整組取代）、記錄確認，並清除「過渡中」旗標。任何一步失敗都不儲存。
 - 錯誤碼：`invalid_provider`、`invalid_model`（空白或超過 200 字元）、`too_many_fallbacks`、`model_auth_failed`、`model_not_found`、`model_streaming_unsupported`、`model_structured_output_unsupported`、`model_check_failed`；與請求中某一項有關的錯誤帶 `error.target`（`primary`、`fallback_1`…`fallback_3`）。封存的教室不能修改（`409 classroom_archived`）；沒設定加密金鑰回 `503 teacher_keys_unavailable`。
 - 權限：未登入 `401`；學生、名單外帳號、只有管理者身分的人 `403`（管理者能否檢視規格未明，預設不開放，待確認）；其他教師與不存在的教室相同 `404`。
 - `GET /api/classrooms/{id}/ai-provider`：教室名單內的學生，回 `{ provider: { id, name } | null }`，供顯示「本教室的 AI 由 {供應商} 提供」；尚未設定或過渡中為 `null`，看不到模型 ID、備援或 key。不在該教室名單內的學生與不存在相同 `404`。
