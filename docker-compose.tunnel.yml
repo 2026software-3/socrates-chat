@@ -6,8 +6,8 @@
 # （cloudflared 與 proxy 在同一個 compose 網路，所以用服務名 proxy；DNS 的 CNAME 由 Cloudflare 自動建立。）
 # token 放不進版控的 .env：CLOUDFLARE_TUNNEL_TOKEN=...（不要寫進這個檔案）。
 # 後端 TRUSTED_PROXIES 維持 172.16.0.0/12：Cloudflare 邊緣帶來真實來源，nginx 追加 cloudflared 容器位址，
-# 後端由右往左跳過受信任代理，與 Funnel 的鏈路相同。APP_BASE_URL 要改成 https://se3socrateschat.ntnu.cc，
-# Google OAuth 的 redirect URI 也要同步（使用者自己改）。
+# 後端由右往左跳過受信任代理。APP_BASE_URL 由 .env 的 APP_PUBLIC_URL 設定（https://se3socrateschat.ntnu.cc），
+# 換網址時 Google OAuth 的 redirect URI 也要同步（使用者自己改）。
 services:
   cloudflared:
     profiles: ["tunnel"]

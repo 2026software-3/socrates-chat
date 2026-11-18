@@ -13,8 +13,8 @@
 #   ./scripts/seed-demo.sh
 # 可用環境變數：
 #   DEMO_PSQL   執行 SQL 的指令，預設 docker compose exec -T db psql -U socrates -d socrates
-#               NTNU 試用環境：
-#               DEMO_PSQL='docker compose -p socrates-ntnu -f docker-compose.yml -f docker-compose.ntnu.yml exec -T db psql -U socrates -d socrates'
+#               msi_cubi 的 staging：
+#               DEMO_PSQL='docker exec -i socrates-staging-staging-db-1 psql -U socrates -d socrates'
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
