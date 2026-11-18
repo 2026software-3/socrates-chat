@@ -47,6 +47,9 @@ use crate::{
     mutex::lock,
 };
 
+/// 教室沒有可用的教師 key 時，學生端與語音通知的錯誤代碼（F-40.5）
+const CLASSROOM_UNAVAILABLE: &str = "classroom_ai_unavailable";
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/conversations/{id}/stream", get(stream))
 }
@@ -57,7 +60,8 @@ type EventTx = mpsc::UnboundedSender<Event>;
 /// 語音對話收到的回覆：文字片段，最後若沒有存成回覆再加一個 `Failed`。
 pub(crate) enum ReplyText {
     Delta(String),
-    Failed,
+    /// 沒有存成回覆；附上學生端要顯示的原因代碼（目前只有教室的 AI 不可用，其餘為 `None`）
+    Failed(Option<&'static str>),
 }
 
 /// 這個服務程序內正在產生的回覆：已送出的文字與正在收看的連線。
@@ -79,6 +83,8 @@ struct Live {
     heard: Option<usize>,
     /// 回覆已存好或已失敗，之後的打斷直接寫資料庫
     sealed: bool,
+    /// 失敗原因代碼，語音對話的通知用
+    failure: Option<&'static str>,
 }
 
 /// 一次回覆產生的紀錄，由產生回覆的工作持有。
@@ -102,6 +108,11 @@ impl LiveReply {
     /// 語音對話的回覆（有收回覆文字的通道）：可能有暫存的打斷位置要在釋放 claim 前寫入。
     fn is_voice(&self) -> bool {
         lock(&self.live).tap.is_some()
+    }
+
+    /// 記下這次失敗的原因代碼，語音對話的通知會帶上。
+    fn fail_with(&self, code: &'static str) {
+        lock(&self.live).failure = Some(code);
     }
 
     /// 收尾：之後的 `cut` 不再暫存，回傳已暫存的聽到字元數。
@@ -130,6 +141,7 @@ impl LiveReplies {
             tap,
             heard: None,
             sealed: false,
+            failure: None,
         }));
         lock(&self.0).insert(id, live.clone());
         LiveReply { id, live }
@@ -149,7 +161,7 @@ impl LiveReplies {
         if let Some(tap) = live.tap.take()
             && failed
         {
-            let _ = tap.send(ReplyText::Failed);
+            let _ = tap.send(ReplyText::Failed(live.failure));
         }
         for w in live.watchers.drain(..) {
             let _ = w.send(last.clone());
@@ -488,7 +500,11 @@ async fn generate(
         .await
     {
         Ok(route) => route,
-        Err(_) => return Err(event("error", json!({"code": "classroom_ai_unavailable"}))),
+        Err(error) => {
+            activity.record_unreached(state, &error);
+            reply.fail_with(CLASSROOM_UNAVAILABLE);
+            return Err(event("error", json!({"code": CLASSROOM_UNAVAILABLE})));
+        }
     };
     let mut classroom_unavailable = false;
     for retry in 0..2 {
@@ -518,12 +534,11 @@ async fn generate(
         }
     }
     let Some((text, meta)) = outcome else {
-        let code = if classroom_unavailable {
-            "classroom_ai_unavailable"
-        } else {
-            "ai_unavailable"
-        };
-        return Err(event("error", json!({"code": code})));
+        if classroom_unavailable {
+            reply.fail_with(CLASSROOM_UNAVAILABLE);
+            return Err(event("error", json!({"code": CLASSROOM_UNAVAILABLE})));
+        }
+        return Err(event("error", json!({"code": "ai_unavailable"})));
     };
 
     // 語音對話可能有暫存的打斷位置，要等寫入後才釋放，所以不在保存時釋放

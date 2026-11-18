@@ -15,7 +15,11 @@
 //! 日誌與診斷事件不含 key 或對話原文。
 
 use std::{
-    sync::{Arc, OnceLock, atomic::Ordering},
+    collections::HashSet,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicI16, Ordering},
+    },
     time::Duration,
 };
 
@@ -50,7 +54,11 @@ pub(crate) struct Route {
     pub model: String,
 }
 
-fn unavailable() -> AiError {
+/// 教室的 AI 不可用。`reason` 只記在日誌（不含 key 或對話內容），讓維運者知道是哪一項沒設好：
+/// `classroom_not_found`、`owner_disabled`、`owner_not_teacher`、`key_encryption_not_configured`、
+/// `model_not_configured`、`no_key_for_provider`、`keys_cooling_down`、`all_keys_failed`、`lookup_failed`。
+fn unavailable(classroom: Uuid, reason: &'static str) -> AiError {
+    tracing::warn!(%classroom, reason, "classroom AI unavailable");
     AiError::classified(Failure::ClassroomUnavailable)
 }
 
@@ -89,26 +97,29 @@ impl AppState {
         .await
         .map_err(|e| {
             tracing::error!(class = %crate::error::db_error_class(&e), "classroom AI route lookup failed");
-            unavailable()
+            unavailable(classroom, "lookup_failed")
         })?;
         let Some((owner, transitional, disabled, is_teacher)) = row else {
-            return Err(unavailable());
+            return Err(unavailable(classroom, "classroom_not_found"));
         };
         if transitional {
             return Ok(system());
         }
-        if disabled || !is_teacher {
-            return Err(unavailable());
+        if disabled {
+            return Err(unavailable(classroom, "owner_disabled"));
+        }
+        if !is_teacher {
+            return Err(unavailable(classroom, "owner_not_teacher"));
         }
         let cipher = self
             .config
             .teacher_key_cipher
             .as_deref()
-            .ok_or_else(unavailable)?;
+            .ok_or_else(|| unavailable(classroom, "key_encryption_not_configured"))?;
         let setting = classroom_ai_store::get(&self.pool, classroom)
             .await
-            .map_err(|_| unavailable())?
-            .ok_or_else(unavailable)?;
+            .map_err(|_| unavailable(classroom, "lookup_failed"))?
+            .ok_or_else(|| unavailable(classroom, "model_not_configured"))?;
         // 同一場對話已換用備援就從那個位置開始，不跳回主模型
         let start_position: i16 = match conversation {
             Some(id) => {
@@ -116,7 +127,7 @@ impl AppState {
                     .bind(id)
                     .fetch_optional(&self.pool)
                     .await
-                    .map_err(|_| unavailable())?
+                    .map_err(|_| unavailable(classroom, "lookup_failed"))?
                     .unwrap_or(0)
             }
             None => 0,
@@ -130,6 +141,8 @@ impl AppState {
             0
         };
         let mut targets = Vec::new();
+        // 有 key 但都在冷卻中，和根本沒有該供應商的 key，在日誌裡分開記
+        let mut any_key = false;
         for (position, m) in models.into_iter().enumerate() {
             let position = position as i16;
             if position < start_position {
@@ -139,12 +152,11 @@ impl AppState {
             let Some(provider) = ai_providers::find(&m.provider) else {
                 continue;
             };
-            let mut usable: Vec<UsableKey> = keys::keys_for(&self.pool, cipher, owner, provider.id)
+            let all = keys::keys_for(&self.pool, cipher, owner, provider.id)
                 .await
-                .map_err(|_| unavailable())?
-                .into_iter()
-                .filter(is_eligible)
-                .collect();
+                .map_err(|_| unavailable(classroom, "lookup_failed"))?;
+            any_key |= !all.is_empty();
+            let mut usable: Vec<UsableKey> = all.into_iter().filter(is_eligible).collect();
             if usable.is_empty() {
                 continue;
             }
@@ -158,7 +170,20 @@ impl AppState {
                 keys: usable,
             });
         }
-        let first_model = targets.first().ok_or_else(unavailable)?.model.clone();
+        let first_model = targets
+            .first()
+            .ok_or_else(|| {
+                unavailable(
+                    classroom,
+                    if any_key {
+                        "keys_cooling_down"
+                    } else {
+                        "no_key_for_provider"
+                    },
+                )
+            })?
+            .model
+            .clone();
         let routed = Routed {
             pool: self.pool.clone(),
             classroom,
@@ -166,6 +191,8 @@ impl AppState {
             endpoint: self.route_endpoint.clone(),
             targets,
             client: client()?,
+            failed: Mutex::default(),
+            settled: AtomicI16::new(0),
         };
         Ok(Route {
             ai: Arc::new(MaskingAi::new(Arc::new(routed))),
@@ -222,6 +249,10 @@ struct Routed {
     endpoint: Option<String>,
     targets: Vec<Target>,
     client: &'static GenaiClient,
+    /// 這次解析中已確定不能用的 key；同一次回覆的重試不再打擾它們
+    failed: Mutex<HashSet<Uuid>>,
+    /// 已成功換用的備援位置；之後的呼叫從這裡開始
+    settled: AtomicI16,
 }
 
 impl Routed {
@@ -249,12 +280,44 @@ impl Routed {
         }
     }
 
-    /// 這把 key 失敗了：記錄狀態（含供應商要求的等待時間）並換下一把。只寫到同一把 key 上，
-    /// 呼叫期間教師更換了 key 時不覆寫新 key 的狀態。
+    /// 這個目標或 key 在這次解析中是否還不值得試。
+    fn skip(&self, target: &Target, key: Option<&UsableKey>) -> bool {
+        target.position < self.settled.load(Ordering::Relaxed)
+            || key.is_some_and(|k| self.failed.lock().is_ok_and(|f| f.contains(&k.id)))
+    }
+
+    /// 記錄這把 key 的狀態（含供應商要求的等待時間）。只寫到同一把 key 上，
+    /// 呼叫期間教師更換了 key 時不覆寫新 key 的狀態。失敗的 key 在這次解析中不再試；
+    /// 恢復成 `Ok` 的 key 照常可用（之後的重試仍可用它）。
     async fn mark(&self, key: &UsableKey, status: KeyStatus, retry_after: Option<Duration>) {
+        if status != KeyStatus::Ok
+            && let Ok(mut failed) = self.failed.lock()
+        {
+            failed.insert(key.id);
+        }
         if let Err(e) = keys::set_status_after(&self.pool, key, status, retry_after).await {
             tracing::warn!(class = %crate::error::db_error_class(&e), "failed to record key status");
         }
+    }
+
+    /// 這把 key 因失效、額度或限流不能用：記在日誌（只有 key 的識別碼與失敗分類），記錄狀態後換下一把。
+    async fn fail_over(
+        &self,
+        target: &Target,
+        key: &UsableKey,
+        error: &AiError,
+        status: KeyStatus,
+    ) {
+        tracing::warn!(
+            classroom = %self.classroom,
+            key_id = %key.id,
+            provider = target.provider.id,
+            model = %target.model,
+            class = error.class.code(),
+            status = status.as_str(),
+            "teacher API key failed; trying the next"
+        );
+        self.mark(key, status, error.retry_after()).await;
     }
 
     /// 這把 key 成功了：之前非正常的狀態恢復。
@@ -266,6 +329,7 @@ impl Routed {
 
     /// 這個目標成功了：若是備援，記回對話，之後同場都從這裡開始。
     async fn settled_on(&self, target: &Target) {
+        self.settled.fetch_max(target.position, Ordering::Relaxed);
         if target.position == 0 {
             return;
         }
@@ -329,14 +393,20 @@ impl AiProvider for Routed {
         // 先試主模型的每把 key，全部因限流、額度用盡或失效不能用，才換下一個備援（F-40.6）；
         // 只在尚未送出任何內容時換，其餘錯誤照原樣回給呼叫端。
         for target in &self.targets {
+            if self.skip(target, None) {
+                continue;
+            }
             for key in &target.keys {
+                if self.skip(target, Some(key)) {
+                    continue;
+                }
                 let gp = self.provider_for(target, key);
                 let guard = self.guard(target, key, &gp);
                 let mut stream = match gp.stream_chat(req.clone()).await {
                     Ok(s) => s,
                     Err(e) => match failover_status(&e) {
                         Some(status) => {
-                            self.mark(key, status, e.retry_after()).await;
+                            self.fail_over(target, key, &e, status).await;
                             continue;
                         }
                         None => return Err(e),
@@ -346,7 +416,7 @@ impl AiProvider for Routed {
                 match stream.next().await {
                     Some(Err(e)) => match failover_status(&e) {
                         Some(status) => {
-                            self.mark(key, status, e.retry_after()).await;
+                            self.fail_over(target, key, &e, status).await;
                             continue;
                         }
                         None => return Err(e),
@@ -374,12 +444,18 @@ impl AiProvider for Routed {
                 }
             }
         }
-        Err(unavailable())
+        Err(unavailable(self.classroom, "all_keys_failed"))
     }
 
     async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
         for target in &self.targets {
+            if self.skip(target, None) {
+                continue;
+            }
             for key in &target.keys {
+                if self.skip(target, Some(key)) {
+                    continue;
+                }
                 let gp = self.provider_for(target, key);
                 let _guard = self.guard(target, key, &gp);
                 match gp.complete_json(req.clone()).await {
@@ -389,12 +465,12 @@ impl AiProvider for Routed {
                         return Ok(done);
                     }
                     Err(e) => match failover_status(&e) {
-                        Some(status) => self.mark(key, status, e.retry_after()).await,
+                        Some(status) => self.fail_over(target, key, &e, status).await,
                         None => return Err(e),
                     },
                 }
             }
         }
-        Err(unavailable())
+        Err(unavailable(self.classroom, "all_keys_failed"))
     }
 }
