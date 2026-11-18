@@ -35,7 +35,7 @@ function mockAdminKeys(initial: AdminTeacherKey[]) {
 
 const open = async () => {
   mockMe(makeMe({ admin: true }))
-  renderApp(null, { route: '/admin/teacher-keys' })
+  renderApp(null, { route: '/admin/teachers/keys' })
   await screen.findByRole('heading', { name: '教師 API key' })
 }
 
@@ -111,7 +111,7 @@ describe('AdminKeysPage', () => {
 
   it('is offered to administrators only', async () => {
     mockMe(makeMe({ teacher: true }))
-    renderApp(null, { route: '/admin/teacher-keys' })
+    renderApp(null, { route: '/admin/teachers/keys' })
     expect(await screen.findByRole('heading', { name: '你沒有權限執行這個操作。' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '教師 API key' })).not.toBeInTheDocument()
   })

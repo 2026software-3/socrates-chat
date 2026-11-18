@@ -96,7 +96,7 @@
 ## 教室（F-28.1）
 
 - 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，最多 255 字元，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空白或超長名稱回 `400 invalid_classroom_name`。年度標籤最多 100 字元、說明最多 2,000 字元，超限分別回 `invalid_classroom_year_label`、`invalid_classroom_description`。選填欄位前後空白會去除，空字串會保存為 `null`。
-- `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。
+- `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。 每列另有 `ai_model_missing`：教室不是過渡中、沒封存、也還沒設定對話模型時為 `true`（學生目前無法使用 AI），教師的教室列表用它顯示警告。
 - 切換教室沿用同一登入 session。教室頁的活動、總結與彙整查詢各自帶 `classroom_id`，名單與學生清單使用 `/api/classrooms/{id}/roster`、`/api/classrooms/{id}/students`。後端依每次請求指定的教室檢查權限。
 - 管理者可管理所有教室。依 Issue「教室由教師建立」，目前只有教師可建立教室（管理者建立權限**待需求方確認**，尚未定案）；建立者欄位固定為建立請求的教師。教室名稱唯一性由資料庫約束保證，併發建立相同名稱時僅一個成功。沒有提供任何欄位的空 PATCH 不會更新 `updated_at`。
 - PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。教室回應帶 `is_archived`（預設 `false`）；PATCH 可傳 `is_archived: true` 封存、`false` 復原。封存後教室、活動、修課名單及既有對話為唯讀，寫入回 `409 classroom_archived`（學生刪除、封存自己的對話不受限制，見「對話」一節；開始活動對話沿用 `400 invalid_conversation_source`）。教師與管理者仍可查閱，名單與原有資料保留；復原後恢復操作。個人練習不受封存影響。名單見上一節。
@@ -166,6 +166,8 @@
 - **系統 AI（管理者，`/api/admin/system-ai`）**：系統用途（沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度、公告翻譯）使用的供應商、模型與多把系統 key；沒設定或沒有可用 key 時用主機的 `.apikeylist`。只有管理者（未登入 `401`、其他角色 `403`），寫入需同源（CSRF）。
   - `GET /api/admin/system-ai`：`{ source: "database" | "host_file", routing_enabled, encryption_configured, setting, host_model, keys[], providers[] }`；`keys[]` 只有遮蔽識別、狀態與近 30 天用量（請求數、輸入／輸出 token、未回報請求數），不含 key。
   - `PUT /api/admin/system-ai/model` `{ provider, model }`：用該供應商的一把系統 key 送一次最小串流與 JSON 請求驗證（少量費用）後儲存；沒有該供應商的 key 回 `400 no_key_for_provider`，驗證失敗的代碼同教室 AI 設定；驗證太頻繁 `429 key_test_rate_limited`（沿用 key 測試額度）。`DELETE` 清除設定（回到 `.apikeylist`）。
+  - `GET /api/admin/system-ai/models?provider=`：用該供應商的系統 key 取模型清單，只當模型欄位的輸入建議（不是白名單，儲存時仍會驗證）。回應與 `GET /api/teacher/keys/models` 相同（`ok`／`no_key`／`unavailable`，取不到仍回 `200`）；供應商不在名單 `400 invalid_provider`，太頻繁 `429 model_list_rate_limited`（與教師共用額度設定）。不使用教師的 key，也不改動 key 狀態。
+  - `GET /api/admin/system-ai/usage?range=`：系統用途的 AI 用量，依（供應商、模型）細分並加總各系統 key，格式同 `GET /api/classrooms/{id}/ai-usage`（`range` 為 `today`、`7d`（預設）、`30d`、`all`，其他值 `400 invalid_range`）。只計次數與 token，不計金額；供應商沒回報 token 的請求標示未回報。刪除 key 時該 key 的用量一併刪除。
   - `POST /api/admin/system-ai/keys` `{ provider, key }` → `201`；`PUT …/keys/{id}` `{ key }` 更換（供應商與歷史用量不變、狀態重設）；`DELETE …/keys/{id}` → `204`（用量一併刪除）；`POST …/keys/{id}/test` → `{ result: "usable" | "connection_failed" }`（只呼叫模型清單端點）。錯誤代碼同教師 key（`invalid_provider`、`invalid_key`、`key_already_exists`——與教師 key 全域不得重複、`503 teacher_keys_unavailable`）。
   - 稽核動作：`system_key_added`、`system_key_replaced`、`system_key_deleted`、`system_ai_model_set`、`system_ai_model_cleared`（對象只記供應商識別碼）。
 - `GET /api/teacher/keys/models?provider=`：用自己該供應商的 key 向供應商取模型清單，只當教室 AI 設定的輸入建議（不是白名單，儲存時仍以模型驗證為準）。回 `{ provider, status: "ok" | "no_key" | "unavailable", models: [string] }`：`ok` 時 `models` 已排序、去重、排除名稱明顯不是文字對話的模型（嵌入、語音、即時／音訊、圖片、影片、審核、重排與舊補全模型）；key 只用在文字對話，最多 500 個；`no_key` 是沒有該供應商的 key；`unavailable` 是有 key 但取不到清單（key 無效、供應商不提供、逾時；同一供應商最多依序試 3 把 key）。後兩者都回 `200`，前端退回純文字輸入。供應商不在名單或缺少 `provider` 回 `400`（`invalid_provider`）；每位教師每分鐘最多 30 次（暫定值，待需求方確認），超過回 `429 model_list_rate_limited`；沒有設定加密金鑰回 `503 teacher_keys_unavailable`。不改動 key 的狀態，回應與日誌不含 key。只有教師本人（管理者身分也是 `403`）。

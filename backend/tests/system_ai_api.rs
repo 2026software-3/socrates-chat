@@ -9,7 +9,10 @@ use common::*;
 use serde_json::{Value, json};
 use socrates_chat_backend::{
     AppState,
-    ai_providers::{KeyCheck, KeyVerifier, ModelCheckError, ModelVerifier, Provider},
+    ai_providers::{
+        KeyCheck, KeyVerifier, ListUnavailable, ModelCheckError, ModelLister, ModelVerifier,
+        Provider,
+    },
     app,
     teacher_key_crypto::KeyCipher,
 };
@@ -25,6 +28,21 @@ struct Fake {
     key_result: Mutex<Option<KeyCheck>>,
     model_failure: Mutex<Option<ModelCheckError>>,
     model_calls: Mutex<Vec<(String, String, String)>>,
+    lists: Mutex<std::collections::HashMap<String, Vec<String>>>,
+    list_calls: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl ModelLister for Fake {
+    async fn list_models(&self, _: &Provider, key: &str) -> Result<Vec<String>, ListUnavailable> {
+        self.list_calls.lock().unwrap().push(key.into());
+        self.lists
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or(ListUnavailable)
+    }
 }
 
 #[async_trait]
@@ -63,6 +81,7 @@ fn build(pool: PgPool, with_cipher: bool, fake: Arc<Fake>) -> Router {
     app(
         AppState::new(pool, config, Arc::new(FakeIdentity), FakeAi::with(vec![]))
             .with_key_verifier(fake.clone())
+            .with_model_lister(fake.clone())
             .with_model_verifier(fake),
     )
 }
@@ -460,4 +479,127 @@ async fn without_an_encryption_key_keys_cannot_be_added(pool: PgPool) {
         ),
         (StatusCode::OK, Some(false), Some(false))
     );
+}
+
+#[sqlx::test]
+async fn model_suggestions_come_from_the_system_keys_only(pool: PgPool) {
+    let fake = Arc::new(Fake::default());
+    fake.lists
+        .lock()
+        .unwrap()
+        .insert(KEY_A.into(), vec!["gpt-b".into(), "gpt-a".into()]);
+    // 教師自己的 key 即使取得到清單也不會被用在這裡
+    fake.lists
+        .lock()
+        .unwrap()
+        .insert(TEACHER_KEY.into(), vec!["teacher-only".into()]);
+    let app = build(pool.clone(), true, fake.clone());
+    let a = seed_actors(&app).await;
+    let url = format!("{BASE}/models?provider=openai");
+    call(
+        &app,
+        "POST",
+        "/api/teacher/keys",
+        Some(&a.teacher),
+        Some(json!({"provider":"openai","key":TEACHER_KEY})),
+    )
+    .await;
+    let (s, v) = call(&app, "GET", &url, Some(&a.admin), None).await;
+    assert_eq!((s, v["status"].as_str()), (StatusCode::OK, Some("no_key")));
+    assert!(fake.list_calls.lock().unwrap().is_empty());
+    add(&app, &a.admin, "openai", KEY_A).await;
+    let (_, v) = call(&app, "GET", &url, Some(&a.admin), None).await;
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["models"], json!(["gpt-b", "gpt-a"]));
+    assert_eq!(*fake.list_calls.lock().unwrap(), vec![KEY_A.to_owned()]);
+    // 取不到清單：200 加狀態，不是錯誤，也不改動 key 狀態
+    fake.lists.lock().unwrap().clear();
+    let (s, v) = call(&app, "GET", &url, Some(&a.admin), None).await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (StatusCode::OK, Some("unavailable"))
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM system_api_keys")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "ok");
+    let (s, e) = call(
+        &app,
+        "GET",
+        &format!("{BASE}/models?provider=nope"),
+        Some(&a.admin),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_provider"));
+    assert_eq!(
+        call(&app, "GET", &url, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for cookie in [&a.teacher, &a.student, &a.outsider] {
+        assert_eq!(
+            call(&app, "GET", &url, Some(cookie), None).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+}
+
+#[sqlx::test]
+async fn system_usage_is_listed_by_model_for_admins_only(pool: PgPool) {
+    let app = build(pool.clone(), true, Arc::new(Fake::default()));
+    let a = seed_actors(&app).await;
+    let (_, item) = add(&app, &a.admin, "openai", KEY_A).await;
+    let id: uuid::Uuid = item["id"].as_str().unwrap().parse().unwrap();
+    let url = format!("{BASE}/usage");
+    let (s, v) = call(&app, "GET", &url, Some(&a.admin), None).await;
+    assert_eq!(
+        (s, v["range"].as_str(), v["totals"]["requests"].as_i64()),
+        (StatusCode::OK, Some("7d"), Some(0))
+    );
+    for (model, tokens) in [
+        ("gpt-a", Some((10, 5))),
+        ("gpt-a", Some((1, 1))),
+        ("gpt-b", None),
+    ] {
+        socrates_chat_backend::system_key_store::record_usage(&pool, id, "openai", model, tokens)
+            .await
+            .unwrap();
+    }
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("{url}?range=all"),
+        Some(&a.admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        v["totals"],
+        json!({"requests": 3, "input_tokens": 11, "output_tokens": 6, "unreported_requests": 1})
+    );
+    assert_eq!(
+        v["items"][0],
+        json!({"provider":"openai","model":"gpt-a","requests":2,"input_tokens":11,"output_tokens":6,"unreported_requests":0})
+    );
+    assert_eq!(v["items"][1]["model"], "gpt-b");
+    let (s, e) = call(
+        &app,
+        "GET",
+        &format!("{url}?range=bad"),
+        Some(&a.admin),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_range"));
+    assert_eq!(
+        call(&app, "GET", &url, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for cookie in [&a.teacher, &a.student, &a.outsider] {
+        assert_eq!(
+            call(&app, "GET", &url, Some(cookie), None).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
 }

@@ -334,3 +334,21 @@ pub async fn usage_by_key(
     .fetch_all(pool)
     .await
 }
+
+/// 系統用途在某段期間依（供應商、模型）細分的用量（各系統 key 加總）。
+pub async fn usage_by_model(
+    pool: &PgPool,
+    range: crate::teacher_key_usage::Range,
+) -> Result<Vec<crate::teacher_key_usage::ModelUsage>, sqlx::Error> {
+    let rows: Vec<crate::teacher_key_usage::ModelRow> = sqlx::query_as(
+        "SELECT provider, model, SUM(requests)::bigint, SUM(input_tokens)::bigint,
+                SUM(output_tokens)::bigint, SUM(unreported_requests)::bigint
+           FROM system_ai_usage
+          WHERE ($1::int IS NULL OR day > (now() AT TIME ZONE 'Asia/Taipei')::date - $1::int)
+          GROUP BY provider, model ORDER BY provider, model",
+    )
+    .bind(range.days())
+    .fetch_all(pool)
+    .await?;
+    Ok(crate::teacher_key_usage::model_usage(rows))
+}

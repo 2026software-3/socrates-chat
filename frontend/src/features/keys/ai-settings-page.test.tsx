@@ -69,6 +69,13 @@ describe('ClassroomAiSettingsPage', () => {
     mockSettings(transitional)
     await open()
     expect(await screen.findByText(/目前沿用系統 key，請設定教師 key 與模型/)).toBeInTheDocument()
+    expect(screen.queryByText('這間教室還沒有設定模型')).not.toBeInTheDocument()
+  })
+
+  it('warns that students cannot use AI when a non-transitional classroom has no model', async () => {
+    mockSettings({ transitional: false, primary: null, fallbacks: [], confirmed_providers: [] })
+    await open()
+    expect(await screen.findByRole('alert')).toHaveTextContent('這間教室還沒有設定模型')
   })
 
   it('shows the current primary and fallbacks, and the model disclaimer', async () => {
@@ -78,6 +85,7 @@ describe('ClassroomAiSettingsPage', () => {
     expect(screen.getByDisplayValue('claude-fb')).toBeInTheDocument()
     expect(screen.getByText(/系統不保證自由輸入的模型的表現/)).toBeInTheDocument()
     expect(screen.queryByText(/目前沿用系統 key/)).not.toBeInTheDocument()
+    expect(screen.queryByText('這間教室還沒有設定模型')).not.toBeInTheDocument()
   })
 
   it('suggests the provider’s models in the model field but still accepts any typed ID', async () => {

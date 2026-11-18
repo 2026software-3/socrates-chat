@@ -1,4 +1,5 @@
 import { KeyRound, Trash2 } from 'lucide-react'
+import { Link } from 'react-router'
 import { useMemo, useState, type FormEvent } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import {
@@ -86,7 +87,14 @@ export function TeachersPage() {
   }
 
   return (
-    <Page title={t('admin.teachers.title')}>
+    <Page
+      title={t('admin.teachers.title')}
+      actions={
+        <Button asChild variant="outline">
+          <Link to="/admin/teachers/keys">{t('adminKeys.nav')}</Link>
+        </Button>
+      }
+    >
       <p className="text-muted-foreground text-sm">{t('admin.teachers.intro')}</p>
 
       <form onSubmit={onAdd} className="flex flex-col gap-2 sm:flex-row sm:items-end" noValidate>
