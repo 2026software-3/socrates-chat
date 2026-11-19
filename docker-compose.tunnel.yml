@@ -14,6 +14,10 @@ services:
     image: cloudflare/cloudflared:${CLOUDFLARED_TAG:-latest}
     restart: unless-stopped
     command: ["tunnel", "--no-autoupdate", "run"]
+    # default：連 staging-proxy 等其他接在這個網路上的容器；edge：連 proxy（proxy 只在 edge 上）。
+    networks:
+      default: {}
+      edge: {}
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?設定 .env 的 CLOUDFLARE_TUNNEL_TOKEN}
     logging:

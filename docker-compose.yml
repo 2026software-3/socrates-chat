@@ -3,11 +3,6 @@
 services:
   db:
     image: postgres:16
-    # net-rev 標籤（db 與 cascade 四個服務都有）：compose 重建網路時，設定沒變的容器只會停了再啟，
-    # 會失去服務名稱別名（db、cascade…），其他容器就解析不到它們。改這個標籤讓它們被「重建」而不是重啟（S-16、ntnu-ops.md）。
-    # 之後只要有變更會讓 compose 重建網路（網段、ipam），這個值也要一起加一。
-    labels:
-      com.socrates.net-rev: "2"
     environment:
       POSTGRES_USER: socrates
       POSTGRES_PASSWORD: socrates
@@ -29,9 +24,11 @@ services:
     profiles: ["app"]
     build: .
     # 固定位址：反向代理（Pingap）沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 換 IP 時代理要很久才跟上。
-    # 其他容器的位址只從下方 ip_range 配置，不會佔用這個位址（S-16）。
+    # 固定在獨立的 edge 網路（app、proxy、cloudflared 才在上面），其他容器的位址只從 edge 的 ip_range 配置，不會佔用它（S-16）。
+    # app 同時在 default 網路，連 db 與 cascade；default 完全不宣告網段，所以套用時 compose 不必重建它、不會停 db 與 cascade。
     networks:
-      default:
+      default: {}
+      edge:
         ipv4_address: 172.29.250.10
     # 避免 Docker 預設日誌無限制占用主機磁碟；舊檔由 local driver 壓縮與輪替。
     logging:
@@ -61,8 +58,6 @@ services:
       context: .
       dockerfile: docker/cascade/Dockerfile
     image: socrates-cascade:latest
-    labels:
-      com.socrates.net-rev: "2"
     command: ["tts"]
     restart: unless-stopped
     logging: &cascade-logging
@@ -93,8 +88,6 @@ services:
       context: .
       dockerfile: docker/cascade/whisper.Dockerfile
     image: socrates-cascade-whisper:latest
-    labels:
-      com.socrates.net-rev: "2"
     restart: unless-stopped
     logging: *cascade-logging
     environment:
@@ -116,8 +109,6 @@ services:
   cascade-adapter:
     profiles: ["cascade"]
     image: socrates-cascade:latest
-    labels:
-      com.socrates.net-rev: "2"
     command: ["adapter"]
     restart: unless-stopped
     logging: *cascade-logging
@@ -136,8 +127,6 @@ services:
   cascade:
     profiles: ["cascade"]
     image: socrates-cascade:latest
-    labels:
-      com.socrates.net-rev: "2"
     command: ["cascade"]
     restart: unless-stopped
     logging: *cascade-logging
@@ -181,6 +170,9 @@ services:
       - ./docker/proxy/down.html:/opt/pingap/down.html:ro
     ports:
       - "127.0.0.1:${PROXY_PORT:-3080}:80"
+    # 只接 edge：解析 app 得到固定位址；不需要連 db 與 cascade。cloudflared 也在 edge 上（docker-compose.tunnel.yml）。
+    networks:
+      - edge
     # 映像沒有 wget／curl，用 bash 內建的 TCP 連線打 /proxy-health
     healthcheck:
       test:
@@ -192,10 +184,12 @@ services:
       timeout: 3s
       retries: 3
 
-# 固定網段（S-16）：app 用 ipv4_address 固定在 172.29.250.10；其他容器只從 ip_range 配置，不會佔走它。
+# 固定網段（S-16）：edge 網路上 app 用 ipv4_address 固定在 172.29.250.10；其他容器只從 ip_range 配置，不會佔走它。
 # 網段必須在後端 TRUSTED_PROXIES（例如 172.16.0.0/12）之內，登入限流才看得到真實來源 IP。
+# default 網路刻意不在這裡宣告（維持隱含的預設設定）：宣告網段會讓 compose 判定設定有變而重建它，
+# 重建要先停掉所有接在上面的容器（db、cascade…）。不要在這裡加 default 的 ipam／labels／driver_opts（ntnu-ops.md）。
 networks:
-  default:
+  edge:
     ipam:
       config:
         - subnet: 172.29.250.0/24
