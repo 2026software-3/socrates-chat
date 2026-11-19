@@ -92,6 +92,9 @@ networks:
   # 固定網段（S-16）：staging-app 固定在 172.29.251.10，其他容器只從 ip_range 配置。
   # 正式環境的 docker-compose.yml 用 172.29.250.0/24；兩個專案的網段不能重疊，所以 staging 用 251。
   default:
+    # 標籤只用來讓 compose 判定網路設定有變而重建網路（量測網路重建的中斷時間，PR #644）；不影響行為。
+    labels:
+      net-rev: "2"
     ipam:
       config:
         - subnet: 172.29.251.0/24
