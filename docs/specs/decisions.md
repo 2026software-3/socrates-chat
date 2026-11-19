@@ -592,7 +592,7 @@
   - **版本固定**：映像標籤固定為 `0.16.2`（沒有 `latest`）；升級前要重跑 `scripts/verify-proxy.sh`。映像以 root 執行、沒有 wget／curl，健康檢查用 bash 內建的 TCP 連線。
   - **與 nginx 的行為差異**（2026-11-19 以 `scripts/verify-proxy.sh` 與換 IP、停機的實測確認，其餘行為驗證項目都通過）：
     - **停機過渡期為 `504`**：見上方〈停機說明頁〉。`error_page` 外掛沿用錯誤原本的狀態碼，不能像 nginx 的 `error_page 502 504 =503` 一律改成 `503`。需求方已接受。
-    - **app 位址必須固定**：Pingap 的 DNS 發現沿用記錄的 TTL，Docker 內建 DNS 的 TTL 是 600 秒，`update_frequency` 只決定多久檢查一次、不會讓位址變更更快生效；`dns_server` 指到 `127.0.0.11` 沒有幫助（實測 224 秒仍未恢復）。app 若換 IP，代理要等數分鐘才跟上（實測約 236 秒），nginx 則每次請求都重新解析、不受影響。因此 `docker-compose.yml` 把 `app` 固定在 `172.29.250.10`，其他容器只從 `ip_range` `172.29.250.128/25` 配置，不會佔走它；實測重建容器與別的容器搶位時，app 的位址都不變，後端回來後 1 秒內恢復。網段必須在後端 `TRUSTED_PROXIES`（例如 `172.16.0.0/12`）之內。若 app 位址仍被迫變更，重啟 `proxy` 容器即可立即跟上。
+    - **app 位址必須固定**：Pingap 的 DNS 發現沿用記錄的 TTL，Docker 內建 DNS 的 TTL 是 600 秒，`update_frequency` 只決定多久檢查一次、不會讓位址變更更快生效；`dns_server` 指到 `127.0.0.11` 沒有幫助（實測 224 秒仍未恢復）。app 若換 IP，代理要等數分鐘才跟上（實測約 236 秒），nginx 則每次請求都重新解析、不受影響。因此 `docker-compose.yml` 在獨立的 `edge` 網路（`172.29.250.0/24`）把 `app` 固定在 `172.29.250.10`（app 同時在 `default` 連 db 與 cascade，proxy 只在 edge，cloudflared 兩個都接），其他容器只從 `ip_range` `172.29.250.128/25` 配置，不會佔走它；`default` 網路刻意不宣告網段：宣告會讓 compose 重建它、停掉 db 與 cascade 全部容器（2026-11-20 需求方採用 edge 網路的做法，staging 實測 db 容器與 default 網路都沒被動）；實測重建容器與別的容器搶位時，app 的位址都不變，後端回來後 1 秒內恢復。網段必須在後端 `TRUSTED_PROXIES`（例如 `172.16.0.0/12`）之內。若 app 位址仍被迫變更，重啟 `proxy` 容器即可立即跟上。
     - 停機頁的 `Cache-Control` 是 `private, no-store`（含 `no-store`）；沒有 nginx 設定的 `Retry-After: 30`。
     - 回應的 `Server` 標頭是 `Pingora`（不含版本）。
     - **錯誤日誌會記 User-Agent（2026-11-19 需求方確認可以記錄）**：Pingap 在代理自己產生錯誤時，錯誤日誌會記該請求的 User-Agent；nginx 的設定原本刻意不記。存取日誌仍只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時，不含 Cookie、Referer、User-Agent、查詢字串（實測確認）。
