@@ -53,11 +53,12 @@ serve／funnel 設定是綁在舊網域上的，改名後不會跟著搬。依�
 
 ## 反向代理與停機說明頁（S-16，選用）
 
-`docker-compose.yml` 有一個 `proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）。啟用後路徑變成：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3080` → `proxy` 容器 → `app:3000`。後端連不上（容器停掉、重建中、WSL 剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。這一層**預設沒有啟用**；是否上線由維護者決定。
+`docker-compose.yml` 有一個 `proxy` 服務（profile `proxy`，Pingap，設定在 `docker/proxy/pingap.toml`；2026-11-19 由 nginx 改採，見 S-16）。啟用後路徑變成：網際網路 → Funnel（443）→ Windows 的 Tailscale → `127.0.0.1:3080` → `proxy` 容器 → `app:3000`。後端連不上（容器停掉、重建中、WSL 剛開機）時，代理回一頁固定的三語說明（穩定時 HTTP 503；剛停掉的約 22 秒內是 504，此期間每個請求要先等 5 秒，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。這一層**預設沒有啟用**；是否上線由維護者決定。
 
 - `proxy` 只綁 `127.0.0.1:3080`（`PROXY_PORT` 可改）。`app` 仍然綁 `127.0.0.1:3000`，所以**切換與回退都只是改 funnel 指向哪個埠**，兩條路可以同時存在。
 - 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
-- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態與耗時；不記 Cookie、Referer、User-Agent。
+- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時；不記 Cookie、Referer、User-Agent。**例外**：代理自己產生錯誤（連不上後端等）時，Pingap 的錯誤日誌會記該請求的 User-Agent（需求方 2026-11-19 確認可以記錄，見 S-16）。
+- **app 的位址固定在 `172.29.250.10`**（`docker-compose.yml` 的 `networks`／`ipv4_address`，其他容器只從 `172.29.250.128/25` 配置）。Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 若換 IP，代理要數分鐘才跟上；固定位址後重建 `app` 不受影響。若 app 位址仍被迫變更，重啟代理即可立即跟上：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy restart proxy`。
 
 ### 上線前驗證
 
@@ -70,7 +71,7 @@ serve／funnel 設定是綁在舊網域上的，改名後不會跟著搬。依�
    curl -s http://127.0.0.1:3080/ready                   # {"status":"ok"}
    ```
 
-3. 確認 `docker-compose.ntnu.yml` 的 `TRUSTED_PROXIES` 包含 compose 網路（目前 `172.16.0.0/12`）。代理的對端是 compose 網路內的位址，沒包含的話所有人在登入限流眼裡都是同一個來源。
+3. 確認 `docker-compose.ntnu.yml` 的 `TRUSTED_PROXIES` 包含 compose 網路（目前 `172.16.0.0/12`，固定網段 `172.29.250.0/24` 在其中）。代理的對端是 compose 網路內的位址，沒包含的話所有人在登入限流眼裡都是同一個來源。
 4. SSE 與語音要用真的後端確認：`verify-proxy.sh` 用的是假後端。切換後立刻開一場對話（回覆要逐段出現）並試一次語音；有問題就照下面〈回退〉。
 
 ### 切換
@@ -96,7 +97,9 @@ TS="/mnt/c/Program Files/Tailscale/tailscale.exe"
 
 ### 已知限制
 
-- 代理只在**後端連不上或逾時**（nginx 自己產生的 502、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
+- **網路重建**：把 `app` 固定位址的設定套用到既有的專案時，compose 專案的網路（例如 `socrates-ntnu_default`）會被重建，所有容器要停下再起，服務會短暫中斷。先在 staging（`socrates-staging`）驗證，正式環境挑沒人使用的時段，並先告知使用者。
+
+- 代理只在**後端連不上或逾時**（Pingap 自己產生的 502、503、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
 - WSL 或 Docker Desktop 重啟後，`proxy` 與 `app` 都要回來；`app` 的 bind mount 失效時（見〈重啟後的恢復〉）代理仍會顯示停機頁，直到 `app` 重建。
 - 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）；摘要論證樹在背景產生，有自己的上限（`ARGUMENT_TREE_TIMEOUT_SECS` 預設 300 秒，見 `docs/specs/summary-argument-tree.md`）。
 
