@@ -57,7 +57,7 @@ serve／funnel 設定是綁在舊網域上的，改名後不會跟著搬。依�
 
 - `proxy` 只綁 `127.0.0.1:3080`（`PROXY_PORT` 可改）。`app` 仍然綁 `127.0.0.1:3000`，所以**切換與回退都只是改 funnel 指向哪個埠**，兩條路可以同時存在。
 - 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
-- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時；不記 Cookie、Referer、User-Agent。**例外**：代理自己產生錯誤（連不上後端等）時，Pingap 的錯誤日誌會記該請求的 User-Agent（待需求方確認，見 S-16）。
+- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時；不記 Cookie、Referer、User-Agent。**例外**：代理自己產生錯誤（連不上後端等）時，Pingap 的錯誤日誌會記該請求的 User-Agent（需求方 2026-11-19 確認可以記錄，見 S-16）。
 - **app 的位址固定在 `172.29.250.10`**（`docker-compose.yml` 的 `networks`／`ipv4_address`，其他容器只從 `172.29.250.128/25` 配置）。Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 若換 IP，代理要數分鐘才跟上；固定位址後重建 `app` 不受影響。若 app 位址仍被迫變更，重啟代理即可立即跟上：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy restart proxy`。
 
 ### 上線前驗證

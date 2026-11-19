@@ -595,7 +595,7 @@
     - **app 位址必須固定**：Pingap 的 DNS 發現沿用記錄的 TTL，Docker 內建 DNS 的 TTL 是 600 秒，`update_frequency` 只決定多久檢查一次、不會讓位址變更更快生效；`dns_server` 指到 `127.0.0.11` 沒有幫助（實測 224 秒仍未恢復）。app 若換 IP，代理要等數分鐘才跟上（實測約 236 秒），nginx 則每次請求都重新解析、不受影響。因此 `docker-compose.yml` 把 `app` 固定在 `172.29.250.10`，其他容器只從 `ip_range` `172.29.250.128/25` 配置，不會佔走它；實測重建容器與別的容器搶位時，app 的位址都不變，後端回來後 1 秒內恢復。網段必須在後端 `TRUSTED_PROXIES`（例如 `172.16.0.0/12`）之內。若 app 位址仍被迫變更，重啟 `proxy` 容器即可立即跟上。
     - 停機頁的 `Cache-Control` 是 `private, no-store`（含 `no-store`）；沒有 nginx 設定的 `Retry-After: 30`。
     - 回應的 `Server` 標頭是 `Pingora`（不含版本）。
-    - **待需求方確認**：Pingap 的錯誤日誌（代理自己產生錯誤時）會記該請求的 User-Agent；nginx 的設定原本刻意不記 User-Agent。存取日誌仍只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時，不含 Cookie、Referer、User-Agent、查詢字串（實測確認）。
+    - **錯誤日誌會記 User-Agent（2026-11-19 需求方確認可以記錄）**：Pingap 在代理自己產生錯誤時，錯誤日誌會記該請求的 User-Agent；nginx 的設定原本刻意不記。存取日誌仍只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時，不含 Cookie、Referer、User-Agent、查詢字串（實測確認）。
   - **驗證**：`scripts/verify-proxy.sh`（假後端，CI 的 `Proxy` 工作流程也會跑）：以 `pingap -t` 檢查設定檔，其餘為行為檢查（轉發、`X-Forwarded-*`、後端自己的 503 原樣轉發、SSE 逐段送達、WebSocket 升級、大請求、停機頁、自動恢復）。nginx 版本額外斷言生效設定的 `proxy_buffering off`，Pingap 沒有這個開關（轉發本來就是串流），SSE 由行為檢查把關。
   - **上線**：這是 NTNU 正式環境（S-09.3）的變更。固定 app 位址會改變 compose 專案的網路設定，套用時整個專案的網路要重建（容器會短暫中斷）；上線前要在 staging 驗證，步驟見 `docs/ntnu-ops.md`。
 
@@ -761,7 +761,7 @@ Given / When / Then：
 - S-01.4（登入限流與 S-08.2 同步修訂）、S-04.8（AI 產生引導問題待 S-06.1）的剩餘待確認項目（見各項）。
 - S-04.6、S-07.2、S-07.3、S-07.4 的剩餘待確認項目（見各項）。
 - F-20 類型卡與 S-04.5 思辨標籤在主要學派取消後的依據。
-- S-17 管理者是否可手動刪除客訴與已處理客訴的保存期限；S-16 Pingap 錯誤日誌記 User-Agent 是否可接受（見各項）。
+- S-17 管理者是否可手動刪除客訴與已處理客訴的保存期限（見各項）。
 
 **尚未討論**
 - S-04.1 題目統計指標
