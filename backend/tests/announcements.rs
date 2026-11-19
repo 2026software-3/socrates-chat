@@ -37,6 +37,17 @@ async fn call(
     (status, bytes)
 }
 
+/// 等到 AI 已收到至少 `n` 個請求，代表慢的那次修改已讀完快照並開始翻譯。
+async fn wait_for_ai_requests(ai: &FakeAi, n: usize) {
+    for _ in 0..200 {
+        if ai.requests.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("AI 沒有在時限內收到 {n} 個請求");
+}
+
 /// 建立一則公告並回傳它；AI 腳本決定翻譯成功或失敗。
 async fn create(app: &axum::Router, admin: &str, body: Value) -> Value {
     let (status, v) = call(app, "POST", ADMIN_LIST, Some(admin), Some(body)).await;
@@ -290,7 +301,7 @@ async fn editing_text_during_translation_keeps_concurrent_changes(pool: PgPool) 
         Paced(vec!["Bye"], pace),
         Paced(vec!["Adiós"], pace),
     ]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool, ai.clone());
     let a = seed_actors(&app).await;
     let made = create(
         &app,
@@ -313,7 +324,7 @@ async fn editing_text_during_translation_keeps_concurrent_changes(pool: PgPool) 
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_ai_requests(&ai, 3).await;
     let ends = at(3600);
     let (s, v) = call(
         &app,
@@ -349,7 +360,7 @@ async fn a_period_made_invalid_by_a_concurrent_change_is_rejected(pool: PgPool) 
         Paced(vec!["Bye"], pace),
         Paced(vec!["Adiós"], pace),
     ]);
-    let app = test_app_with_ai(pool, ai);
+    let app = test_app_with_ai(pool, ai.clone());
     let a = seed_actors(&app).await;
     let made = create(
         &app,
@@ -373,7 +384,7 @@ async fn a_period_made_invalid_by_a_concurrent_change_is_rejected(pool: PgPool) 
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_ai_requests(&ai, 3).await;
     // B：結束時間設在一小時後，早於 A 要設的開始時間
     let (s, v) = call(
         &app,
@@ -894,4 +905,50 @@ async fn maintenance_also_blocks_the_internal_cascade_endpoint(pool: PgPool) {
     )
     .await;
     assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
+}
+
+/// 重試翻譯進行期間管理者手動存了譯文：重試完成後不能把手動譯文蓋掉。
+#[sqlx::test]
+async fn a_late_retry_does_not_overwrite_a_manual_translation(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Fail,
+        Fail,
+        Paced(vec!["AI en"], pace),
+        Paced(vec!["AI es"], pace),
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "稍後翻譯"}),
+    )
+    .await;
+    let id: uuid::Uuid = made["id"].as_str().unwrap().parse().unwrap();
+    let state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        test_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    let retry = tokio::spawn(async move {
+        socrates_chat_backend::announcements::retry_pending_translation(&state, id).await;
+    });
+    wait_for_ai_requests(&ai, 3).await;
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &format!("{ADMIN_LIST}/{id}"),
+        Some(&a.admin),
+        Some(json!({"text_en": "Manual"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    retry.await.unwrap();
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["text_en"], "Manual", "手動譯文被重試蓋掉");
+    assert_eq!(list[0]["text_es"], "AI es");
+    assert_eq!(list[0]["pending_languages"], json!([]));
 }
