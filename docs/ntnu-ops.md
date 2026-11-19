@@ -94,8 +94,8 @@ CSRF 只認一個網址，換網址要同步改：
 
 - **網路重建**：把 `app` 固定位址的設定套用到既有的專案時，`docker compose up -d` 會自動停下用到該網路的容器、重建網路、再起容器，服務會中斷；以 staging 相同拓撲預演約 20 秒（約 10 秒連線被拒、約 10 秒 503）。先在 staging 驗證，正式環境挑沒人使用的時段，並先告知使用者。
   **不會被重建的容器（例如 db）重新接上新網路時會失去服務名稱別名**（2026-11-19 staging 實測：`staging-db` 解析不到，app 反覆崩潰「failed to lookup address information」，部署的健康檢查失敗）。
-  不只 db：所有沒被重建的容器都會失去別名，沒被重建的 app 還會失去固定位址；接在該網路上的外部容器（例如 staging-proxy）更會讓網路移除失敗、整個專案停著。
-  補救用 `scripts/host/compose-alias-watch.sh`（背景補回別名與固定位址，不重啟容器）；正式環境的完整做法見〈正式環境套用 Pingap 與固定位址〉。
+  不只 db：所有設定沒變的容器都會失去別名，沒被重建的 app 還會失去固定位址；接在該網路上的外部容器（例如 staging-proxy）更會讓網路移除失敗、整個專案停著。
+  根本做法是讓這些容器在同一次部署被「重建」而不是重啟（`docker-compose.yml` 的 `com.socrates.net-rev` 標籤，之後讓網路重建的變更要一起加一），外部容器要先拆再接回；完整步驟見〈正式環境套用 Pingap 與固定位址〉。
 - 代理只在**後端連不上或逾時**（Pingap 自己產生的 502、503、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
 - 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）；摘要論證樹在背景產生，有自己的上限（`ARGUMENT_TREE_TIMEOUT_SECS` 預設 300 秒，見 `docs/specs/summary-argument-tree.md`）。
 
@@ -428,16 +428,20 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 這次部署與平常不同，**不能只按核准**：`docker-compose.yml` 的網段從 Docker 自動配置的 `172.19.0.0/16` 改成 `172.29.250.0/24`（app 固定 `.10`），compose 會重建 `socrates-ntnu_default`。重建網路要先停掉所有接在上面的容器，所以**整個正式環境會停止再啟動**（db、app、proxy、cloudflared、四個 cascade 服務），不只是換代理。
 staging 已驗證（2026-11-19：SSE 對話成功、中斷約 21 秒）；語音 WebSocket 在 staging 沒有語音服務，**第一次經 Pingap 的語音測試會在正式環境**。
 
-### 先知道的四個陷阱（2026-11-20 在 msi_cubi 以相同版本的 compose 2.40.3 實測）
+### 為什麼需要固定位址
 
-部署包裝腳本（`socrates-prod-deploy`）是 root 的檔案，不處理這些；沒準備好就會把正式環境弄停。
+Docker 不會固定容器位址：每次啟動從網段由低到高挑一個空的，重啟後常常沒變，但重建網路、啟動順序不同或容器被重建時都可能換。nginx 會重新解析位址所以沒問題；Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 換位址後代理要約 4 分鐘才跟上（2026-11-19 實測）。所以 app 用 `ipv4_address` 固定在 `172.29.250.10`，其他容器只從 `ip_range` 配置，不會佔走它。
 
-1. **接在正式網路上的外部容器會擋住網路重建**。目前 `socrates-staging-staging-proxy-1` 就接在 `socrates-ntnu_default`（讓 cloudflared 連得到 staging）。compose 會先停掉所有專案容器，才在移除網路時報 `has active endpoints` 退出——**正式環境整個停著**。部署前必須先把它從網路拆下來，部署後再接回。
-2. **沒被重建的容器失去服務別名**。不只 db：cascade、cascade-adapter、cascade-tts、cascade-whisper、cloudflared、proxy 只是停了再啟，重新接上新網路後別名都沒了。app 找不到 `db`、`cascade`，cloudflared 找不到 `proxy`，公開網址不通。
-3. **沒被重建的 app 會失去固定位址**，改拿動態位址。正式部署每次換映像標籤，app 會被重建所以通常不受影響；但同一版重跑部署（Re-run）時 app 只是重啟，位址就跑掉。
-4. **失敗後的卡住狀態**：上面第 1 點失敗後，容器已停且已離開網路，再跑一次 `up -d` 會報 `is not connected to the network`。要先 `docker compose ... rm -f`（只移除容器，**不加 `-v`**）再重來。
+### 兩個要先處理的陷阱（2026-11-20 在 msi_cubi 以 compose 2.40.3 實測）
 
-對策是 `scripts/host/compose-alias-watch.sh`：在背景每 0.3 秒檢查，缺別名或 app 位址不對就 `disconnect`／`connect --alias [--ip]` 補回，不重啟容器。已在隔離專案用 4 個服務加一個外部容器完整演練過（別名與 app 位址都在部署後 1～2 秒內補回）。
+部署包裝腳本（`socrates-prod-deploy`）是 root 的檔案，不處理這些。
+
+1. **接在正式網路上的外部容器會擋住網路重建**。目前 `socrates-staging-staging-proxy-1` 就接在 `socrates-ntnu_default`（讓 cloudflared 連得到 staging）。compose 會先停掉所有專案容器，才在移除網路時報 `has active endpoints` 退出——**正式環境整個停著**。部署前先把它從網路拆下來，部署後再接回（清單第 2、4 步）。
+2. **設定沒變的容器重新接上新網路時，會失去服務別名**（db、cascade 等：app 找不到 `db`、`cascade`），沒被重建的 app 還會失去固定位址。原因是 compose 只對「設定有變」的容器做重建，其他的只是停了再啟。
+   對策已經在 `docker-compose.yml`：db 與 cascade 四個服務各有標籤 `com.socrates.net-rev: "2"`，這次部署會因此被**重建**（重建的容器別名與位址都正確）；proxy（換映像）與 app（每次部署換映像標籤）本來就會被重建。db 與 cascade 在網路重建時本來就會停了再啟，重建不多花時間。
+   **之後任何會讓 compose 重建網路的變更（網段、ipam），都要同時把這個標籤加一**，否則會再發生。
+
+另外要知道失敗後的卡住狀態：第 1 點失敗後，容器已停且已離開網路，再跑一次 `up -d` 會報 `is not connected to the network`，要先 `docker compose ... rm -f`（只移除容器，**不加 `-v`**）再重來（見回退）。
 
 ### 清單
 
@@ -449,40 +453,32 @@ staging 已驗證（2026-11-19：SSE 對話成功、中斷約 21 秒）；語音
 
 **2. 前置（動手前 30 分鐘內）**
 
-1. 前提：PR #644 已進 `main`，且含本節的版本已部署到 staging（腳本會出現在 `/var/lib/socrates-staging/scripts/host/compose-alias-watch.sh`）。複製到家目錄：`cp /var/lib/socrates-staging/scripts/host/compose-alias-watch.sh ~/ && chmod 755 ~/compose-alias-watch.sh`。
-2. 記下目前版本，回退要用：`docker inspect -f '{{.Config.Image}}' socrates-ntnu-app-1`，格式 `socrates-ntnu-app:prod-<12 碼>`；用 `git rev-parse <12 碼>` 取得 40 位 sha。
-3. 列出接在正式網路上的外部容器（名稱不是 `socrates-ntnu-` 開頭的）：
+1. 記下目前版本，回退要用：`docker inspect -f '{{.Config.Image}}' socrates-ntnu-app-1`，格式 `socrates-ntnu-app:prod-<12 碼>`；用 `git rev-parse <12 碼>` 取得 40 位 sha。
+2. 確認最近的備份存在（部署腳本也會在動手前自動 `pg_dump`，備份失敗會中止）：`ls -lt /var/backups/socrates-prod | head -3`。
+3. 列出接在正式網路上的外部容器（名稱不是 `socrates-ntnu-` 開頭的），應該只有 staging-proxy：
    ```bash
    docker network inspect socrates-ntnu_default -f '{{range .Containers}}{{.Name}}{{println}}{{end}}' | grep -v '^socrates-ntnu-'
    ```
-   目前應該只有 `socrates-staging-staging-proxy-1`。**全部都要拆**。
-4. 拆下外部容器（staging 的公開網址此刻起連不到，等第 4 步接回）：
+4. 拆下它（staging 的公開網址此刻起連不到，等第 4 步接回）：
    ```bash
    docker network disconnect socrates-ntnu_default socrates-staging-staging-proxy-1
    ```
-5. 啟動補救腳本（最多跑 30 分鐘；同一專案只會有一個）：
-   ```bash
-   nohup ~/compose-alias-watch.sh socrates-ntnu 1800 app=172.29.250.10 > ~/alias-watch-prod.log 2>&1 &
-   ```
-6. 確認最近的備份存在（部署腳本也會在動手前自動 `pg_dump`，備份失敗會中止）：`ls -lt /var/backups/socrates-prod | head -3`。
 
 **3. 套用**
 
 1. 開 PR 把 `deploy/msi-cubi-staging` 合併到 `deploy/msi-cubi-intel`；PR 合併後 GitHub Actions「Production deploy (msi_cubi)」開始，**核准 `prod-deploy` 環境**。
-2. 另開一個終端看進度：`watch -n 2 'docker ps --format "{{.Names}} | {{.Status}}" | grep socrates-ntnu'` 與 `tail -f ~/alias-watch-prod.log`。補救腳本應在網路重建後 1～2 秒內印出各服務「已補上」。
+2. 另開一個終端看進度：`watch -n 2 'docker ps --format "{{.Names}} | {{.Status}}" | grep socrates-ntnu'`。
 3. 部署腳本的健康檢查通過（`/ready` 回 200）才算部署成功；cascade 還要再等數分鐘轉為 healthy。
 
 **4. 套用後立刻做**
 
-1. 接回外部容器（沿用原別名）：
-   ```bash
-   docker network connect --alias staging-proxy socrates-ntnu_default socrates-staging-staging-proxy-1
-   ```
-   然後 `curl -s -o /dev/null -w '%{http_code}\n' https://staging.se3socrateschat.ntnu.cc/ready` 應回 200。
-2. 等 cascade 四個服務都 healthy（`docker ps`）後，停掉補救腳本並看紀錄：
-   ```bash
-   pkill -f '[c]ompose-alias-watch.sh socrates-ntnu'; cat ~/alias-watch-prod.log
-   ```
+接回外部容器（沿用原別名）：
+
+```bash
+docker network connect --alias staging-proxy socrates-ntnu_default socrates-staging-staging-proxy-1
+```
+
+然後 `curl -s -o /dev/null -w '%{http_code}\n' https://staging.se3socrateschat.ntnu.cc/ready` 應回 200。
 
 **5. 驗證**
 
@@ -495,6 +491,7 @@ staging 已驗證（2026-11-19：SSE 對話成功、中斷約 21 秒）；語音
     docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}: {{range $k,$v := .NetworkSettings.Networks}}{{$v.Aliases}} {{$v.IPAddress}}{{end}}' $c
   done
   ```
+  cloudflared 不會被別的服務解析，別名清單可以沒有它的服務名。
 - 代理：`curl -s http://127.0.0.1:3080/proxy-health` 回 `ok`；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/ready` 與 `https://se3socrateschat.ntnu.cc/ready` 都回 200。
 - 來源 IP：照〈驗證 TRUSTED_PROXIES（來源 IP）〉做一次（新網段仍在 `172.16.0.0/12` 內，`ip` 應是公網位址，不是 `172.x`）。
 - SSE：用自己的帳號開一場對話，回覆要逐段出現。
@@ -505,23 +502,21 @@ staging 已驗證（2026-11-19：SSE 對話成功、中斷約 21 秒）；語音
 **6. 回退**
 
 - **只是 Pingap 行為不對、其他正常**：先不動容器，把 Cloudflare Zero Trust 的 tunnel 遠端 ingress 從 `http://proxy:80` 改成 `http://app:3000`（見〈反向代理與停機說明頁〉的回退）。沒有停機頁，其他照常。
-- **需要整個退回 nginx**：是另一次完整的網路重建（網段回到 Docker 自動配置，整個環境再停一次），**照上面第 2～5 步再做一遍**（拆外部容器、補救腳本——這次不用帶 `app=`、驗證、接回），中間的部署改成 root 回滾：
+- **需要整個退回 nginx**：是另一次完整的網路重建（網段回到 Docker 自動配置，整個環境再停一次），**照上面第 2～5 步再做一遍**（拆、接回 staging-proxy 一樣要做），中間的部署改成 root 回滾：
   ```bash
   sudo PROD_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-prod-deploy <舊 sha>
   ```
-  先確認舊版與目前資料庫相容（migration 只往前）：`git diff --stat <舊 sha> <新 sha> -- backend/migrations` 沒有輸出才可直接退回；有 migration 就不能直接退，要另外評估。
+  舊版沒有 `net-rev` 標籤，db 與 cascade 的設定會因此不同而被重建，別名一樣正確。先確認舊版與目前資料庫相容（migration 只往前）：`git diff --stat <舊 sha> <新 sha> -- backend/migrations` 沒有輸出才可直接退回；有 migration 就不能直接退，要另外評估。
 - **部署中出現 `has active endpoints`（前置第 3～4 步漏了）**：此時正式環境的容器都已停掉。依序：
   1. 找出並拆下外部容器：`docker network inspect socrates-ntnu_default -f '{{range .Containers}}{{.Name}}{{println}}{{end}}'`，名稱不是 `socrates-ntnu-` 開頭的都 `docker network disconnect socrates-ntnu_default <名稱>`。
-  2. 啟動補救腳本（前置第 5 步）。
-  3. 移除已停止的容器（**不加 `-v`**；資料庫在命名 volume `pgdata_v2`，不受影響），需要 root：
+  2. 移除已停止的容器（**不加 `-v`**；資料庫在命名 volume `pgdata_v2`，不受影響），需要 root：
      ```bash
      cd /var/lib/socrates-prod && sudo APP_IMAGE_TAG=x docker compose -f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml --profile app --profile cascade --profile proxy --profile tunnel rm -f
      ```
-  4. 重新部署：`sudo /usr/local/sbin/socrates-prod-deploy <目前 head 的 sha>`，然後做第 4 步與第 5 步。
-- **健康檢查失敗、app 反覆崩潰（找不到 db 或 cascade）**：補救腳本沒在跑。立刻 `nohup ~/compose-alias-watch.sh socrates-ntnu 600 app=172.29.250.10 &`，別名補回後 app 會自行重啟；不需要重啟資料庫。
+  3. 重新部署：`sudo /usr/local/sbin/socrates-prod-deploy <目前 head 的 sha>`，然後做第 4 步與第 5 步。
 - 上述回退只動 `socrates-ntnu`；資料庫與備份（`/var/backups/socrates-prod`）都不會因網路重建而遺失。
 
-**未驗證、需求方可決定的選項**：若不想讓整個環境停機，可以改成不更換網段（維持 `172.19.0.0/16`），只把 app 固定在該網段內一個很高的位址（Docker 從低位址開始配置，不會撞到）。這樣 compose 不會重建網路、只重建 proxy 與 app，中斷會短很多；但目前的 `docker-compose.yml` 與 S-16 規格寫的是 `172.29.250.0/24`，改它要先更新規格，而且這個做法尚未實測。
+**備選（已在隔離專案實測可行，但未採用）**：正式環境不換網段，維持現有的 `172.19.0.0/16`，只把 app 固定在其中一個高位址（例如 `172.19.0.250`）。實測 compose 不會重建網路，只重建 app 與 proxy，不會整個環境停機，也沒有上面兩個陷阱。沒採用是因為它與 S-16 規格寫的 `172.29.250.0/24` 不一致，且位址綁在這台主機 Docker 自動挑的網段上。
 
 ## 讓管理者直接改環境變數檔（staging 與正式環境）
 
