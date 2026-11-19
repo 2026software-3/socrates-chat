@@ -49,10 +49,12 @@ services:
       TRUSTED_PROXIES: 172.16.0.0/12
       DEMO_MODE: ${STAGING_DEMO_MODE:-false}
     # 固定位址：Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），staging-app 換 IP 時代理要很久才跟上（S-16）。
-    # 其他容器只從下方 ip_range 配置，不會佔用這個位址。
+    # 位址固定在獨立的 edge 網路（只有 staging-app 與 staging-proxy），其他容器只從下方 ip_range 配置，不會佔用這個位址。
+    # 這樣 default 網路（staging-db 在上面）不必為了固定位址而重建，db 不會被停（2026-11-20 設計，見 docs/ntnu-ops.md）。
     networks:
-      default:
-        ipv4_address: 172.29.251.10
+      default: {}
+      edge:
+        ipv4_address: 172.29.252.10
     depends_on:
       staging-db:
         condition: service_healthy
@@ -73,8 +75,9 @@ services:
       - ./docker/proxy/down.html:/opt/pingap/down.html:ro
     ports:
       - "127.0.0.1:${STAGING_PROXY_PORT:-3081}:80"
+    # 只接 edge（解析 staging-app 得到固定位址）與正式環境的網路（讓 cloudflared 連得到）；不接 default，不需要連 staging-db。
     networks:
-      default: {}
+      edge: {}
       ntnu:
         aliases: [staging-proxy]
     # 映像沒有 wget／curl，用 bash 內建的 TCP 連線打 /proxy-health
@@ -89,16 +92,22 @@ services:
       retries: 3
 
 networks:
-  # 固定網段（S-16）：staging-app 固定在 172.29.251.10，其他容器只從 ip_range 配置。
-  # 正式環境的 docker-compose.yml 用 172.29.250.0/24；兩個專案的網段不能重疊，所以 staging 用 251。
+  # default：staging-db 與 staging-app 之間的網路，2026-11-19 套用過，設定不能再動，否則 compose 會重建它並停掉 staging-db。
+  # 下面的標籤與網段是當時留下的（標籤用來觸發重建、量測中斷時間，PR #644），移除任何一項都會讓 compose 判定設定有變。
   default:
-    # 標籤只用來讓 compose 判定網路設定有變而重建網路（量測網路重建的中斷時間，PR #644）；不影響行為。
     labels:
       net-rev: "2"
     ipam:
       config:
         - subnet: 172.29.251.0/24
           ip_range: 172.29.251.128/25
+  # edge：staging-app 固定在 172.29.252.10（S-16），staging-proxy 在這裡解析它；其他容器只從 ip_range 配置。
+  # 正式環境的 edge 用 172.29.250.0/24；各網段不能重疊（staging default 251、staging edge 252）。
+  edge:
+    ipam:
+      config:
+        - subnet: 172.29.252.0/24
+          ip_range: 172.29.252.128/25
   ntnu:
     external: true
     name: socrates-ntnu_default
