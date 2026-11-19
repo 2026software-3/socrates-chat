@@ -93,6 +93,8 @@ CSRF 只認一個網址，換網址要同步改：
 ### 已知限制
 
 - **網路重建**：把 `app` 固定位址的設定套用到既有的專案時，`docker compose up -d` 會自動停下用到該網路的容器、重建網路、再起容器，服務會中斷；以 staging 相同拓撲預演約 20 秒（約 10 秒連線被拒、約 10 秒 503）。先在 staging 驗證，正式環境挑沒人使用的時段，並先告知使用者。
+  **不會被重建的容器（例如 db）重新接上新網路時會失去服務名稱別名**（2026-11-19 staging 實測：`staging-db` 解析不到，app 反覆崩潰「failed to lookup address information」，部署的健康檢查失敗）。
+  套用後立刻檢查，沒有別名就補上，不需要重啟資料庫：`docker network disconnect <專案>_default <db 容器> && docker network connect --alias <db 服務名> <專案>_default <db 容器>`，app 隨後自行重啟恢復。
 - 代理只在**後端連不上或逾時**（Pingap 自己產生的 502、503、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
 - 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）；摘要論證樹在背景產生，有自己的上限（`ARGUMENT_TREE_TIMEOUT_SECS` 預設 300 秒，見 `docs/specs/summary-argument-tree.md`）。
 
@@ -381,7 +383,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - 權限模型：
   - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支目前的 head。
   - 部署邏輯來自主機上 root 擁有的 `/usr/local/sbin/socrates-staging-deploy`，**不取自被推送的 commit**。
-  - 密鑰（`.env.staging`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。
+  - 密鑰（`.env.staging`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。管理者要不用 sudo 直接改，見〈讓管理者直接改環境變數檔〉。
   - 只部署分支目前的 head；舊 commit 與分支外 commit 會被拒絕。回滾是 root 的緊急手段：`sudo STAGING_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-staging-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。
 - 不碰正式環境：沒有 `down`、沒有 `-v`，不動 `socrates-ntnu`。不設 `STAGING_DEMO_MODE`，自動部署不會開示範帳號。
 - 同一時間只跑一個部署：workflow 的 concurrency 加上包裝腳本的 `flock`。部署中途不取消；排隊中的舊執行會被較新的 push 取代。
@@ -412,13 +414,51 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 - 流程：核准後 msi_cubi 的 self-hosted runner（使用者 `gha-runner-prod`，label `msi-cubi-prod`，與 staging 的 `gha-runner` 不同人）執行 `sudo -n /usr/local/sbin/socrates-prod-deploy <sha>`。
 - 包裝腳本（`scripts/host/socrates-prod-deploy`，root 擁有，不取自被推送的 commit）：只接受 40 位小寫十六進位 SHA 且必須是 `deploy/msi-cubi-intel` 的祖先；**先 pg_dump 備份到 `/var/backups/socrates-prod`（保留 14 份，備份失敗就中止，不動容器）**；`git reset --hard` 到該 commit；建置 `socrates-ntnu-app:prod-<sha12>`；以 `APP_IMAGE_TAG` 覆寫並 `up -d --no-build`（四個 compose 檔、四個 profile）；經 proxy 的 `/ready` 健康檢查（最多 90 秒）；只保留最近 5 個 prod 映像。不使用 `down`、不使用 `-v`，不碰資料庫 volume 與 cascade 映像。
-- 部署目錄 `/var/lib/socrates-prod`（root 擁有的 clone）；秘密只有 `.env`（root 0600，runner 讀不到）。**不要在那裡手動改程式**。`~/socrates-intel` 是舊的手動部署目錄，切換後不再使用（保留作退路，勿再用它啟動，以免兩邊搶同一個 compose 專案）。
+- 部署目錄 `/var/lib/socrates-prod`（root 擁有的 clone）；秘密只有 `.env`（預設 root 0600，runner 讀不到；管理者直接改的設定見〈讓管理者直接改環境變數檔〉）。**不要在那裡手動改程式**。`~/socrates-intel` 是舊的手動部署目錄，切換後不再使用（保留作退路，勿再用它啟動，以免兩邊搶同一個 compose 專案）。
 - 注意：第一次從新目錄部署時，bind mount 路徑變了，proxy 與 cascade 容器會被重建（cascade 模型載入需要數分鐘，語音暫時不可用）。
 - 只部署 `deploy/msi-cubi-intel` 目前的 head；舊 commit 與分支外 commit 都會被包裝腳本拒絕（避免別的 workflow 跑在 prod runner 上時繞過核准回滾）。回滾是 root 的緊急手段：`sudo PROD_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-prod-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。**migration 只往前**，舊映像不一定相容新 schema；回滾前先確認，必要時用部署前備份還原。
 - runner 隔離：prod runner 只該跑 `prod-deploy.yml`。repo 設定要關閉 fork PR 觸發 self-hosted runner；若 repo 之後搬到 organization，把 runner 放進限定 `prod-deploy.yml@refs/heads/deploy/msi-cubi-intel` 的 runner group。runner 上線後，**不要以 root 執行 runner 目錄裡的腳本**（`svc.sh` 等由 runner 使用者擁有），改用 `systemctl`。
 - 信任邊界：同 staging。防線是分支保護（只能經 PR、禁止 force push）、environment `prod-deploy` 的 Required reviewers、workflow 只接 `push`（不要加 `pull_request`）。
 - 主機端一次性設定：合併 PR 後在 msi_cubi 用 `scripts/host/setup-prod-autodeploy.sh`（`~/socrates-intel` 不是 git clone，要先 `scp` 過去；檔頭有一行指令版本，token 由本機 `gh` 產生並自動帶入，runner 固定 v2.338.2 並驗 SHA256）。它建立目錄、複製 `.env`（缺 `TEACHER_KEY_ENCRYPTION_KEYS` 會產生並要你存好）、安裝包裝腳本與 sudoers、建立 runner。
 - **AI key 淘汰（2026-11-19）**：後端不再讀 `.apikeylist`／`OPENAI_API_KEYS`。升級後管理者第一件事是到「系統 AI」設定模型與 key，在那之前系統用途的 AI（個人練習、翻譯、主張分組、公告翻譯等）不可用；教師 key 與教室 AI 不受影響。`TEACHER_KEY_ENCRYPTION_KEYS` 遺失就解不開資料庫裡所有 key，要另存。主機上舊的 `.apikeylist` 可在確認 AI 正常後刪除。
+
+## 讓管理者直接改環境變數檔（staging 與正式環境）
+
+部署目錄（`/var/lib/socrates-staging`、`/var/lib/socrates-prod`）與裡面的秘密檔預設是 root 擁有、0600，管理者（`ray520`）要改環境變數得每次 `sudo`。
+`docker` 群組目前只有 `ray520`，而能用 docker 本來就等同 root，所以把秘密檔的群組改成 `docker` 並開群組讀寫，**不會多給任何人權限**；自動部署的 runner 使用者（`gha-runner`、`gha-runner-prod`）不在 docker 群組，仍然讀不到。
+只動秘密檔，不用 `chgrp -R`：目錄與其他檔案維持 root，部署包裝腳本的 `git reset --hard` 不受影響。以 root 在 msi_cubi 執行一次：
+
+```bash
+# staging
+sudo chgrp docker /var/lib/socrates-staging/.env.staging /var/lib/socrates-staging/.staging-credentials
+sudo chmod 660   /var/lib/socrates-staging/.env.staging /var/lib/socrates-staging/.staging-credentials
+
+# 正式環境（只有 .env 一個秘密檔）
+sudo chgrp docker /var/lib/socrates-prod/.env
+sudo chmod 660   /var/lib/socrates-prod/.env
+```
+
+- 之後 `ray520` 可以直接編輯這些檔，不用 sudo。編輯器要「原地寫入」：目錄仍是 root 的，會先寫暫存檔再改名的編輯器會失敗；`nano` 與 `vim`（預設設定）都可以。
+- **不要**把權限開得比 660 更寬，也不要把使用者加進 `docker` 群組以外的方式給 runner 讀取。`.env` 內有資料庫密碼與 `TEACHER_KEY_ENCRYPTION_KEYS`（遺失就解不開資料庫裡所有 key），改之前先備份一份到安全的地方。
+- 部署包裝腳本以 root 寫檔，不會動這兩個被 `.gitignore` 的檔案，所以群組與權限在自動部署後仍保留。若檔案被刪除重建，要重新執行上面兩行。
+- 正式環境的 `.env` 也是 compose 預設會讀的檔（變數替換）。原本 `ray520` 在 `/var/lib/socrates-prod` 跑 `docker compose` 會因為讀不到 `.env` 而失敗；改成 660 後才讀得到。
+
+改完要重建容器才會生效（只需要 docker 群組，不用 root、不經 GitHub 核准）。只重建會用到該檔的服務，不要讓不相關的服務一起被重建：
+
+```bash
+# staging：app 讀 .env.staging
+cd /var/lib/socrates-staging
+STAGING_APP_IMAGE_TAG=$(docker inspect -f '{{.Config.Image}}' socrates-staging-staging-app-1 | cut -d: -f2) \
+  docker compose -f docker-compose.staging.yml up -d --no-build --no-deps --force-recreate staging-app
+
+# 正式環境：app 讀 .env；其他服務（尤其 cascade，載入模型要數分鐘）不要動
+cd /var/lib/socrates-prod
+APP_IMAGE_TAG=$(docker inspect -f '{{.Config.Image}}' socrates-ntnu-app-1 | cut -d: -f2) \
+  docker compose -f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml \
+  --profile app --profile cascade --profile proxy --profile tunnel up -d --no-build --no-deps --force-recreate app
+```
+
+重建 `app` 會中斷服務數秒；正式環境挑沒人使用的時段，並先告知使用者。若改的是 cascade 或 tunnel 讀的變數，要重建對應的服務，不是 `app`。
 
 ## 狀態紀錄
 
