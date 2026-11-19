@@ -6,9 +6,9 @@ services:
     command: ["python", "/proxy-check.py", "backend"]
     volumes:
       - ./scripts/proxy-check.py:/proxy-check.py:ro
+    # 與正式設定相同：假後端在 edge 網路（代理只接 edge）並固定位址（Pingap 沿用 DNS TTL，位址不能變；見 docker-compose.yml）
     networks:
-      default:
+      edge:
         aliases:
           - app
-        # 與正式設定相同的固定位址（Pingap 沿用 DNS TTL，位址不能變；見 docker-compose.yml）
         ipv4_address: 172.29.250.10
