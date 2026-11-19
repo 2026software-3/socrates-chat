@@ -107,6 +107,7 @@ pub fn test_config() -> Config {
         smtp: None,
         teacher_key_cipher: None,
         classroom_ai_routing: false,
+        monitored_services: vec![],
     }
 }
 
