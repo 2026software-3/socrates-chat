@@ -81,17 +81,19 @@ CSRF 只認一個網址，換網址要同步改：
 
 ## 反向代理與停機說明頁（S-16）
 
-`proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）在正式環境的路徑上：`cloudflared` → `proxy:80` → `app:3000`。後端連不上（容器停掉、重建中、主機剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。
+`proxy` 服務（profile `proxy`，Pingap，設定在 `docker/proxy/pingap.toml`；2026-11-19 由 nginx 改採，見 S-16）在正式環境的路徑上：`cloudflared` → `proxy:80` → `app:3000`。後端連不上（容器停掉、重建中、主機剛開機）時，代理回一頁固定的三語說明（穩定時 HTTP 503；剛停掉的約 22 秒內是 504，此期間每個請求要先等 5 秒；「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。
 
 - 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
-- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態與耗時；不記 Cookie、Referer、User-Agent。
+- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時；不記 Cookie、Referer、User-Agent。**例外**：代理自己產生錯誤（連不上後端等）時，Pingap 的錯誤日誌會記該請求的 User-Agent（需求方 2026-11-19 確認可以記錄，見 S-16）。
+- **app 的位址固定**：Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 若換 IP，代理要數分鐘才跟上；固定位址後重建 `app` 不受影響。固定位址放在獨立的 `edge` 網路，不動 `default`（原因與步驟見〈正式環境套用 Pingap 與固定位址〉）：正式環境在 `docker-compose.yml`（`edge` 為 `172.29.250.0/24`，app 固定在 `.10`，其他容器只從 `172.29.250.128/25` 配置；proxy 只接 edge，cloudflared 兩個網路都接）；staging 在 `docker-compose.staging.yml`（`edge` 為 `172.29.252.0/24`，`staging-app` 固定在 `.10`；`default` 是 `172.29.251.0/24`，2026-11-19 套用過，設定不能再動）。**各網段不能重疊**，否則後建立的那個網路會失敗。app 位址若仍被迫變更，重啟代理即可立即跟上：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy restart proxy`。
 - 改代理設定前，先在任何有 Docker 的機器上跑 `scripts/verify-proxy.sh`（用假後端，不碰 `socrates-ntnu`）：檢查轉發、`X-Forwarded-For`、後端自己的 503 原樣轉發、SSE、WebSocket 升級、大請求，以及後端停掉時的停機頁與回來後的自動恢復。SSE 與語音要另外用真的後端確認（開一場對話，回覆要逐段出現；試一次語音）。
 - 確認停機頁：先告知使用者（會中斷服務），`docker stop socrates-ntnu-app-1`，公開網址應出現停機頁，之後 `docker start socrates-ntnu-app-1`。
 - 代理出問題時的回退：把 tunnel ingress 的服務從 `http://proxy:80` 改成 `http://app:3000`（Cloudflare Zero Trust 的遠端設定，不用動容器）。這時沒有停機頁，`TRUSTED_PROXIES` 仍包含 cloudflared 所在的 compose 網段，來源 IP 照常。
 
 ### 已知限制
 
-- 代理只在**後端連不上或逾時**（nginx 自己產生的 502、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
+- **不要重建 `default` 網路**：固定位址放在 `edge` 網路，就是為了不讓 compose 重建現有的 `default`。對 `default` 加 `ipam`、`labels`、`driver_opts` 任何一項，compose 都會判定設定有變而重建它：要先停掉所有接在上面的容器；接在上面的外部容器（`staging-proxy`）會讓網路移除失敗、整個專案停著；設定沒變的容器只是停了再啟，會失去服務別名（db、cascade 等）與固定位址（2026-11-19 staging 實測：`staging-db` 解析不到，app 反覆崩潰「failed to lookup address information」，部署的健康檢查失敗；2026-11-20 在隔離專案重現其餘兩點）。若真的必須重建，檢查表見〈正式環境套用 Pingap 與固定位址〉最後一段。
+- 代理只在**後端連不上或逾時**（Pingap 自己產生的 502、503、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
 - 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）；摘要論證樹在背景產生，有自己的上限（`ARGUMENT_TREE_TIMEOUT_SECS` 預設 300 秒，見 `docs/specs/summary-argument-tree.md`）。
 
 ## 部署
@@ -379,7 +381,7 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 - 權限模型：
   - `gha-runner` 不在 docker 群組，不能直接使用 docker。它唯一能做的 root 操作是 sudoers 允許的那一個指令；sudoers 不限制參數（參數不接受萬用字元），參數限制完全由包裝腳本負責：只接受一個 40 位小寫十六進位 SHA，且必須是分支目前的 head。
   - 部署邏輯來自主機上 root 擁有的 `/usr/local/sbin/socrates-staging-deploy`，**不取自被推送的 commit**。
-  - 密鑰（`.env.staging`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。
+  - 密鑰（`.env.staging`、`.staging-credentials`）放在 `/var/lib/socrates-staging`，root 0600，runner 讀不到。管理者要不用 sudo 直接改，見〈讓管理者直接改環境變數檔〉。
   - 只部署分支目前的 head；舊 commit 與分支外 commit 會被拒絕。回滾是 root 的緊急手段：`sudo STAGING_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-staging-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。
 - 不碰正式環境：沒有 `down`、沒有 `-v`，不動 `socrates-ntnu`。不設 `STAGING_DEMO_MODE`，自動部署不會開示範帳號。
 - 同一時間只跑一個部署：workflow 的 concurrency 加上包裝腳本的 `flock`。部署中途不取消；排隊中的舊執行會被較新的 push 取代。
@@ -410,13 +412,134 @@ Workers Paid 每月含 25 GiB-小時記憶體、375 vCPU-分鐘、200 GB-小時�
 
 - 流程：核准後 msi_cubi 的 self-hosted runner（使用者 `gha-runner-prod`，label `msi-cubi-prod`，與 staging 的 `gha-runner` 不同人）執行 `sudo -n /usr/local/sbin/socrates-prod-deploy <sha>`。
 - 包裝腳本（`scripts/host/socrates-prod-deploy`，root 擁有，不取自被推送的 commit）：只接受 40 位小寫十六進位 SHA 且必須是 `deploy/msi-cubi-intel` 的祖先；**先 pg_dump 備份到 `/var/backups/socrates-prod`（保留 14 份，備份失敗就中止，不動容器）**；`git reset --hard` 到該 commit；建置 `socrates-ntnu-app:prod-<sha12>`；以 `APP_IMAGE_TAG` 覆寫並 `up -d --no-build`（四個 compose 檔、四個 profile）；經 proxy 的 `/ready` 健康檢查（最多 90 秒）；只保留最近 5 個 prod 映像。不使用 `down`、不使用 `-v`，不碰資料庫 volume 與 cascade 映像。
-- 部署目錄 `/var/lib/socrates-prod`（root 擁有的 clone）；秘密只有 `.env`（root 0600，runner 讀不到）。**不要在那裡手動改程式**。`~/socrates-intel` 是舊的手動部署目錄，切換後不再使用（保留作退路，勿再用它啟動，以免兩邊搶同一個 compose 專案）。
+- 部署目錄 `/var/lib/socrates-prod`（root 擁有的 clone）；秘密只有 `.env`（預設 root 0600，runner 讀不到；管理者直接改的設定見〈讓管理者直接改環境變數檔〉）。**不要在那裡手動改程式**。`~/socrates-intel` 是舊的手動部署目錄，切換後不再使用（保留作退路，勿再用它啟動，以免兩邊搶同一個 compose 專案）。
 - 注意：第一次從新目錄部署時，bind mount 路徑變了，proxy 與 cascade 容器會被重建（cascade 模型載入需要數分鐘，語音暫時不可用）。
 - 只部署 `deploy/msi-cubi-intel` 目前的 head；舊 commit 與分支外 commit 都會被包裝腳本拒絕（避免別的 workflow 跑在 prod runner 上時繞過核准回滾）。回滾是 root 的緊急手段：`sudo PROD_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-prod-deploy <祖先 sha>`（sudoers 不保留環境變數，runner 設不了）。**migration 只往前**，舊映像不一定相容新 schema；回滾前先確認，必要時用部署前備份還原。
 - runner 隔離：prod runner 只該跑 `prod-deploy.yml`。repo 設定要關閉 fork PR 觸發 self-hosted runner；若 repo 之後搬到 organization，把 runner 放進限定 `prod-deploy.yml@refs/heads/deploy/msi-cubi-intel` 的 runner group。runner 上線後，**不要以 root 執行 runner 目錄裡的腳本**（`svc.sh` 等由 runner 使用者擁有），改用 `systemctl`。
 - 信任邊界：同 staging。防線是分支保護（只能經 PR、禁止 force push）、environment `prod-deploy` 的 Required reviewers、workflow 只接 `push`（不要加 `pull_request`）。
-- 主機端一次性設定：合併 PR 後在 msi_cubi 先下載腳本（`~/socrates-intel` 不是 git clone）：`curl -fsSL https://raw.githubusercontent.com/2026software-3/socrates-chat/deploy/msi-cubi-intel/scripts/host/setup-prod-autodeploy.sh -o ~/setup-prod-autodeploy.sh`，看過內容後 `sudo bash ~/setup-prod-autodeploy.sh`（互動式）。它建立目錄、複製 `.env`（缺 `TEACHER_KEY_ENCRYPTION_KEYS` 會產生並要你存好）、安裝包裝腳本與 sudoers、建立 runner。
+- 主機端一次性設定：合併 PR 後在 msi_cubi 用 `scripts/host/setup-prod-autodeploy.sh`（`~/socrates-intel` 不是 git clone，要先 `scp` 過去；檔頭有一行指令版本，token 由本機 `gh` 產生並自動帶入，runner 固定 v2.338.2 並驗 SHA256）。它建立目錄、複製 `.env`（缺 `TEACHER_KEY_ENCRYPTION_KEYS` 會產生並要你存好）、安裝包裝腳本與 sudoers、建立 runner。
 - **AI key 淘汰（2026-11-19）**：後端不再讀 `.apikeylist`／`OPENAI_API_KEYS`。升級後管理者第一件事是到「系統 AI」設定模型與 key，在那之前系統用途的 AI（個人練習、翻譯、主張分組、公告翻譯等）不可用；教師 key 與教室 AI 不受影響。`TEACHER_KEY_ENCRYPTION_KEYS` 遺失就解不開資料庫裡所有 key，要另存。主機上舊的 `.apikeylist` 可在確認 AI 正常後刪除。
+
+## 正式環境套用 Pingap 與固定位址（操作清單，S-16）
+
+這次部署把反向代理從 nginx 換成 Pingap，並把 app 固定在**新增的 `edge` 網路**（`172.29.250.0/24`，app 固定 `.10`；proxy 只接 edge，cloudflared 兩個網路都接）。現有的 `socrates-ntnu_default` 設定完全不動，所以：
+
+- **db 與四個 cascade 服務不會被停**（語音不必重新載入模型）；`staging-proxy` 接在 `socrates-ntnu_default` 上也不受影響，不必拆。
+- 只有 **app、proxy、cloudflared 會被重建**，公開服務中斷一小段時間。staging 實測約 20.5 秒（2026-11-20：連線被重置約 10 秒、503 約 10 秒；app 與 proxy 的停止各約 10 秒，等於 compose 預設逾時，加上 app 啟動）。正式環境的 app 與 proxy 一樣，預估相近，這是預估不是實測。
+- app 重啟時，進行中的對話與語音連線會斷，使用者要重新連線。
+
+staging 已驗證（2026-11-20、run 44573345584）：db 容器 ID、啟動時間與 default 網路 ID 都沒變，app 在 edge 固定位址，proxy 解析 `staging-app` 得到固定位址，`/ready` 正常；2026-11-19 另驗證過 SSE 對話。語音 WebSocket 在 staging 沒有語音服務，**第一次經 Pingap 的語音測試會在正式環境**。
+
+### 為什麼需要固定位址
+
+Docker 不會固定容器位址：每次啟動從網段由低到高挑一個空的，重啟後常常沒變，但重建網路、啟動順序不同或容器被重建時都可能換。nginx 會重新解析位址所以沒問題；Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 換位址後代理要約 4 分鐘才跟上（2026-11-19 實測）。所以 app 用 `ipv4_address` 固定在 `172.29.250.10`，其他容器只從 `ip_range` 配置，不會佔走它。
+
+### 為什麼放在獨立的 edge 網路
+
+固定位址需要宣告網段。若直接宣告在現有的 `default` 網路，compose 會判定網路設定有變而**重建它**，這很危險（2026-11-20 在 msi_cubi 以 compose 2.40.3 實測）：
+
+1. 重建網路要先停掉所有接在上面的容器，**整個正式環境（8 個容器）停止再啟動**。
+2. 接在網路上的外部容器（`staging-proxy`）會擋住網路移除：compose 先停掉所有容器才報 `has active endpoints` 退出，**正式環境整個停著**。
+3. 設定沒變的容器只是停了再啟，**失去服務別名**（`db`、`cascade`…），沒被重建的 app 還會失去固定位址。
+
+新增 `edge` 網路就完全避開這些：`docker-compose.yml` 對 `default` 不宣告任何東西，db 與 cascade 的設定與目前正式環境逐字相同，compose 判定「沒變」，不會碰它們。
+
+**不要在 `docker-compose.yml` 對 `default` 網路加 `ipam`、`labels`、`driver_opts`。** 任何一項都會讓 compose 重建它，落入上面三個陷阱。staging 的 `default` 是 2026-11-19 套用過的，保留當時的標籤與網段，也不能動（見 `docker-compose.staging.yml` 的註解）。
+
+### 清單
+
+**1. 挑時段與告知（至少前一天）**
+
+- 挑沒有課堂活動、沒有學生在用的時段（夜間或沒有活動的日子）。預估公開服務中斷 20～30 秒，進行中的對話與語音連線會斷。
+- 到管理後台建立公告（S-15）：提前一天發一次、開始前約 30 分鐘再提醒。範本：「系統將於 `<日期 時間>` 維護，約 `<N>` 分鐘無法使用，請在此之前結束進行中的討論。」
+- 開始前確認沒有進行中的對話：`docker logs --since 10m socrates-ntnu-proxy-1 2>&1 | wc -l`（最近 10 分鐘的請求數，接近 0 才動手）。
+
+**2. 前置（動手前 30 分鐘內，在 msi_cubi）**
+
+1. 記下目前版本，回退要用：`docker inspect -f '{{.Config.Image}}' socrates-ntnu-app-1`，格式 `socrates-ntnu-app:prod-<12 碼>`；用 `git rev-parse <12 碼>` 取得 40 位 sha。
+2. 記下 db 與 cascade 目前的啟動時間與網路 ID，驗證時用來證明它們沒被碰：
+   ```bash
+   for c in socrates-ntnu-db-1 socrates-ntnu-cascade-1 socrates-ntnu-cascade-adapter-1 socrates-ntnu-cascade-tts-1 socrates-ntnu-cascade-whisper-1; do
+     docker inspect -f '{{.Name}} {{.Id}} {{.State.StartedAt}}' $c
+   done
+   docker network inspect socrates-ntnu_default -f 'default net {{.Id}}'
+   ```
+3. 確認 edge 的網段沒被占用（輸出不應有 `172.29.250.0/24`；staging 用 `172.29.251.0/24` 與 `172.29.252.0/24`）：
+   ```bash
+   docker network ls -q | xargs docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'
+   ```
+4. 確認最近的備份存在（部署腳本也會在動手前自動 `pg_dump`，備份失敗會中止）：`ls -lt /var/backups/socrates-prod | head -3`。
+
+**3. 套用**
+
+1. 開 PR 把 `deploy/msi-cubi-staging` 合併到 `deploy/msi-cubi-intel`；PR 合併後 GitHub Actions「Production deploy (msi_cubi)」開始，**核准 `prod-deploy` 環境**。
+2. 另開一個終端看進度：`watch -n 2 'docker ps --format "{{.Names}} | {{.Status}}" | grep socrates-ntnu'`。部署日誌應看到 `Network socrates-ntnu_edge Created`、`db Running`、cascade 各服務 `Running`，只有 app、proxy、cloudflared 是 `Recreate`。
+3. 部署腳本的健康檢查通過（`/ready` 回 200）才算部署成功。
+
+**4. 驗證**
+
+- db 與 cascade 沒被碰：再跑一次前置第 2 步的指令，容器 ID 與啟動時間、`default net` 的 ID 都要和之前**完全相同**。
+- 容器：`docker ps --filter name=socrates-ntnu --format '{{.Names}} | {{.Image}} | {{.Status}}'`，全部 Up、proxy 是 `vicanso/pingap:0.16.2` 且 healthy。
+- edge 網段：`docker network inspect socrates-ntnu_edge -f '{{range .IPAM.Config}}{{.Subnet}} {{.IPRange}}{{end}}'` 應為 `172.29.250.0/24 172.29.250.128/25`。
+- app 位址：`docker inspect -f '{{(index .NetworkSettings.Networks "socrates-ntnu_edge").IPAddress}}' socrates-ntnu-app-1` 應為 `172.29.250.10`。
+- proxy 解析 app：`docker exec socrates-ntnu-proxy-1 getent hosts app` 應回 `172.29.250.10`。
+- 代理：`curl -s http://127.0.0.1:3080/proxy-health` 回 `ok`；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/ready` 與 `https://se3socrateschat.ntnu.cc/ready` 都回 200。
+- staging 沒受影響：`curl -s -o /dev/null -w '%{http_code}\n' https://staging.se3socrateschat.ntnu.cc/ready` 回 200。
+- 來源 IP：照〈驗證 TRUSTED_PROXIES（來源 IP）〉做一次（edge 網段仍在 `172.16.0.0/12` 內，`ip` 應是公網位址，不是 `172.x`）。
+- SSE：用自己的帳號開一場對話，回覆要逐段出現。
+- 語音 WebSocket：開一場語音對話，確認連得上、能互動（cascade 沒被重啟，不必等模型載入；**這是第一次經 Pingap 驗證語音**）。
+- 停機頁：選擇性。先告知，`docker stop socrates-ntnu-app-1`，公開網址應出現停機頁，再 `docker start socrates-ntnu-app-1`；app 重啟後位址要仍是 `172.29.250.10`。
+- 代理日誌沒有持續的連線錯誤：`docker logs --tail 30 socrates-ntnu-proxy-1`。
+
+**5. 回退**
+
+- **只是 Pingap 行為不對、其他正常**：先不動容器，把 Cloudflare Zero Trust 的 tunnel 遠端 ingress 從 `http://proxy:80` 改成 `http://app:3000`（見〈反向代理與停機說明頁〉的回退）。cloudflared 在 default 網路上，解析得到 app。沒有停機頁，其他照常。
+- **需要整個退回 nginx**：用 root 回滾部署：
+  ```bash
+  sudo PROD_ALLOW_ROLLBACK=1 /usr/local/sbin/socrates-prod-deploy <舊 sha>
+  ```
+  舊版沒有 edge，app、proxy、cloudflared 會被重建回 default 網路（db 與 cascade 一樣不會被碰），中斷同樣約 20 秒。先確認舊版與目前資料庫相容（migration 只往前）：`git diff --stat <舊 sha> <新 sha> -- backend/migrations` 沒有輸出才可直接退回；有 migration 就不能直接退，要另外評估。退回後 `socrates-ntnu_edge` 會留著沒人用，確認沒有容器接著後可移除：`docker network rm socrates-ntnu_edge`。
+- **部署失敗或健康檢查沒過**：看 `docker ps -a` 與 `docker logs socrates-ntnu-app-1`／`socrates-ntnu-proxy-1`，修好後推新 commit，或照上面回滾。資料庫在命名 volume `pgdata_v2`，備份在 `/var/backups/socrates-prod`，這些都不會因部署而遺失。
+
+**若日後真的必須重建 `socrates-ntnu_default`**（例如要改它的網段）：先用上面三個陷阱當檢查表。拆下接在上面的外部容器（`docker network disconnect`，部署後再 `connect --alias` 接回）；讓 db 與 cascade 在同一次部署被重建（給它們加標籤改設定，重建的容器別名才正確）；失敗後容器已停且已離開網路，再 `up -d` 會報 `is not connected to the network`，要先 `docker compose ... rm -f`（**不加 `-v`**）。細節與實測見 PR #646、#648 的討論。
+
+## 讓管理者直接改環境變數檔（staging 與正式環境）
+
+部署目錄（`/var/lib/socrates-staging`、`/var/lib/socrates-prod`）與裡面的秘密檔預設是 root 擁有、0600，管理者（`ray520`）要改環境變數得每次 `sudo`。
+`docker` 群組目前只有 `ray520`，而能用 docker 本來就等同 root，所以把秘密檔的群組改成 `docker` 並開群組讀寫，**不會多給任何人權限**；自動部署的 runner 使用者（`gha-runner`、`gha-runner-prod`）不在 docker 群組，仍然讀不到。
+只動秘密檔，不用 `chgrp -R`：目錄與其他檔案維持 root，部署包裝腳本的 `git reset --hard` 不受影響。以 root 在 msi_cubi 執行一次：
+
+```bash
+# staging
+sudo chgrp docker /var/lib/socrates-staging/.env.staging /var/lib/socrates-staging/.staging-credentials
+sudo chmod 660   /var/lib/socrates-staging/.env.staging /var/lib/socrates-staging/.staging-credentials
+
+# 正式環境（只有 .env 一個秘密檔）
+sudo chgrp docker /var/lib/socrates-prod/.env
+sudo chmod 660   /var/lib/socrates-prod/.env
+```
+
+- 之後 `ray520` 可以直接編輯這些檔，不用 sudo。編輯器要「原地寫入」：目錄仍是 root 的，會先寫暫存檔再改名的編輯器會失敗；`nano` 與 `vim`（預設設定）都可以。
+- **不要**把權限開得比 660 更寬，也不要把使用者加進 `docker` 群組以外的方式給 runner 讀取。`.env` 內有資料庫密碼與 `TEACHER_KEY_ENCRYPTION_KEYS`（遺失就解不開資料庫裡所有 key），改之前先備份一份到安全的地方。
+- 部署包裝腳本以 root 寫檔，不會動這兩個被 `.gitignore` 的檔案，所以群組與權限在自動部署後仍保留。若檔案被刪除重建，要重新執行上面兩行。
+- 正式環境的 `.env` 也是 compose 預設會讀的檔（變數替換）。原本 `ray520` 在 `/var/lib/socrates-prod` 跑 `docker compose` 會因為讀不到 `.env` 而失敗；改成 660 後才讀得到。
+
+改完要重建容器才會生效（只需要 docker 群組，不用 root、不經 GitHub 核准）。只重建會用到該檔的服務，不要讓不相關的服務一起被重建：
+
+```bash
+# staging：app 讀 .env.staging
+cd /var/lib/socrates-staging
+STAGING_APP_IMAGE_TAG=$(docker inspect -f '{{.Config.Image}}' socrates-staging-staging-app-1 | cut -d: -f2) \
+  docker compose -f docker-compose.staging.yml up -d --no-build --no-deps --force-recreate staging-app
+
+# 正式環境：app 讀 .env；其他服務（尤其 cascade，載入模型要數分鐘）不要動
+cd /var/lib/socrates-prod
+APP_IMAGE_TAG=$(docker inspect -f '{{.Config.Image}}' socrates-ntnu-app-1 | cut -d: -f2) \
+  docker compose -f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml \
+  --profile app --profile cascade --profile proxy --profile tunnel up -d --no-build --no-deps --force-recreate app
+```
+
+重建 `app` 會中斷服務數秒；正式環境挑沒人使用的時段，並先告知使用者。若改的是 cascade 或 tunnel 讀的變數，要重建對應的服務，不是 `app`。
 
 ## 狀態紀錄
 
