@@ -321,7 +321,8 @@ async fn translate(state: &AppState, language: &str, text: &str) -> Option<Strin
 }
 
 /// 重試這則公告尚未完成的翻譯；系統自動重試與測試都呼叫它。
-/// 只在 zh-TW 內文沒被改過時寫入，避免把舊內文的譯文蓋到新內文上。
+/// 只在 zh-TW 內文沒被改過、且該語言仍待完成時寫入：前者避免把舊內文的譯文蓋到新內文上，
+/// 後者避免蓋掉等待翻譯期間管理者手動存的譯文。
 pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
     let row: Option<(String, Vec<String>)> = match sqlx::query_as(
         "SELECT text_zh_tw, pending_languages FROM announcements WHERE id = $1",
@@ -351,7 +352,7 @@ pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
                  text_en = CASE WHEN $4 = 'en' THEN $3 ELSE text_en END,
                  text_es = CASE WHEN $4 = 'es' THEN $3 ELSE text_es END,
                  pending_languages = array_remove(pending_languages, $4)
-             WHERE id = $1 AND text_zh_tw = $2",
+             WHERE id = $1 AND text_zh_tw = $2 AND $4 = ANY(pending_languages)",
         )
         .bind(id)
         .bind(&source)
