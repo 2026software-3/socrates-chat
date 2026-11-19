@@ -81,17 +81,19 @@ CSRF 只認一個網址，換網址要同步改：
 
 ## 反向代理與停機說明頁（S-16）
 
-`proxy` 服務（profile `proxy`，nginx，設定在 `docker/proxy/`）在正式環境的路徑上：`cloudflared` → `proxy:80` → `app:3000`。後端連不上（容器停掉、重建中、主機剛開機）時，代理回一頁固定的三語說明（HTTP 503，「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。
+`proxy` 服務（profile `proxy`，Pingap，設定在 `docker/proxy/pingap.toml`；2026-11-19 由 nginx 改採，見 S-16）在正式環境的路徑上：`cloudflared` → `proxy:80` → `app:3000`。後端連不上（容器停掉、重建中、主機剛開機）時，代理回一頁固定的三語說明（穩定時 HTTP 503；剛停掉的約 22 秒內是 504，此期間每個請求要先等 5 秒；「系統維護中，請稍後再試」，不含時間與原因）；後端自己的回應（包含維護模式的 503）原樣轉發。
 
 - 代理刻意不 `depends_on` `app`，也設了 `restart: unless-stopped`：`app` 停著時代理仍在。`curl http://127.0.0.1:3080/proxy-health` 回 200 `ok` 只表示代理活著，與後端無關。
-- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態與耗時；不記 Cookie、Referer、User-Agent。
+- 代理的存取日誌只有來源位址、方法、路徑（不含查詢字串）、狀態、大小與耗時；不記 Cookie、Referer、User-Agent。**例外**：代理自己產生錯誤（連不上後端等）時，Pingap 的錯誤日誌會記該請求的 User-Agent（需求方 2026-11-19 確認可以記錄，見 S-16）。
+- **app 的位址固定**：Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），app 若換 IP，代理要數分鐘才跟上；固定位址後重建 `app` 不受影響。正式環境在 `docker-compose.yml` 的 `networks`／`ipv4_address`（`172.29.250.10`，其他容器只從 `172.29.250.128/25` 配置）；staging 在 `docker-compose.staging.yml`（`172.29.251.0/24`，`staging-app` 固定在 `.10`）。**兩個專案的網段不能重疊**，否則後建立的那個網路會失敗。app 位址若仍被迫變更，重啟代理即可立即跟上：`docker compose -f docker-compose.yml -f docker-compose.ntnu.yml -p socrates-ntnu --profile proxy restart proxy`。
 - 改代理設定前，先在任何有 Docker 的機器上跑 `scripts/verify-proxy.sh`（用假後端，不碰 `socrates-ntnu`）：檢查轉發、`X-Forwarded-For`、後端自己的 503 原樣轉發、SSE、WebSocket 升級、大請求，以及後端停掉時的停機頁與回來後的自動恢復。SSE 與語音要另外用真的後端確認（開一場對話，回覆要逐段出現；試一次語音）。
 - 確認停機頁：先告知使用者（會中斷服務），`docker stop socrates-ntnu-app-1`，公開網址應出現停機頁，之後 `docker start socrates-ntnu-app-1`。
 - 代理出問題時的回退：把 tunnel ingress 的服務從 `http://proxy:80` 改成 `http://app:3000`（Cloudflare Zero Trust 的遠端設定，不用動容器）。這時沒有停機頁，`TRUSTED_PROXIES` 仍包含 cloudflared 所在的 compose 網段，來源 IP 照常。
 
 ### 已知限制
 
-- 代理只在**後端連不上或逾時**（nginx 自己產生的 502、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
+- **網路重建**：把 `app` 固定位址的設定套用到既有的專案時，`docker compose up -d` 會自動停下用到該網路的容器、重建網路、再起容器，服務會中斷；以 staging 相同拓撲預演約 20 秒（約 10 秒連線被拒、約 10 秒 503）。先在 staging 驗證，正式環境挑沒人使用的時段，並先告知使用者。
+- 代理只在**後端連不上或逾時**（Pingap 自己產生的 502、503、504）時回停機頁；後端活著但回錯誤（包含它自己回的 502、504）會原樣轉發。
 - 一般請求最多等 600 秒、語音 WebSocket 3600 秒；AI 回覆的產生時間上限遠小於此（`AI_TOTAL_TIMEOUT_SECS` 預設 60 秒）；摘要論證樹在背景產生，有自己的上限（`ARGUMENT_TREE_TIMEOUT_SECS` 預設 300 秒，見 `docs/specs/summary-argument-tree.md`）。
 
 ## 部署
