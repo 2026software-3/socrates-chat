@@ -8,8 +8,13 @@ RUN npm ci
 COPY frontend/ ./
 # 文字類產物預先壓成 .gz（保留原檔）：後端在瀏覽器接受 gzip 時直接送 .gz，執行期不必壓縮。
 # 字型（woff2）本身已壓縮，不處理
+# 最後一步把權限統一成目錄 755、檔案 644：後端以非 root 的 socrates 執行，讀不到 root 專屬（0600）的檔案時，
+# 靜態檔服務會把「讀不到」當成「找不到」而退回 index.html。public/ 的檔案（favicon、語音的 AudioWorklet 腳本）
+# 在建置時沿用來源檔的權限，而來源檔的權限取決於建置主機的 umask（部署腳本用 umask 077 做 git checkout，
+# 結果是 0600），語音因此載入失敗（2026-11-20）。不要依賴主機的權限。
 RUN npm run build \
-    && find dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' \) -exec gzip -9 -k {} +
+    && find dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' \) -exec gzip -9 -k {} + \
+    && chmod -R u=rwX,go=rX dist
 
 FROM rust:1-slim-bookworm AS api
 WORKDIR /api
