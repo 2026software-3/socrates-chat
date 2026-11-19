@@ -3,6 +3,11 @@
 services:
   db:
     image: postgres:16
+    # net-rev 標籤（db 與 cascade 四個服務都有）：compose 重建網路時，設定沒變的容器只會停了再啟，
+    # 會失去服務名稱別名（db、cascade…），其他容器就解析不到它們。改這個標籤讓它們被「重建」而不是重啟（S-16、ntnu-ops.md）。
+    # 之後只要有變更會讓 compose 重建網路（網段、ipam），這個值也要一起加一。
+    labels:
+      com.socrates.net-rev: "2"
     environment:
       POSTGRES_USER: socrates
       POSTGRES_PASSWORD: socrates
@@ -56,6 +61,8 @@ services:
       context: .
       dockerfile: docker/cascade/Dockerfile
     image: socrates-cascade:latest
+    labels:
+      com.socrates.net-rev: "2"
     command: ["tts"]
     restart: unless-stopped
     logging: &cascade-logging
@@ -86,6 +93,8 @@ services:
       context: .
       dockerfile: docker/cascade/whisper.Dockerfile
     image: socrates-cascade-whisper:latest
+    labels:
+      com.socrates.net-rev: "2"
     restart: unless-stopped
     logging: *cascade-logging
     environment:
@@ -107,6 +116,8 @@ services:
   cascade-adapter:
     profiles: ["cascade"]
     image: socrates-cascade:latest
+    labels:
+      com.socrates.net-rev: "2"
     command: ["adapter"]
     restart: unless-stopped
     logging: *cascade-logging
@@ -125,6 +136,8 @@ services:
   cascade:
     profiles: ["cascade"]
     image: socrates-cascade:latest
+    labels:
+      com.socrates.net-rev: "2"
     command: ["cascade"]
     restart: unless-stopped
     logging: *cascade-logging
