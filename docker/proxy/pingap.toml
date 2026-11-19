@@ -1,0 +1,66 @@
+# 反向代理（S-16）：把請求轉給 compose 內的 app:3000；後端連不上時回靜態停機說明頁。
+# 代理只講 HTTP：HTTPS 由前面的 Funnel／Tunnel 處理。代理不做登入、不快取、不改內容。
+# 代理程式是 Pingap（Rust、Cloudflare Pingora），理由與已知差異見 docs/specs/decisions.md 的 S-16。
+
+[basic]
+name = "socrates-proxy"
+# 只採用來自這些網段的 X-Forwarded-For／X-Forwarded-Proto（Funnel、Tunnel 經 Docker 閘道進來，都在私有網段）。
+# 後端的 TRUSTED_PROXIES 也要包含 compose 網段，登入限流才看得到真實來源 IP（S-01.4、S-09.2.1）。
+trusted_proxies = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+# 上游：compose 內的 app。Pingap 用 DNS 發現位址，並沿用 DNS 記錄的 TTL（Docker 內建 DNS 的 TTL 是 600 秒），
+# 所以 update_frequency 只決定多久檢查一次，並不會讓位址變更更快生效。
+# app 的位址因此在 docker-compose.yml 固定（ipv4_address），重建容器不會換 IP；請不要拿掉。
+[upstreams.app]
+addrs = ["app:3000"]
+discovery = "dns"
+update_frequency = "5s"
+ipv4_only = true
+# 連不上就快點放棄，改回停機頁
+connection_timeout = "5s"
+# 一般請求最多等多久才算後端沒反應；比 AI 回覆的產生時間（AI_TOTAL_TIMEOUT_SECS 預設 60 秒）長很多
+read_timeout = "600s"
+write_timeout = "600s"
+
+# 代理自己的存活檢查：不依賴後端
+[plugins.proxyHealth]
+category = "mock"
+path = "/proxy-health"
+status = 200
+headers = ["Content-Type: text/plain"]
+data = "ok\n"
+
+# 只處理代理自己產生的錯誤（連不上、逾時、沒有可用的上游 → 502／503／504），回靜態停機頁。
+# 沒開 intercept：後端自己回的任何狀態（包含維護模式的 503）不攔截，原樣轉發。
+# 停機頁沿用錯誤原本的狀態碼：剛停掉的短暫期間是 504，之後穩定為 503（已知差異，見 S-16）。
+[plugins.downPage]
+category = "error_page"
+pages = ["5xx:/opt/pingap/down.html"]
+
+[locations.health]
+path = "=/proxy-health"
+plugins = ["proxyHealth"]
+
+# 語音 WebSocket：長時間連線，閒置也不要被代理切斷
+[locations.voice]
+path = "~^/api/conversations/[^/]+/voice$"
+upstream = "app"
+read_timeout = "3600s"
+write_timeout = "3600s"
+plugins = ["downPage"]
+enable_reverse_proxy_headers = true
+proxy_set_headers = ["X-Forwarded-Proto: $forwarded_proto"]
+
+[locations.main]
+upstream = "app"
+plugins = ["downPage"]
+# 後端自己限制本文大小（一般 1 MiB、語音上傳 10 MiB）；代理稍微放寬，讓超過時由後端回標準錯誤
+client_max_body_size = "11mb"
+enable_reverse_proxy_headers = true
+proxy_set_headers = ["X-Forwarded-Proto: $forwarded_proto"]
+
+[servers.main]
+addr = "0.0.0.0:80"
+locations = ["health", "voice", "main"]
+# 存取日誌只記必要欄位：不含查詢字串（OAuth 的 code、state）、Cookie、Referer、User-Agent
+access_log = 'stdout {remote} [{when}] "{method} {path}" {status} {size} {latency}ms'

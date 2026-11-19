@@ -10,3 +10,5 @@ services:
       default:
         aliases:
           - app
+        # 與正式設定相同的固定位址（Pingap 沿用 DNS TTL，位址不能變；見 docker-compose.yml）
+        ipv4_address: 172.29.250.10
