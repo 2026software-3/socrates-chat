@@ -1,3 +1,4 @@
+import { ActivityBooksButton } from '@/features/books/book-list'
 import { Link, useParams } from 'react-router'
 import { useAccountLanguage } from '@/auth/auth-context'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -148,6 +149,7 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
       {loadingMeta ? <LoadingBlock /> : null}
       {!loadingMeta && !activity && !active.error && !archived.error ? <EmptyBlock>{t('error.not_found')}</EmptyBlock> : null}
       {active.error ? <ErrorBlock error={active.error} onRetry={active.reload} /> : null}
+      {activity ? <ActivityBooksButton activity={activity} classroomArchived={classroom.is_archived} /> : null}
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">{t('classrooms.distribution')}</h2>
