@@ -89,14 +89,14 @@ button, input { font: inherit; color: inherit; }
 .note { font-size: 13px; color: var(--ink-soft); }
 .chalk-note { font-family: var(--face-latin-text); font-style: italic; color: var(--chalk); font-size: 15px; }
 
-/* rostra: the exchange set as a dialogue in a printed book */
-.talk { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.talk li { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); gap: 8px; font-size: 15px; }
-.talk li::before { font-family: var(--face-latin); color: var(--ink-soft); }
-.talk .s::before { content: 'DISC.'; }
-.talk .a::before { content: 'INTER.'; color: var(--chalk); }
-.talk .a { font-weight: 700; }
-.legend-key { font-size: 13px; color: var(--ink-soft); }
+/* rostra: Socrates on the left in red chalk, the student on the right in ink */
+.talk { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.talk li { display: flex; flex-direction: column; gap: 2px; width: fit-content; max-width: 84%; font-size: 15px; }
+.talk li::before { font-family: var(--face-latin), var(--face-han); font-size: 13px; font-weight: 400; letter-spacing: .08em; }
+.talk .a { align-self: flex-start; align-items: flex-start; padding: 2px 0 4px 12px; border-left: 1.5px solid var(--chalk); font-weight: 700; }
+.talk .a::before { content: '蘇格拉底　INTER.'; color: var(--chalk-deep); }
+.talk .s { align-self: flex-end; align-items: flex-end; padding: 2px 12px 4px 0; border-right: 1.5px solid var(--ink); }
+.talk .s::before { content: 'DISC.　你'; color: var(--ink-soft); }
 .polish { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-soft); }
 .polish i { flex: 1; height: 1px; background: var(--ink-faint); position: relative; }
 .polish b { position: absolute; left: 0; top: -1px; height: 3px; width: 100%; background: var(--ink); transform-origin: left; }
@@ -200,7 +200,6 @@ button, input { font: inherit; color: inherit; }
     <section class="panel" id="st-2" aria-labelledby="h2r">
       <h2 id="h2r" data-h tabindex="-1">講壇上，AI 只負責追問<span class="latin">Rostra</span></h2>
       <ol class="talk" id="talk" aria-label="示意對話"></ol>
-      <p class="legend-key"><span class="latin">DISC.</span> 學生　<span class="latin" style="color:var(--chalk)">INTER.</span> 提問的 AI</p>
       <div class="polish"><span>想法的刻線</span><i><b id="meter"></b></i></div>
       <div class="actions"><button type="button" class="ui-link" id="replay">重刻這段對話</button></div>
     </section>
@@ -782,6 +781,13 @@ const shell = wireShell({
     flying = false;
   },
   homeShown() {
+    // Local runs continue through the door into the interior prototype (prototypes/c-interior/index.html, decision D).
+    // As a standalone artifact the relative page is not published, so the in-page home stays.
+    if (location.protocol === 'file:' || /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+      const r = document.getElementById('home-role').textContent;
+      location.href = '../c-interior/index.html#' + (r === '學生' ? 'home' : 't-classes');
+      return;
+    }
     if (RM) { gsap.set('#flood', { clipPath: 'circle(0% at 50% 50%)' }); return; }
     gsap.to('#flood', { autoAlpha: 0, duration: 0.5, delay: 0.1, onComplete: () => gsap.set('#flood', { clipPath: 'circle(0% at 50% 50%)', autoAlpha: 1 }) });
     gsap.from('#home .home-inner > *', { autoAlpha: 0, y: 12, duration: 0.5, stagger: 0.06, ease: 'power3.out', clearProps: 'all' });
