@@ -1,7 +1,12 @@
 import type { Book, BookWork } from './types'
 
+export function normalizeBookLanguage(language: string | null | undefined): string | null {
+  const text = language?.trim()
+  if (!text) return null
+  return ({ '中文': 'zh', '繁體中文': 'zh-Hant', '简体中文': 'zh-Hans', '簡體中文': 'zh-Hans', chinese: 'zh', chi: 'zh', zho: 'zh', '英文': 'en', '英語': 'en', english: 'en', eng: 'en', '西文': 'es', '西班牙文': 'es', '西班牙語': 'es', spanish: 'es', español: 'es', spa: 'es', '其他': 'other' } as Record<string, string>)[text.toLowerCase()] ?? text
+}
 export function bookLanguage(language: string | null) {
-  const code = language?.trim().toLowerCase().split(/[-_]/)[0] || 'missing'
+  const code = normalizeBookLanguage(language)?.toLowerCase().split(/[-_]/)[0] || 'missing'
   return ({ eng: 'en', spa: 'es', zho: 'zh', chi: 'zh' } as Record<string, string>)[code] ?? code
 }
 export function filterBooks(books: Book[], query: string, language: string, sort = 'newest') {

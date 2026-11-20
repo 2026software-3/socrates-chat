@@ -14,6 +14,7 @@ import { BookActionDialog } from './book-actions'
 import { safeBookUrl } from './book-validation'
 import { BookLanguageFilter } from './book-filters'
 import { filterWorks } from './book-filtering'
+import { RelatedEditions } from './related-editions'
 import { BookForm } from './book-form'
 import type { Book, BookInput, BookWork } from './types'
 
@@ -21,6 +22,7 @@ export function BooksPage() {
   const t = useT()
   const me = useMe()
   const books = useFetch<BookWork[]>('/api/book-works')
+  const [related, setRelated] = useState<{ book: Book; workTitle: string }>()
   const [viewing, setViewing] = useState<Book>()
   const [action, setAction] = useState<{ book: Book; action: 'delete' | 'status' }>()
   const [query, setQuery] = useState('')
@@ -30,7 +32,7 @@ export function BooksPage() {
   const [editing, setEditing] = useState<Book | 'new'>()
   const shown = books.data && filterWorks(books.data.filter((book) => status === 'all' || book.is_active === (status === 'active')), query, language, sort)
   async function save(value: BookInput) {
-    if (editing === 'new') await api.post<Book>('/api/books', value)
+    if (editing === 'new') { const created = await api.post<Book>('/api/books', value); setRelated({ book: created, workTitle: created.title }) }
     else if (editing) await api.put<Book>(`/api/books/${encodeURIComponent(editing.id)}`, value)
     setEditing(undefined)
     books.reload()
@@ -54,10 +56,12 @@ export function BooksPage() {
       <div className="flex flex-wrap items-center gap-3"><h3 className="font-semibold break-words">{book.title}</h3><Badge variant={book.is_active ? 'secondary' : 'outline'}>{t(book.is_active ? 'books.active' : 'books.inactive')}</Badge></div>
       <p className="text-muted-foreground text-sm">{book.authors || t('books.authorMissing')} · {book.language || t('books.languageMissing')} · {book.publication_year || t('books.yearMissing')}</p>
       <Button variant="outline" aria-label={t('books.view', { title: book.title })} onClick={() => setViewing(book)}>{t('books.view', { title: book.title })}</Button>
+      <Button variant="outline" onClick={() => setRelated({ book, workTitle: work.title })}>{t('books.relatedSearch')}</Button>
       <MoveEditionButton book={book} works={books.data ?? []} changed={books.reload} />
       {(me.roles.admin || me.id === book.created_by) ? <Button variant="outline" aria-label={t('books.edit', { title: book.title })} onClick={() => setEditing(book)}>{t('books.editTitle')}</Button> : null}
       {me.roles.admin ? <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setAction({ book, action: 'status' })}>{t(book.is_active ? 'books.deactivate' : 'books.activate')}</Button><Button variant="destructive" aria-label={t('books.delete', { title: book.title })} onClick={() => setAction({ book, action: 'delete' })}>{t('books.deleteTitle')}</Button></div> : null}
     </li>)}</ul></li>)}</ul>
+    {related ? <RelatedEditions key={related.book.id} {...related} close={() => setRelated(undefined)} changed={books.reload} /> : null}
     {action ? <BookActionDialog key={`${action.action}-${action.book.id}`} {...action} close={() => setAction(undefined)} changed={books.reload} /> : null}
     {viewing ? <Dialog open onOpenChange={(open) => !open && setViewing(undefined)}><DialogContent showCloseButton={false} className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{viewing.title}</DialogTitle><DialogDescription>{viewing.authors || t('books.authorMissing')}</DialogDescription></DialogHeader><p>{viewing.language || t('books.languageMissing')} · {viewing.publication_year || t('books.yearMissing')}</p>{viewing.external_sources.map((source) => <p key={`${source.source}-${source.source_id}`}>{t('books.source', { source: source.source })}: {source.source_id}</p>)}{viewing.isbn ? <p>ISBN: {viewing.isbn}</p> : null}{viewing.description ? <p className="whitespace-pre-wrap break-words">{viewing.description}</p> : null}{viewing.recommendation_note ? <p className="whitespace-pre-wrap break-words">{viewing.recommendation_note}</p> : null}{safeBookUrl(viewing.source_url) ? <a href={safeBookUrl(viewing.source_url)} target="_blank" rel="noreferrer" className="underline">{t('books.sourceLink')}</a> : null}<Button variant="outline" onClick={() => setViewing(undefined)}>{t('books.close')}</Button></DialogContent></Dialog> : null}
     <Dialog open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)}><DialogContent showCloseButton={false} className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{t(editing === 'new' ? 'books.new' : 'books.editTitle')}</DialogTitle><DialogDescription>{t('books.formHint')}</DialogDescription></DialogHeader>

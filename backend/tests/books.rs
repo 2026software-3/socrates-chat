@@ -491,6 +491,25 @@ struct FakeBookSource {
 }
 #[async_trait::async_trait]
 impl socrates_chat_backend::book_sources::BookSource for FakeBookSource {
+    async fn related(
+        &self,
+        book: &socrates_chat_backend::book_store::Book,
+    ) -> Result<
+        Vec<socrates_chat_backend::book_sources::RelatedEdition>,
+        socrates_chat_backend::book_sources::BookSourceError,
+    > {
+        Ok(self
+            .search(&book.title)
+            .await?
+            .into_iter()
+            .map(|book| socrates_chat_backend::book_sources::RelatedEdition {
+                work_id: "/works/OL1W".into(),
+                work_title: "合成作品".into(),
+                book,
+            })
+            .collect())
+    }
+
     async fn search(
         &self,
         query: &str,
@@ -1126,4 +1145,155 @@ async fn work_operations_reject_nonstaff_before_reading_or_mutating_catalog(pool
             );
         }
     }
+}
+
+#[sqlx::test]
+async fn related_edition_endpoints_require_staff_and_import_atomically(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let book = create_book(&app, &actors.teacher, "合成作品").await;
+    let id = book["id"].as_str().unwrap();
+    let lookup = format!("/api/books/{id}/editions");
+    let add = format!("/api/book-works/{id}/editions");
+    for (cookie, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(actors.student.as_str()), StatusCode::FORBIDDEN),
+        (Some(actors.outsider.as_str()), StatusCode::FORBIDDEN),
+    ] {
+        assert_eq!(
+            send(&app, json_req("GET", &lookup, cookie, None))
+                .await
+                .status(),
+            status
+        );
+        assert_eq!(
+            send(
+                &app,
+                json_req(
+                    "POST",
+                    &add,
+                    cookie,
+                    Some(
+                        json!({"confirm_title":"合成作品","books":[{"title":"Synthetic edition"}]})
+                    )
+                )
+            )
+            .await
+            .status(),
+            status
+        );
+    }
+    let body = json!({"confirm_title":"合成作品","books":[{"title":"Synthetic edition","language":"en","external_sources":[{"source":"Open Library","source_id":"/books/OL123M"}]}]});
+    for _ in 0..2 {
+        assert_eq!(
+            send(
+                &app,
+                json_req("POST", &add, Some(&actors.teacher), Some(body.clone()))
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM books")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM book_works")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        send(
+            &app,
+            json_req(
+                "POST",
+                &add,
+                Some(&actors.teacher),
+                Some(json!({"confirm_title":"wrong","books":[{"title":"Do not add"}]}))
+            )
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(send(&app,json_req("POST",&add,Some(&actors.teacher),Some(json!({"confirm_title":"合成作品","books":[{"title":"Do not add"},{"title":" "}]})))).await.status(),StatusCode::BAD_REQUEST);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM books")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[sqlx::test]
+async fn related_lookup_deduplicates_catalog_and_failure_preserves_saved_book(pool: PgPool) {
+    use socrates_chat_backend::{AppState, app as make_app};
+    use std::sync::Arc;
+    register_fixture_pool(&pool);
+    let build = |fail| {
+        make_app(
+            AppState::new(
+                pool.clone(),
+                test_config(),
+                Arc::new(FakeIdentity),
+                FakeAi::with(vec![]),
+            )
+            .with_book_source(Arc::new(FakeBookSource {
+                fail,
+                calls: Default::default(),
+            })),
+        )
+    };
+    let app = build(false);
+    let a = seed_actors(&app).await;
+    let seed = create_book(&app, &a.teacher, "合成原書").await;
+    let url = format!("/api/books/{}/editions", seed["id"].as_str().unwrap());
+    let response = send(&app, json_req("GET", &url, Some(&a.teacher), None)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await.as_array().unwrap().len(), 1);
+    let known = send(&app, json_req("POST", "/api/books", Some(&a.teacher), Some(json!({"title":"其他作品已有版本","external_sources":[{"source":"Google Books","source_id":"synthetic-volume"}]})))).await;
+    assert_eq!(known.status(), StatusCode::CREATED);
+    let known = json_body(known).await;
+    assert_eq!(
+        json_body(send(&app, json_req("GET", &url, Some(&a.admin), None)).await).await,
+        json!([])
+    );
+    let target = format!(
+        "/api/book-works/{}/editions",
+        seed["work_id"].as_str().unwrap()
+    );
+    let response = send(&app, json_req("POST", &target, Some(&a.teacher), Some(json!({"confirm_title":"合成原書","books":[{"title":"重複版本","external_sources":[{"source":"Google Books","source_id":"synthetic-volume"}]}]})))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await["editions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let original = format!("/api/books/{}", known["id"].as_str().unwrap());
+    assert_eq!(
+        json_body(send(&app, json_req("GET", &original, Some(&a.teacher), None)).await).await["work_id"],
+        known["work_id"]
+    );
+    let failed = build(true);
+    let response = send(&failed, json_req("GET", &url, Some(&a.teacher), None)).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "book_source_unavailable"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM books")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
 }

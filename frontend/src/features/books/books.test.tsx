@@ -92,6 +92,7 @@ describe('shared books', () => {
     expect(within(dialog).getByRole('button', { name: '儲存書目' })).toBeDisabled()
     await userEvent.type(within(dialog).getByLabelText('書名（必填）'), '  Synthetic title  ')
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存書目' }))
+    await userEvent.click(await screen.findByRole('button', { name: '關閉' }))
     await screen.findByRole('heading', { name: 'Synthetic title', level: 2 })
     expect(requests).toEqual([{ external_sources: [], title: 'Synthetic title', authors: null, language: null, publication_year: null, isbn: null, source_url: null, description: null, recommendation_note: null }])
     expect(screen.getByRole('button', { name: '編輯「Book own」' })).toBeInTheDocument()
@@ -223,6 +224,7 @@ describe('shared books', () => {
     expect(within(dialog).getByLabelText('書名（必填）')).toHaveValue('Keep this')
     server.use(http.post('/api/books', () => HttpResponse.json(book('new'), { status: 201 })))
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存書目' }))
+    await userEvent.click(await screen.findByRole('button', { name: '關閉' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 

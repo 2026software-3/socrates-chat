@@ -115,6 +115,7 @@ it('keeps a successfully created work selected when the library refresh fails', 
  await userEvent.click(await screen.findByRole('button', { name: '新增書目' }))
  await userEvent.type(screen.getByLabelText('書名（必填）'), 'New edition')
  await userEvent.click(screen.getByRole('button', { name: '儲存書目' }))
+ await userEvent.click(await screen.findByRole('button', { name: '關閉' }))
  expect(await screen.findByRole('button', { name: '將「New edition」移出書單' })).toBeInTheDocument()
  await waitFor(() => expect(reads).toBe(2))
  expect(screen.queryByRole('button', { name: '儲存書目' })).not.toBeInTheDocument()

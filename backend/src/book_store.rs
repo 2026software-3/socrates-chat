@@ -88,10 +88,27 @@ pub async fn create<'e>(
     created_by: Option<Uuid>,
     data: &BookData,
 ) -> Result<Book, sqlx::Error> {
+    insert(executor, created_by, data, None).await
+}
+
+pub async fn create_in_work<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    created_by: Uuid,
+    data: &BookData,
+    work_id: Uuid,
+) -> Result<Book, sqlx::Error> {
+    insert(executor, Some(created_by), data, Some(work_id)).await
+}
+async fn insert<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    created_by: Option<Uuid>,
+    data: &BookData,
+    work_id: Option<Uuid>,
+) -> Result<Book, sqlx::Error> {
     sqlx::query_as(
         "INSERT INTO books (title, authors, language, publication_year, isbn, source_url,
-                            description, recommendation_note, created_by, external_sources)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",
+                            description, recommendation_note, created_by, external_sources, work_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
     )
     .bind(&data.title)
     .bind(&data.authors)
@@ -103,6 +120,7 @@ pub async fn create<'e>(
     .bind(&data.recommendation_note)
     .bind(created_by)
     .bind(sqlx::types::Json(&data.external_sources))
+    .bind(work_id)
     .fetch_one(executor)
     .await
 }

@@ -2,11 +2,18 @@ import { defineMessages } from '@/i18n/define'
 
 export const bookMessages = defineMessages({
   "zh-TW": {
+    "books.relatedSearch": "搜尋其他版本",
+    "books.relatedTitle": "其他版本：{title}",
+    "books.relatedHint": "僅列出 Open Library 部分候選，不保證找齊譯本。請確認是同一作品再加入；已收錄的版本會略過。",
+    "books.relatedEmpty": "未找到尚未收錄的版本。原書已保留，可稍後重新搜尋。",
+    "books.relatedImport": "確認加入此作品",
+
     "books.filterLanguage": "書目語言",
     "books.allLanguages": "所有語言",
     "books.language.zh": "中文",
     "books.language.en": "英文",
     "books.language.es": "西班牙文",
+    "books.language.other": "其他",
     "books.sort": "排序方式",
     "books.newest": "最近新增",
     "books.oldest": "最早新增",
@@ -115,11 +122,18 @@ export const bookMessages = defineMessages({
     "books.noActiveEditions": "全部版本已停用，無可推薦版本。"
   },
   "en": {
+    "books.relatedSearch": "Find other editions",
+    "books.relatedTitle": "Other editions: {title}",
+    "books.relatedHint": "Partial Open Library candidates; translations may be missing. Confirm these belong to the same work before adding. Existing editions are skipped.",
+    "books.relatedEmpty": "No new editions found. Your saved book is kept; you can search again later.",
+    "books.relatedImport": "Confirm and add to this work",
+
     "books.filterLanguage": "Book language",
     "books.allLanguages": "All languages",
     "books.language.zh": "Chinese",
     "books.language.en": "English",
     "books.language.es": "Spanish",
+    "books.language.other": "Other",
     "books.sort": "Sort by",
     "books.newest": "Newest first",
     "books.oldest": "Oldest first",
@@ -228,11 +242,18 @@ export const bookMessages = defineMessages({
     "books.noActiveEditions": "All editions are inactive; none are available for recommendations."
   },
   "es": {
+    "books.relatedSearch": "Buscar otras ediciones",
+    "books.relatedTitle": "Otras ediciones: {title}",
+    "books.relatedHint": "Candidatos parciales de Open Library; pueden faltar traducciones. Confirma que pertenecen a la misma obra. Se omiten ediciones existentes.",
+    "books.relatedEmpty": "No se encontraron ediciones nuevas. El libro guardado se conserva; puedes buscar de nuevo.",
+    "books.relatedImport": "Confirmar y añadir a esta obra",
+
     "books.filterLanguage": "Idioma del libro",
     "books.allLanguages": "Todos los idiomas",
     "books.language.zh": "Chino",
     "books.language.en": "Inglés",
     "books.language.es": "Español",
+    "books.language.other": "Otro",
     "books.sort": "Ordenar por",
     "books.newest": "Más recientes",
     "books.oldest": "Más antiguos",

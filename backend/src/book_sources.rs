@@ -19,9 +19,21 @@ pub struct BookCandidate {
 }
 #[derive(Debug)]
 pub struct BookSourceError;
+#[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RelatedEdition {
+    pub work_id: String,
+    pub work_title: String,
+    pub book: BookCandidate,
+}
 #[async_trait]
 pub trait BookSource: Send + Sync {
     async fn search(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError>;
+    async fn related(
+        &self,
+        _book: &crate::book_store::Book,
+    ) -> Result<Vec<RelatedEdition>, BookSourceError> {
+        Err(BookSourceError)
+    }
 }
 pub struct HttpBookSource {
     client: reqwest::Client,
@@ -202,6 +214,14 @@ impl HttpBookSource {
 }
 #[async_trait]
 impl BookSource for HttpBookSource {
+    async fn related(
+        &self,
+        book: &crate::book_store::Book,
+    ) -> Result<Vec<RelatedEdition>, BookSourceError> {
+        tokio::time::timeout(self.provider_timeout, self.lookup_related(book))
+            .await
+            .map_err(|_| BookSourceError)?
+    }
     async fn search(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
         self.lookup(query.trim()).await
     }
@@ -324,4 +344,189 @@ pub fn isbn13(value: &str) -> Option<String> {
         % 10
         == 0)
         .then_some(s)
+}
+
+// Other editions deliberately use Open Library work relations independently of Google lookup.
+fn ol_key(value: &str, kind: &str, suffix: char) -> bool {
+    value
+        .strip_prefix(&format!("/{kind}/OL"))
+        .and_then(|v| v.strip_suffix(suffix))
+        .is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()))
+}
+impl HttpBookSource {
+    fn ol_url(&self, path: &str) -> Result<reqwest::Url, BookSourceError> {
+        let mut url = reqwest::Url::parse(&self.openlibrary).map_err(|_| BookSourceError)?;
+        url.set_path(path);
+        url.set_query(None);
+        Ok(url)
+    }
+    async fn lookup_related(
+        &self,
+        book: &crate::book_store::Book,
+    ) -> Result<Vec<RelatedEdition>, BookSourceError> {
+        let mut works = Vec::<(String, String)>::new();
+        if let Some(reference) = book
+            .external_sources
+            .iter()
+            .find(|r| r.source == "Open Library" && ol_key(&r.source_id, "books", 'M'))
+        {
+            let data = self
+                .json(
+                    self.client
+                        .get(self.ol_url(&format!("{}.json", reference.source_id))?),
+                    true,
+                )
+                .await?;
+            if data.get("key").and_then(Value::as_str) != Some(reference.source_id.as_str()) {
+                return Err(BookSourceError);
+            }
+            for w in data
+                .get("works")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(key) = w
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .filter(|k| ol_key(k, "works", 'W'))
+                {
+                    works.push((key.to_owned(), book.title.clone()));
+                }
+            }
+        } else {
+            let mut request = self
+                .client
+                .get(&self.openlibrary)
+                .query(&[("limit", "3"), ("fields", "key,title")]);
+            if let Some(isbn) = &book.isbn {
+                request = request.query(&[("isbn", isbn)]);
+            } else {
+                request = request.query(&[("title", &book.title)]);
+                if let Some(author) = &book.authors {
+                    request = request.query(&[("author", author)]);
+                }
+            }
+            let data = self.json(request, true).await?;
+            for w in data
+                .get("docs")
+                .and_then(Value::as_array)
+                .ok_or(BookSourceError)?
+                .iter()
+                .take(3)
+            {
+                if let Some(raw) = w.get("key").and_then(Value::as_str) {
+                    let key = if raw.starts_with("OL") {
+                        format!("/works/{raw}")
+                    } else {
+                        raw.to_owned()
+                    };
+                    if ol_key(&key, "works", 'W') {
+                        works.push((key, text(w, "title").unwrap_or_else(|| book.title.clone())));
+                    }
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut seen_works = std::collections::HashSet::new();
+        let mut groups = std::collections::BTreeMap::<String, Vec<RelatedEdition>>::new();
+        for (key, title) in works
+            .into_iter()
+            .filter(|(k, _)| seen_works.insert(k.clone()))
+            .take(3)
+        {
+            let data = self
+                .json(
+                    self.client
+                        .get(self.ol_url(&format!("{key}/editions.json"))?)
+                        .query(&[("limit", "100")]),
+                    true,
+                )
+                .await?;
+            for entry in data
+                .get("entries")
+                .and_then(Value::as_array)
+                .ok_or(BookSourceError)?
+                .iter()
+                .take(100)
+            {
+                let Some(id) = entry
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .filter(|v| ol_key(v, "books", 'M'))
+                else {
+                    continue;
+                };
+                if !seen.insert(id.to_owned()) {
+                    continue;
+                }
+                if let Some(relations) = entry.get("works").and_then(Value::as_array)
+                    && !relations
+                        .iter()
+                        .any(|w| w.get("key").and_then(Value::as_str) == Some(key.as_str()))
+                {
+                    continue;
+                }
+                let Some(edition_title) = text(entry, "title") else {
+                    continue;
+                };
+                let candidate = BookCandidate {
+                    source: "Open Library".into(),
+                    source_id: id.to_owned(),
+                    title: edition_title,
+                    authors: None,
+                    language: entry
+                        .pointer("/languages/0/key")
+                        .and_then(Value::as_str)
+                        .and_then(|s| s.strip_prefix("/languages/"))
+                        .map(str::to_owned),
+                    publication_year: text(entry, "publish_date").and_then(|s| year(&s)),
+                    isbn: entry
+                        .get("isbn_13")
+                        .or_else(|| entry.get("isbn_10"))
+                        .and_then(Value::as_array)
+                        .and_then(|a| a.iter().find_map(|v| v.as_str().and_then(isbn13))),
+                    source_url: Some(format!("https://openlibrary.org{id}")),
+                    description: description(entry),
+                };
+                if book
+                    .external_sources
+                    .iter()
+                    .any(|r| r.source == candidate.source && r.source_id == candidate.source_id)
+                    || candidate
+                        .isbn
+                        .as_ref()
+                        .is_some_and(|i| book.isbn.as_ref() == Some(i))
+                {
+                    continue;
+                }
+                groups
+                    .entry(candidate.language.clone().unwrap_or_default())
+                    .or_default()
+                    .push(RelatedEdition {
+                        work_id: key.clone(),
+                        work_title: title.clone(),
+                        book: candidate,
+                    });
+            }
+        }
+        // Interleave languages so a work's numerous English editions do not hide other translations.
+        let mut out = Vec::new();
+        let mut groups: Vec<_> = groups.into_values().map(|v| v.into_iter()).collect();
+        while out.len() < 20 {
+            let previous = out.len();
+            for group in &mut groups {
+                if let Some(v) = group.next() {
+                    out.push(v);
+                    if out.len() == 20 {
+                        break;
+                    }
+                }
+            }
+            if out.len() == previous {
+                break;
+            }
+        }
+        Ok(out)
+    }
 }

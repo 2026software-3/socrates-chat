@@ -3,6 +3,7 @@ import { setupServer } from 'msw/node'
 
 /** 測試用的假後端（MSW）。各測試以 `server.use(...)` 加上自己需要的端點。 */
 export const server = setupServer(
+  http.get('/api/books/:id/editions', () => HttpResponse.json([])),
   // 外框會顯示 AI 用量；沒有特別要測的測試一律回用量很低的合成值
   http.get('/api/me/usage', () => HttpResponse.json({ used: 0, limit: 200, window_secs: 86400, resets_in_secs: null })),
   // 沒有特別要測的測試：沒有公告、沒有維護

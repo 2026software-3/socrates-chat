@@ -127,6 +127,7 @@ impl Modify for SessionCookie {
         accounts::delete_student,
         crate::book_works::list, crate::book_works::impact, crate::book_works::edition_work_impact,
         crate::book_works::merge, crate::book_works::move_edition, crate::book_works::set_status, crate::book_works::remove,
+        crate::book_editions::related, crate::book_editions::import,
         crate::books::list, crate::books::read, crate::books::create, crate::books::update,
         crate::books::set_status, crate::books::deletion_impact, crate::books::remove, crate::books::search,
         crate::books::topic_list, crate::books::replace_topic_list,

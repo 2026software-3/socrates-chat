@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { errorText, useT } from '@/i18n'
+import { bookLanguage, normalizeBookLanguage } from './book-filtering'
 import { BookSearch } from './book-search'
 import { textLimits, safeBookUrl, validIsbn } from './book-validation'
 import type { BookCandidate, BookInput } from './types'
@@ -16,12 +17,13 @@ export function BookForm({ initial = emptyBook, save, cancel }: { initial?: Book
   const t = useT()
   const id = useId()
   const imported = useRef<Partial<BookInput>>({})
-  const [value, setValue] = useState<BookInput>(() => ({ ...Object.fromEntries(bookFields.map((field) => [field, initial[field]])), external_sources: initial.external_sources ?? [] }) as BookInput)
+  const [value, setValue] = useState<BookInput>(() => ({ ...Object.fromEntries(bookFields.map((field) => [field, field === 'language' ? normalizeBookLanguage(initial[field]) : initial[field]])), external_sources: initial.external_sources ?? [] }) as BookInput)
   const [pending, setPending] = useState(false)
   const [validation, setValidation] = useState<Partial<Record<(typeof bookFields)[number], string>>>({})
   const [notice, setNotice] = useState<'skipped' | 'conflict' | false>(false)
   const [error, setError] = useState<unknown>()
   function choose(candidate: BookCandidate, fillOnly: boolean) {
+    candidate = { ...candidate, language: normalizeBookLanguage(candidate.language) }
     const normalized = (text: string | null | undefined) => (text ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
     const authors = (text: string | null) => normalized(text).split(';').map((part) => part.trim()).sort().join(';')
     const isbn = (text: string | null) => normalized(text).replace(/[\s-]/g, '')
@@ -90,7 +92,12 @@ export function BookForm({ initial = emptyBook, save, cancel }: { initial?: Book
     {notice ? <p role="status">{t(notice === 'conflict' ? 'books.fillConflict' : 'books.fillSkipped')}</p> : null}
     {bookFields.map((field) => <div key={field} className="space-y-1.5">
       <Label htmlFor={`${id}-${field}`}>{t(`books.${field}`)}</Label>
-      {field === 'description' || field === 'recommendation_note'
+      {field === 'language'
+        ? <select id={`${id}-${field}`} className="w-full rounded border p-2" disabled={pending} value={!value.language ? '' : ['zh', 'en', 'es'].includes(bookLanguage(value.language)) ? bookLanguage(value.language) : 'other'} onChange={(event) => setValue({ ...value, language: event.target.value || null })}>
+          <option value="">{t('books.languageMissing')}</option>
+          {(['zh', 'en', 'es', 'other'] as const).map((code) => <option key={code} value={code}>{t(`books.language.${code}`)}{value.language && code === 'other' && !['zh', 'en', 'es', 'other'].includes(bookLanguage(value.language)) ? ` (${value.language})` : ''}</option>)}
+        </select>
+        : field === 'description' || field === 'recommendation_note'
         ? <Textarea id={`${id}-${field}`} value={value[field] ?? ''} disabled={pending} aria-invalid={!!validation[field]} aria-describedby={validation[field] ? `${id}-${field}-error` : undefined} onChange={(event) => setValue({ ...value, [field]: event.target.value })} />
         : <Input id={`${id}-${field}`} value={value[field] ?? ''} required={field === 'title'} disabled={pending} aria-invalid={!!validation[field]} aria-describedby={validation[field] ? `${id}-${field}-error` : undefined} onChange={(event) => setValue({ ...value, [field]: event.target.value })} />}
       {validation[field] ? <p id={`${id}-${field}-error`} className="text-sm text-destructive">{validation[field]}</p> : null}

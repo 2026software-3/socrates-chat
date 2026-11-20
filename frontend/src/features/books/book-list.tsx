@@ -12,6 +12,7 @@ import { useFetch } from '@/lib/use-fetch'
 import type { Activity, Topic } from '@/lib/types'
 import { BookLanguageFilter } from './book-filters'
 import { filterWorks } from './book-filtering'
+import { RelatedEditions } from './related-editions'
 import { BookForm } from './book-form'
 import type { Book, BookInput, BookWork } from './types'
 
@@ -26,6 +27,7 @@ export function BookListEditor({ path, readOnly = false }: { path: string; readO
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const [notice, setNotice] = useState(false)
+  const [related, setRelated] = useState<Book>()
   const [creating, setCreating] = useState(false)
   const chosen = selected ?? list.data ?? []
   const baseline = savedList ?? list.data ?? []
@@ -41,11 +43,13 @@ export function BookListEditor({ path, readOnly = false }: { path: string; readO
   async function create(value: BookInput) {
     const created = await api.post<Book>('/api/books', value)
     const work: BookWork = { id: created.work_id, title: created.title, is_active: true, created_at: created.created_at, updated_at: created.updated_at, editions: [created] }
+    setRelated(created)
     setSelected([...chosen, work]); setNotice(false); setCreating(false); library.reload()
   }
   if (list.loading && !list.data) return <LoadingBlock />
   if (!list.data) return list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null
   return <div className="space-y-4">
+    {related ? <RelatedEditions book={related} workTitle={related.title} close={() => setRelated(undefined)} changed={(work) => { setSelected(chosen.map((item) => item.id === work.id ? work : item)); library.reload() }} /> : null}
     {readOnly ? <p role="status">{t('books.readonly')}</p> : <p className="text-sm text-muted-foreground">{t('books.listChanges')}</p>}
     <h3 className="font-medium">{t('books.selectedCount', { count: chosen.length })}</h3>
     {!readOnly ? <p role="status">{t('books.pendingChanges', { added, removed })}</p> : null}

@@ -399,3 +399,60 @@ async fn google_and_openlibrary_each_receive_their_own_timeout_budget() {
     assert!(result.unwrap().is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+fn synthetic_related_book() -> socrates_chat_backend::book_store::Book {
+    serde_json::from_value(json!({"id":"00000000-0000-4000-8000-000000000001","work_id":"00000000-0000-4000-8000-000000000001","title":"Synthetic original","authors":"Original Author","language":"en","publication_year":null,"isbn":null,"source_url":null,"description":null,"recommendation_note":null,"created_by":null,"is_active":true,"external_sources":[{"source":"Open Library","source_id":"/books/OL1M"}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap()
+}
+
+#[tokio::test]
+async fn related_editions_use_work_relations_without_google_or_guessing_translated_titles() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let google = calls.clone();
+    let router=Router::new()
+        .route("/volumes",get(move || { google.fetch_add(1,Ordering::SeqCst); async { Json(json!({"items":[]})) } }))
+        .route("/books/OL1M.json",get(||async { Json(json!({"key":"/books/OL1M","works":[{"key":"/works/OL10W"},{"key":"/works/../../evil"}]})) }))
+        .route("/search.json",get(||async {Json(json!({"docs":[{"key":"OL10W","title":"Synthetic work"}]}))}))
+        .route("/works/OL10W/editions.json",get(||async {Json(json!({"entries":[
+            {"key":"/books/OL1M","title":"Synthetic original"},
+            {"key":"/books/OL2M","title":"合成中文譯本","languages":[{"key":"/languages/chi"}],"works":[{"key":"/works/OL10W"}]},
+            {"key":"/books/OL3M","title":"Edición sintética","languages":[{"key":"/languages/spa"}],"works":[{"key":"/works/OL10W"}]},
+            {"key":"/books/OL4M","title":"Wrong work","works":[{"key":"/works/OL99W"}]},
+            {"key":"/books/../../evil","title":"Invalid key"}
+        ]}))}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let source =
+        HttpBookSource::with_urls(None, format!("{url}/volumes"), format!("{url}/search.json"));
+    let book = synthetic_related_book();
+    let related = source.related(&book).await.unwrap();
+    assert_eq!(related.len(), 2);
+    assert!(
+        related
+            .iter()
+            .any(|r| r.book.title == "合成中文譯本" && r.book.language.as_deref() == Some("chi"))
+    );
+    assert!(
+        related
+            .iter()
+            .all(|r| r.work_id == "/works/OL10W" && r.book.authors.is_none())
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let mut title_only = book.clone();
+    title_only.external_sources.clear();
+    let found = source.related(&title_only).await.unwrap();
+    assert!(found.iter().any(|r| r.book.title == "Edición sintética"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn related_lookup_failure_or_timeout_is_not_empty_success() {
+    let (url, _) = server(StatusCode::OK, json!({"items":[]}), json!({"not_docs":[]})).await;
+    let source =
+        HttpBookSource::with_urls(None, format!("{url}/volumes"), format!("{url}/search.json"));
+    let mut book = synthetic_related_book();
+    book.external_sources.clear();
+    assert!(source.related(&book).await.is_err());
+    let source = source.with_provider_timeout(std::time::Duration::from_millis(1));
+    assert!(source.related(&book).await.is_err());
+}
