@@ -258,7 +258,7 @@ components:
 
 - **每個區域是廣場上的一棟建築**，同一個區域在不同角色用同一棟：
   - 學生：I 我的教室 Basilica Ivlia、II 個人練習 Aedes Vestae、III 我的對話 Rostra、IV 點數與任務 Aedes Satvrni、V 我的蘇格拉底 Aedes Castoris、VI 個人檔案 Tabvlarivm。
-  - 教師：I 教室管理 Basilica Ivlia、II 題目庫 Tabvlarivm、III 教師書單 Aedes Satvrni、IV 學生帳號 Cvria、V 學生總結 Rostra；活動與論點分布在教室詳細頁的頁籤（S-04.7、S-14）。
+  - 教師：I 教室管理 Basilica Ivlia、II 題目庫 Tabvlarivm、III 共用書庫 Aedes Satvrni、IV 學生帳號 Cvria、V 學生總結 Rostra；活動與論點分布在教室詳細頁的頁籤（S-04.7、S-14）。
   - 管理者：I 總覽 Cvria、II 教室管理 Basilica Ivlia、III 教師管理 Aedes Castoris、IV 修課名單 Aedes Satvrni、V 題目庫 Tabvlarivm、VI 系統設定 Aedes Vestae、VII 執行日誌 Rostra。
 - **側欄**：上方是廣場平面圖（仿 Nolli 1748 年羅馬地圖），建築平常塗黑，所在那棟打開成白色內部與柱子並標上編號圖釘；下方是圖例（羅馬數字＋中文區名＋拉丁建築名），只有一層。同區子頁用頁內頁籤，清單進詳細用麵包屑。
 - **手機導覽（2026-11-18 定案，提案 C）**：< 768 不用左側抽屜。

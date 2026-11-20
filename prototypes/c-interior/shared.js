@@ -25,7 +25,7 @@
     teacher: [
       { id: 't-classes', n: 'I', zh: '教室管理', la: 'Basilica Ivlia', b: 'basilica' },
       { id: 't-topics', n: 'II', zh: '題目庫', la: 'Tabvlarivm', b: 'tabularium' },
-      { id: 't-books', n: 'III', zh: '教師書單', la: 'Aedes Satvrni', b: 'saturn' },
+      { id: 't-books', n: 'III', zh: '共用書庫', la: 'Aedes Satvrni', b: 'saturn' },
       { id: 't-students', n: 'IV', zh: '學生帳號', la: 'Cvria', b: 'curia' },
       { id: 't-summaries', n: 'V', zh: '學生總結', la: 'Rostra', b: 'rostra' },
     ],
