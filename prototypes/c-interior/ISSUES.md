@@ -89,14 +89,14 @@
   3. 0.38 秒後，頁首的拉丁名再刻一次。
 - Given 同一頁更新（例如對話輪數），Then 不重刻。
 - Given `prefers-reduced-motion: reduce`，Then 直接顯示結果。
-- 依 AGENTS.md，不新增動畫函式庫；用 CSS `clip-path` 與 `animation-delay` 即可（原型就是這樣做的）。
+- 原型用 CSS `clip-path` 與 `animation-delay` 做刻字，也可以改用已採用的 GSAP（2026-11-20）。
 
 ### 2.6 [F-xx.6-FE] 入口登入後的轉場
 **Labels**：frontend
 - Given 在入口登入成功，Then 墨水淹沒畫面後進入該角色的區域首頁：學生到我的教室，教師與管理者到教室管理或總覽。
 - Given 減少動態，Then 直接切換。
 - 原型：`b-roman-forum/vedute.html` 在本機會轉到 `c-interior/index.html`。
-- **相依**：Three.js 與 GSAP 的依賴仍待規格確認（S-11，見 DESIGN.md Known Issues）。
+- **相依**：Three.js 與 GSAP 已採用（2026-11-20，見 `docs/specs/decisions.md` S-11）；無 WebGL 時的替代畫面仍待決定。
 
 ### 2.7 [F-xx.7-FE] Toast 通知
 **Labels**：frontend

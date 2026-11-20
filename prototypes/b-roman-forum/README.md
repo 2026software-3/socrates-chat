@@ -21,6 +21,6 @@ node prototypes/b-roman-forum/inline-core.mjs
 
 ## 待確認
 
-- Three.js 與 GSAP 都是新增前端主要依賴，依 AGENTS.md 與 S-11 需先經規格討論，本原型不代表採用。
+- Three.js 與 GSAP 已採用（2026-11-20，見 `docs/specs/decisions.md` S-11）。
 - 文案依 2026-11 修訂的 S-02.1：教師可唯讀查看自己教室已結束活動的對話原文；進行中的對話與個人練習看不到。
 - 連續登入失敗的鎖定策略（S-08.2）尚未呈現。

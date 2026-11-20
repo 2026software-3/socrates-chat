@@ -31,7 +31,7 @@ AI 只追問、不代答。對話以「理由是否站得住」為收斂目標�
 - 教師可查看自己教室學生的 AI 總結，以及已結束活動對話的完整原文（唯讀）；進行中的對話與個人練習看不到（S-02.1，2026-11 修訂）。
 - 管理介面、API、報表、匯出與日誌中，每則訊息內容一律以 `message` 顯示。
 - 介面三語（S-12.1）。
-- 前端已定案：React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui；新增主要依賴（例如 GSAP、Three.js）需先經規格討論，入口動畫的依賴尚待確認。
+- 前端已定案：React、TypeScript、Vite、Tailwind CSS、shadcn/ui、assistant-ui；入口 3D 與動畫用 Three.js、GSAP（2026-11-20 決定）；其他新增主要依賴需先經規格討論。
 - 規格以 `docs/specs/` 為準。
 
 ## Evidence on Hand

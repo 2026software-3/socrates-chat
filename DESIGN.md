@@ -348,7 +348,7 @@ components:
 截至 2026-11-03，`vedute.html` 與本規範的已知問題與待辦：
 
 **待確認的規格**
-- Three.js 與 GSAP 都是新增前端主要依賴，依 AGENTS.md 與 S-11 須先經規格討論；需開規格 PR 更新 `docs/specs/decisions.md`，含無 WebGL 降級與效能上限。
+- Three.js 與 GSAP 已於 2026-11-20 採用（見 `docs/specs/decisions.md` S-11）；無 WebGL 時的替代畫面與 3D 場景的效能上限仍待決定。
 - 連續登入失敗的鎖定策略（S-08.2）、逾時後是否提示進度保留，尚未呈現。
 - 三語（S-11）：IM Fell 只有拉丁字母；英文介面的正文字體與中英混排規則未定。
 
