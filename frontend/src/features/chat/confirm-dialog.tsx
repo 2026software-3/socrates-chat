@@ -18,6 +18,8 @@ type Props = {
   title: string
   description: ReactNode
   confirmLabel: string
+  /** 僅停用確認按鈕，仍可取消。 */
+  confirmDisabled?: boolean
   /** 進行中：按鈕停用，避免重複送出，且不可關閉。 */
   pending?: boolean
   /** 上一次確認失敗的錯誤（顯示翻譯後的訊息）。 */
@@ -36,6 +38,7 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   pending = false,
+  confirmDisabled = false,
   error,
   onConfirm,
   destructive = false,
@@ -59,7 +62,7 @@ export function ConfirmDialog({
           <AlertDialogCancel disabled={pending}>{t('common.cancel')}</AlertDialogCancel>
           <AlertDialogAction
             variant={destructive ? 'destructive' : 'default'}
-            disabled={pending}
+            disabled={pending || confirmDisabled}
             onClick={(e) => {
               // 非同步確認：等請求完成才由呼叫端關閉對話框
               e.preventDefault()
