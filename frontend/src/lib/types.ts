@@ -21,8 +21,8 @@ export type Topic = {
   id: string
   title: string
   description: string
-  category: string | null
   is_active: boolean
+  guiding_questions?: string[]
 }
 
 export type ActivityStatus = 'draft' | 'published' | 'closed'
@@ -53,8 +53,8 @@ export type TopicProgress = {
   summary_ready: boolean
 }
 
-/** 學生看到的活動：每題進度與整體完成度（每題都有總結才算完成）。 */
-export type StudentActivity = Activity & { topics: TopicProgress[]; completed: boolean }
+/** 學生看到的活動：所屬教室名稱（供依教室分組，S-14；學生只看得到教室名稱）、每題進度與整體完成度（每題都有總結才算完成）。 */
+export type StudentActivity = Activity & { classroom_name: string; topics: TopicProgress[]; completed: boolean }
 
 export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
@@ -79,6 +79,10 @@ export type Conversation = {
   ended_at: string | null
   /** 學生已封存：只從自己的清單隱藏，可復原 */
   is_archived: boolean
+  /** 來源教室名稱；個人練習為 null（S-14） */
+  classroom_name: string | null
+  /** 來源教室已封存，來源欄加註「已封存」 */
+  classroom_archived: boolean
 }
 
 export type MessageRole = 'student' | 'ai'
@@ -99,6 +103,8 @@ export type ConversationDetail = Conversation & {
   generating: boolean
   /** 伺服器端語音對話已啟用（`GET /api/conversations/{id}/voice`） */
   voice_realtime: boolean
+  /** 該題目目前的引導問題（S-04.8）；對話頁隨機顯示其中一題 */
+  guiding_questions: string[]
 }
 
 /** 送出訊息的回應；`auto_ended` 表示達回合上限，對話已自動結束、總結產生中。 */
@@ -115,6 +121,33 @@ export type SummaryView = {
   completed_at: string | null
   translation?: SummaryTranslation | null
   translation_pending?: boolean
+}
+
+/** 單場雷達圖的狀態（GET /api/conversations/{id}/radar）；能否重試看 `retryable`，不由前端推斷。 */
+export type RadarStatus =
+  | 'summary_not_ready'
+  | 'unavailable'
+  | 'dimensions_pending'
+  | 'not_started'
+  | 'pending'
+  | 'failed'
+  | 'ready'
+
+/** 後端保存的三語文字。 */
+export type LocalizedText = { zh_tw: string; en: string; es: string }
+
+/** 題目的一個維度：給學生看的名稱與白話說明。 */
+export type RadarDimension = { id: string; name: LocalizedText; description: LocalizedText }
+
+export type RadarView = {
+  status: RadarStatus
+  /** 現在能否呼叫 `radar/retry` */
+  retryable: boolean
+  /** 以維度識別碼為 key 的 0 到 5 整數分；只有 `ready` 時有值，且六個維度齊全 */
+  scores: Record<string, number> | null
+  dimensions: RadarDimension[] | null
+  rules_version: string | null
+  completed_at: string | null
 }
 
 /** 教師與管理者的總結列表項目（GET /api/summaries，分頁）。 */
@@ -191,6 +224,13 @@ export type ActivityDistribution = {
   activity_id: string
   title: string
   completed: number
+  topics: TopicDistribution[]
+}
+
+export type TopicDistribution = {
+  topic_id: string
+  title: string
+  completed: number
   claims: ClaimGroup[]
   /** 有主張但還沒歸群的場數 */
   ungrouped: number
@@ -224,6 +264,8 @@ export type ClassDashboard = {
 export type EmailList = { emails: string[] }
 
 export type Classroom = {
+  /** 只有 `GET /api/classrooms`（列表）會回：教室不是過渡中、沒封存、也還沒設定對話模型，學生目前無法使用 AI */
+  ai_model_missing?: boolean
   is_archived: boolean
   id: string
   name: string
@@ -266,4 +308,93 @@ export type AiUsage = {
   window_secs: number
   /** 最早那一次呼叫還要幾秒滑出時間窗（多久後會空出一個額度）；尚未使用時為 null。 */
   resets_in_secs: number | null
+}
+
+/** 教師 API key 的狀態（F-40.1）：`ok` 之外都是無法使用或受限制的原因類別。 */
+export type KeyStatus = 'ok' | 'invalid' | 'rate_limited' | 'quota_exhausted'
+
+/** `GET /api/teacher/ai-providers`：可綁定 key 的供應商。 */
+export type AiProvider = { id: string; name: string }
+
+/**
+ * `GET /api/teacher/keys/models?provider=…`：供應商的模型清單，只當輸入建議（不是白名單）。
+ * `no_key`：沒有該供應商的 key；`unavailable`：有 key 但取不到清單。這兩種都退回手動輸入。
+ */
+export type ModelList = { provider: string; status: 'ok' | 'no_key' | 'unavailable'; models: string[] }
+
+/** `GET /api/teacher/keys`：自己的 key，只有遮蔽識別，沒有完整 key。 */
+export type TeacherKey = {
+  id: string
+  provider: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** `GET /api/admin/teacher-keys`：管理者看到的 key 設定狀態（沒有用量）。 */
+export type AdminTeacherKey = {
+  id: string
+  owner_email: string
+  provider: string
+  /** 供應商的顯示名稱（管理者不能呼叫教師的供應商名單，所以由後端附上） */
+  provider_name: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+}
+
+export type UsageRange = 'today' | '7d' | '30d' | 'all'
+
+export type UsageNumbers = {
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  /** 供應商沒有回報 token 的請求數；這些請求不估算 token。 */
+  unreported_requests: number
+}
+
+/** 教師 key 或教室的 AI 用量（F-40.8）。 */
+export type UsageReport = {
+  range: UsageRange
+  totals: UsageNumbers
+  items: (UsageNumbers & { provider: string; model: string })[]
+}
+
+export type ModelRef = { provider: string; model: string }
+
+/** `GET /api/classrooms/{id}/ai-settings`（F-40.4）。 */
+export type ClassroomAiSettings = {
+  transitional: boolean
+  primary: ModelRef | null
+  fallbacks: ModelRef[]
+  confirmed_providers: string[]
+}
+
+/** `GET /api/admin/system-ai`：系統用途的模型、key 與近 30 天用量。 */
+export type SystemAiKey = {
+  id: string
+  provider: string
+  provider_name: string
+  mask: string
+  status: KeyStatus
+  status_at: string | null
+  created_at: string
+  requests_30d: number
+  input_tokens_30d: number
+  output_tokens_30d: number
+  unreported_requests_30d: number
+}
+
+export type SystemAiOverview = {
+  /** `database`：用這裡設定的模型與 key；`host_file`：尚未設定（主機 key 已淘汰，系統用途的 AI 無法使用） */
+  source: 'database' | 'host_file'
+  routing_enabled: boolean
+  encryption_configured: boolean
+  setting: { provider: string; provider_name: string; model: string } | null
+  host_model: string
+  keys: SystemAiKey[]
+  providers: AiProvider[]
 }

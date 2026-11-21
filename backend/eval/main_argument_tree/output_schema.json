@@ -1,0 +1,84 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "topic_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "claim",
+              "premise",
+              "boundary",
+              "rebuttal",
+              "precision",
+              "independent_judgment",
+              "opposing_proposition"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "source_round": {
+            "type": "integer"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relation": {
+            "enum": [
+              "support",
+              "attack",
+              "qualify",
+              "precision",
+              "reflect",
+              "context_only",
+              null
+            ]
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant_question_scenario"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "source_round",
+          "evidence",
+          "parent",
+          "relation",
+          "origin"
+        ]
+      }
+    }
+  },
+  "required": [
+    "topic_id",
+    "title",
+    "nodes"
+  ]
+}

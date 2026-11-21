@@ -1,0 +1,706 @@
+//! 供應商名單與驗證探測（F-40.3，#595）對本機假 HTTP 服務的測試；全部使用合成資料。
+
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::State,
+    http::{HeaderMap, Method, Response, StatusCode, Uri, header},
+};
+use serde_json::{Value, json};
+
+use super::*;
+
+const KEY: &str = "sk-test-KEYSENTINEL";
+const MODEL: &str = "the-model";
+const SHORT: Duration = Duration::from_millis(300);
+
+// ---- 名單 ----
+
+#[test]
+fn list_is_pinned_and_excludes_unsafe_or_unsupported_adapters() {
+    let ids: Vec<&str> = providers().iter().map(|p| p.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "openai",
+            "anthropic",
+            "gemini",
+            "groq",
+            "deepseek",
+            "xai",
+            "mistral",
+            "together",
+            "fireworks"
+        ]
+    );
+    for excluded in [
+        "ollama",
+        "ollama_cloud",
+        "omlx",
+        "vertex",
+        "bedrock",
+        "github_copilot",
+        "opencode_go",
+        "openai_resp",
+        "custom",
+    ] {
+        assert!(find(excluded).is_none(), "{excluded}");
+    }
+    // openai_resp 併入 OpenAI：名單只有 Chat Completions 的 OpenAI adapter
+    assert_eq!(find("openai").unwrap().adapter, AdapterKind::OpenAI);
+}
+
+#[test]
+fn ids_match_the_database_format_and_are_unique() {
+    let mut seen = std::collections::HashSet::new();
+    for p in providers() {
+        assert!(
+            !p.id.is_empty()
+                && p.id.len() <= 64
+                && p.id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'),
+            "{}",
+            p.id
+        );
+        assert!(seen.insert(p.id), "duplicate {}", p.id);
+        assert!(!p.name.trim().is_empty());
+    }
+}
+
+#[test]
+fn every_endpoint_is_a_public_https_host_ending_with_a_slash() {
+    for p in providers() {
+        let url = reqwest::Url::parse(p.endpoint).unwrap_or_else(|_| panic!("{}", p.id));
+        assert_eq!(url.scheme(), "https", "{}", p.id);
+        assert!(p.endpoint.ends_with('/'), "{}", p.id);
+        assert!(
+            url.username().is_empty() && url.password().is_none(),
+            "{}",
+            p.id
+        );
+        assert!(url.port().is_none(), "{}", p.id);
+        assert!(
+            url.query().is_none() && url.fragment().is_none(),
+            "{}",
+            p.id
+        );
+        let host = url.host_str().unwrap();
+        // 一律是網域名稱，不接受 IP 字面值，也不接受本機或內網用的網域
+        assert!(host.parse::<std::net::IpAddr>().is_err(), "{host}");
+        assert!(host.contains('.'), "{host}");
+        for bad in [
+            "localhost",
+            ".local",
+            ".internal",
+            ".lan",
+            ".home",
+            ".localdomain",
+        ] {
+            assert!(
+                !host.ends_with(bad) && host != bad.trim_start_matches('.'),
+                "{host}"
+            );
+        }
+    }
+}
+
+#[test]
+fn find_is_exact_and_case_sensitive() {
+    assert_eq!(find("openai").unwrap().id, "openai");
+    assert!(find("OpenAI").is_none());
+    assert!(find("").is_none());
+    assert!(find("openai ").is_none());
+}
+
+// ---- 假 HTTP 服務 ----
+
+#[derive(Clone)]
+struct Seen {
+    method: Method,
+    uri: String,
+    headers: HeaderMap,
+    body: String,
+}
+
+type Handler = Arc<dyn Fn(&Seen) -> Response<Body> + Send + Sync>;
+
+#[derive(Clone)]
+struct Srv {
+    handler: Handler,
+    seen: Arc<Mutex<Vec<Seen>>>,
+}
+
+async fn handle(
+    State(s): State<Srv>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response<Body> {
+    let seen = Seen {
+        method,
+        uri: uri.to_string(),
+        headers,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    };
+    s.seen.lock().unwrap().push(seen.clone());
+    (s.handler)(&seen)
+}
+
+async fn spawn(handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+    let app = Router::new().fallback(handle).with_state(Srv {
+        handler,
+        seen: seen.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/api/v1/"), seen)
+}
+
+fn reply(status: u16, content_type: &str, body: impl Into<String>) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::from_u16(status).unwrap())
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body.into()))
+        .unwrap()
+}
+
+fn fixed(status: u16) -> Handler {
+    Arc::new(move |_| reply(status, "application/json", r#"{"data":[]}"#))
+}
+
+/// 接受連線但永遠不回應的服務。
+async fn hanging() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    format!("http://{addr}/api/v1/")
+}
+
+// ---- verify_key ----
+
+const FAMILIES: [AdapterKind; 3] = [
+    AdapterKind::OpenAI,
+    AdapterKind::Anthropic,
+    AdapterKind::Gemini,
+];
+
+fn authenticated(adapter: AdapterKind, h: &HeaderMap) -> bool {
+    let get = |n: &str| h.get(n).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    match adapter {
+        AdapterKind::Anthropic => get("x-api-key").as_deref() == Some(KEY),
+        AdapterKind::Gemini => get("x-goog-api-key").as_deref() == Some(KEY),
+        _ => get("authorization").as_deref() == Some(&format!("Bearer {KEY}")),
+    }
+}
+
+#[tokio::test]
+async fn verify_key_only_lists_models_and_sends_no_conversation_content() {
+    for adapter in FAMILIES {
+        let (endpoint, seen) = spawn(Arc::new(move |s| {
+            if authenticated(adapter, &s.headers) {
+                reply(200, "application/json", r#"{"data":[],"models":[]}"#)
+            } else {
+                reply(401, "application/json", "{}")
+            }
+        }))
+        .await;
+        assert_eq!(
+            verify_key_at(&endpoint, adapter, KEY, SHORT).await,
+            KeyCheck::Usable,
+            "{adapter:?}"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, Method::GET);
+        assert!(seen[0].uri.starts_with("/api/v1/models"), "{}", seen[0].uri);
+        assert!(seen[0].body.is_empty());
+        // key 只放在標頭，不放在網址
+        assert!(!seen[0].uri.contains(KEY));
+    }
+}
+
+#[tokio::test]
+async fn verify_key_wrong_key_or_rejection_is_connection_failed() {
+    for adapter in FAMILIES {
+        for status in [400, 401, 403, 404, 500, 503] {
+            let (endpoint, _) = spawn(fixed(status)).await;
+            assert_eq!(
+                verify_key_at(&endpoint, adapter, KEY, SHORT).await,
+                KeyCheck::ConnectionFailed,
+                "{adapter:?} {status}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn verify_key_counts_quota_and_rate_limit_as_usable() {
+    for status in [402, 429] {
+        let (endpoint, _) = spawn(fixed(status)).await;
+        assert_eq!(
+            verify_key_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+            KeyCheck::Usable,
+            "{status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn verify_key_unreachable_or_hanging_service_is_connection_failed() {
+    // 沒有人在聽的埠
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = format!("http://{}/v1/", listener.local_addr().unwrap());
+    drop(listener);
+    assert_eq!(
+        verify_key_at(&dead, AdapterKind::OpenAI, KEY, SHORT).await,
+        KeyCheck::ConnectionFailed
+    );
+    // 一直不回應：必須在逾時內回來
+    let endpoint = hanging().await;
+    let started = std::time::Instant::now();
+    assert_eq!(
+        verify_key_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        KeyCheck::ConnectionFailed
+    );
+    assert!(started.elapsed() < Duration::from_millis(1200));
+}
+
+// ---- list_models ----
+
+fn openai_models(ids: &[&str]) -> String {
+    json!({"object":"list","data": ids.iter().map(|id| json!({"id": id, "object": "model"})).collect::<Vec<_>>()})
+        .to_string()
+}
+
+#[tokio::test]
+async fn list_models_returns_sorted_deduplicated_chat_models_and_hides_non_chat_ones() {
+    let body = openai_models(&[
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4o",
+        "text-embedding-3-small",
+        "whisper-1",
+        "tts-1",
+        "dall-e-3",
+        "gpt-image-1",
+        "omni-moderation-latest",
+        "gpt-4o-audio-preview",
+        "gpt-4o-realtime-preview",
+        "gpt-4o-mini-tts",
+        "gpt-3.5-turbo-instruct",
+        "davinci-002",
+        "sora-2",
+        "has space",
+        "",
+        &"x".repeat(201),
+    ]);
+    let (endpoint, seen) = spawn(Arc::new(move |s| {
+        if authenticated(AdapterKind::OpenAI, &s.headers) {
+            reply(200, "application/json", body.clone())
+        } else {
+            reply(401, "application/json", "{}")
+        }
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Ok(vec!["gpt-4o".to_owned(), "gpt-4o-mini".to_owned()])
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].method, Method::GET);
+    assert!(seen[0].uri.starts_with("/api/v1/models"), "{}", seen[0].uri);
+    assert!(seen[0].body.is_empty());
+    // key 只放在標頭，不放在網址
+    assert!(!seen[0].uri.contains(KEY));
+}
+
+#[tokio::test]
+async fn list_models_asks_anthropic_and_gemini_for_a_full_page_and_reads_their_formats() {
+    let (endpoint, seen) = spawn(Arc::new(|s| {
+        if !authenticated(AdapterKind::Anthropic, &s.headers) {
+            return reply(401, "application/json", "{}");
+        }
+        reply(
+            200,
+            "application/json",
+            r#"{"data":[{"id":"claude-b","type":"model"},{"id":"claude-a","type":"model"}],"has_more":false}"#,
+        )
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::Anthropic, KEY, SHORT).await,
+        Ok(vec!["claude-a".to_owned(), "claude-b".to_owned()])
+    );
+    assert!(seen.lock().unwrap()[0].uri.contains("limit=1000"));
+
+    let (endpoint, seen) = spawn(Arc::new(|s| {
+        if !authenticated(AdapterKind::Gemini, &s.headers) {
+            return reply(401, "application/json", "{}");
+        }
+        reply(
+            200,
+            "application/json",
+            json!({"models":[
+                {"name":"models/gemini-pro","supportedGenerationMethods":["generateContent","countTokens"]},
+                {"name":"models/text-embedding-004","supportedGenerationMethods":["embedContent"]},
+                {"name":"models/gemini-flash","supportedGenerationMethods":["generateContent"]},
+                {"name":"models/legacy-no-methods"}
+            ]})
+            .to_string(),
+        )
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::Gemini, KEY, SHORT).await,
+        Ok(vec![
+            "gemini-flash".to_owned(),
+            "gemini-pro".to_owned(),
+            "legacy-no-methods".to_owned()
+        ])
+    );
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].uri.contains("pageSize=1000"));
+    assert!(!seen[0].uri.contains(KEY));
+}
+
+#[tokio::test]
+async fn list_models_keeps_at_most_the_cap() {
+    let ids: Vec<String> = (0..MODEL_LIST_MAX + 100)
+        .map(|i| format!("m-{i:04}"))
+        .collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let body = openai_models(&refs);
+    let (endpoint, _) = spawn(Arc::new(move |_| {
+        reply(200, "application/json", body.clone())
+    }))
+    .await;
+    let listed = list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), MODEL_LIST_MAX);
+    assert_eq!(listed[0], "m-0000");
+}
+
+#[tokio::test]
+async fn list_models_is_unavailable_for_rejections_bad_bodies_and_a_silent_service() {
+    for status in [400, 401, 403, 404, 429, 500, 503] {
+        let (endpoint, _) = spawn(fixed(status)).await;
+        assert_eq!(
+            list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+            Err(ListUnavailable),
+            "{status}"
+        );
+    }
+    for body in ["not json", "<html></html>", ""] {
+        let (endpoint, _) = spawn(Arc::new(move |_| reply(200, "application/json", body))).await;
+        assert_eq!(
+            list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+            Err(ListUnavailable),
+            "{body:?}"
+        );
+    }
+    // 200 但沒有預期的欄位：視為空清單，不是錯誤
+    let (endpoint, _) = spawn(Arc::new(|_| reply(200, "application/json", "{}"))).await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Ok(Vec::new())
+    );
+    // 沒有人在聽的埠
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = format!("http://{}/v1/", listener.local_addr().unwrap());
+    drop(listener);
+    assert_eq!(
+        list_models_at(&dead, AdapterKind::OpenAI, KEY, SHORT).await,
+        Err(ListUnavailable)
+    );
+    // 一直不回應：必須在逾時內回來
+    let endpoint = hanging().await;
+    let started = std::time::Instant::now();
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Err(ListUnavailable)
+    );
+    assert!(started.elapsed() < Duration::from_millis(1200));
+}
+
+#[tokio::test]
+async fn list_models_does_not_follow_redirects() {
+    let (target, target_seen) = spawn(Arc::new(|_| {
+        reply(200, "application/json", r#"{"data":[{"id":"leak"}]}"#)
+    }))
+    .await;
+    let location = format!("{target}models");
+    let (endpoint, _) = spawn(Arc::new(move |_| {
+        Response::builder()
+            .status(StatusCode::FOUND)
+            .header(header::LOCATION, location.clone())
+            .body(Body::empty())
+            .unwrap()
+    }))
+    .await;
+    assert_eq!(
+        list_models_at(&endpoint, AdapterKind::OpenAI, KEY, SHORT).await,
+        Err(ListUnavailable)
+    );
+    assert!(target_seen.lock().unwrap().is_empty());
+}
+
+// ---- verify_model ----
+
+fn sse(data: Value) -> String {
+    format!("data: {data}\n\n")
+}
+
+fn openai_stream() -> String {
+    let mut b = String::new();
+    for t in ["O", "K"] {
+        b += &sse(
+            json!({"id":"c","object":"chat.completion.chunk","model":MODEL,
+            "choices":[{"index":0,"delta":{"role":"assistant","content":t}}]}),
+        );
+    }
+    b += &sse(
+        json!({"id":"c","object":"chat.completion.chunk","model":MODEL,
+        "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+    );
+    b + "data: [DONE]\n\n"
+}
+
+fn openai_json(text: &str) -> String {
+    json!({"id":"c","object":"chat.completion","model":MODEL,
+        "choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+    .to_string()
+}
+
+/// 一般的健康供應商：串流與 JSON 結構化輸出都正常。
+fn healthy() -> Handler {
+    Arc::new(|s| {
+        let body: Value = serde_json::from_str(&s.body).unwrap_or_default();
+        if body["stream"] == json!(true) {
+            reply(200, "text/event-stream", openai_stream())
+        } else {
+            reply(200, "application/json", openai_json(r#"{"ok":true}"#))
+        }
+    })
+}
+
+#[tokio::test]
+async fn verify_model_passes_after_one_stream_and_one_structured_request() {
+    let (endpoint, seen) = spawn(healthy()).await;
+    assert_eq!(
+        verify_model_at(&endpoint, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Ok(())
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    let bodies: Vec<Value> = seen
+        .iter()
+        .map(|s| serde_json::from_str(&s.body).unwrap())
+        .collect();
+    assert_eq!(
+        bodies.iter().filter(|b| b["stream"] == json!(true)).count(),
+        1
+    );
+    // 結構化輸出請求帶了 JSON schema
+    assert!(bodies.iter().any(|b| b.get("response_format").is_some()));
+    for s in seen.iter() {
+        assert!(s.uri.ends_with("/chat/completions"));
+        assert!(authenticated(AdapterKind::OpenAI, &s.headers));
+        assert_eq!(
+            s.body.matches(MODEL).count(),
+            1,
+            "model sent once: {}",
+            s.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn verify_model_reports_a_recognizable_reason_per_failure() {
+    use ModelCheckError::*;
+    // 認證失敗
+    for status in [401, 403] {
+        let (e, _) = spawn(fixed(status)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Err(AuthFailed),
+            "{status}"
+        );
+    }
+    // 模型不存在
+    let (e, _) = spawn(fixed(404)).await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Err(ModelNotFound)
+    );
+    // 串流不支援：回的是一般 JSON 而不是事件串流
+    let (e, _) = spawn(Arc::new(|_| {
+        reply(200, "application/json", openai_json("hi"))
+    }))
+    .await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Err(StreamingUnsupported)
+    );
+    // 結構化輸出不支援：串流正常，但結構化請求被供應商以 400 拒絕
+    let (e, _) = spawn(Arc::new(|s| {
+        let body: Value = serde_json::from_str(&s.body).unwrap_or_default();
+        if body["stream"] == json!(true) {
+            reply(200, "text/event-stream", openai_stream())
+        } else {
+            reply(
+                400,
+                "application/json",
+                r#"{"error":{"message":"response_format unsupported"}}"#,
+            )
+        }
+    }))
+    .await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Err(StructuredOutputUnsupported)
+    );
+    // 結構化輸出內容不是 JSON 也算不支援
+    let (e, _) = spawn(Arc::new(|s| {
+        let body: Value = serde_json::from_str(&s.body).unwrap_or_default();
+        if body["stream"] == json!(true) {
+            reply(200, "text/event-stream", openai_stream())
+        } else {
+            reply(200, "application/json", openai_json("not json at all"))
+        }
+    }))
+    .await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Err(StructuredOutputUnsupported)
+    );
+    // 其他：5xx、限流、連線失敗、逾時
+    for status in [429, 500, 503] {
+        let (e, _) = spawn(fixed(status)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Err(Other),
+            "{status}"
+        );
+    }
+    let e = hanging().await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Err(Other)
+    );
+}
+
+/// 前 `n` 次請求回 `status`，之後交給健康的供應商（模擬 Google 偶發的 503）。
+fn flaky(status: u16, n: usize) -> Handler {
+    let count = Arc::new(Mutex::new(0usize));
+    let ok = healthy();
+    Arc::new(move |s| {
+        let mut c = count.lock().unwrap();
+        *c += 1;
+        if *c <= n {
+            reply(
+                status,
+                "application/json",
+                r#"{"error":{"message":"busy"}}"#,
+            )
+        } else {
+            ok(s)
+        }
+    })
+}
+
+#[tokio::test]
+async fn verify_model_retries_transient_provider_errors() {
+    for status in [429, 500, 503] {
+        // 串流步驟第一次失敗
+        let (e, seen) = spawn(flaky(status, 1)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Ok(()),
+            "stream {status}"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        // 連續失敗兩次仍在重試額度內
+        let (e, _) = spawn(flaky(status, 2)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Ok(()),
+            "twice {status}"
+        );
+    }
+    // 結構化輸出步驟第一次失敗（串流已成功）
+    let count = Arc::new(Mutex::new(0usize));
+    let ok = healthy();
+    let (e, _) = spawn(Arc::new(move |s| {
+        let body: Value = serde_json::from_str(&s.body).unwrap_or_default();
+        if body["stream"] != json!(true) {
+            let mut c = count.lock().unwrap();
+            *c += 1;
+            if *c == 1 {
+                return reply(503, "application/json", "{}");
+            }
+        }
+        ok(s)
+    }))
+    .await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn verify_model_does_not_retry_definitive_failures() {
+    for (status, want) in [
+        (401, ModelCheckError::AuthFailed),
+        (404, ModelCheckError::ModelNotFound),
+    ] {
+        let (e, seen) = spawn(fixed(status)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Err(want)
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1, "{status}");
+    }
+}
+
+#[tokio::test]
+async fn reason_codes_are_stable_strings() {
+    use ModelCheckError::*;
+    let codes: Vec<&str> = [
+        AuthFailed,
+        ModelNotFound,
+        StreamingUnsupported,
+        StructuredOutputUnsupported,
+        Other,
+    ]
+    .iter()
+    .map(|e| e.code())
+    .collect();
+    assert_eq!(
+        codes,
+        [
+            "auth_failed",
+            "model_not_found",
+            "streaming_unsupported",
+            "structured_output_unsupported",
+            "other"
+        ]
+    );
+}

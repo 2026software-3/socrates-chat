@@ -10,10 +10,7 @@
 //! 稽核日誌只記操作者、動作與公告編號，不記公告內文。
 
 use std::{
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -76,41 +73,81 @@ pub fn routes() -> Router<AppState> {
 /// 維護模式旗標的記憶體快取。資料庫是唯一的真相：快取過期就重讀，讀取失敗時沿用上一次的值。
 #[derive(Default)]
 pub struct MaintenanceFlag {
-    on: AtomicBool,
-    checked: Mutex<Option<Instant>>,
+    state: Mutex<FlagState>,
+}
+
+#[derive(Default)]
+struct FlagState {
+    on: bool,
+    checked: Option<Instant>,
+    /// 每次 `set()` 加一。讀取開始前記下版本，回來時版本變了代表期間有較新的寫入，丟棄這次讀到的舊值。
+    version: u64,
 }
 
 impl MaintenanceFlag {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FlagState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(crate) async fn is_on(&self, pool: &PgPool) -> bool {
-        let stale = self
-            .checked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_none_or(|at| at.elapsed() >= MAINTENANCE_CACHE);
-        if stale {
-            // 先記下檢查時間：資料庫讀不到時也只每 MAINTENANCE_CACHE 才再試一次，
-            // 而且最多等 1 秒，不讓資料庫故障拖慢每個請求；讀不到就沿用上一個值
-            *self.checked.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
-            let read = tokio::time::timeout(
+        self.is_on_with(|| async {
+            // 最多等 1 秒，不讓資料庫故障拖慢每個請求
+            match tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 sqlx::query_scalar::<_, bool>("SELECT enabled FROM maintenance_mode")
                     .fetch_one(pool),
             )
-            .await;
-            match read {
-                Ok(Ok(v)) => self.set(v),
+            .await
+            {
+                Ok(Ok(v)) => Some(v),
                 Ok(Err(e)) => {
                     tracing::warn!(class = %crate::error::db_error_class(&e), "failed to read maintenance flag");
+                    None
                 }
-                Err(_) => tracing::warn!("timed out reading maintenance flag"),
+                Err(_) => {
+                    tracing::warn!("timed out reading maintenance flag");
+                    None
+                }
             }
+        })
+        .await
+    }
+
+    /// `read` 回 `None` 表示讀取失敗，沿用上一個值。
+    async fn is_on_with<F, Fut>(&self, read: F) -> bool
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Option<bool>>,
+    {
+        let started_version = {
+            let mut st = self.lock();
+            if st
+                .checked
+                .is_some_and(|at| at.elapsed() < MAINTENANCE_CACHE)
+            {
+                return st.on;
+            }
+            // 先記下檢查時間：資料庫讀不到時也只每 MAINTENANCE_CACHE 才再試一次；讀不到就沿用上一個值
+            st.checked = Some(Instant::now());
+            st.version
+        };
+        let value = read().await;
+        let mut st = self.lock();
+        if let Some(v) = value
+            && st.version == started_version
+        {
+            st.on = v;
+            st.checked = Some(Instant::now());
+            st.version += 1;
         }
-        self.on.load(Ordering::Relaxed)
+        st.on
     }
 
     fn set(&self, value: bool) {
-        self.on.store(value, Ordering::Relaxed);
-        *self.checked.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        let mut st = self.lock();
+        st.on = value;
+        st.checked = Some(Instant::now());
+        st.version += 1;
     }
 }
 
@@ -273,7 +310,8 @@ async fn translate(state: &AppState, language: &str, text: &str) -> Option<Strin
             content: text.to_string(),
         }],
     };
-    let raw = collect_background(state.ai.as_ref(), request, state.config.ai_total_timeout)
+    let system = state.system_route().await;
+    let raw = collect_background(system.ai.as_ref(), request, state.config.ai_total_timeout)
         .await
         .ok()?;
     let translated = raw.trim();
@@ -284,7 +322,8 @@ async fn translate(state: &AppState, language: &str, text: &str) -> Option<Strin
 }
 
 /// 重試這則公告尚未完成的翻譯；系統自動重試與測試都呼叫它。
-/// 只在 zh-TW 內文沒被改過時寫入，避免把舊內文的譯文蓋到新內文上。
+/// 只在 zh-TW 內文沒被改過、且該語言仍待完成時寫入：前者避免把舊內文的譯文蓋到新內文上，
+/// 後者避免蓋掉等待翻譯期間管理者手動存的譯文。
 pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
     let row: Option<(String, Vec<String>)> = match sqlx::query_as(
         "SELECT text_zh_tw, pending_languages FROM announcements WHERE id = $1",
@@ -314,7 +353,7 @@ pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
                  text_en = CASE WHEN $4 = 'en' THEN $3 ELSE text_en END,
                  text_es = CASE WHEN $4 = 'es' THEN $3 ELSE text_es END,
                  pending_languages = array_remove(pending_languages, $4)
-             WHERE id = $1 AND text_zh_tw = $2",
+             WHERE id = $1 AND text_zh_tw = $2 AND $4 = ANY(pending_languages)",
         )
         .bind(id)
         .bind(&source)
@@ -536,51 +575,87 @@ pub(crate) async fn update(
     let manual_en = b.text_en.as_deref().map(clean_text).transpose()?;
     let manual_es = b.text_es.as_deref().map(clean_text).transpose()?;
 
-    let mut en = current.text_en.clone();
-    let mut es = current.text_es.clone();
-    let mut pending = current.pending_languages.clone();
+    // 只記下這次請求要改的譯文：`None`＝不動，`Some(None)`＝清掉（翻譯失敗）
+    let mut en: Option<Option<String>> = None;
+    let mut es: Option<Option<String>> = None;
+    // 這次寫過的語言先從待完成移除，翻譯失敗的再加回去
+    let mut touched: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
     for (code, language) in TRANSLATED {
         let manual = if code == "en" { &manual_en } else { &manual_es };
         let value = if let Some(m) = manual {
             // 手動給的譯文優先
-            pending.retain(|p| p != code);
             Some(m.clone())
         } else if zh_changed {
             // 內文改了：重新翻譯並覆蓋舊譯文；失敗時舊譯文已過期，清掉並標示待完成
             let translated = translate(&state, language, &text).await;
-            pending.retain(|p| p != code);
             if translated.is_none() {
-                pending.push(code.to_string());
+                failed.push(code.to_string());
             }
             translated
         } else {
             continue;
         };
+        touched.push(code.to_string());
         if code == "en" {
-            en = value;
+            en = Some(value);
         } else {
-            es = value;
+            es = Some(value);
         }
     }
 
-    let view: AnnouncementView = sqlx::query_as(concat!(
-        "UPDATE announcements SET kind = $2, text_zh_tw = $3, text_en = $4, text_es = $5, pending_languages = $6,
-             starts_at = $7, ends_at = $8, enabled = $9, updated_at = now()
-         WHERE id = $1 RETURNING ",
+    // 翻譯可能等很久，期間其他管理者可能改過這則公告：只寫這次請求真正要改的欄位，
+    // 其餘欄位保留資料庫當下的值，不用一開始讀到的舊快照整列寫回（#527）。
+    // 起訖時間以合併後的結果再檢查一次，衝突時不寫入。
+    let view: Option<AnnouncementView> = sqlx::query_as(concat!(
+        "UPDATE announcements SET
+             kind = COALESCE($2, kind),
+             text_zh_tw = COALESCE($3, text_zh_tw),
+             text_en = CASE WHEN $4 THEN $5 ELSE text_en END,
+             text_es = CASE WHEN $6 THEN $7 ELSE text_es END,
+             pending_languages = ARRAY(
+                 SELECT p FROM unnest(pending_languages) AS p WHERE p <> ALL($8::text[])
+             ) || $9::text[],
+             starts_at = COALESCE($10, starts_at),
+             ends_at = CASE WHEN $11 THEN $12 ELSE ends_at END,
+             enabled = COALESCE($13, enabled),
+             updated_at = now()
+         WHERE id = $1
+           AND (
+               (CASE WHEN $11 THEN $12 ELSE ends_at END) IS NULL
+               OR (CASE WHEN $11 THEN $12 ELSE ends_at END) > COALESCE($10, starts_at)
+           )
+         RETURNING ",
         view_columns!()
     ))
-        .bind(id)
-        .bind(b.kind.as_deref().unwrap_or(&current.kind))
-        .bind(&text)
-        .bind(&en)
-        .bind(&es)
-        .bind(&pending)
-        .bind(starts)
-        .bind(ends)
-        .bind(b.enabled.unwrap_or(current.enabled))
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    .bind(id)
+    .bind(b.kind.as_deref())
+    .bind(zh_changed.then_some(&text))
+    .bind(en.is_some())
+    .bind(en.flatten())
+    .bind(es.is_some())
+    .bind(es.flatten())
+    .bind(&touched)
+    .bind(&failed)
+    .bind(b.starts_at)
+    .bind(b.ends_at.is_some())
+    .bind(b.ends_at.flatten())
+    .bind(b.enabled)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(view) = view else {
+        // 沒寫入：公告已被刪除，或與期間其他修改合併後的起訖時間不合法
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM announcements WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&state.pool)
+                .await?;
+        return Err(if exists {
+            ApiError::bad_request("invalid_period", "結束時間必須晚於開始時間")
+        } else {
+            ApiError::not_found()
+        });
+    };
     audit(
         &state.pool,
         cu.user.id,
@@ -681,4 +756,31 @@ pub(crate) async fn set_maintenance(
         audit(&state.pool, cu.user.id, action, "maintenance").await?;
     }
     Ok(Json(MaintenanceState { enabled: b.enabled }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 舊讀取（開始於 `set(true)` 之前）晚於 `set` 回來時，不得把旗標蓋回 false。
+    #[tokio::test]
+    async fn stale_read_does_not_overwrite_newer_set() {
+        let flag = MaintenanceFlag::default();
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let read = flag.is_on_with(|| async {
+            started_tx.send(()).unwrap();
+            gate.await.unwrap();
+            Some(false) // 讀取當時資料庫還是 false
+        });
+        let interleave = async {
+            started_rx.await.unwrap(); // 讀取已開始
+            flag.set(true); // 管理者開啟維護模式
+            release.send(()).unwrap(); // 舊讀取才回來
+        };
+        let (_, ()) = tokio::join!(read, interleave);
+
+        assert!(flag.is_on_with(|| async { None }).await);
+    }
 }

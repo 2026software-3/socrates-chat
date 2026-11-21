@@ -22,6 +22,8 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: &'static str,
+    /// 錯誤指的是請求中的哪一項（例如模型驗證失敗的是主模型還是第幾個備援）；多數錯誤沒有。
+    pub target: Option<&'static str>,
 }
 
 impl ApiError {
@@ -30,7 +32,13 @@ impl ApiError {
             status,
             code,
             message,
+            target: None,
         }
+    }
+
+    pub const fn with_target(mut self, target: &'static str) -> Self {
+        self.target = Some(target);
+        self
     }
 
     pub const fn unauthorized() -> Self {
@@ -51,6 +59,48 @@ impl ApiError {
 
     pub const fn conflict(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::CONFLICT, code, message)
+    }
+
+    // 以下是多個地方共用的錯誤：code 與訊息只在這裡定義一次。
+
+    pub const fn no_permission() -> Self {
+        Self::forbidden("forbidden", "沒有權限")
+    }
+
+    pub const fn reply_in_progress() -> Self {
+        Self::conflict("reply_in_progress", "AI 正在回覆中")
+    }
+
+    pub const fn conversation_ended() -> Self {
+        Self::conflict("conversation_ended", "對話已結束")
+    }
+
+    pub const fn classroom_archived() -> Self {
+        Self::conflict("classroom_archived", "教室已封存")
+    }
+
+    pub const fn invalid_title() -> Self {
+        Self::bad_request("invalid_title", "標題不可為空")
+    }
+
+    pub const fn invalid_cursor() -> Self {
+        Self::bad_request("invalid_cursor", "分頁游標不正確")
+    }
+
+    pub const fn invalid_message() -> Self {
+        Self::bad_request("invalid_message", "訊息長度不符")
+    }
+
+    pub const fn invalid_language() -> Self {
+        Self::bad_request("invalid_language", "不支援的語言")
+    }
+
+    pub const fn invalid_filter() -> Self {
+        Self::bad_request("invalid_filter", "篩選條件不正確")
+    }
+
+    pub const fn invalid_email() -> Self {
+        Self::bad_request("invalid_email", "電子郵件格式不正確")
     }
 
     pub const fn internal() -> Self {
@@ -81,17 +131,15 @@ impl From<sqlx::Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let request_id = REQUEST_ID.try_with(|id| id.clone()).unwrap_or_default();
-        let mut response = (
-            self.status,
-            Json(json!({
-                "error": {
-                    // S-12.1：只回 code 與 request_id，由前端依 code 查翻譯
-                    "code": self.code,
-                    "request_id": request_id,
-                }
-            })),
-        )
-            .into_response();
+        let mut error = json!({
+            // S-12.1：只回 code 與 request_id，由前端依 code 查翻譯
+            "code": self.code,
+            "request_id": request_id,
+        });
+        if let Some(target) = self.target {
+            error["target"] = json!(target);
+        }
+        let mut response = (self.status, Json(json!({ "error": error }))).into_response();
         response.extensions_mut().insert(ErrorCode(self.code));
         response
     }
@@ -108,6 +156,9 @@ pub struct ErrorDetail {
     /// 錯誤碼，前端依此顯示翻譯文字（S-12.1）
     pub code: String,
     pub request_id: String,
+    /// 只有少數錯誤帶：指出是請求中的哪一項（例如 `primary`、`fallback_1`）
+    #[schema(required = false)]
+    pub target: Option<String>,
 }
 
 /// 幾乎所有需要登入的端點共有的錯誤回應。

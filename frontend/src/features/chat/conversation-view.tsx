@@ -5,6 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
+import { pickGuidingQuestion } from '@/features/chat/guiding-question'
 import { useMessageSource } from '@/features/chat/use-message-source'
 import type { RealtimeHost } from '@/features/chat/voice/realtime/use-realtime-voice'
 import { createVoiceTurns } from '@/features/chat/voice/realtime/voice-turn'
@@ -12,6 +13,8 @@ import type { RecognitionSource } from '@/features/chat/voice/recognizer'
 import { ChatThread } from '@/features/chat/chat-thread'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { StageIndicator } from '@/features/chat/stage-indicator'
+import { ArgumentTreePanel } from '@/features/chat/argument-tree-panel'
+import { RadarPanel } from '@/features/chat/radar-panel'
 import { SummaryPanel } from '@/features/chat/summary-panel'
 import { useT } from '@/i18n'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
@@ -111,6 +114,12 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
   }, [detail, runtime, voiceTurns])
 
   const ended = status === 'ended'
+  const guidingQuestion = useMemo(
+    () => pickGuidingQuestion(detail.id, detail.guiding_questions ?? []),
+    [detail.id, detail.guiding_questions],
+  )
+  // 單場雷達圖依賴總結：總結成功後才顯示它的計算狀態
+  const [summaryReady, setSummaryReady] = useState(false)
 
   async function endDiscussion() {
     if (ending) return
@@ -136,7 +145,11 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
               <h1 className="text-2xl leading-8 font-medium break-words">{detail.title}</h1>
               <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
             </div>
-            {detail.description ? <p className="text-muted-foreground text-xs break-words">{detail.description}</p> : null}
+            {guidingQuestion ? (
+              <p data-testid="guiding-question" className="text-muted-foreground text-sm break-words whitespace-pre-line">
+                {guidingQuestion}
+              </p>
+            ) : null}
             <div className="mt-1 flex flex-wrap items-center gap-2">
               <RoundCount uncounted={uncounted} />
               <StageIndicator stage={stage} />
@@ -167,7 +180,9 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
         {ended ? (
           <div className="space-y-4 px-4 pb-6 md:px-8">
             <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p>
-            <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} />
+            <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} onReadyChange={setSummaryReady} />
+            {summaryReady ? <RadarPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} /> : null}
+            <ArgumentTreePanel conversationId={detail.id} />
           </div>
         ) : null}
       </div>

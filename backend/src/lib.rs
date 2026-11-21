@@ -42,15 +42,21 @@ pub mod accounts;
 pub mod achievement_admin;
 pub mod achievements;
 pub mod activity_store;
+pub mod admin_teacher_keys;
 pub mod ai;
+pub mod ai_providers;
+mod ai_route;
 pub mod ai_usage;
 pub mod announcements;
+pub mod argument_tree;
 pub mod auth;
 pub mod auth_store;
 pub mod cascade;
 pub mod catalog;
 pub mod chat;
 pub mod claims;
+pub mod classroom_ai_settings;
+pub mod classroom_ai_store;
 pub mod classroom_store;
 pub mod classrooms;
 pub mod client_ip;
@@ -60,12 +66,14 @@ pub mod dashboard;
 pub mod demo;
 pub mod diagnostics;
 pub mod error;
+pub mod genai_provider;
 mod google_translation;
 pub mod identity;
 pub mod key_pool;
 pub mod logging;
 pub mod login_rate_limit;
 pub mod mail;
+pub mod main_argument_tree;
 pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
@@ -73,12 +81,25 @@ pub mod password;
 pub mod pii;
 pub mod points;
 pub mod purchase;
+pub mod radar;
+pub mod radar_scoring;
+pub mod radar_store;
 pub mod reply;
 pub mod roster;
 pub mod roster_store;
+pub mod service_monitor;
+pub mod student_notifications;
 pub mod summary;
 pub mod summary_translation;
+pub mod system_ai;
+pub mod system_key_store;
 pub mod tasks;
+pub mod teacher_key_crypto;
+pub mod teacher_key_store;
+pub mod teacher_key_usage;
+pub mod teacher_keys;
+pub mod topic_dimensions;
+pub mod usage_api;
 pub(crate) mod user_limit;
 pub mod voice;
 
@@ -89,7 +110,8 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 8] = [
+pub const LONG_RUNNING_ROUTES: [&str; 15] = [
+    "/api/topics/{id}/dimensions/retry",
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
     // 管理者新增、修改公告時同步翻譯內文
@@ -105,6 +127,16 @@ pub const LONG_RUNNING_ROUTES: [&str; 8] = [
     "/api/voice/speech",
     // 管理者匯入時逐一雜湊新帳號的臨時密碼（Argon2），名單大時會超過一般逾時
     "/api/classrooms/{id}/roster/import",
+    // 同步等供應商回應 key 測試
+    "/api/teacher/keys/{id}/test",
+    // 儲存教室 AI 設定前，對主模型與每個備援各送一次最小串流與 JSON 請求
+    "/api/classrooms/{id}/ai-settings",
+    // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
+    "/api/teacher/keys/models",
+    // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
+    "/api/admin/system-ai/model",
+    "/api/admin/system-ai/models",
+    "/api/admin/system-ai/keys/{id}/test",
 ];
 
 /// 所有 handler 共用的狀態。
@@ -115,6 +147,8 @@ pub struct AppState {
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
     pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
+    /// 正在產生維度的題目，避免同一題目重複呼叫 AI（F-03.4）。
+    pub(crate) dimension_jobs: Arc<topic_dimensions::Jobs>,
     /// 語音備援（S-05.3）；測試時以 `with_voice` 換成假實作。
     pub voice: Arc<dyn VoiceProvider>,
     /// 自架語音同時進行中的使用者（S-05.5）。
@@ -130,6 +164,21 @@ pub struct AppState {
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
     /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
     pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
+    /// 教師 key 認證測試的對外探測；測試時以 `with_key_verifier` 換成假的。
+    pub(crate) key_verifier: Arc<dyn ai_providers::KeyVerifier>,
+    /// 教室模型設定的模型驗證；測試時以 `with_model_verifier` 換成假的。
+    pub(crate) model_verifier: Arc<dyn ai_providers::ModelVerifier>,
+    /// 教師按「測試 key」的每人頻率限制（暫定值，待需求方確認）。
+    pub(crate) key_test_limit: Arc<user_limit::UserLimiter>,
+    /// 向供應商取模型清單（只當輸入建議）；測試時以 `with_model_lister` 換成假的。
+    pub(crate) model_lister: Arc<dyn ai_providers::ModelLister>,
+    /// 取模型清單的每人頻率限制（不產生費用，但仍會對外送請求；暫定值，待需求方確認）。
+    pub(crate) model_list_limit: Arc<user_limit::UserLimiter>,
+    /// 教室 AI 路由的輪流計數：每次呼叫從同供應商的下一把教師 key 開始。
+    pub(crate) key_rotation: Arc<std::sync::atomic::AtomicUsize>,
+    /// 把所有供應商端點換成這個位址（測試用，指向假服務）；正式環境一律是 `None`。
+    pub(crate) route_endpoint: Option<String>,
+    pub(crate) service_monitor: Arc<service_monitor::Monitor>,
 }
 
 impl AppState {
@@ -150,11 +199,13 @@ impl AppState {
         ));
         Self {
             pool,
+            service_monitor: Arc::new(service_monitor::Monitor::new(&config.monitored_services)),
             config: Arc::new(config),
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
             ai: Arc::new(MaskingAi::new(ai)),
             google_translation,
+            dimension_jobs: Arc::default(),
             voice,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
@@ -163,6 +214,19 @@ impl AppState {
             summary_translation_wake: Arc::default(),
             ai_usage,
             maintenance: Arc::default(),
+            key_verifier: Arc::new(ai_providers::HttpKeyVerifier),
+            model_verifier: Arc::new(ai_providers::HttpModelVerifier),
+            key_test_limit: Arc::new(user_limit::UserLimiter::new(
+                teacher_keys::KEY_TEST_MAX,
+                teacher_keys::KEY_TEST_WINDOW,
+            )),
+            model_lister: Arc::new(ai_providers::HttpModelLister),
+            model_list_limit: Arc::new(user_limit::UserLimiter::new(
+                teacher_keys::MODEL_LIST_MAX_CALLS,
+                teacher_keys::MODEL_LIST_WINDOW,
+            )),
+            key_rotation: Arc::default(),
+            route_endpoint: None,
         }
     }
 
@@ -173,6 +237,39 @@ impl AppState {
 
     pub fn with_google_translation(mut self, key: &str) -> Self {
         self.google_translation = google_translation::GoogleTranslation::new(key);
+        self
+    }
+
+    pub fn with_key_verifier(mut self, verifier: Arc<dyn ai_providers::KeyVerifier>) -> Self {
+        self.key_verifier = verifier;
+        self
+    }
+
+    pub fn with_model_lister(mut self, lister: Arc<dyn ai_providers::ModelLister>) -> Self {
+        self.model_lister = lister;
+        self
+    }
+
+    /// 換掉取模型清單的頻率限制（測試用）。
+    pub fn with_model_list_limit(mut self, max: usize, window: std::time::Duration) -> Self {
+        self.model_list_limit = Arc::new(user_limit::UserLimiter::new(max, window));
+        self
+    }
+
+    pub fn with_model_verifier(mut self, verifier: Arc<dyn ai_providers::ModelVerifier>) -> Self {
+        self.model_verifier = verifier;
+        self
+    }
+
+    /// 把教室 AI 路由的供應商端點換成假服務（測試用）。
+    pub fn with_route_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.route_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// 換掉教師 key 測試的頻率限制（測試用）。
+    pub fn with_key_test_limit(mut self, max: usize, window: std::time::Duration) -> Self {
+        self.key_test_limit = Arc::new(user_limit::UserLimiter::new(max, window));
         self
     }
 
@@ -208,14 +305,19 @@ pub fn app(state: AppState) -> Router {
         ))
         .merge(roster::routes())
         .merge(classrooms::routes())
+        .merge(classroom_ai_settings::routes())
         .merge(accounts::routes())
         .merge(dashboard::routes())
         .merge(claims::routes())
         .merge(catalog::routes())
+        .merge(topic_dimensions::routes())
+        .merge(radar::routes())
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(diagnostics::routes())
+        .merge(service_monitor::routes())
         .merge(summary::routes())
+        .merge(argument_tree::routes())
         .merge(voice::routes())
         .merge(cascade::routes())
         .merge(points::routes())
@@ -225,7 +327,12 @@ pub fn app(state: AppState) -> Router {
         .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(teacher_keys::routes())
+        .merge(admin_teacher_keys::routes())
+        .merge(system_ai::routes())
+        .merge(usage_api::routes())
         .merge(announcements::routes())
+        .merge(student_notifications::routes())
         // API reference：由 OpenAPI 文件渲染的 Redoc 頁面，公開；Redoc 的 JS 由後端自己提供
         .route("/api/docs/redoc.standalone.js", get(redoc_js))
         .merge(
@@ -296,12 +403,7 @@ async fn health() -> Json<Health> {
     )
 )]
 pub(crate) async fn ready(State(state): State<AppState>) -> Response {
-    let check = tokio::time::timeout(
-        READY_DB_TIMEOUT,
-        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.pool),
-    )
-    .await;
-    match check {
+    match probe_database(&state.pool).await {
         Ok(Ok(_)) => Json(Health { status: "ok" }).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
@@ -312,6 +414,16 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
             database_unavailable()
         }
     }
+}
+
+async fn probe_database(
+    pool: &PgPool,
+) -> Result<Result<i32, sqlx::Error>, tokio::time::error::Elapsed> {
+    tokio::time::timeout(
+        READY_DB_TIMEOUT,
+        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool),
+    )
+    .await
 }
 
 fn database_unavailable() -> Response {
@@ -325,17 +437,40 @@ fn database_unavailable() -> Response {
 
 /// 沒有對應路由時：`/api` 底下一律回 JSON 404；其餘在設定了 `FRONTEND_DIR` 時提供前端建置產物，
 /// 找不到的檔案退回 `index.html`（前端路由，S-08.1）。
+///
+/// 建置時預先壓好的 `.gz`（Dockerfile）在瀏覽器接受 gzip 時直接送出，執行期不壓縮；沒有 `.gz` 就送原檔。
+/// `/assets/` 底下是檔名帶內容雜湊的建置產物：可以長期快取，找不到就是 404（重新部署後舊分頁要的 chunk
+/// 已不存在，不能拿 `index.html` 充數）。其餘（`index.html`、前端路由）每次重新驗證，部署後才拿得到新的檔名。
 async fn fallback(State(state): State<AppState>, req: Request) -> Response {
     let path = req.uri().path();
     let is_api = is_api_path(path);
     let Some(dir) = state.config.frontend_dir.as_ref().filter(|_| !is_api) else {
         return ApiError::not_found().into_response();
     };
-    let spa = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
-    match spa.oneshot(req).await {
-        Ok(res) => res.into_response(),
+    let hashed = path.starts_with("/assets/");
+    let files = ServeDir::new(dir).precompressed_gzip();
+    let served = if hashed {
+        files.oneshot(req).await.map(IntoResponse::into_response)
+    } else {
+        files
+            .fallback(ServeFile::new(dir.join("index.html")).precompressed_gzip())
+            .oneshot(req)
+            .await
+            .map(IntoResponse::into_response)
+    };
+    let mut res = match served {
+        Ok(res) => res,
         Err(never) => match never {},
-    }
+    };
+    let found = res.status().is_success() || res.status() == StatusCode::NOT_MODIFIED;
+    let cache = if hashed && found {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    res
 }
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
@@ -434,13 +569,22 @@ async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Nex
         return next.run(req).await;
     }
     let (mut parts, body) = req.into_parts();
-    let is_admin = auth::AnyCurrentUser::from_request_parts(&mut parts, &state)
-        .await
-        .is_ok_and(|auth::AnyCurrentUser(cu)| cu.roles.admin);
-    if is_admin {
-        next.run(Request::from_parts(parts, body)).await
-    } else {
-        announcements::MAINTENANCE_ERROR.into_response()
+    match auth::AnyCurrentUser::from_request_parts(&mut parts, &state).await {
+        Ok(user) if user.0.roles.admin => {
+            parts
+                .extensions
+                .insert(auth::MaintenanceAuthenticatedUser(user));
+            next.run(Request::from_parts(parts, body)).await
+        }
+        Ok(_) => announcements::MAINTENANCE_ERROR.into_response(),
+        Err(e) => {
+            // 驗證失敗（含資料庫錯誤）對外仍是維護中，但留下 code 方便診斷；不記 token 或使用者資料
+            tracing::debug!(
+                code = e.code,
+                "maintenance gate could not resolve the session"
+            );
+            announcements::MAINTENANCE_ERROR.into_response()
+        }
     }
 }
 

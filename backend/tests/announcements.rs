@@ -37,6 +37,17 @@ async fn call(
     (status, bytes)
 }
 
+/// 等到 AI 已收到至少 `n` 個請求，代表慢的那次修改已讀完快照並開始翻譯。
+async fn wait_for_ai_requests(ai: &FakeAi, n: usize) {
+    for _ in 0..200 {
+        if ai.requests.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("AI 沒有在時限內收到 {n} 個請求");
+}
+
 /// 建立一則公告並回傳它；AI 腳本決定翻譯成功或失敗。
 async fn create(app: &axum::Router, admin: &str, body: Value) -> Value {
     let (status, v) = call(app, "POST", ADMIN_LIST, Some(admin), Some(body)).await;
@@ -278,6 +289,121 @@ async fn editing_zh_tw_translates_again_and_overwrites_manual_translations(pool:
     assert_eq!(v["text_zh_tw"], "再見");
     assert_eq!(v["text_en"], "Bye");
     assert_eq!(v["text_es"], "Adiós");
+}
+
+/// 管理者 A 改內文、等翻譯期間，管理者 B 停用公告並改結束時間；A 完成後不能把 B 的變更蓋回去（#527）。
+#[sqlx::test]
+async fn editing_text_during_translation_keeps_concurrent_changes(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Paced(vec!["Bye"], pace),
+        Paced(vec!["Adiós"], pace),
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    let slow = {
+        let (app, admin, path) = (app.clone(), a.admin.clone(), path.clone());
+        tokio::spawn(async move {
+            call(
+                &app,
+                "PATCH",
+                &path,
+                Some(&admin),
+                Some(json!({"text_zh_tw": "再見"})),
+            )
+            .await
+        })
+    };
+    wait_for_ai_requests(&ai, 3).await;
+    let ends = at(3600);
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"enabled": false, "ends_at": ends})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let concurrent_ends = v["ends_at"].clone();
+
+    let (s, v) = slow.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text_zh_tw"], "再見");
+    assert_eq!(v["text_en"], "Bye");
+    assert_eq!(v["text_es"], "Adiós");
+    assert_eq!(v["enabled"], false, "停用被舊快照蓋回啟用");
+    assert_eq!(v["ends_at"], concurrent_ends, "結束時間被舊快照蓋回");
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["enabled"], false);
+    assert_eq!(list[0]["ends_at"], concurrent_ends);
+}
+
+/// 合併兩次修改後的起訖時間若互相衝突，回 400 invalid_period，而不是寫入失敗變成 500。
+#[sqlx::test]
+async fn a_period_made_invalid_by_a_concurrent_change_is_rejected(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Paced(vec!["Bye"], pace),
+        Paced(vec!["Adiós"], pace),
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好", "starts_at": at(-60)}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    // A：開始時間延到兩小時後（當下沒有結束時間，所以合法）
+    let slow = {
+        let (app, admin, path) = (app.clone(), a.admin.clone(), path.clone());
+        tokio::spawn(async move {
+            call(
+                &app,
+                "PATCH",
+                &path,
+                Some(&admin),
+                Some(json!({"text_zh_tw": "再見", "starts_at": at(7200)})),
+            )
+            .await
+        })
+    };
+    wait_for_ai_requests(&ai, 3).await;
+    // B：結束時間設在一小時後，早於 A 要設的開始時間
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"ends_at": at(3600)})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let concurrent_ends = v["ends_at"].clone();
+
+    let (s, v) = slow.await.unwrap();
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["code"], "invalid_period", "{v}");
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["text_zh_tw"], "你好");
+    assert_eq!(list[0]["ends_at"], concurrent_ends);
 }
 
 #[sqlx::test]
@@ -544,6 +670,49 @@ async fn maintenance_blocks_everyone_but_admins_and_the_exempt_endpoints(pool: P
 }
 
 #[sqlx::test]
+async fn maintenance_admin_session_must_still_change_password(pool: PgPool) {
+    let app = test_app_with_ai(pool.clone(), FakeAi::with(vec![]));
+    let a = seed_actors(&app).await;
+    set_maintenance(&app, &a.admin, true).await;
+
+    // 管理者通過維護閘門，並且閘門快取的身分不能略過必須改密碼的檢查
+    let (status, _) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    sqlx::query(
+        "UPDATE sessions SET must_change_password = true
+         WHERE user_id = (SELECT id FROM users WHERE email = 'admin@example.com')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let res = send(&app, get(ADMIN_LIST, Some(&a.admin))).await;
+    assert_json_error(res, StatusCode::FORBIDDEN, "password_change_required").await;
+    let res = send(
+        &app,
+        json_req(
+            "PUT",
+            MAINTENANCE,
+            Some(&a.admin),
+            Some(json!({"enabled": false})),
+        ),
+    )
+    .await;
+    assert_json_error(res, StatusCode::FORBIDDEN, "password_change_required").await;
+    // /api/me 仍可呼叫，前端據此導向改密碼頁
+    let res = send(&app, get("/api/me", Some(&a.admin))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["must_change_password"], true);
+    // 維護模式沒有被這個被拒絕的請求改掉
+    assert_eq!(public(&app, None).await["maintenance"], true);
+
+    // 非管理者仍然被維護閘門擋下，而不是得到改密碼提示
+    let res = send(&app, get(ADMIN_LIST, Some(&a.student))).await;
+    assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
+}
+
+#[sqlx::test]
 async fn maintenance_survives_a_restart(pool: PgPool) {
     let app = test_app_with_ai(pool.clone(), FakeAi::with(vec![]));
     let a = seed_actors(&app).await;
@@ -678,6 +847,48 @@ async fn a_reply_in_progress_finishes_but_new_messages_are_blocked(pool: PgPool)
     assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
 }
 
+/// #529：維護模式的 gate 已經查過 session，handler 的 extractor 沿用，同一個請求只查一次 session。
+/// 數連線池被取用的次數：維護模式開啟時管理者的請求，與關閉時完全相同。
+/// `before_acquire` 只在取用既有閒置連線時觸發，所以先備好足夠的連線，避免新建連線讓計數失準。
+#[sqlx::test]
+async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let acquires = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = acquires.clone();
+    let counting = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(8)
+        .before_acquire(move |_, _| {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            })
+        })
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let app = test_app(counting);
+    let a = seed_actors(&app).await;
+
+    let acquires_of_one_request = || async {
+        // 先暖身，讓維護旗標的快取在量測期間仍有效
+        send(&app, get("/api/me", Some(&a.admin))).await;
+        let before = acquires.load(Ordering::SeqCst);
+        let res = send(&app, get("/api/me", Some(&a.admin))).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        acquires.load(Ordering::SeqCst) - before
+    };
+
+    let normal = acquires_of_one_request().await;
+    set_maintenance(&app, &a.admin, true).await;
+    let in_maintenance = acquires_of_one_request().await;
+    assert_eq!(
+        in_maintenance, normal,
+        "the maintenance gate and the handler extractor each queried the session"
+    );
+}
+
 #[sqlx::test]
 async fn maintenance_also_blocks_the_internal_cascade_endpoint(pool: PgPool) {
     let app = test_app_with_ai(pool, FakeAi::with(vec![]));
@@ -694,4 +905,50 @@ async fn maintenance_also_blocks_the_internal_cascade_endpoint(pool: PgPool) {
     )
     .await;
     assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
+}
+
+/// 重試翻譯進行期間管理者手動存了譯文：重試完成後不能把手動譯文蓋掉。
+#[sqlx::test]
+async fn a_late_retry_does_not_overwrite_a_manual_translation(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Fail,
+        Fail,
+        Paced(vec!["AI en"], pace),
+        Paced(vec!["AI es"], pace),
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "稍後翻譯"}),
+    )
+    .await;
+    let id: uuid::Uuid = made["id"].as_str().unwrap().parse().unwrap();
+    let state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        test_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    let retry = tokio::spawn(async move {
+        socrates_chat_backend::announcements::retry_pending_translation(&state, id).await;
+    });
+    wait_for_ai_requests(&ai, 3).await;
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &format!("{ADMIN_LIST}/{id}"),
+        Some(&a.admin),
+        Some(json!({"text_en": "Manual"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    retry.await.unwrap();
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["text_en"], "Manual", "手動譯文被重試蓋掉");
+    assert_eq!(list[0]["text_es"], "AI es");
+    assert_eq!(list[0]["pending_languages"], json!([]));
 }

@@ -12,7 +12,7 @@
 - **常見錯誤碼**：`unauthorized`（401）、`forbidden`（403）、`account_disabled`（403，帳號已被管理者停用）、`password_change_required`（403，用臨時密碼登入尚未改密碼）、`not_enrolled`（403，名單外帳號）、`not_found`（404）、`csrf`（403）、`request_timeout`（408）、`payload_too_large`（413）、`internal`（500）。各端點特有的錯誤碼寫在 OpenAPI 的 responses 說明。
 - **請求大小上限**：所有端點的 request body 上限為 1 MiB（`MAX_BODY_BYTES`；最大的合法 JSON 是修課名單匯入，1 MiB 可容納兩萬筆以上信箱），只有 `POST /api/voice/transcribe` 放寬為 10 MB。超過時回 `413 payload_too_large`（統一的 JSON 錯誤格式，帶 `request_id`），有沒有 `Content-Length`（分段傳送）都一樣。
 - **請求逾時**：從收到請求到送出回應標頭為止（含讀取 request body 與 handler 處理）預設 10 秒（`REQUEST_TIMEOUT_SECS`），逾時回 `408 request_timeout`（統一的 JSON 錯誤格式），handler 中止、未提交的交易回滾。以下路由改用較長的逾時（`AI_TOTAL_TIMEOUT_SECS` + 60 秒，預設 120 秒）：同步等 AI 的 `POST /api/dashboard/class/regroup` 與 `POST /api/summaries/{id}/translation`、上傳音訊並等語音服務的 `POST /api/voice/transcribe`、同步等語音服務的 `POST /api/voice/speech`、匯入時逐一雜湊臨時密碼的 `POST /api/classrooms/{id}/roster/import`。逾時不含回應本文，SSE 的 `POST …/messages` 與 `GET …/stream` 在背景產生 AI 回覆，標頭送出後不會被截斷，串流長度由 AI 逾時限制（S-03.5）。
-- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（題目的 `category`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
+- **PATCH 語意**：沒帶的欄位保留原值；可為空的欄位（活動的 `opens_at`、`closes_at`）送 `null` 代表清除（JSON merge-patch，RFC 7396）。`description` 不可為 `null`，要清空請送 `""`。
 - **列表分頁**：`GET /api/conversations`、`/api/summaries`、`/api/classrooms/{id}/students`、`/api/classrooms/{id}/roster`、`/api/activities` 都用 `?limit=&cursor=` keyset 分頁，回 `{ "items": [...], "next_cursor": "..." | null }`。`limit` 預設 50，必須為 1–200 的整數，否則 `400 invalid_limit`；`cursor` 是上一頁非空的 `next_cursor`（不透明字串，不能跨端點使用），損壞時 `400 invalid_cursor`；最後一頁的 `next_cursor` 為 `null`。
 - **學生識別欄位命名**（#446）：`student_number` 一律是學號（8 位數字加 1 個大寫英文字母，個資，可見範圍見 S-01.4）；學生的使用者 UUID 在學生列表是 `id`，在總結列表與對話原文是 `student_user_id`。API 不使用 `student_id` 這個名稱（包含重設密碼請求）。資料庫欄位 `users.student_id`、`enrollments.student_id` 仍存學號，不對外。
 - **權限分層**：管理者專用的在 `/api/admin`；其他端點依教師、管理者或修課名單內學生的權限區分。學生的對話端點僅擁有者可讀，其他人回 `404`；教師可透過教師檢視端點唯讀查看自己教室已結束的活動對話原文，管理者不可見原文（S-02.1）。
@@ -27,8 +27,14 @@
 - 改密碼成功後，該使用者**其他** session 失效（保留目前這個）。新密碼長度 8–128。
 - `GET /api/me` 回傳 `student_number`：帳號本身有學號就回傳（大寫，只會是登入者自己的），沒有學號的帳號（教師、管理者等）為 `null`；與角色無關，同時具備教師身分的學生帳號一樣看得到自己的學號。其他人的學號不會出現在學生可用的任何端點（S-01.4）。
 - `GET /api/me` 回傳 `can_change_password`：帳號有內建密碼且不是示範模式的示範帳號時為 `true`，前端依此決定是否在個人設定顯示「更改密碼」。`POST /api/auth/change-password` 對示範模式的示範帳號回 `403 demo_account`；目前密碼連續輸錯 5 次回 `429 too_many_attempts`（鎖定 15 分鐘，只針對更改密碼，不影響登入），成功更改會記稽核 `change_password`（S-18）。
-- `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生另可用同一 PATCH 修改 `display_name`；其他角色送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
-- 學生的 `display_name` 去除頭尾空白後最多 30 個 Unicode 字元。若超過上限或包含控制字元、行／段落分隔字元，回 `400 invalid_display_name`。傳入 `null` 或空白字串會恢復匯入名單時的姓名，省略欄位則保留目前名稱。
+- `GET /api/me` 回傳 `language`（`zh-TW`、`en`、`es`）；`PATCH /api/me` 可由所有已登入使用者以 `{ language }` 更新，立即影響介面與之後建立的對話，不改變既有對話。新帳號首次成功登入時依 `Accept-Language` 取第一個支援語言，沒有則使用 `zh-TW`。學生、教師與管理者另可用同一 PATCH 修改 `display_name`（去除頭尾空白後上限 30 個 Unicode 字元、不可含控制字元與行／段落分隔字元，違反回 `400 invalid_display_name`；`null` 或空白清除：學生回到匯入的姓名；教師與管理者暫時顯示電子郵件，Google 帳號在下次 Google 登入時重新取自 Google）；沒有任何角色的帳號送出 `display_name` 回 `403 forbidden`。`roles` 全為 `false` 代表「尚未開通」。教師與管理者不需要在修課名單內。
+
+## 站內通知（F-30.6、F-40.9）
+
+- 學生與教師登入後只取得自己尚未讀取的通知，由最早建立的通知開始顯示。學號更正通知只提供識別碼、類型與更正時間，前端依介面語言顯示。
+- 關閉通知會標記已讀。對同一筆自己的通知重送標記仍會成功，保留首次已讀時間。不存在或屬於他人的通知一律回 `404 not_found`。
+- 教師的通知類型 `teacher_api_key_deleted`：管理者刪除了該教師的 API key（F-40.9），同樣只有識別碼、類型與時間。只有管理者身分與名單外帳號呼叫通知端點回 `403`，未登入 `401`。
+- 通知沒有到期日。未讀通知跨登入保留，成功標記已讀後不再出現在未讀清單。
 
 ## 管理（管理者）
 
@@ -37,7 +43,9 @@
 - `GET /api/admin/status?period=24h|7d|30d` 預設最近 24 小時。回傳 `service`、`database`、`period`、`diagnostics_available`、`statistics` 與最多 10 筆 `recent_errors`。統計包含 `ai_calls`、`ai_failures`、`ai_invalid_outputs`、`login_failures`、`account_locks` 及 `ai_status`（`no_data`、`ok`、`has_failures`）。AI 統計以每一次實際執行的嘗試為單位：自動重試的每次嘗試各算一次呼叫，失敗的嘗試各算一次失敗（失敗一次再成功＝2 次呼叫、1 次失敗）。`ai_failures` 只計供應商失敗；供應商正常回應但內容無法解析的算 `ai_invalid_outputs`，不影響 `ai_status`。`account_locks` 只計帳號層級的鎖定（同一登入帳號輸入在所有 IP 的失敗總數達門檻），單一 IP 的鎖定不計入。
 - 若診斷無法讀取，狀態端點保留已知的服務及資料庫狀態，回 `diagnostics_available: false`、`statistics: null`。若資料庫故障使 PostgreSQL session 無法驗證，前端可用既有的 `/health` 和 `/ready` 顯示基礎健康狀態。
 - `GET /api/admin/diagnostics` 回 `{ items, next_cursor }`，由新到舊。可篩選 `from`（含）、`to`（不含，均為 RFC 3339）、`kind`（`ai`、`login`、`account_lock`）、`failure_class`、`request_id`、`user_id`、`classroom_id`。最後三個欄位使用 UUID。分頁沿用 `limit` 和 `cursor`，更改條件後須從第一頁查詢。
-- 失敗分類包括 AI 的 `connection_failed`、`timeout`、`invalid_key`、`quota_exceeded`、`rate_limited`、`service_error`、`invalid_output`，以及登入的 `invalid_credentials`、`account_disabled`、`account_locked`。每筆失敗有時間、request ID、功能、路由模板、狀態碼及固定 error code。AI 另有耗時、重試次數（該次嘗試之前已重試的次數加上供應商內部換金鑰或換備援模型的次數；成功事件同樣如此，模型為實際回覆的模型）及可用的模型名稱。診斷分類只供紀錄，不影響金鑰冷卻與備援模型的決定。可依 request ID 到容器 stdout 查相關記錄。
+- `GET /api/admin/services?period_days=30` 回 `{ services, period_days, history_available }`。期間可選 1–30 天，預設 30。服務狀態為 `checking`、`no_data`、`healthy` 或 `unhealthy`，異常服務排在前面。每列包含檢查時間、回應時間（毫秒）、最近正常時間及目前狀態起始時間。最多回傳 10 筆最近變化，可用率是 0–1 的比例，無已知時段為 `null`。歷史查詢失敗時，仍回傳目前狀態並標記 `history_available: false`。
+- `POST /api/admin/services/check` 接受 `{ name }`，回傳該服務目前狀態。服務不存在回 `404 service_not_found`，同一服務 10 秒內再次立即檢查回 `429 service_check_rate_limited`。
+- 失敗分類包括 AI 的 `connection_failed`、`timeout`、`invalid_key`、`quota_exceeded`、`rate_limited`、`service_error`、`invalid_output`、`classroom_ai_unavailable`（教室的 AI 不可用：沒有設定模型、沒有可用的教師 key、所有 key 都失敗等；還沒呼叫供應商就失敗時沒有耗時與模型，原因記在伺服器日誌的 `classroom AI unavailable` 一行），以及登入的 `invalid_credentials`、`account_disabled`、`account_locked`。每筆失敗有時間、request ID、功能、路由模板、狀態碼及固定 error code。AI 另有耗時、重試次數（該次嘗試之前已重試的次數加上供應商內部換金鑰或換備援模型的次數；成功事件同樣如此，模型為實際回覆的模型）及可用的模型名稱。診斷分類只供紀錄，不影響金鑰冷卻與備援模型的決定。可依 request ID 到容器 stdout 查相關記錄。
 - PostgreSQL 保存最近 30 天，每日清理到期事件，查詢也會排除到期事件。成功只供統計。帳號或教室可用內部 ID 關聯，未知帳號的失敗仍可從系統清單查看；因為任何人都能對不存在的信箱嘗試登入，這類事件每種每小時最多保留 100 筆，已鎖定後的登入嘗試不寫事件，Google 登入只記錄停用帳號的拒絕。診斷寫入在背景進行，不增加請求延遲；寫入積壓時新事件會被丟棄，不影響原請求結果。兩個端點只允許管理者，查詢端點無法讀取時回 `503 diagnostics_unavailable`。
 - 程序記憶體的 request 日誌與 `GET /api/admin/logs` 已移除（#465）：成功的請求不再有後台可查，完整請求日誌以容器 stdout 的 `request completed`（含 request ID）為準；持久化診斷只保存失敗事件。
 
@@ -58,6 +66,9 @@
 - 教師時間表單依瀏覽器時區輸入及顯示，傳送時轉 UTC；已有人開始對話的活動仍可修改時間。建立活動須選擇未封存的教室。
 
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
+- 題目可附 0 到 5 個引導問題（`guiding_questions` 字串陣列，S-04.8、F-32.1）：建立與修改時選填，建立未帶預設為 `[]`，修改未帶保留原值，修改帶 `[]` 清空；每個問題最多 200 字，超過 5 個或單一超過 200 字回 `400 invalid_guiding_questions`；題目已有對話後仍可修改引導問題（不鎖定），不影響既有總結；學生呼叫 `GET /api/catalog` 的題目清單亦帶有此欄位。
+- AI 不再讀題目或對話的 `description`（F-32.5）：對話提示、總結、單場雷達評分與 AI 產生雷達維度都改帶題目目前的引導問題；教師在題目還沒有對話時修改引導問題，未鎖定的維度會丟掉並重新產生。
+- 引導問題將取代題目的 `description`（S-04.8 2026-11 修訂）：`description` 欄位標為 deprecated，目前讀寫行為不變、之後另案改為寫入忽略並移除；migration `20261117000000` 已把引導問題為空、`description` 非空的既有題目轉成引導問題（`description` 欄位保留）。
 - 題目停用後學生看不到。系統啟動時會補上內建題目「電車難題」（固定 ID；已存在就不動，教師改過或停用後也不會被覆寫）。
 - `GET /api/activities?limit=&cursor=` 依 `created_at DESC, id ASC` 分頁，草稿、已發布、已停止開放都列出；`activities(created_at DESC, id)` 有索引。前端依需要載入（「載入更多」），不先取完所有分頁。
 - 活動建立時是 `draft`；`publish` 後學生才選得到，可重新開放；`close` 停止開放。
@@ -65,7 +76,7 @@
 - 活動屬於教室（F-28.3、S-14）：`POST /api/activities` 本文必須帶 `classroom_id`（沒帶回 `400 invalid_classroom`），建立後不可更改（`PATCH` 沒有這個欄位）。教室不存在與不是自己管理的教室一律回相同的 `404 not_found`；教師只能建立、讀取、修改、發布與停止自己建立的教室內的活動（其他教師的活動回 `404`），管理者可管理所有教室。題目是全域的：兩個教室可以引用同一題目，各教室的活動互不影響。
 - `GET /api/activities?classroom_id=` 列出自己管理的教室內的活動（管理者為全部），回應每筆都有 `classroom_id`；帶 `classroom_id` 時只看那間教室，不是自己管理的教室回 `404`。
 - 活動封存與刪除（S-14）：活動回應帶 `is_archived`（預設 `false`）。`POST /api/activities/{id}/archive`、`/unarchive`（選填 `?reason=` 寫入稽核日誌）封存與復原；教室已封存時回 `409 classroom_archived`。封存的活動不出現在學生清單、不能開始新對話（`400 invalid_conversation_source`），既有對話照舊；`GET /api/activities` 預設只列未封存的，`?archived=true` 只列已封存的；`archived` 只接受 `true` 或 `false`，其他值回 `400 invalid_archived`。已封存的活動不能發布或停止開放（`409 activity_archived`），需先復原；重複封存同一活動不會重複寫稽核。`DELETE /api/activities/{id}` 永久刪除活動與其所有對話、總結，JSON body 的 `confirm_title` 必須等於活動標題（`400 confirmation_mismatch`），選填 `reason`；封存的活動與封存教室內的活動都可直接刪除，成功回 `204`；缺少 body 與名稱不符都回 `400 confirmation_mismatch`（不存在的活動先回 `404`）。封存、復原、刪除都寫入稽核日誌（`activity_archived`／`activity_restored`／`activity_deleted`，對象為活動標題；刪除另記 `item_count`＝一併刪除的對話數）。
-- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、未封存、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目。每個活動除活動欄位外，另帶 `topics`（依教師排定順序，每題 `topic_id`、`title`、該學生此題的 `conversation_id` 與 `conversation_status`（`active`／`ended`，未開始為 null）、`summary_ready`）與 `completed`（每題都有已產生總結的對話才為 true；F-29.6、S-04.7）；舊的 `/api/available` 已移除。
+- `GET /api/catalog` 回傳 `{ activities, topics }`，`activities` 只含已發布、未封存、且所在教室的名單內有這位學生的活動，`topics` 為已啟用的題目。每個活動除活動欄位外，另帶 `classroom_name`（所屬教室名稱，供依教室分組；學生看得到的教室資訊只有名稱，不含教師、教室說明或其他學生，S-14）、`topics`（依教師排定順序，每題 `topic_id`、`title`、該學生此題的 `conversation_id` 與 `conversation_status`（`active`／`ended`，未開始為 null）、`summary_ready`）與 `completed`（每題都有已產生總結的對話才為 true；F-29.6、S-04.7）；舊的 `/api/available` 已移除。
 
 ## 修課名單與學生（F-28.2）
 
@@ -87,7 +98,8 @@
 ## 教室（F-28.1）
 
 - 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，最多 255 字元，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空白或超長名稱回 `400 invalid_classroom_name`。年度標籤最多 100 字元、說明最多 2,000 字元，超限分別回 `invalid_classroom_year_label`、`invalid_classroom_description`。選填欄位前後空白會去除，空字串會保存為 `null`。
-- `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。
+- `GET /api/classrooms`：教師只取得自己建立的教室，管理者取得全部教室。建立者與管理者可檢視／編輯教室；其他教師存取他人教室時與不存在的教室一律回相同 `404 not_found`。 每列另有 `ai_model_missing`：教室不是過渡中、沒封存、也還沒設定對話模型時為 `true`（學生目前無法使用 AI），教師的教室列表用它顯示警告。
+- 切換教室沿用同一登入 session。教室頁的活動、總結與彙整查詢各自帶 `classroom_id`，名單與學生清單使用 `/api/classrooms/{id}/roster`、`/api/classrooms/{id}/students`。後端依每次請求指定的教室檢查權限。
 - 管理者可管理所有教室。依 Issue「教室由教師建立」，目前只有教師可建立教室（管理者建立權限**待需求方確認**，尚未定案）；建立者欄位固定為建立請求的教師。教室名稱唯一性由資料庫約束保證，併發建立相同名稱時僅一個成功。沒有提供任何欄位的空 PATCH 不會更新 `updated_at`。
 - PATCH 未提供的欄位保留原值；`year_label`、`description` 送 `null` 可清除。教室回應帶 `is_archived`（預設 `false`）；PATCH 可傳 `is_archived: true` 封存、`false` 復原。封存後教室、活動、修課名單及既有對話為唯讀，寫入回 `409 classroom_archived`（學生刪除、封存自己的對話不受限制，見「對話」一節；開始活動對話沿用 `400 invalid_conversation_source`）。教師與管理者仍可查閱，名單與原有資料保留；復原後恢復操作。個人練習不受封存影響。名單見上一節。
 - 教室刪除（S-14）：`DELETE /api/classrooms/{id}` 永久刪除教室，連同活動、修課名單、活動對話與總結，個人練習、點數、成就與帳號不受影響；JSON body 的 `confirm_name` 必須等於教室名稱（`400 confirmation_mismatch`），選填 `reason`；封存的教室可直接刪除，成功回 `204`，名稱隨即可再使用。不存在或不是自己管理的教室先回 `404`；body 缺少、不是 JSON 或缺 `confirm_name` 與名稱不符一樣回 `400 confirmation_mismatch`。刪除時先鎖住教室列再計數，稽核的對話數量不會漏掉同時開始的對話。PATCH 封存與復原可帶選填 `reason`。封存、復原、刪除都寫入稽核日誌（`classroom_archived`／`classroom_restored`／`classroom_deleted`，對象為教室名稱；刪除另記 `item_count`＝一併刪除的對話數）。只有建立者與管理者可操作，其他教師回 `404`。
@@ -96,11 +108,12 @@
 
 教師與管理者不參與討論：對話、可選清單、語音與 `/api/dashboard/me` 對教師與管理者一律回 `403 forbidden`（名單外帳號回 `not_enrolled`）。
 
-- `GET /api/conversations?limit=&cursor=` 依 `updated_at DESC, id ASC` 回 `{ items, next_cursor }`；`updated_at` 表示最後一則訊息的時間，尚無訊息時以 `created_at` 替代。預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
+- `GET /api/conversations?limit=&cursor=` 依 `updated_at DESC, id ASC` 回 `{ items, next_cursor }`；`updated_at` 表示最後一則訊息的時間，尚無訊息時以 `created_at` 替代。預設 50 筆，limit 必須為 1–200 的整數，否則 400 `invalid_limit`。cursor 使用上一頁的非空 `next_cursor`，最後一頁為 null，損壞的 cursor 回 400 `invalid_cursor`。只查詢本人資料，不含訊息；前端可往前／往後翻頁。預設只列未封存的對話，`?archived=true` 只列已封存的（只接受 `true`／`false`，其他值回 `400 invalid_archived`）；每筆帶 `is_archived`。對話（列表、單場與建立的回應）帶 `classroom_name`（來源教室目前的名稱，教室改名後跟著變；個人練習為 `null`）與 `classroom_archived`（來源教室已封存；個人練習為 `false`），教室刪除時對話一併刪除（S-14）。`?activity_id=` 只列該活動的對話（格式不正確回 `400 invalid_activity_id`），前端用它判斷「已有一場」的對話是否被自己封存。
 - 開始活動對話時在 `POST /api/conversations` 同時傳 `activity_id` 與 `topic_id`；題目必須屬於該活動，對話保存所選題目的標題和說明。只傳 `topic_id` 建立個人練習。為相容現有前端，只傳 `activity_id` 時暫時使用活動的第一個題目，對話標題一樣是該題目的標題（不是活動名稱），說明則沿用活動說明。活動必須已發布、在開放期間、未封存且屬於未封存教室，學生也須在該教室名單內；個人練習題目須啟用。來源不可用（包含題目不屬於活動）一律回 `400 invalid_conversation_source`，不外露原因。
 - 新對話會把帳號目前的 `language` 複製到對話；之後切換帳號語言不會改變既有對話。AI 回覆、總結、主張分組與語音都依對話語言執行，提示／規則版本以 `vN/<language>` 保存。
 - 對話自己保存 `classroom_id`（S-14），不以活動推得：**活動對話**取自活動所在的教室，建立後不可更改，活動停用也不變（活動被刪除時對話一併刪除）；只帶 `topic_id` 的**個人練習**為 `null`，不屬於任何教室，教師看不到。學生只要仍在任一教室的名單內就能做個人練習。學生的 `GET /api/conversations` 同時包含兩種對話。對話回應（建立、單場、列表）帶 `activity_title`：活動對話所屬活動**目前**的名稱（教師改名後跟著變），個人練習為 `null`；題目名稱仍是 `title`。「我的對話」來源欄用這兩個欄位顯示活動名稱與題目。
 - 每位學生在每個活動的每個題目至多一場對話，進行中或已結束都算（S-04.7）：該題已有對話時回 `409 activity_already_started`，同時送出的兩個請求也只會成功一個；同一活動的其他題目仍可各自開始。刪除該場對話後該題可重新開始；個人練習不受限。
+- 對話詳情 `GET /api/conversations/{id}`（F-32.4、S-04.8）另回 `guiding_questions`（字串陣列）：該對話題目**目前**的引導問題，題目沒有或已不存在時為 `[]`；對話頁據此隨機顯示其中一題（以對話 id 決定，同一場對話固定同一題）。
 - 對話封存（S-14）：`POST /api/conversations/{id}/archive`、`/unarchive` 只改變本人清單的顯示（回 `204`，他人的對話回 `404`），不受教室封存限制，不影響教師端總結、彙整、點數，也不解除「一人一活動每題一場」；封存的活動對話要重開必須先刪除。`DELETE /api/conversations/{id}` 不受教室封存限制。教室或活動被刪除時其中的對話一併刪除。
 - 訊息 `source`：`text`、`speech-browser`、`speech-openai`（後兩者代表語音輸入的逐字稿，S-05.4）。長度上限 4000 字元（`invalid_message`）。
 - **送出訊息即串流回覆（S-08.4）**：`POST …/messages` 回 `200 text/event-stream`，事件依序為：
@@ -114,22 +127,72 @@
 - 總結：`status` 為 `pending`／`ready`／`failed`，`pending` 時請輪詢；失敗可用 `summary/retry` 重試（`summary_not_retryable`）。總結不可由學生修改。
 - 總結的 `stance`、`reasons` 與 `claim` 保留原文。`translation` 提供帳號語言的已保存譯文 `{ language, stance, reasons }`，其餘情況為 `null`。總結完成且需要的譯文尚未保存時，`translation_pending` 為 `true`，介面顯示原文並標示待完成。
   - `claim`：學生最終主張的一句短句（AI 寫的，約 30 字內，用對話語言，分組用）。
-  - 固定學派的 `framework`（主要學派）與 `framework_scores`（6 維分數）已取消（S-04.6）。題目綁定的新維度與分數由後續功能（F-03.4、F-24）加入，屆時再更新本節。
+  - 固定學派的 `framework`（主要學派）與 `framework_scores`（6 維分數）已取消（S-04.6）。題目綁定的維度由教師的 `GET`／`PATCH /api/topics/{id}/dimensions`（F-03.4）管理，單場分數見下一點。
+- 單場雷達圖（F-24.1，S-04.3）：`GET /api/conversations/{id}/radar` 回 `{ status, retryable, scores, dimensions, rules_version, completed_at }`，只有對話擁有者（名單內學生）可讀，授權規則與總結相同。總結成功後後端自動開始計算，`pending` 時請輪詢；計算失敗不影響總結。
+  - `status`：`summary_not_ready`（對話未結束或總結尚未成功）、`unavailable`（題目已不存在）、`dimensions_pending`（題目的六個維度尚未完成）、`not_started`（可以計算但尚未開始，例如維度在總結之後才完成）、`pending`、`failed`、`ready`。
+  - `retryable`：現在能否呼叫重試。`failed`、`not_started`，以及 `pending` 超過逾時上限（例如服務重啟）時為 `true`；教室已封存時一律為 `false`（重試會回 `409 classroom_archived`）。前端依這個欄位決定是否顯示重試，不自行判斷。
+  - `scores`：只有 `ready` 時有值，以維度識別碼 `d1`～`d6` 為 key、0 到 5 的整數，六個齊全；0 代表證據不足，是有效分數。其他狀態為 `null`，不會有部分分數。
+  - `dimensions`：題目的六個維度 `{ id, name, description }`，`name` 與 `description` 各含 `zh_tw`、`en`、`es`，前端依介面語言顯示；不含評分準則。題目沒有維度時為 `null`。
+  - `rules_version`（評分提示版本）與 `completed_at` 只有 `ready` 時有值。
+- `POST /api/conversations/{id}/radar/retry`：開始或重新計算，成功回 `202` 與目前的雷達圖狀態（`pending`）。`409 dimensions_pending`＝題目維度尚未完成；`409 radar_not_retryable`＝計算中、已成功、總結尚未成功或題目已不存在；`409 classroom_archived`＝教室已封存。失敗時後端已自動重試一次（S-03.5），之後才需要學生手動重試。
 - 刪除對話會一併刪除訊息與總結。
 
 ## 儀表板
 
-論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。目前教師儀表板仍以活動彙整，尚未依 S-04.7 區分活動內各題目；多題目彙整由 F-29.4（#389）處理。從題目庫開始的個人練習不屬於任何教室，不列入。
+論點分布的主體是「主張」：AI 為每場對話寫一句最終主張，再把意思相近的歸成一群並命名（轉變先不記，只有最終主張）。教師儀表板以活動內的單一題目彙整，不跨題目合併（S-04.7）。從題目庫開始的個人練習不屬於任何教室，不列入。
 
 - `GET /api/dashboard/me`：`{ total_conversations, total_turns, completed, recent }`，只算自己的資料；`recent` 是最近完成的 10 場（含主張與立場）。固定學派的雷達圖與學派人數已取消（S-04.6）。
-- `GET /api/dashboard/class?classroom_id=`：`{ masked, students_total, students_participating, completed, activities }`；`activities` 每項為 `{ activity_id, title, completed, claims, ungrouped }`，完成場數多的在前。只計入自己管理的教室內的活動對話（管理者為全部），個人練習與他人教室一律不計入；帶 `classroom_id` 時只看那間教室（`students_total` 為該教室名單人數），不是自己管理的教室回 `404`。**沒帶 `classroom_id` 時涵蓋自己管理的所有教室，只是 F-28.4 加入教室切換前的暫時行為**；S-14 規定彙整範圍限單一教室，是否改為必填**待需求方確認**。
+- `GET /api/dashboard/class?classroom_id=`：`{ masked, students_total, students_participating, completed, activities }`；`activities` 每項為 `{ activity_id, title, completed, topics }`，完成對話場數多的在前；`topics` 依活動設定順序，每項為 `{ topic_id, title, completed, claims, ungrouped }`，包含尚無總結的題目（計數為 0、分組為空）；`completed` 均為已產生總結的對話數，不代表完成全部題目的學生數。只計入自己管理的教室內的活動對話（管理者為全部），個人練習與他人教室一律不計入；帶 `classroom_id` 時只看那間教室（`students_total` 為該教室名單人數），不是自己管理的教室回 `404`。F-28.4 的教室頁面固定帶 `classroom_id`，依 S-14 顯示單一教室的彙整。既有呼叫若省略此參數，API 仍涵蓋呼叫者可管理的所有教室。是否改為必填**待需求方確認**。
 - 班上儀表板只給教師（S-02.4 不設最小群體門檻），只有數量與分類，沒有學生身分或內容。管理者身分一律 `masked: true` 且沒有分布（S-02.2）。
-- 活動的 `claims`：人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組）。
-- 重新分組：`POST /api/dashboard/class/regroup`，本文 `{ activity_id }`，教師請 AI 把該活動下全部主張重新分組。活動不存在或不在自己管理的教室回 `404`；自己教室的活動沒有可分組的主張回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
+- 舊資料若已缺少 `topic_id`，保留原群組與總結，不推測題目；不會放入任意題目的分布。
+- 每題的 `claims`：人數多的在前；`reasons` 是這群人的核心理由（AI 總結的文字，最多 5 則、去重，沒有姓名與原文）；超過 6 群時最小的幾群併成 `other: true`（沒有名稱）；`ungrouped` 是有主張但還沒歸群的場數（分組失敗或尚未分組）。
+- 重新分組：`POST /api/dashboard/class/regroup`，本文 `{ activity_id, topic_id }`，教師請 AI 只把該活動指定題目的全部主張重新分組，其他題目的分組不變。活動不存在、不在自己管理的教室、題目不存在或不屬於活動均回相同的 `404`；該題沒有可分組的主張回 `409 no_claims`；AI 失敗回 `502 ai_unavailable` 並沿用原本的分組；管理者 `403`。
 
 ## 語音備援（只有修課名單內的學生）
 
 瀏覽器預設用 Web Speech API；不支援時才經 `/api/voice/*` 呼叫 OpenAI（S-05.3）。**不保存原始音訊**（S-05.4）。具體語音模型尚未決定，沒設定 `OPENAI_STT_MODEL`／`OPENAI_TTS_MODEL` 時回 `503 voice_unavailable`；外部服務失敗回 `502 voice_failed`。語音辨識的請求本文是音訊位元組（`Content-Type: audio/*`，上限 10 MB），`language` 為 `zh-TW`、`en` 或 `es`；合成文字 1–4000 字元。
+
+## 教師 API key（F-40.1，S-03.1）
+
+只有教師本人可用；學生、名單外帳號與只有管理者身分的人回 `403 forbidden`，未登入回 `401`。他人的 key 與不存在的 key（含格式不正確的 id）一律回相同的 `404 not_found`。回應、錯誤與日誌都不含完整 key 或密文，只回遮蔽識別（例如 `…abcd`；太短的 key 只回 `…`）。管理者的檢視與刪除另見 F-40.9。
+
+- `GET /api/teacher/ai-providers`：可綁定 key 的供應商名單 `[{ id, name }]`（寫死在程式，S-03.1；不含端點）。
+- `GET /api/teacher/keys`：自己的 key `[{ id, provider, mask, status, status_at, created_at, updated_at }]`。`status` 為 `ok`、`invalid`（失效或遭撤銷）、`rate_limited`、`quota_exhausted`；`status_at` 是進入該狀態的時間，`ok` 時為 `null`。
+- `POST /api/teacher/keys`：`{ provider, key }` → `201`（同上項目）。供應商不在名單回 `400 invalid_provider`；key 去掉前後空白後為空、超過 512 字元或含空白／控制字元回 `400 invalid_key`；同一把 key（不論哪位教師、哪個供應商）已存在回 `409 key_already_exists`（前端顯示「這把 key 已經存在」）。後端沒有設定 `TEACHER_KEY_ENCRYPTION_KEYS` 時回 `503 teacher_keys_unavailable`。
+- `PUT /api/teacher/keys/{id}`：`{ key }` 更換自己的 key；`id`、供應商與歷史用量不變，狀態重設為 `ok`。body 帶 `provider` 或其他欄位會被拒絕（要換供應商請新增另一把）。錯誤同新增。
+- `DELETE /api/teacher/keys/{id}`：`204`；該 key 的用量統計連帶刪除，教室統計隨之扣除。
+- `POST /api/teacher/keys/{id}/test`：只呼叫供應商的模型清單端點、不送對話內容，可能產生 API 請求與費用；回 `{ result: "usable" | "connection_failed" }`，額度不足或頻率限制算可用，key 無效或已撤銷、逾時算連線失敗。每位教師 10 分鐘最多 10 次（暫定值，待需求方確認），超過回 `429 key_test_rate_limited`。測試可用時把 key 的 `status` 清為 `ok`（路由不必等冷卻結束）；連線失敗不改寫 `status`（可能只是網路問題）。清單裡看得到、但伺服器已解不開（加密金鑰已輪替掉）的 key 回 `connection_failed`。
+
+### AI 用量（F-40.8，S-03.1）
+
+- **系統 AI（管理者，`/api/admin/system-ai`）**：系統用途（沒有教室的呼叫、過渡中的教室、翻譯、主張分組、維度、公告翻譯）使用的供應商、模型與多把系統 key；沒設定或沒有可用 key 時這些用途的 AI 無法使用（主機的 `.apikeylist` 已淘汰，後端不再讀取）。只有管理者（未登入 `401`、其他角色 `403`），寫入需同源（CSRF）。
+  - `GET /api/admin/system-ai`：`{ source: "database" | "host_file", routing_enabled, encryption_configured, setting, host_model, keys[], providers[] }`；`keys[]` 只有遮蔽識別、狀態與近 30 天用量（請求數、輸入／輸出 token、未回報請求數），不含 key。
+  - `PUT /api/admin/system-ai/model` `{ provider, model }`：用該供應商的一把系統 key 送一次最小串流與 JSON 請求驗證（少量費用）後儲存；沒有該供應商的 key 回 `400 no_key_for_provider`，驗證失敗的代碼同教室 AI 設定；驗證太頻繁 `429 key_test_rate_limited`（沿用 key 測試額度）。`DELETE` 清除設定（key 保留，系統用途的 AI 暫時無法使用，直到重新設定）。
+  - `GET /api/admin/system-ai/models?provider=`：用該供應商的系統 key 取模型清單，只當模型欄位的輸入建議（不是白名單，儲存時仍會驗證）。回應與 `GET /api/teacher/keys/models` 相同（`ok`／`no_key`／`unavailable`，取不到仍回 `200`）；供應商不在名單 `400 invalid_provider`，太頻繁 `429 model_list_rate_limited`（與教師共用額度設定）。不使用教師的 key，也不改動 key 狀態。
+  - `GET /api/admin/system-ai/usage?range=`：系統用途的 AI 用量，依（供應商、模型）細分並加總各系統 key，格式同 `GET /api/classrooms/{id}/ai-usage`（`range` 為 `today`、`7d`（預設）、`30d`、`all`，其他值 `400 invalid_range`）。只計次數與 token，不計金額；供應商沒回報 token 的請求標示未回報。刪除 key 時該 key 的用量一併刪除。
+  - `POST /api/admin/system-ai/keys` `{ provider, key }` → `201`；`PUT …/keys/{id}` `{ key }` 更換（供應商與歷史用量不變、狀態重設）；`DELETE …/keys/{id}` → `204`（用量一併刪除）；`POST …/keys/{id}/test` → `{ result: "usable" | "connection_failed" }`（只呼叫模型清單端點）。錯誤代碼同教師 key（`invalid_provider`、`invalid_key`、`key_already_exists`——與教師 key 全域不得重複、`503 teacher_keys_unavailable`）。
+  - 稽核動作：`system_key_added`、`system_key_replaced`、`system_key_deleted`、`system_ai_model_set`、`system_ai_model_cleared`（對象只記供應商識別碼）。
+- `GET /api/teacher/keys/models?provider=`：用自己該供應商的 key 向供應商取模型清單，只當教室 AI 設定的輸入建議（不是白名單，儲存時仍以模型驗證為準）。回 `{ provider, status: "ok" | "no_key" | "unavailable", models: [string] }`：`ok` 時 `models` 已排序、去重、排除名稱明顯不是文字對話的模型（嵌入、語音、即時／音訊、圖片、影片、審核、重排與舊補全模型）；key 只用在文字對話，最多 500 個；`no_key` 是沒有該供應商的 key；`unavailable` 是有 key 但取不到清單（key 無效、供應商不提供、逾時；同一供應商最多依序試 3 把 key）。後兩者都回 `200`，前端退回純文字輸入。供應商不在名單或缺少 `provider` 回 `400`（`invalid_provider`）；每位教師每分鐘最多 30 次（暫定值，待需求方確認），超過回 `429 model_list_rate_limited`；沒有設定加密金鑰回 `503 teacher_keys_unavailable`。不改動 key 的狀態，回應與日誌不含 key。只有教師本人（管理者身分也是 `403`）。
+- `GET /api/teacher/keys/{id}/usage?range=`：自己某把 key 的用量。
+- `GET /api/classrooms/{id}/ai-usage?range=`：自己建立的教室的用量（各 key 加總；封存的教室仍可看）。
+- `range` 為 `today`、`7d`（預設，暫定）、`30d` 或 `all`，其他值回 `400 invalid_range`；「日」以 Asia/Taipei 日曆日計，`7d`、`30d` 含今天（待需求方確認）。
+- 回 `{ range, totals, items }`；`totals` 與每個 `items`（依供應商、模型細分，備援模型歸在它自己的列）都是 `{ requests, input_tokens, output_tokens, unreported_requests }`。`unreported_requests` 是供應商沒回報 token 的請求數，這些請求不估算 token。不計金額。刪除 key 後該 key 的用量消失、教室總計扣除；更換 key 用量延續。
+- 權限：未登入 `401`；學生與名單外帳號 `403`。`/api/teacher/keys/{id}/usage` 只有 key 的持有教師，只有管理者身分的人也是 `403`（管理者看不到教師 key 的用量）。`/api/classrooms/{id}/ai-usage` 教師看自己建立的教室，管理者可看任何教室（需求方已確認）；其他教師查他人的 key 或教室與不存在相同 `404`。
+
+### 教室的 AI 模型設定（F-40.4，S-03.1）
+
+- `GET /api/classrooms/{id}/ai-settings`：只有教室建立者（教師）。回 `{ transitional, primary: { provider, model } | null, fallbacks: [{ provider, model }], confirmed_providers: [...] }`。`transitional` 為真代表 NTNU 上線前已存在、尚未設定的教室，沿用系統 key。
+- `PUT /api/classrooms/{id}/ai-settings`：`{ provider, model, fallbacks: [{ provider, model }] (至多 3 個，依嘗試順序), data_flow_confirmed }`。流程：格式與供應商名單檢查 → 教師必須有每個供應商的 key（`400 no_key_for_provider`）→ 第一次選定某家供應商（含備援）時 `data_flow_confirmed` 必須為真（`400 data_flow_confirmation_required`；已確認過的供應商之後不必再帶）→ 對每個模型同時呼叫 F-40.3 的模型驗證（此路由使用長逾時；會對供應商送出少量請求、可能產生少量費用，前端送出前要提示；與「測試 key」共用每人頻率限制，超過 `429 key_test_rate_limited`）→ 全部通過才儲存（備援整組取代）、記錄確認，並清除「過渡中」旗標。任何一步失敗都不儲存。
+- 錯誤碼：`invalid_provider`、`invalid_model`（空白或超過 200 字元）、`too_many_fallbacks`、`model_auth_failed`、`model_not_found`、`model_streaming_unsupported`、`model_structured_output_unsupported`、`model_check_failed`；與請求中某一項有關的錯誤帶 `error.target`（`primary`、`fallback_1`…`fallback_3`）。封存的教室不能修改（`409 classroom_archived`）；沒設定加密金鑰回 `503 teacher_keys_unavailable`。
+- 權限：未登入 `401`；學生、名單外帳號、只有管理者身分的人 `403`（管理者能否檢視規格未明，預設不開放，待確認）；其他教師與不存在的教室相同 `404`。
+- `GET /api/classrooms/{id}/ai-provider`：教室名單內的學生，回 `{ provider: { id, name } | null }`，供顯示「本教室的 AI 由 {供應商} 提供」；尚未設定或過渡中為 `null`，看不到模型 ID、備援或 key。不在該教室名單內的學生與不存在相同 `404`。
+
+### 管理者檢視與刪除教師 key（F-40.9，S-03.1）
+
+只有管理者；未登入 `401`，教師、學生與名單外帳號 `403`。管理者**看不到用量與完整 key，也不能新增或更換**（這些路徑只接受 GET／DELETE，其他方法回 `405`）。
+
+- `GET /api/admin/teacher-keys`：全部教師的 key `[{ id, owner_email, provider, provider_name, mask, status, status_at, created_at }]`，依教師電子郵件排序；不含用量、密文與完整 key。
+- `DELETE /api/admin/teacher-keys/{id}`：`204`；key 與它的用量紀錄一併刪除（教室統計扣除）。同一個交易內通知該教師（站內通知 `teacher_api_key_deleted`，只存類型與時間）並寫稽核 `teacher_key_deleted`（操作者、時間、受影響的教師帳號），**不記 key、遮蔽識別與用量**。不存在或已刪除回 `404 not_found`；`id` 不是 UUID 回 `400`。
 
 ## 教師檢視
 
@@ -148,7 +211,7 @@
   - `activity_completed`：布林值（S-04.7、F-29.3）。代表該學生是否已完成該活動內的所有題目（每個題目皆有一場已產生 `ready` 總結的對話；活動新增題目時自動回退為 `false`；非活動對話為 `false`）。多題目活動中每位學生每個題目各有一列，每列各有自己的 `conversation_id` 作為入口可查看該題總結或完整對話。
 
 - `student`：學生的使用者 UUID（列表項目的 `student_user_id`，也是學生列表的 `id`；不是學號，傳學號回 `400 invalid_filter`）。用 UUID 而非電子郵件，網址與日後的請求日誌不會帶個資（S-02.2）。
-- `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題，總結列只帶這個 `title`；論點分布與主張分組也以這個標題區分題目，所以篩選用同一個鍵。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
+- `topic`：題目標題，**完全相符但不分大小寫**（子字串不算；要子字串請用 `q`）。對話開始時會複製題目標題作為總結列的 `title`；此總結列表篩選仍使用標題；論點分布與主張分組則以活動 ID＋題目 ID 區分題目。來源是活動或題目庫、或題目之後被刪除（`topic_id` 變成空值）都篩得到。
 - 兩個篩選可同時使用，也可與分頁一起用（換篩選時要從第一頁開始，舊游標會被拒絕）。格式錯誤（`student` 不是 UUID、`student` 或 `topic` 為空白）回 `400 invalid_filter`；格式正確但沒有符合的學生或題目，回空頁 `{ "items": [], "next_cursor": null }`，不洩漏學生或題目是否存在。
 - `q`：搜尋學生姓名、電子郵件或題目標題，不分大小寫的子字串；`%`、`_`、`\` 當一般字元處理。搜尋在後端對**所有頁**進行（不是只篩目前這一頁），可與 `student`、`topic` 並用。前後空白會被忽略，空白或超過 100 字元回 `400 invalid_filter`。查詢字串帶得到姓名與電子郵件，但應用程式的請求日誌只記路徑（不含查詢字串），反向代理等外部元件另行遵守 S-09.3 的日誌規則。
 - 前端總結頁依 `next_cursor` 前後翻頁；搜尋框送出時把關鍵字放進 `q`，並從第一頁開始。
@@ -230,7 +293,7 @@
 ```bash
 docker compose up -d db
 cp .env.example .env   # 專案根目錄，整個系統共用；填入 GOOGLE_CLIENT_ID／SECRET、OPENAI_MODEL、ADMIN_EMAILS
-cp .apikeylist.example .apikeylist   # 一行一把 AI API key；後端從 ./.apikeylist 或 ../.apikeylist 讀取
+# AI API key 不放檔案：啟動後以管理者登入，在「系統 AI」頁設定（需要先設定 TEACHER_KEY_ENCRYPTION_KEYS）
 set -a && . ./.env && set +a   # 後端不會自行讀取 .env，需先載入環境變數
 cd backend
 cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration
@@ -241,3 +304,17 @@ cargo run              # RUN_MIGRATIONS=true 時啟動前自動 migration
 要連前端一起跑：在 `frontend/` 執行 `npm ci && npm run build`，並設定 `FRONTEND_DIR=../frontend/dist`，後端就會在同一個網域提供前端（找不到的路徑退回 `index.html`，`/api/*` 仍回 JSON 404）。開發前端時改用 `npm run dev`（Vite 會把 `/api` 轉給本機後端）。
 
 具體 OpenAI 模型尚未決定（S-03.1／S-03.4），因此 `OPENAI_MODEL` 沒有預設值。
+
+
+## 按需摘要論證樹
+
+學生自己的已結束對話使用以下端點（sid cookie；POST 遵守既有 Origin／CSRF 檢查）：
+
+| 方法 | 路徑 | 用途 |
+| --- | --- | --- |
+| GET | /api/conversations/{id}/argument-tree | 讀取 missing/pending/ready/failed；不呼叫模型 |
+| POST | /api/conversations/{id}/argument-tree | 生成或重試；已完成直接重用，產生中不重複啟動 |
+
+POST 無需傳送對話內容。200 為已成功，202 為背景產生中，之後查詢 GET。回應包含 status、tree（只有 ready 有值）、prompt_version、completed_at。tree 使用 DisplayTree 的巢狀 root/children 格式。
+
+401／403／404 沿用既有授權規則；進行中或空對話為 409，AI 額度不足為 429。失敗結果不包含模型原始輸出。完整規則見 [摘要論證樹](../specs/summary-argument-tree.md)。

@@ -11,7 +11,10 @@ use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use common::*;
 use serde_json::{Value, json};
-use socrates_chat_backend::mail::{Security, SmtpConfig};
+use socrates_chat_backend::{
+    AppState,
+    mail::{Security, SmtpConfig},
+};
 use sqlx::PgPool;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -94,6 +97,11 @@ struct FakeSmtp {
 impl FakeSmtp {
     /// `reject_rcpt` 為真時，對收件人回 550（模擬被拒）。
     async fn start(reject_rcpt: bool) -> Self {
+        Self::start_slow(reject_rcpt, Duration::ZERO).await
+    }
+
+    /// 與 `start` 相同，但收到信件內容後先等 `delay` 才回應（讓同時進來的重寄有機會重疊）。
+    async fn start_slow(reject_rcpt: bool, delay: Duration) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let mails = Arc::new(Mutex::new(Vec::new()));
@@ -138,6 +146,7 @@ impl FakeSmtp {
                                 }
                                 data.push_str(&line);
                             }
+                            tokio::time::sleep(delay).await;
                             store.lock().unwrap().push(Mail {
                                 recipients: std::mem::take(&mut recipients),
                                 data,
@@ -719,6 +728,96 @@ async fn a_failed_mail_keeps_the_complaint_and_can_be_resent(pool: PgPool) {
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(settled(&fixed, &admin, &id).await["mail_status"], "sent");
     assert_eq!(smtp.mails().len(), 1);
+}
+
+#[sqlx::test]
+async fn two_concurrent_resends_send_exactly_one_mail(pool: PgPool) {
+    // 先在沒有 SMTP 的情況下送出，狀態是 skipped；之後有伺服器了，同時按兩次重寄
+    let app = app_with_smtp(pool.clone(), None);
+    let a = seed_actors(&app).await;
+    assert_eq!(
+        submit(&app, &a.student, complaint("連點重寄")).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let id = only_complaint_id(&app, &a.admin).await;
+    assert_eq!(settled(&app, &a.admin, &id).await["mail_status"], "skipped");
+
+    let smtp = FakeSmtp::start_slow(false, Duration::from_millis(500)).await;
+    let fixed = app_with_smtp(pool.clone(), Some(smtp.config()));
+    let admin = login_as(&fixed, "sub-admin", "admin@example.com").await;
+    let path = format!("{ADMIN_LIST}/{id}/resend");
+    let (first, second) = tokio::join!(
+        call(&fixed, "POST", &path, Some(&admin), None),
+        call(&fixed, "POST", &path, Some(&admin), None),
+    );
+    assert_eq!(first.0, StatusCode::NO_CONTENT);
+    assert_eq!(second.0, StatusCode::NO_CONTENT);
+    assert_eq!(settled(&fixed, &admin, &id).await["mail_status"], "sent");
+    // 再等一下，確認沒有第二封晚到
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(smtp.mails().len(), 1);
+}
+
+#[sqlx::test]
+async fn startup_requeues_only_stale_pending_complaints(pool: PgPool) {
+    let smtp = FakeSmtp::start(false).await;
+    let mut config = test_config();
+    config.smtp = Some(smtp.config());
+    register_fixture_pool(&pool);
+    let state = AppState::new(
+        pool.clone(),
+        config,
+        Arc::new(FakeIdentity),
+        FakeAi::with(vec![]),
+    );
+    let app = socrates_chat_backend::app(state.clone());
+    let a = seed_actors(&app).await;
+    for text in ["卡住的", "剛開始寄的", "舊版留下的"] {
+        // 直接寫入：不經過背景寄信
+        sqlx::query(
+            "INSERT INTO complaints (user_id, category, description, submitter_role)
+             SELECT id, 'other', $1, 'student' FROM users WHERE email = 'student@example.com'",
+        )
+        .bind(text)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE complaints SET mail_send_started_at = now() - interval '1 hour' WHERE description = '卡住的'")
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE complaints SET mail_send_started_at = now() WHERE description = '剛開始寄的'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // 「舊版留下的」沒有開始時間（migration 之前就卡住的列）
+    let _ = &a;
+
+    let n = socrates_chat_backend::complaints::requeue_stale(&state).await;
+    assert_eq!(n, 2);
+    let mut statuses = Vec::new();
+    for _ in 0..100 {
+        statuses = sqlx::query_as::<_, (String, String)>(
+            "SELECT description, mail_status FROM complaints ORDER BY description",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        if statuses.iter().filter(|(_, s)| s == "sent").count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for (d, s) in &statuses {
+        let expected = if d == "剛開始寄的" {
+            "pending"
+        } else {
+            "sent"
+        };
+        assert_eq!(s, expected, "{d}");
+    }
+    assert_eq!(smtp.mails().len(), 2);
 }
 
 #[sqlx::test]

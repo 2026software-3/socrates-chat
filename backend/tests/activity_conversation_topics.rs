@@ -25,10 +25,61 @@ async fn existing_database_upgrades_without_losing_conversations(pool: PgPool) {
 
     let app = test_app(pool.clone());
     let actors = seed_actors(&app).await;
-    let (activity, first, second) = multi_topic_activity(&app, &actors).await;
-    let response = start_topic(&app, Some(&actors.student), &activity, &first).await;
+    // 升級前資料庫（< 20261107000100）尚未包含後續新增的欄位（如 guiding_questions），
+    // 依 migration 測試慣例（如 conversation_title_migration），升級前的題目以 raw SQL 插入。
+    let first: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO topics (title) VALUES ('第一題') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let second: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO topics (title) VALUES ('第二題') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let first = first.to_string();
+    let second = second.to_string();
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/activities",
+            Some(&actors.teacher),
+            Some(json!({
+                "title": "討論活動",
+                "classroom_id": actors.classroom,
+                "topic_ids": [&first, &second]
+            })),
+        ),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let original = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let activity = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let response = send(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/activities/{activity}/publish"),
+            Some(&actors.teacher),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // 升級前的資料庫（< 20261107000100）還沒有 topics.guiding_questions，建立對話的 API 會讀它，
+    // 依 migration 測試慣例，升級前的對話以 raw SQL 插入。
+    let original: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
+         SELECT u.id, $1, $2, $3, '第一題', '', 'zh-TW' FROM users u WHERE u.email = 'student@example.com'
+         RETURNING id",
+    )
+    .bind(activity.parse::<uuid::Uuid>().unwrap())
+    .bind(first.parse::<uuid::Uuid>().unwrap())
+    .bind(actors.classroom.parse::<uuid::Uuid>().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let original = original.to_string();
 
     all.run(&pool).await.unwrap();
     all.run(&pool).await.unwrap();

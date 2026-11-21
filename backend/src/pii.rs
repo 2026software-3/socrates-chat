@@ -9,7 +9,9 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use regex::Regex;
 
-use crate::ai::{AiError, AiProvider, AiRequest, AiStream};
+use crate::ai::{
+    AiError, AiProvider, AiRequest, AiStream, StructuredCompletion, StructuredRequest,
+};
 
 /// 台灣市話區碼（去掉開頭的 0）；較長的放前面，讓 `037` 不會先被當成 `03`。
 const AREA: &str = "(?:826|836|37|49|82|89|[2-8])";
@@ -92,6 +94,23 @@ impl MaskingAi {
 
 #[async_trait]
 impl AiProvider for MaskingAi {
+    async fn complete_json(
+        &self,
+        mut req: StructuredRequest,
+    ) -> Result<StructuredCompletion, AiError> {
+        fn mask_value(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::String(text) => *text = mask(std::mem::take(text)),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(mask_value),
+                serde_json::Value::Object(fields) => fields.values_mut().for_each(mask_value),
+                _ => {}
+            }
+        }
+        req.system = mask(req.system);
+        mask_value(&mut req.input);
+        self.inner.complete_json(req).await
+    }
+
     async fn stream_chat(&self, mut req: AiRequest) -> Result<AiStream, AiError> {
         req.system = mask(std::mem::take(&mut req.system));
         for turn in &mut req.messages {
@@ -264,7 +283,7 @@ mod tests {
         for stage in 1..=3 {
             let prompt = build_system_prompt(&PromptContext {
                 title: "電車難題",
-                description: "你會拉桿嗎？",
+                guiding_questions: &["你會拉桿嗎？".to_string()],
                 stage,
                 turn: 18,
                 wrap_up_turn: 16,
@@ -273,7 +292,7 @@ mod tests {
             assert_eq!(masked(&prompt), prompt);
         }
         for prompt in [
-            build_summary_prompt("電車難題", "你會拉桿嗎？", "zh-TW"),
+            build_summary_prompt("電車難題", &["你會拉桿嗎？".to_string()], "zh-TW"),
             build_group_assign_prompt("電車難題", &["拉桿".to_string()], "zh-TW"),
             build_regroup_prompt(
                 "電車難題",

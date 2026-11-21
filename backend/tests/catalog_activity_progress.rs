@@ -63,9 +63,9 @@ async fn catalog_shows_per_topic_progress_and_completion(pool: PgPool) {
     ]);
     let app = test_app_with_ai(pool.clone(), ai);
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "第一題").await;
-    let t2 = create_topic(&app, &a, "第二題").await;
-    let t3 = create_topic(&app, &a, "第三題").await;
+    let t1 = seed_topic("第一題").await;
+    let t2 = seed_topic("第二題").await;
+    let t3 = seed_topic("第三題").await;
     let res = send(
         &app,
         json_req(
@@ -139,7 +139,7 @@ async fn catalog_shows_per_topic_progress_and_completion(pool: PgPool) {
 async fn progress_is_per_student(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
-    let t1 = create_topic(&app, &a, "第一題").await;
+    let t1 = seed_topic("第一題").await;
     let activity = publish_activity(&app, &a, "單題活動", &t1).await;
     let other = add_student(&app, &a, "sub-other", "other@example.com").await;
 

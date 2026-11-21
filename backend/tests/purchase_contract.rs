@@ -17,7 +17,12 @@ async fn purchase_endpoints_document_auth_and_errors() {
         );
     }
     assert!(paths["/api/admin/parts"]["get"]["responses"]["200"].is_object());
-    assert!(paths["/api/admin/parts/{id}"]["patch"]["requestBody"].is_object());
+    let update = &paths["/api/admin/parts/{id}"]["patch"];
+    assert!(update["requestBody"].is_object());
+    assert_eq!(
+        update["responses"]["422"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ErrorBody"
+    );
     let props = &doc["components"]["schemas"]["PartView"]["properties"];
     for field in [
         "id",

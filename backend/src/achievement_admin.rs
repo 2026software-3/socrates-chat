@@ -606,11 +606,13 @@ async fn translate_achievement(
             content: serde_json::json!({"name": name, "description": description}).to_string(),
         }],
     };
+    let system = state.system_route().await;
     AiActivity::new("achievement_translation", Some(user), None)
         .statuses(201, 201)
-        .run(state, Some(&state.config.openai_model), 0, async {
-            let raw = collect_background(state.ai.as_ref(), request, state.config.ai_total_timeout)
-                .await?;
+        .run(state, Some(&system.model), 0, async {
+            let raw =
+                collect_background(system.ai.as_ref(), request, state.config.ai_total_timeout)
+                    .await?;
             let translated: Translation =
                 serde_json::from_str(&raw).map_err(|_| AiError::invalid_output())?;
             if name.matches("{n}").count() != translated.name.matches("{n}").count()

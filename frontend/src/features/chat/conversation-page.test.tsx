@@ -4,7 +4,8 @@ import { http, HttpResponse } from 'msw'
 import { Link, Route, Routes } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationPage } from '@/features/chat/conversation-page'
-import { makeDetail, makeMessage, makeSummary } from '@/features/chat/test-data'
+import { pickGuidingQuestion } from '@/features/chat/guiding-question'
+import { makeDetail, makeMessage, makeRadarState, makeSummary } from '@/features/chat/test-data'
 import type { Lang } from '@/i18n/define'
 import type { ConversationDetail, StreamDone, SummaryView } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
@@ -69,12 +70,53 @@ async function send(text: string) {
   await userEvent.click(screen.getByRole('button', { name: '送出' }))
 }
 
+describe('ConversationPage: guiding question', () => {
+  const questions = ['問題一：你的前提是什麼？', '問題二：有沒有反例？', '問題三：誰該負責？']
+
+  it('shows exactly one of the topic guiding questions under the title', async () => {
+    mockDetail(makeDetail({ guiding_questions: questions }))
+    renderPage()
+    await screen.findByRole('heading', { name: '合成題目：電車難題' })
+    const shown = questions.filter((q) => screen.queryByText(q))
+    expect(shown).toHaveLength(1)
+  })
+
+  it('shows the same question every time the same conversation is opened', async () => {
+    mockDetail(makeDetail({ guiding_questions: questions }))
+    const first = renderPage()
+    await screen.findByRole('heading', { name: '合成題目：電車難題' })
+    const before = questions.find((q) => screen.queryByText(q))
+    first.unmount()
+    renderPage()
+    await screen.findByRole('heading', { name: '合成題目：電車難題' })
+    expect(questions.find((q) => screen.queryByText(q))).toBe(before)
+  })
+
+  it('shows nothing when the topic has no guiding questions', async () => {
+    mockDetail(makeDetail({ guiding_questions: [] }))
+    renderPage()
+    await screen.findByRole('heading', { name: '合成題目：電車難題' })
+    expect(screen.queryByTestId('guiding-question')).not.toBeInTheDocument()
+  })
+})
+
+describe('pickGuidingQuestion', () => {
+  it('is deterministic per conversation id and spreads across ids', () => {
+    const qs = ['a', 'b', 'c', 'd', 'e']
+    expect(pickGuidingQuestion('conv-1', qs)).toBe(pickGuidingQuestion('conv-1', qs))
+    const picked = new Set(Array.from({ length: 40 }, (_, i) => pickGuidingQuestion(`conv-${i}`, qs)))
+    expect(picked.size).toBeGreaterThan(1)
+    expect(pickGuidingQuestion('conv-1', [])).toBeNull()
+  })
+})
+
 describe('ConversationPage: loading', () => {
   it('shows the topic, stage, status and the loaded history', async () => {
     mockDetail(makeDetail({ stage: 2 }))
     renderPage()
     expect(await screen.findByRole('heading', { name: '合成題目：電車難題' })).toBeInTheDocument()
-    expect(screen.getByText('合成描述：該不該扳動拉桿？')).toBeInTheDocument()
+    // 舊的題目內容不再顯示（S-04.8 修訂：引導問題取代題目內容）
+    expect(screen.queryByText('合成描述：該不該扳動拉桿？')).not.toBeInTheDocument()
     expect(screen.getByText('進行中')).toBeInTheDocument()
     const stage = screen.getByTestId('stage-indicator')
     expect(within(stage).getByText('論證').closest('li')).toHaveAttribute('aria-current', 'step')
@@ -693,6 +735,33 @@ describe('ConversationPage: summary states', () => {
     await userEvent.click(await screen.findByRole('button', { name: '重新產生總結' }))
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '重試' })).toBeInTheDocument()
+  })
+
+  it('keeps the summary readable when the radar calculation failed, and offers a retry', async () => {
+    mockDetail(makeDetail({ status: 'ended' }))
+    mockSummaries(makeSummary())
+    server.use(http.get('/api/conversations/c1/radar', () => HttpResponse.json(makeRadarState('failed', true))))
+    renderPage()
+
+    expect(await screen.findByText('雷達圖計算失敗，總結不受影響。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重新計算雷達圖' })).toBeInTheDocument()
+    expect(screen.getByText('合成立場：支持扳動拉桿')).toBeInTheDocument()
+    expect(screen.getByText('合成理由：結果論')).toBeInTheDocument()
+  })
+
+  it('does not ask for the radar before the summary is ready', async () => {
+    mockDetail(makeDetail({ status: 'ended' }))
+    mockSummaries(failed)
+    let reads = 0
+    server.use(http.get('/api/conversations/c1/radar', () => {
+      reads += 1
+      return HttpResponse.json(makeRadarState('summary_not_ready'))
+    }))
+    renderPage()
+
+    expect(await screen.findByText('總結產生失敗。')).toBeInTheDocument()
+    expect(reads).toBe(0)
+    expect(screen.queryByRole('region', { name: '單場雷達圖' })).not.toBeInTheDocument()
   })
 
   it('exposes the summary as a named region', async () => {

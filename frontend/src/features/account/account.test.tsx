@@ -29,36 +29,96 @@ async function openDialog() {
   return within(await screen.findByRole('dialog', { name: '更改密碼' }))
 }
 
-const settingsCard = () => screen.getByRole('region', { name: '個人設定' })
+const settingsCard = () => screen.getByRole('form', { name: '個人設定' })
+
+/** `/api/me` 的 GET 與 PATCH 共用一份可變的使用者，模擬後端保存名稱。 */
+function mockProfileApi(roles: Partial<Roles>, initial: string | null) {
+  let name = initial
+  const patches: unknown[] = []
+  server.use(
+    http.get('/api/me', () => HttpResponse.json(makeMe(roles, { display_name: name }))),
+    http.patch('/api/me', async ({ request }) => {
+      const body = (await request.json()) as { display_name: string | null }
+      patches.push(body)
+      name = body.display_name?.trim() || null
+      return HttpResponse.json(makeMe(roles, { display_name: name }))
+    }),
+  )
+  return patches
+}
 
 describe('the account page', () => {
   it.each<[string, Partial<Roles>, string]>([
     ['a teacher', { teacher: true }, '教師'],
     ['an admin-only account', { admin: true }, '管理者'],
     ['a teacher who is also an admin', { teacher: true, admin: true }, '管理者 / 教師'],
-  ])('gives %s the same 個人設定 card as students, with read-only account info', async (_label, roles, roleText) => {
+  ])('gives %s the same 個人設定 form as students, plus read-only account info', async (_label, roles, roleText) => {
     await open(roles)
     const card = within(settingsCard())
-    // 與學生同一個版型：同一個標題，更改密碼按鈕在卡片裡
+    // 與學生同一個表單：同一個標題、可編輯的顯示名稱、「儲存」與「更改密碼」
     expect(card.getByRole('heading', { level: 2, name: '個人設定' })).toBeInTheDocument()
+    expect(card.getByLabelText('顯示名稱')).toHaveValue('Test User')
+    expect(card.getByRole('button', { name: '儲存' })).toBeInTheDocument()
     expect(card.getByRole('button', { name: '更改密碼' })).toBeInTheDocument()
-    // 教師與管理者能看到自己的帳號資訊，但不能在這裡修改（顯示名稱只有學生能改，後端也拒絕）
-    expect(card.getByText('顯示名稱')).toBeInTheDocument()
-    expect(card.getByText('Test User')).toBeInTheDocument()
+    // 電子郵件與角色是唯讀的帳號資訊（教師與管理者才有這兩列）
     expect(card.getByText('電子郵件')).toBeInTheDocument()
     expect(card.getByText('user@example.com')).toBeInTheDocument()
     expect(card.getByText('角色')).toBeInTheDocument()
     expect(card.getByText(roleText)).toBeInTheDocument()
-    expect(card.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(card.queryByRole('button', { name: '儲存' })).not.toBeInTheDocument()
+    expect(card.getAllByRole('textbox')).toHaveLength(1)
     // 沒有學生才有的內容
     expect(screen.queryByRole('heading', { name: 'Google 帳號' })).not.toBeInTheDocument()
     expect(screen.queryByText('已完成對話')).not.toBeInTheDocument()
   })
 
-  it('shows a dash when a teacher has no display name', async () => {
-    await open({ teacher: true }, { display_name: null })
-    expect(within(settingsCard()).getByText('—')).toBeInTheDocument()
+  it.each<[string, Partial<Roles>]>([
+    ['a teacher', { teacher: true }],
+    ['an admin-only account', { admin: true }],
+  ])('lets %s rename themselves, and the header follows', async (_label, roles) => {
+    const patches = mockProfileApi(roles, '舊名稱')
+    renderApp(null, { route: '/account' })
+    const input = await screen.findByLabelText('顯示名稱')
+    await userEvent.clear(input)
+    await userEvent.type(input, '王老師')
+    await userEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
+    expect(patches).toEqual([{ display_name: '王老師' }])
+    expect(within(screen.getByRole('complementary')).getByText('王老師')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '王老師' })).toHaveAttribute('href', '/account')
+  })
+
+  it('clearing a teacher name sends null and the header falls back to the email', async () => {
+    const patches = mockProfileApi({ teacher: true }, '王老師')
+    renderApp(null, { route: '/account' })
+    await userEvent.clear(await screen.findByLabelText('顯示名稱'))
+    await userEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
+    expect(patches).toEqual([{ display_name: null }])
+    expect(screen.getByRole('link', { name: 'user@example.com' })).toBeInTheDocument()
+    expect(screen.getByLabelText('顯示名稱')).toHaveValue('')
+  })
+
+  it('applies the same 30-character limit to teachers', async () => {
+    mockProfileApi({ teacher: true }, null)
+    renderApp(null, { route: '/account' })
+    const input = await screen.findByLabelText('顯示名稱')
+    await userEvent.click(input)
+    await userEvent.paste('字'.repeat(31))
+    expect(screen.getByText('31 / 30')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '儲存' })).toBeDisabled()
+  })
+
+  it('changing the password never saves the display name of a teacher either', async () => {
+    const patches = mockProfileApi({ teacher: true }, '王老師')
+    server.use(http.post('/api/auth/change-password', () => new HttpResponse(null, { status: 204 })))
+    renderApp(null, { route: '/account' })
+    await screen.findByLabelText('顯示名稱')
+    const form = await openDialog()
+    await userEvent.type(form.getByLabelText('目前密碼'), 'old-pass-123')
+    await userEvent.type(form.getByLabelText('新密碼'), 'new-pass-456')
+    await userEvent.type(form.getByLabelText('確認新密碼'), 'new-pass-456{Enter}')
+    expect(await screen.findByText('密碼已更改，其他裝置已登出。')).toBeInTheDocument()
+    expect(patches).toEqual([])
   })
 
   it.each<[string, Partial<Roles>]>([
@@ -115,8 +175,9 @@ describe('the account page', () => {
     ['an admin-only account', { admin: true }],
   ])('explains inside the card that %s without a built-in password cannot change it here', async (_label, roles) => {
     await open(roles, { can_change_password: false })
-    // 卡片照常顯示帳號資訊，按鈕本來的位置改為說明（與學生同一句）
+    // 表單照常可編輯顯示名稱，按鈕本來的位置改為說明（與學生同一句）
     expect(within(settingsCard()).getByText('這個帳號不能在這裡更改密碼。')).toBeInTheDocument()
+    expect(within(settingsCard()).getByLabelText('顯示名稱')).toBeInTheDocument()
     expect(within(settingsCard()).getByText('user@example.com')).toBeInTheDocument()
     noChangeButton()
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()

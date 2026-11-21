@@ -41,7 +41,7 @@ pub struct Config {
     pub ai_usage_window: Duration,
     /// 前端建置產物目錄（`frontend/dist`）；設定後由後端同網域提供（S-08.1）。
     pub frontend_dir: Option<std::path::PathBuf>,
-    /// AI 服務的 API key 池（`OPENAI_API_KEYS`、`.apikeylist`）；對話與語音共用，冷卻狀態也共用。
+    /// 主機 key 池，已淘汰所以永遠是空的（`KeyPool::empty`）；只剩語音走 OpenAI 備援時會用到它，沒有 key 就失敗。
     pub openai_keys: Arc<KeyPool>,
     /// 具體模型尚未決定（S-03.1），因此沒有預設值，必須明確設定。
     pub openai_model: String,
@@ -71,6 +71,8 @@ pub struct Config {
     pub ai_first_token_timeout: Duration,
     /// AI 完整回覆上限（S-03.5）。
     pub ai_total_timeout: Duration,
+    /// 摘要論證樹單次產生的上限：一次 high 推理的 Responses 呼叫可超過一般 AI 逾時，所以獨立設定。
+    pub argument_tree_timeout: Duration,
     /// 一般 API 請求的逾時（#325）：從收到請求到送出回應標頭為止，含讀取 request body。
     pub request_timeout: Duration,
     /// 示範模式（`DEMO_MODE=true`）：啟動時建立固定密碼的示範帳號，並開放 `GET /api/demo/accounts`
@@ -78,6 +80,13 @@ pub struct Config {
     pub demo_mode: bool,
     /// 客訴通知信的 SMTP 設定（S-17.3）；沒設定（缺主機、寄件人或收件信箱）就是 `None`，客訴照常保存、寄信狀態為 `skipped`。
     pub smtp: Option<crate::mail::SmtpConfig>,
+    /// 教師 API key 的加密金鑰（`TEACHER_KEY_ENCRYPTION_KEYS`，S-03.1）；沒設定就是 `None`，教師 key 功能不可用。
+    /// 設定了但格式錯誤時啟動失敗（錯誤訊息不含設定內容）。
+    pub teacher_key_cipher: Option<Arc<crate::teacher_key_crypto::KeyCipher>>,
+    /// 教室對話是否依教室設定走教師 key（F-40.5）。正式環境一律為 `true`，沒有對應的環境變數；
+    /// 只有既有測試把它設為 `false`，讓教室內的對話繼續用假的系統 AI。
+    pub classroom_ai_routing: bool,
+    pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
 }
 
 #[derive(Debug)]
@@ -96,6 +105,16 @@ fn required(name: &str) -> Result<String, ConfigError> {
         .ok()
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ConfigError(format!("missing environment variable {name}")))
+}
+
+fn teacher_key_cipher_from_env()
+-> Result<Option<Arc<crate::teacher_key_crypto::KeyCipher>>, ConfigError> {
+    match env::var("TEACHER_KEY_ENCRYPTION_KEYS") {
+        Ok(v) if !v.trim().is_empty() => crate::teacher_key_crypto::KeyCipher::parse(&v)
+            .map(|c| Some(Arc::new(c)))
+            .map_err(|e| ConfigError(e.to_string())),
+        _ => Ok(None),
+    }
 }
 
 fn parse_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, ConfigError> {
@@ -157,15 +176,13 @@ pub fn load_openai_keys() -> Result<Vec<String>, ConfigError> {
     )
 }
 
-/// 沒有任何 key 時的啟動錯誤；舊的 `OPENAI_API_KEY` 還設著就明講它已改名，免得部署時摸不著頭緒。
-fn no_key_error(legacy_variable_set: bool) -> ConfigError {
-    ConfigError(if legacy_variable_set {
-        "OPENAI_API_KEY is no longer used: put the key in the .apikeylist file (one per line) \
-         or in OPENAI_API_KEYS"
-            .into()
-    } else {
-        "no AI API key: set OPENAI_API_KEYS or fill the .apikeylist file".into()
-    })
+/// 已淘汰的主機 key 設定：應用程式不再讀取，設了也只會被忽略；啟動時列出來，免得以為還有效。
+/// `is_set` 回報該環境變數是否設了非空值。
+pub fn retired_key_variables(is_set: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    ["OPENAI_API_KEY", "OPENAI_API_KEYS", "OPENAI_API_KEYS_FILE"]
+        .into_iter()
+        .filter(|name| is_set(name))
+        .collect()
 }
 
 fn gather_keys(
@@ -224,6 +241,13 @@ impl Config {
     }
 
     pub fn from_env() -> Result<Self, ConfigError> {
+        let monitored_services = match env::var("MONITORED_SERVICES") {
+            Ok(value) => crate::service_monitor::MonitoredService::parse(&value)?,
+            Err(env::VarError::NotPresent) => Vec::new(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError("MONITORED_SERVICES must be UTF-8".into()));
+            }
+        };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
@@ -284,9 +308,8 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .map(Into::into),
-            openai_keys: Arc::new(KeyPool::new(load_openai_keys()?).ok_or_else(|| {
-                no_key_error(env::var("OPENAI_API_KEY").is_ok_and(|v| !v.is_empty()))
-            })?),
+            // 主機上的 key 已淘汰（對話 key 在資料庫，由管理者與教師在介面管理）；這個池永遠是空的
+            openai_keys: Arc::new(KeyPool::empty()),
             openai_model: required("OPENAI_MODEL")?,
             openai_fallback_models: parse_model_list(
                 &env::var("OPENAI_FALLBACK_MODELS").unwrap_or_default(),
@@ -320,9 +343,16 @@ impl Config {
                 15,
             )?),
             ai_total_timeout: Duration::from_secs(parse_or("AI_TOTAL_TIMEOUT_SECS", 60)?),
+            argument_tree_timeout: Duration::from_secs(parse_or(
+                "ARGUMENT_TREE_TIMEOUT_SECS",
+                300,
+            )?),
             request_timeout: Duration::from_secs(request_timeout_secs),
             demo_mode: env::var("DEMO_MODE").is_ok_and(|v| v == "true"),
             smtp: crate::mail::SmtpConfig::from_env()?,
+            teacher_key_cipher: teacher_key_cipher_from_env()?,
+            classroom_ai_routing: true,
+            monitored_services,
             app_base_url,
         })
     }
@@ -371,11 +401,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_key_error_points_to_the_renamed_variable() {
-        let legacy = no_key_error(true).to_string();
-        assert!(legacy.contains("OPENAI_API_KEY"), "{legacy}");
-        assert!(legacy.contains(".apikeylist"), "{legacy}");
-        assert!(!no_key_error(false).to_string().contains("OPENAI_API_KEY "));
+    fn retired_key_variables_are_reported_when_set() {
+        let set = |name: &str| matches!(name, "OPENAI_API_KEY" | "OPENAI_API_KEYS_FILE");
+        assert_eq!(
+            retired_key_variables(set),
+            ["OPENAI_API_KEY", "OPENAI_API_KEYS_FILE"]
+        );
+        assert!(retired_key_variables(|_| false).is_empty());
     }
 
     #[test]

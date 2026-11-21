@@ -12,6 +12,7 @@ import base64
 import hashlib
 import http.client
 import json
+import re
 import socket
 import sys
 import time
@@ -220,8 +221,9 @@ def check_down(base):
     check("text/html" in h.get("content-type", ""), "內容是 HTML", h.get("content-type", ""))
     for phrase in ("系統維護中，請稍後再試", "under maintenance", "en mantenimiento"):
         check(phrase.lower() in text.lower(), f"頁面含「{phrase}」")
-    check(h.get("cache-control", "").startswith("no-store"), "停機頁不被瀏覽器快取", h.get("cache-control", ""))
-    check("nginx/" not in h.get("server", "") and "nginx/" not in text, "不洩漏代理版本")
+    check("no-store" in h.get("cache-control", ""), "停機頁不被瀏覽器快取", h.get("cache-control", ""))
+    leak = re.search(r"(nginx|pingora|pingap)/[0-9]", h.get("server", "") + text, re.IGNORECASE)
+    check(leak is None, "不洩漏代理版本", leak.group(0) if leak else "")
     check("x-backend" not in h, "不是後端的回應")
 
     s, h, b = request(base, "POST", "/api/auth/login", {"Content-Type": "application/json"}, b"{}")

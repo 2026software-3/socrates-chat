@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     auth::{CurrentUser, RequireAdmin},
+    auth_store::display_name_sql,
     error::ApiError,
     mail::{self, ComplaintMail},
 };
@@ -78,7 +79,7 @@ pub(crate) async fn submit(
     // 只有學生與教師：尚未開通的帳號與純管理者都不能送
     if !cu.roles.student && !cu.roles.teacher {
         return Err(if cu.roles.admin {
-            ApiError::forbidden("forbidden", "沒有權限")
+            ApiError::no_permission()
         } else {
             ApiError::forbidden("not_enrolled", "尚未開通")
         });
@@ -131,8 +132,8 @@ pub(crate) async fn submit(
         return Err(RATE_LIMITED);
     }
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO complaints (user_id, category, description, conversation_id, submitter_role)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        "INSERT INTO complaints (user_id, category, description, conversation_id, submitter_role, mail_send_started_at)
+         VALUES ($1, $2, $3, $4, $5, now()) RETURNING id",
     )
     .bind(cu.user.id)
     .bind(&body.category)
@@ -173,7 +174,9 @@ macro_rules! view_select {
     ($tail:literal) => {
         concat!(
             "SELECT c.id, c.category, c.description, c.conversation_id, c.created_at, c.status, c.mail_status,
-                    u.display_name AS submitter_name, c.submitter_role, cl.name AS classroom_name
+                    ",
+            display_name_sql!("u"),
+            " AS submitter_name, c.submitter_role, cl.name AS classroom_name
              FROM complaints c
              JOIN users u ON u.id = c.user_id
              LEFT JOIN conversations cv ON cv.id = c.conversation_id
@@ -287,7 +290,7 @@ pub(crate) async fn update(
     path = "/api/admin/complaints/{id}/resend",
     tag = "complaints",
     summary = "重寄客訴通知信（管理者）",
-    description = "寄信狀態先回到 `pending`，在背景重寄；結果看清單裡的 `mail_status`。沒有設定 SMTP 時結果是 `skipped`。",
+    description = "寄信狀態先回到 `pending`，在背景重寄；結果看清單裡的 `mail_status`。沒有設定 SMTP 時結果是 `skipped`。已經在寄（`pending` 且未逾時 5 分鐘）時不會再寄第二封，同樣回 204。",
     params(("id" = Uuid, Path)),
     responses((status = 204, description = "已排入重寄"))
 )]
@@ -296,17 +299,65 @@ pub(crate) async fn resend(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let updated = sqlx::query("UPDATE complaints SET mail_status = 'pending' WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await?
-        .rows_affected();
-    if updated == 0 {
-        return Err(ApiError::not_found());
+    if claim_send(&state, id).await? {
+        let state = state.clone();
+        tokio::spawn(async move { deliver(&state, id).await });
+    } else {
+        // 沒搶到：不是不存在，就是已經有寄信在進行（連點），這次不再寄第二封
+        let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM complaints WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
+        if exists.is_none() {
+            return Err(ApiError::not_found());
+        }
     }
-    let state = state.clone();
-    tokio::spawn(async move { deliver(&state, id).await });
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 寄信進行超過這麼久還是 `pending`，就當作中斷了（寄信本身 30 秒逾時），可以重新寄。
+const STALE_PENDING_MINUTES: i32 = 5;
+
+/// 以條件式 UPDATE 搶下寄信的資格：只有不在 `pending`、或 `pending` 已逾時的客訴才搶得到。
+async fn claim_send(state: &AppState, id: Uuid) -> Result<bool, sqlx::Error> {
+    let claimed = sqlx::query(
+        "UPDATE complaints SET mail_status = 'pending', mail_send_started_at = now()
+         WHERE id = $1 AND (mail_status <> 'pending' OR mail_send_started_at IS NULL
+                            OR mail_send_started_at < now() - make_interval(mins => $2))",
+    )
+    .bind(id)
+    .bind(STALE_PENDING_MINUTES)
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    Ok(claimed == 1)
+}
+
+/// 啟動時呼叫：重啟或寫回狀態失敗會讓客訴永遠停在 `pending`，把逾時的重新排入寄信。
+/// 回傳重新排入的數量。多個實例同時啟動時，每則只會被其中一個搶到。
+pub async fn requeue_stale(state: &AppState) -> u64 {
+    let ids: Vec<Uuid> = match sqlx::query_scalar(
+        "UPDATE complaints SET mail_send_started_at = now()
+         WHERE mail_status = 'pending' AND (mail_send_started_at IS NULL
+               OR mail_send_started_at < now() - make_interval(mins => $1))
+         RETURNING id",
+    )
+    .bind(STALE_PENDING_MINUTES)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!(class = %crate::error::db_error_class(&e), "failed to requeue stale complaint mails");
+            return 0;
+        }
+    };
+    let count = ids.len() as u64;
+    for id in ids {
+        let state = state.clone();
+        tokio::spawn(async move { deliver(&state, id).await });
+    }
+    count
 }
 
 #[derive(FromRow)]
@@ -340,15 +391,16 @@ pub async fn deliver(state: &AppState, id: Uuid) {
         tracing::info!(complaint_id = %id, result = "skipped", "complaint mail not sent");
         return;
     };
-    let row: Option<MailRow> = match sqlx::query_as(
-        "SELECT c.id, c.category, c.description, c.created_at, c.conversation_id,
-                u.display_name AS submitter_name, c.submitter_role, cl.name AS classroom_name
+    let row: Option<MailRow> = match sqlx::query_as(concat!(
+        "SELECT c.id, c.category, c.description, c.created_at, c.conversation_id, ",
+        display_name_sql!("u"),
+        " AS submitter_name, c.submitter_role, cl.name AS classroom_name
          FROM complaints c
          JOIN users u ON u.id = c.user_id
          LEFT JOIN conversations cv ON cv.id = c.conversation_id
          LEFT JOIN classrooms cl ON cl.id = cv.classroom_id
-         WHERE c.id = $1",
-    )
+         WHERE c.id = $1"
+    ))
     .bind(id)
     .fetch_optional(&state.pool)
     .await

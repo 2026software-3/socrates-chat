@@ -20,7 +20,7 @@ use crate::{
     AppState,
     accounts::audit,
     auth_store,
-    auth_store::{SESSION_ABSOLUTE_TTL, SessionUser},
+    auth_store::{SESSION_ABSOLUTE_TTL, SessionUser, display_name_sql},
     catalog::nullable,
     client_ip,
     error::ApiError,
@@ -154,6 +154,7 @@ impl Roles {
 
 /// 目前登入的使用者；沒有有效 session 時回 401，
 /// 用臨時密碼登入、尚未更改密碼時回 403 `password_change_required`。
+#[derive(Clone)]
 pub struct CurrentUser {
     pub user: auth_store::User,
     pub roles: Roles,
@@ -162,7 +163,18 @@ pub struct CurrentUser {
 }
 
 /// 同 `CurrentUser`，但不要求已更改臨時密碼；只給 `/api/me` 與改密碼使用。
+#[derive(Clone)]
 pub struct AnyCurrentUser(pub CurrentUser);
+
+#[derive(Clone)]
+pub(crate) struct MaintenanceAuthenticatedUser(pub AnyCurrentUser);
+
+fn cached_maintenance_user(parts: &Parts) -> Option<AnyCurrentUser> {
+    parts
+        .extensions
+        .get::<MaintenanceAuthenticatedUser>()
+        .map(|cached| cached.0.clone())
+}
 
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = ApiError;
@@ -189,6 +201,10 @@ impl FromRequestParts<AppState> for AnyCurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(user) = cached_maintenance_user(parts) {
+            return Ok(user);
+        }
+
         let token = token_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
         // 學生：在任一教室的修課名單內即可（S-14）；不在任何名單內則是「尚未開通」
         let SessionUser {
@@ -228,7 +244,7 @@ impl FromRequestParts<AppState> for RequireAdmin {
     ) -> Result<Self, Self::Rejection> {
         let cu = CurrentUser::from_request_parts(parts, state).await?;
         if !cu.roles.admin {
-            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+            return Err(ApiError::no_permission());
         }
         Ok(RequireAdmin(cu))
     }
@@ -246,7 +262,7 @@ impl FromRequestParts<AppState> for RequireTeacher {
     ) -> Result<Self, Self::Rejection> {
         let cu = CurrentUser::from_request_parts(parts, state).await?;
         if !cu.roles.can_teach() {
-            return Err(ApiError::forbidden("forbidden", "沒有權限"));
+            return Err(ApiError::no_permission());
         }
         Ok(RequireTeacher(cu))
     }
@@ -379,7 +395,7 @@ pub(crate) async fn link_start(
             .fetch_one(&state.pool)
             .await?;
     if !is_student {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let req = state.identity.start();
     auth_store::save_link_state(
@@ -479,7 +495,7 @@ pub(crate) async fn unlink_google(
     CurrentUser { user, .. }: CurrentUser,
 ) -> Result<StatusCode, ApiError> {
     if !auth_store::unlink_google(&state.pool, user.id).await? {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let _ = audit(
         &state.pool,
@@ -675,7 +691,7 @@ fn valid_display_name(name: &str) -> bool {
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct MePatch {
-    /// 沒帶＝保留；`null` 或空白字串＝恢復匯入姓名；上限 30 個字元，不可含控制字元。
+    /// 沒帶＝保留；`null` 或空白字串＝清除（學生恢復匯入姓名，教師與管理者顯示電子郵件）；上限 30 個字元，不可含控制字元。
     #[serde(default, deserialize_with = "nullable")]
     display_name: Option<Option<String>>,
     /// 介面與之後建立之對話的語言；僅接受 `zh-TW`、`en`、`es`。
@@ -691,7 +707,7 @@ pub(crate) struct MePatch {
     responses(
         (status = 200, description = "更新後的使用者", body = MeResponse),
         (status = 400, description = "顯示名稱無效（invalid_display_name）或語言不受支援（invalid_language）"),
-        (status = 403, description = "非學生嘗試修改顯示名稱（所有登入者皆可修改語言）"),
+        (status = 403, description = "沒有任何角色的帳號嘗試修改顯示名稱（所有登入者皆可修改語言）"),
     )
 )]
 pub(crate) async fn update_me(
@@ -699,14 +715,18 @@ pub(crate) async fn update_me(
     State(state): State<AppState>,
     Json(p): Json<MePatch>,
 ) -> Result<Json<MeResponse>, ApiError> {
-    if p.display_name.is_some() && !cu.roles.student {
-        return Err(ApiError::forbidden("forbidden", "只有學生能修改顯示名稱"));
+    // 學生、教師與管理者都能改（S-08.2，2026-11-12 開放教師與管理者）；沒有任何角色（尚未開通）的帳號不行
+    if p.display_name.is_some() && !(cu.roles.student || cu.roles.teacher || cu.roles.admin) {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "尚未開通的帳號不能修改顯示名稱",
+        ));
     }
     if p.language
         .as_deref()
         .is_some_and(|language| !matches!(language, "zh-TW" | "en" | "es"))
     {
-        return Err(ApiError::bad_request("invalid_language", "不支援的語言"));
+        return Err(ApiError::invalid_language());
     }
     let name = p
         .display_name
@@ -721,14 +741,17 @@ pub(crate) async fn update_me(
         return Ok(Json(MeResponse::build(&state, cu).await?));
     }
     // 兩個欄位用同一條 UPDATE 寫入，一個 PATCH 不會只套用一半
-    let (display_name, language): (Option<String>, String) = sqlx::query_as(
+    // 清除名稱時存 NULL，回應的名稱由 display_name_sql! 解析（學生會回到匯入姓名）
+    let (display_name, language): (Option<String>, String) = sqlx::query_as(concat!(
         "UPDATE users SET
-             display_name = CASE WHEN $2 THEN COALESCE($3, imported_name) ELSE display_name END,
+             display_name = CASE WHEN $2 THEN $3 ELSE display_name END,
              language = COALESCE($4::text, language),
              language_initialized = language_initialized OR $4::text IS NOT NULL,
              updated_at = now()
-         WHERE id = $1 RETURNING display_name, language",
-    )
+         WHERE id = $1 RETURNING ",
+        display_name_sql!(),
+        ", language"
+    ))
     .bind(cu.user.id)
     .bind(name.is_some())
     .bind(name.flatten())
@@ -974,7 +997,7 @@ impl ResetBody {
         match (self.email, self.student_number) {
             (Some(email), None) => crate::roster::normalize_email(&email)
                 .map(ResetTarget::Email)
-                .ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確")),
+                .ok_or(ApiError::invalid_email()),
             (None, Some(student_number)) => {
                 Some(auth_store::normalize_login_input(&student_number))
                     .filter(|id| crate::roster::is_valid_student_number(id))
@@ -1048,6 +1071,7 @@ pub(crate) async fn reset_password(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
 
     fn pick(value: &str) -> &'static str {
         let mut headers = HeaderMap::new();
@@ -1073,5 +1097,38 @@ mod tests {
         // 沒有可接受的支援語言時回到繁體中文
         assert_eq!(pick("es;q=0"), "zh-TW");
         assert_eq!(pick("fr, *;q=0.5"), "zh-TW");
+    }
+
+    #[test]
+    fn maintenance_user_is_reused_from_request_extensions() {
+        let expected = AnyCurrentUser(CurrentUser {
+            user: auth_store::User {
+                id: Uuid::nil(),
+                google_sub: None,
+                email: Some("admin@example.com".to_string()),
+                student_number: None,
+                display_name: None,
+                language: "zh-TW".to_string(),
+                is_admin: true,
+                must_change_password: false,
+                created_at: Utc::now(),
+                disabled: false,
+            },
+            roles: Roles {
+                admin: true,
+                teacher: false,
+                student: false,
+            },
+            must_change_password: false,
+        });
+        let mut parts = axum::http::Request::new(Body::empty()).into_parts().0;
+        parts
+            .extensions
+            .insert(MaintenanceAuthenticatedUser(expected));
+
+        let first = cached_maintenance_user(&parts).unwrap();
+        let second = cached_maintenance_user(&parts).unwrap();
+        assert!(first.0.roles.admin);
+        assert!(second.0.roles.admin);
     }
 }

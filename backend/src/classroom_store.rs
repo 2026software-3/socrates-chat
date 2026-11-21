@@ -16,6 +16,16 @@ pub struct Classroom {
     pub is_archived: bool,
 }
 
+/// 教室列表的一列：教室加上「還沒設定模型」的旗標。
+#[derive(Debug, Clone, Serialize, FromRow, utoipa::ToSchema)]
+pub struct ListedClassroom {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub classroom: Classroom,
+    /// 教室不是過渡中、沒封存、也還沒設定對話模型：學生目前無法使用 AI（見 F-40）
+    pub ai_model_missing: bool,
+}
+
 #[derive(Debug)]
 pub enum ClassroomStoreError {
     NameTaken,
@@ -43,12 +53,15 @@ pub async fn list(
     pool: &PgPool,
     actor_id: Uuid,
     is_admin: bool,
-) -> Result<Vec<Classroom>, sqlx::Error> {
+) -> Result<Vec<ListedClassroom>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, name, year_label, description, created_at, updated_at, is_archived
-         FROM classrooms
-         WHERE $1 OR created_by = $2
-         ORDER BY lower(name), id",
+        "SELECT c.id, c.name, c.year_label, c.description, c.created_at, c.updated_at, c.is_archived,
+                (NOT c.ai_transitional AND NOT c.is_archived
+                 AND NOT EXISTS (SELECT 1 FROM classroom_ai_models m WHERE m.classroom_id = c.id))
+                    AS ai_model_missing
+         FROM classrooms c
+         WHERE $1 OR c.created_by = $2
+         ORDER BY lower(c.name), c.id",
     )
     .bind(is_admin)
     .bind(actor_id)
@@ -142,4 +155,38 @@ pub async fn update_visible<'e>(
     .fetch_optional(pool)
     .await
     .map_err(Into::into)
+}
+
+/// 教室學生統計：排除停用帳號與已移出名單的學生。
+#[derive(sqlx::FromRow)]
+pub struct StudentStatistics {
+    pub student_count: i64,
+    pub joined_count: i64,
+}
+
+pub async fn student_statistics(
+    pool: &sqlx::PgPool,
+    classroom_id: uuid::Uuid,
+) -> Result<StudentStatistics, sqlx::Error> {
+    sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*) AS student_count,
+            COUNT(*) FILTER (
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM audit_logs a
+                    WHERE a.actor_id = u.id
+                      AND a.action = 'login'
+                )
+            ) AS joined_count
+        FROM enrollments e
+        JOIN users u ON u.id = e.user_id
+        WHERE e.classroom_id = $1
+          AND u.disabled_at IS NULL
+        "#,
+    )
+    .bind(classroom_id)
+    .fetch_one(pool)
+    .await
 }

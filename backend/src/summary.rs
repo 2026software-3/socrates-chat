@@ -28,6 +28,7 @@ use crate::{
         format_transcript, parse_summary, rules_version,
     },
     auth::{RequireStudent, RequireTeacher},
+    auth_store::display_name_sql,
     chat::{Message, load_messages, owned_conversation},
     classrooms::{ClassroomFilter, filtered_classroom},
     diagnostics::{self, AiActivity},
@@ -139,16 +140,16 @@ async fn on_conversation_completed(
 struct SummarySource {
     owner: Uuid,
     title: String,
-    description: String,
+    guiding_questions: Vec<String>,
     activity_id: Option<Uuid>,
     language: String,
     classroom: Option<Uuid>,
 }
 
 async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
-    let (SummarySource { owner, title, description, activity_id, language, classroom }, turns) = tokio::try_join!(
+    let (SummarySource { owner, title, guiding_questions, activity_id, language, classroom }, turns) = tokio::try_join!(
         sqlx::query_as::<_, SummarySource>(
-            "SELECT user_id AS owner, title, description, activity_id, language, classroom_id AS classroom
+            "SELECT user_id AS owner, title, COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions, activity_id, language, classroom_id AS classroom
              FROM conversations WHERE id = $1"
         )
         .bind(id)
@@ -156,7 +157,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
         load_messages_for(state, id),
     )?;
     let req = AiRequest {
-        system: build_summary_prompt(&title, &description, &language),
+        system: build_summary_prompt(&title, &guiding_questions, &language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: format_transcript(&turns, &language),
@@ -165,11 +166,17 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     // 逾時或結果不完整時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut summary = None;
     let activity = AiActivity::new("summary", Some(owner), classroom).statuses(202, 202);
+    // 教室內的對話只用教室建立者的 key（F-40.5）；沒有可用 key 時這次不產生，總結標記失敗、可重試
+    let route = state.ai_for_conversation(classroom, Some(id)).await;
+    if let Err(error) = &route {
+        activity.record_unreached(state, error);
+    }
     for retry in 0..2 {
+        let Ok(route) = &route else { break };
         let generated = activity
-            .run(state, Some(&state.config.openai_model), retry, async {
+            .run(state, Some(&route.model), retry, async {
                 let raw = collect_background(
-                    state.ai.as_ref(),
+                    route.ai.as_ref(),
                     req.clone(),
                     state.config.ai_total_timeout,
                 )
@@ -200,14 +207,27 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .execute(&mut *tx)
             .await?
             .rows_affected();
+            // 總結成功時在同一個交易內登記單場雷達圖的第一次計算（S-04.3）：
+            // 學生看到總結 ready 時，雷達圖已經是計算中，不會短暫顯示成「尚未計算」
+            let mut radar = None;
             if updated > 0 {
                 on_conversation_completed(&mut tx, id, owner).await?;
+                radar = crate::radar::claim_after_summary(
+                    &mut tx,
+                    id,
+                    state.config.generation_stale_secs(),
+                )
+                .await;
             }
             tx.commit().await?;
             if updated > 0 {
                 state.summary_translation_wake.notify_one();
             }
-            // 主張分組以活動為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
+            // 計算在背景進行，失敗不影響總結
+            if let Some(claimed) = radar {
+                crate::radar::spawn_claimed(state.clone(), id, claimed);
+            }
+            // 主張分組以活動內的題目為單位（S-04.7）：個人練習沒有活動，不分組。盡力而為，失敗不影響總結
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
                 crate::claims::assign_group(state, id, activity, &title, claim).await;
             }
@@ -226,7 +246,10 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
     Ok(())
 }
 
-async fn load_messages_for(state: &AppState, id: Uuid) -> Result<Vec<ChatTurn>, sqlx::Error> {
+pub(crate) async fn load_messages_for(
+    state: &AppState,
+    id: Uuid,
+) -> Result<Vec<ChatTurn>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(concat!(
         "SELECT role, ",
         crate::chat::heard_content!(),
@@ -310,7 +333,7 @@ pub(crate) async fn end(
         // 沒有結束成功：若對話其實已被結束（競態）就回傳目前狀態，否則是 AI 還在回覆
         let now = owned_conversation(&state, cu.user.id, id).await?;
         if now.status == "active" {
-            return Err(ApiError::conflict("reply_in_progress", "AI 正在回覆中"));
+            return Err(ApiError::reply_in_progress());
         }
         return Ok((
             StatusCode::OK,
@@ -449,7 +472,7 @@ pub(crate) async fn translate(
     Path(id): Path<Uuid>,
 ) -> Result<Json<SummaryTranslation>, ApiError> {
     if cu.roles.admin {
-        return Err(ApiError::forbidden("forbidden", "沒有權限"));
+        return Err(ApiError::no_permission());
     }
     let source: Option<(String, String, String, Uuid)> = sqlx::query_as(
         "SELECT s.stance, s.reasons, c.language, cl.id
@@ -579,14 +602,16 @@ pub(crate) async fn transcript(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ConversationTranscript>, ApiError> {
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
-    let head: TranscriptHead = sqlx::query_as(
+    let head: TranscriptHead = sqlx::query_as(concat!(
         "SELECT c.classroom_id, c.title, c.language, c.ended_at,
-                u.id AS student_user_id, u.display_name AS student_name
+                u.id AS student_user_id, ",
+        display_name_sql!("u"),
+        " AS student_name
          FROM conversations c
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($2 OR cl.created_by = $3)
          JOIN users u ON u.id = c.user_id
-         WHERE c.id = $1 AND c.ended_at IS NOT NULL",
-    )
+         WHERE c.id = $1 AND c.ended_at IS NOT NULL"
+    ))
     .bind(id)
     .bind(cu.roles.admin)
     .bind(cu.user.id)
@@ -687,7 +712,7 @@ fn fingerprint(
 
 impl SummaryQuery {
     fn filters(&self, classroom: Option<Uuid>) -> Result<Filters<'_>, ApiError> {
-        let invalid = || ApiError::bad_request("invalid_filter", "篩選條件不正確");
+        let invalid = || ApiError::invalid_filter();
         let student = self
             .student
             .as_deref()
@@ -755,12 +780,12 @@ pub(crate) async fn list(
     let cursor: Option<(DateTime<Utc>, Uuid, String)> = query.page.cursor(CURSOR_KIND)?;
     // 游標只對產生它時的篩選條件有效；換條件要從第一頁開始
     if cursor.as_ref().is_some_and(|c| c.2 != fingerprint) {
-        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+        return Err(ApiError::invalid_cursor());
     }
     let (after_time, after_id) = cursor.map(|c| (c.0, c.1)).unzip();
     // 依總結完成時間排序：翻頁期間才完成的總結一定排在第一頁最上面，不會插進已翻過的位置。
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
-    let mut rows: Vec<SummaryRow> = sqlx::query_as(
+    let mut rows: Vec<SummaryRow> = sqlx::query_as(concat!(
         "SELECT s.conversation_id, c.classroom_id, c.activity_id, c.topic_id,
                 (
                     c.activity_id IS NOT NULL
@@ -784,8 +809,9 @@ pub(crate) async fn list(
                     )
                 ) AS activity_completed,
                 c.title, c.ended_at, s.completed_at,
-                u.id AS student_user_id, u.student_id AS student_number,
-                u.display_name AS student_name, u.email AS student_email,
+                u.id AS student_user_id, u.student_id AS student_number, ",
+        display_name_sql!("u"),
+        " AS student_name, u.email AS student_email,
                 c.language,
                 s.stance, s.reasons, s.claim,
                 CASE WHEN t.stance IS NOT NULL THEN
@@ -803,15 +829,17 @@ pub(crate) async fn list(
            AND ($4::uuid IS NULL OR u.id = $4)
            AND ($5::text IS NULL OR lower(c.title) = lower($5))
            AND ($6::text IS NULL
-                OR u.display_name ILIKE $6 ESCAPE '\\'
+                OR ",
+        display_name_sql!("u"),
+        " ILIKE $6 ESCAPE '\\'
                 OR u.email ILIKE $6 ESCAPE '\\'
                 OR c.title ILIKE $6 ESCAPE '\\')
            AND ($7::timestamptz IS NULL
                 OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
            AND ($9::uuid IS NULL OR c.activity_id = $9)
          ORDER BY s.completed_at DESC, s.conversation_id ASC
-         LIMIT $10",
-    )
+         LIMIT $10"
+    ))
     .bind(cu.roles.admin)
     .bind(cu.user.id)
     .bind(classroom)

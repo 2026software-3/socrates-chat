@@ -1,19 +1,30 @@
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, config::Config, demo, diagnostics,
-    identity::GoogleIdentity, logging, password, summary, summary_translation,
+    AppState, ai::OpenAiProvider, app, auth_store, catalog, complaints, config::Config, demo,
+    diagnostics, identity::GoogleIdentity, logging, password, radar_store, service_monitor,
+    summary, summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
     logging::json_subscriber()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(logging::env_filter(
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .init();
 
     let config = Config::from_env().expect("invalid configuration");
+    let retired = socrates_chat_backend::config::retired_key_variables(|name| {
+        std::env::var(name).is_ok_and(|v| !v.is_empty())
+    });
+    if !retired.is_empty() {
+        tracing::warn!(
+            variables = ?retired,
+            "host API key settings are no longer used; manage AI keys in the admin and teacher UI"
+        );
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
@@ -31,6 +42,12 @@ async fn main() {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
         Err(_) => tracing::error!("failed to recover orphaned summaries"),
+    }
+    // 重啟前卡住的雷達圖計算同樣標記為失敗；還在時限內的留給可能仍在執行的實例
+    match radar_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "marked orphaned radar results as failed"),
+        Err(_) => tracing::error!("failed to recover orphaned radar results"),
     }
     // 內建題目（電車難題）：已存在時不動它
     if catalog::seed_builtin_topics(&pool).await.is_err() {
@@ -69,6 +86,12 @@ async fn main() {
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
     diagnostics::spawn_retention(pool.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
+    service_monitor::spawn(&state);
+    // 重啟前寄到一半的客訴通知信：把逾時仍是 pending 的重新排入寄信
+    match complaints::requeue_stale(&state).await {
+        0 => {}
+        n => tracing::warn!(count = n, "requeued stale complaint mails"),
+    }
     if let Ok(seconds) = std::env::var("SUMMARY_TRANSLATION_RETRY_SECS")
         && !seconds.trim().is_empty()
     {
@@ -81,6 +104,7 @@ async fn main() {
             Duration::from_secs(u64::from(seconds.get())),
         );
     }
+    socrates_chat_backend::topic_dimensions::spawn(&state, catalog::TROLLEY_TOPIC_ID, "zh-TW");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind listener");

@@ -46,7 +46,7 @@ async fn database_clock_decides_and_one_sided_schedules_work(pool: PgPool) {
             .await
             .unwrap();
         assert_eq!(
-            listed.iter().any(|a| a.id == id),
+            listed.iter().any(|a| a.activity.id == id),
             open_now,
             "{opens:?} {closes:?}"
         );

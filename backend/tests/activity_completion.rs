@@ -133,9 +133,9 @@ async fn activity_completion_lifecycle_and_summary_rows(pool: PgPool) {
     let a = seed_actors(&app).await;
 
     // 建立 3 個題目的活動
-    let t1 = create_topic(&app, &a, "第一題：電車問題").await;
-    let t2 = create_topic(&app, &a, "第二題：無知之幕").await;
-    let t3 = create_topic(&app, &a, "第三題：洞穴寓言").await;
+    let t1 = seed_topic("第一題：電車問題").await;
+    let t2 = seed_topic("第二題：無知之幕").await;
+    let t3 = seed_topic("第三題：洞穴寓言").await;
 
     let res = send(
         &app,
@@ -228,7 +228,7 @@ async fn activity_completion_lifecycle_and_summary_rows(pool: PgPool) {
     }
 
     // 情境 3: 活動新增第 4 題 -> 原已完成的學生回到尚未完成（activity_completed: false）
-    let t4 = create_topic(&app, &a, "第四題：忒修斯之船").await;
+    let t4 = seed_topic("第四題：忒修斯之船").await;
     let res = send(
         &app,
         json_req(
@@ -316,8 +316,8 @@ async fn activity_completion_counts_only_own_ready_summaries(pool: PgPool) {
     let a = seed_actors(&app).await;
     let student_b = add_student(&app, &a, "sub-student-b", "student-b@example.com").await;
 
-    let t1 = create_topic(&app, &a, "第一題：電車問題").await;
-    let t2 = create_topic(&app, &a, "第二題：無知之幕").await;
+    let t1 = seed_topic("第一題：電車問題").await;
+    let t2 = seed_topic("第二題：無知之幕").await;
     let res = send(
         &app,
         json_req(
@@ -406,7 +406,7 @@ async fn activity_completion_authorization_boundaries(pool: PgPool) {
     let other_room = create_classroom(&app, &other_teacher, "其他教師教室").await;
 
     // 建立 1 題活動並完成
-    let t1 = create_topic(&app, &a, "單一題目：正義論").await;
+    let t1 = seed_topic("單一題目：正義論").await;
     let res = send(
         &app,
         json_req(

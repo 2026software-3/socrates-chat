@@ -88,6 +88,9 @@ pub struct AiError {
     pub(crate) class: crate::diagnostics::Failure,
     pub(crate) model: Option<String>,
     pub(crate) provider_attempts: i32,
+    pub(crate) retry_after: Option<Duration>,
+    /// 供應商回的 HTTP 狀態碼（只有狀態碼，不含本文）；供模型驗證區分「模型不存在」（F-40.3）。
+    pub(crate) http_status: Option<u16>,
 }
 
 impl AiError {
@@ -106,6 +109,8 @@ impl AiError {
             class,
             model: None,
             provider_attempts: 0,
+            retry_after: None,
+            http_status: None,
         }
     }
 
@@ -168,7 +173,26 @@ impl AiError {
         Self::classified(class)
     }
 
-    fn with_model(mut self, model: &str) -> Self {
+    /// 供應商要求的等待時間（`Retry-After`），供 key 冷卻使用。
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
+    }
+
+    pub fn http_status(&self) -> Option<u16> {
+        self.http_status
+    }
+
+    pub(crate) fn with_http_status(mut self, status: u16) -> Self {
+        self.http_status = Some(status);
+        self
+    }
+
+    pub(crate) fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    pub(crate) fn with_model(mut self, model: &str) -> Self {
         self.model = Some(model.to_owned());
         self
     }
@@ -182,10 +206,32 @@ impl AiError {
 /// 依序給出文字片段。空字串代表模型開始推理、還沒有正文：算作首個 token（S-03.5），但不帶文字。
 pub type AiStream = BoxStream<'static, Result<String, AiError>>;
 
+/// A structured Responses request; input remains typed JSON until masking is complete.
+#[derive(Debug, Clone)]
+pub struct StructuredRequest {
+    pub system: String,
+    pub input: serde_json::Value,
+    pub schema: serde_json::Value,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub struct StructuredCompletion {
+    pub content: String,
+    pub model: String,
+}
+
 #[async_trait]
 pub trait AiProvider: Send + Sync {
     /// 開始串流回覆；回傳的串流依序給出文字片段（見 `AiStream`）。
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError>;
+    /// Providers without structured-output support fail explicitly.
+    async fn complete_json(
+        &self,
+        _req: StructuredRequest,
+    ) -> Result<StructuredCompletion, AiError> {
+        Err(AiError::unclassified())
+    }
 }
 
 // ---- 每回合的結構化結果 ----
@@ -290,7 +336,8 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
 
 pub struct PromptContext<'a> {
     pub title: &'a str,
-    pub description: &'a str,
+    /// 題目目前的引導問題（S-04.8），依教師填寫的順序；沒有時為空
+    pub guiding_questions: &'a [String],
     pub stage: i16,
     pub turn: i32,
     pub wrap_up_turn: u32,
@@ -310,6 +357,47 @@ pub fn closing_instruction(language: &str) -> &'static str {
         _ => {
             "本次例外（優先於上面所有規則）：討論回合已足夠，這次請直接收尾，不要再提問，也不要請學生總結。第一部分改為一兩句結束語：感謝學生並說明討論到此結束，全文不得出現問句。question_type 必須標 wrap_up。"
         }
+    }
+}
+
+/// 把題目的引導問題放進對話提示（S-04.8）：按順序編號，沒有引導問題時整段省略。
+/// 明講它們只是了解學生可能想釐清的方向、不是追問腳本，追問仍依學生的回答。
+fn guiding_questions_section(language: &str, questions: &[String]) -> String {
+    if questions.is_empty() {
+        return String::new();
+    }
+    let list = questions
+        .iter()
+        .enumerate()
+        .map(|(i, q)| format!("{}. {q}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    match language {
+        "en" => format!(
+            "Guiding questions for this topic (the student has seen them; they are background on what the student may want to work out, not a script — base your questions on what the student actually says and do not read them out one by one):\n{list}\n"
+        ),
+        "es" => format!(
+            "Preguntas guía de este tema (el estudiante ya las vio; son contexto sobre lo que puede querer aclarar, no un guion: basa tus preguntas en lo que el estudiante dice de verdad y no las leas una por una):\n{list}\n"
+        ),
+        _ => format!(
+            "這個題目的引導問題（學生已經看過；它們只是讓你了解學生可能想釐清的方向，不是追問腳本，追問要依學生實際說的話，不要逐條照念）：\n{list}\n"
+        ),
+    }
+}
+
+/// 總結等提示裡接在題目標題後的一小段引導問題；沒有時為空字串。
+pub fn guiding_questions_inline(language: &str, questions: &[String]) -> String {
+    if questions.is_empty() {
+        return String::new();
+    }
+    let joined = questions.join(match language {
+        "en" | "es" => "; ",
+        _ => "；",
+    });
+    match language {
+        "en" => format!(" (guiding questions: {joined})"),
+        "es" => format!(" (preguntas guía: {joined})"),
+        _ => format!("（引導問題：{joined}）"),
     }
 }
 
@@ -374,7 +462,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
     format!(
         "你就是蘇格拉底，雅典人，石匠與助產士的兒子。母親幫人接生孩子，你幫人「接生」想法：把學生心裡已有、自己卻沒察覺的東西，用提問引導出來。\
          你以第一人稱「我」與學生對話，只使用繁體中文。\n\
-         討論題目：{title}\n題目說明：{desc}\n\n\
+         討論題目：{title}\n{guiding}\n\
         人設與語氣（只影響說話方式，不改變下面的規則、追問分類與輸出格式）：\n\
         - 溫和、好奇、有耐心，但邏輯上毫不讓步，像一位真誠而執著的朋友。\n\
         - 假裝無知：用「我不太確定」「也許是我理解錯了」「你能幫我理解一下嗎」這類措辭，請學生自己說清楚；不用術語，必要時用鞋匠、醫生、船長、助產士等日常與手藝人的比方。\n\
@@ -502,7 +590,7 @@ fn build_system_prompt_zh(c: &PromptContext) -> String {
         正文結束絕對不代表輸出結束；輸出的最後一行必須是合法的 JSON 結尾符號 }}！絕不得漏掉 {delim} 與結尾 JSON！\n\
         {wrap_alert}\n",
         title = c.title,
-        desc = c.description,
+        guiding = guiding_questions_section(c.language, c.guiding_questions),
         stage = stage,
         delim = META_DELIM,
         wrap_alert = wrap_alert,
@@ -561,7 +649,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
     format!(
         "You are Socrates of Athens, son of a stonemason and a midwife. Your mother helped deliver children; you help deliver ideas: you draw out, through questions, what the student already holds but has not noticed. \
          Speak to the student in the first person (“I”) and only in English.\n\
-         Discussion topic: {title}\nTopic description: {desc}\n\n\
+         Discussion topic: {title}\n{guiding}\n\
          Persona and tone (this affects only how you speak; it does not change the rules, question classification, or output format below):\n\
          - Gentle, curious, and patient, yet logically unyielding, like a sincere and persistent friend.\n\
          - Feign ignorance: use phrasing such as “I am not sure”, “perhaps I have misunderstood”, or “could you help me understand?” to have the student make things clear. Avoid jargon; when useful, explain with everyday and craftsman analogies such as the cobbler, the doctor, the ship's captain, or the midwife.\n\
@@ -652,7 +740,7 @@ fn build_system_prompt_en(c: &PromptContext) -> String {
          Now respond to the actual conversation. Output exactly one complete response: the student-visible question, {delim} on its own line, and the JSON on its own line. The end of the question is not the end of the response; finish the delimiter and JSON before stopping.\n\
          {wrap_alert}\n",
         title = c.title,
-        desc = c.description,
+        guiding = guiding_questions_section(c.language, c.guiding_questions),
         stage = stage,
         wrap_alert = wrap_alert,
         delim = META_DELIM,
@@ -711,7 +799,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
     format!(
         "Eres Sócrates de Atenas, hijo de un cantero y de una partera. Tu madre ayudaba a dar a luz a los niños; tú ayudas a dar a luz ideas: sacas a la luz, con preguntas, lo que el estudiante ya tiene pero no ha notado. \
          Habla con el estudiante en primera persona («yo») y únicamente en español.\n\
-         Tema de discusión: {title}\nDescripción del tema: {desc}\n\n\
+         Tema de discusión: {title}\n{guiding}\n\
          Personaje y tono (solo afecta a cómo hablas; no cambia las reglas, la clasificación de preguntas ni el formato de salida que siguen):\n\
          - Amable, curioso y paciente, pero lógicamente inflexible, como un amigo sincero y tenaz.\n\
          - Finge ignorancia: usa fórmulas como «no estoy seguro», «quizá lo entendí mal» o «¿me ayudas a entender?» para que el estudiante lo aclare. Evita la jerga; cuando convenga, explica con analogías cotidianas y de oficios, como el zapatero, el médico, el capitán de barco o la partera.\n\
@@ -802,7 +890,7 @@ fn build_system_prompt_es(c: &PromptContext) -> String {
          Responde ahora a la conversación real. Produce exactamente una respuesta completa: la pregunta visible para el estudiante, {delim} en su propia línea y el JSON en su propia línea. El final de la pregunta no es el final de la respuesta; completa el delimitador y el JSON antes de terminar.\n\
          {wrap_alert}\n",
         title = c.title,
-        desc = c.description,
+        guiding = guiding_questions_section(c.language, c.guiding_questions),
         stage = stage,
         wrap_alert = wrap_alert,
         delim = META_DELIM,
@@ -908,6 +996,7 @@ impl OpenAiProvider {
     async fn send_with_failover(
         &self,
         keys: &KeyPool,
+        endpoint: &str,
         body: &(impl Serialize + Sync),
         may_wait: bool,
     ) -> Result<(reqwest::Response, i32), SendFailure> {
@@ -941,7 +1030,7 @@ impl OpenAiProvider {
             attempts += 1;
             let res = self
                 .http
-                .post(format!("{}/chat/completions", self.base_url))
+                .post(format!("{}/{}", self.base_url, endpoint))
                 .bearer_auth(&lease.key)
                 .json(body)
                 .send()
@@ -1125,8 +1214,13 @@ impl OpenAiProvider {
             stream: true,
         };
         // 後面還有備援模型時不等 key 冷卻，直接換
-        self.send_with_failover(&target.keys, &body, index + 1 == self.targets.len())
-            .await
+        self.send_with_failover(
+            &target.keys,
+            "chat/completions",
+            &body,
+            index + 1 == self.targets.len(),
+        )
+        .await
     }
 
     /// 從第 `start` 個模型起，找第一個能送出請求的；只在限流（429）時往下一個找，
@@ -1289,6 +1383,61 @@ async fn pump(res: reqwest::Response, tx: &mpsc::Sender<Result<String, AiError>>
 
 #[async_trait]
 impl AiProvider for OpenAiProvider {
+    async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        let input = serde_json::to_string(&req.input).map_err(|_| AiError::unclassified())?;
+        let trace = crate::diagnostics::current_trace();
+        let last = self.targets.len() - 1;
+        // 與 first_available 相同：只在限流（429）時換下一個模型，嘗試次數跨模型累計
+        let mut attempts = 0;
+        for (index, target) in self.targets.iter().enumerate() {
+            let mut body = serde_json::json!({
+                "model":target.model, "stream":false, "store":false,
+                "instructions":req.system,
+                "input":[{"role":"user","content":input}],
+                "text":{"format":{"type":"json_schema","name":req.name,"strict":true,"schema":req.schema}}
+            });
+            if let Some(effort) = &self.reasoning_effort {
+                body["reasoning"] = serde_json::json!({"effort":effort});
+            }
+            let (response, current_attempts) = match self
+                .send_with_failover(&target.keys, "responses", &body, index == last)
+                .await
+            {
+                Ok(sent) => sent,
+                Err(SendFailure::RateLimited(error)) if index < last => {
+                    attempts += error.provider_attempts;
+                    continue;
+                }
+                Err(SendFailure::RateLimited(error) | SendFailure::Failed(error)) => {
+                    return Err(error.with_model(&target.model).add_attempts(attempts));
+                }
+            };
+            attempts += current_attempts;
+            let answer: serde_json::Value = response.json().await.map_err(|error| {
+                AiError::transport(&error)
+                    .with_model(&target.model)
+                    .add_attempts(attempts)
+            })?;
+            let result = crate::main_argument_tree::parse_response(&answer, &target.model, None)
+                .map_err(|_| {
+                    AiError::invalid_output()
+                        .with_model(&target.model)
+                        .add_attempts(attempts)
+                })?;
+            if let Some(trace) = &trace {
+                trace.note(attempts, &target.model);
+            }
+            return Ok(StructuredCompletion {
+                content: result.content,
+                model: result.model,
+            });
+        }
+        Err(
+            AiError::classified(crate::diagnostics::Failure::RateLimited)
+                .with_model(&self.targets[last].model),
+        )
+    }
+
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
         // 串流在另一個工作中讀取，先取得這次呼叫的診斷追蹤，成功時也能回報嘗試次數與模型
         let trace = crate::diagnostics::current_trace();
@@ -1414,11 +1563,12 @@ pub struct Summary {
     pub claim: Option<String>,
 }
 
-pub fn build_summary_prompt(title: &str, description: &str, language: &str) -> String {
+pub fn build_summary_prompt(title: &str, guiding_questions: &[String], language: &str) -> String {
+    let topic_extra = guiding_questions_inline(language, guiding_questions);
     match language {
         "en" => format!(
             "You are the record-keeper for a philosophy discussion. Write the summary only in English. \
-             The following is the complete discussion between a student and facilitator about \"{title}\" ({description}). \
+             The following is the complete discussion between a student and facilitator about \"{title}\"{topic_extra}. \
              Summarize only the student's argument from the transcript. Do not add your own views or judge whether the argument is correct.\n\
              Output one JSON object whose stance and reasons values are non-empty strings:\n\
              {{\"stance\":\"the student's main position\",\"reasons\":\"the student's core reasons\",\
@@ -1427,7 +1577,7 @@ pub fn build_summary_prompt(title: &str, description: &str, language: &str) -> S
         ),
         "es" => format!(
             "Eres quien registra una discusión filosófica. Escribe el resumen únicamente en español. \
-             A continuación está la conversación completa entre un estudiante y un facilitador sobre «{title}» ({description}). \
+             A continuación está la conversación completa entre un estudiante y un facilitador sobre «{title}»{topic_extra}. \
              Resume solo el argumento del estudiante según la conversación. No añadas opiniones propias ni juzgues si el argumento es correcto.\n\
              Devuelve un objeto JSON cuyos valores stance y reasons sean cadenas no vacías:\n\
              {{\"stance\":\"postura principal del estudiante\",\"reasons\":\"razones centrales del estudiante\",\
@@ -1435,7 +1585,7 @@ pub fn build_summary_prompt(title: &str, description: &str, language: &str) -> S
              claim debe contener solo la postura final, sin razones y en un máximo de 30 palabras. Devuelve únicamente JSON."
         ),
         _ => format!(
-            "你是哲學討論的紀錄整理者，只使用繁體中文。以下是學生與引導者就「{title}」（{description}）\
+            "你是哲學討論的紀錄整理者，只使用繁體中文。以下是學生與引導者就「{title}」{topic_extra}\
              的完整對話。請只依對話內容整理學生的論點，不加入你自己的看法，也不評論論點的對錯。\n\
              輸出一個 JSON 物件，stance、reasons 為不可為空的字串：\n\
              {{\"stance\":\"學生的主要立場\",\"reasons\":\"學生提出的核心理由\",\
@@ -2074,7 +2224,7 @@ mod tests {
     fn prompt_reflects_stage_and_wrap_up() {
         let c = PromptContext {
             title: "T",
-            description: "D",
+            guiding_questions: &[],
             stage: 2,
             turn: 3,
             wrap_up_turn: 15,
@@ -2085,7 +2235,10 @@ mod tests {
 
         // 1. 確認討論題目和階段正確。
         assert!(p.contains("討論題目：T"));
-        assert!(p.contains("題目說明：D"));
+        assert!(
+            !p.contains("題目說明"),
+            "題目說明已由引導問題取代（S-04.8）"
+        );
         assert!(p.contains("第 2 階段「論證」"));
         assert!(!p.contains("開始引導學生整理"));
 
@@ -2134,7 +2287,7 @@ mod tests {
     fn dialogue_prompts_localize_the_rules_not_just_the_output_instruction() {
         let context = PromptContext {
             title: "T",
-            description: "D",
+            guiding_questions: &[],
             stage: 1,
             turn: 1,
             wrap_up_turn: 15,
@@ -2163,7 +2316,7 @@ mod tests {
         // 三種語言一致（S-12.1）。只檢查規則存在；模型實際行為由 eval/f10_1_cases.json 評估。
         let context = PromptContext {
             title: "T",
-            description: "D",
+            guiding_questions: &[],
             stage: 1,
             turn: 1,
             wrap_up_turn: 15,
@@ -2215,7 +2368,7 @@ mod tests {
         let prompt = |language, stage| {
             build_system_prompt(&PromptContext {
                 title: "T",
-                description: "D",
+                guiding_questions: &[],
                 stage,
                 turn: 5,
                 wrap_up_turn: 15,
@@ -2319,7 +2472,7 @@ mod tests {
             for stage in [1, 2] {
                 let p = build_system_prompt(&PromptContext {
                     title: "T",
-                    description: "D",
+                    guiding_questions: &[],
                     stage,
                     turn: 3,
                     wrap_up_turn: 15,
@@ -2366,7 +2519,7 @@ mod tests {
         ] {
             let p = build_system_prompt(&PromptContext {
                 title: "T",
-                description: "D",
+                guiding_questions: &[],
                 stage: 1,
                 turn: 1,
                 wrap_up_turn: 15,
@@ -2385,7 +2538,7 @@ mod tests {
         let at = |language, stage, turn| {
             build_system_prompt(&PromptContext {
                 title: "T",
-                description: "D",
+                guiding_questions: &[],
                 stage,
                 turn,
                 wrap_up_turn: 15,
@@ -2440,7 +2593,7 @@ mod tests {
         let at = |language, stage, turn| {
             build_system_prompt(&PromptContext {
                 title: "T",
-                description: "D",
+                guiding_questions: &[],
                 stage,
                 turn,
                 wrap_up_turn: 15,
@@ -2501,7 +2654,7 @@ mod tests {
         ] {
             let p = build_system_prompt(&PromptContext {
                 title: "T",
-                description: "D",
+                guiding_questions: &[],
                 stage: 2,
                 turn: 3,
                 wrap_up_turn: 15,
@@ -2518,7 +2671,7 @@ mod tests {
         // 或打字），三種語言一致（S-12.1）。只檢查規則存在；模型實際行為由 eval/f10_2_cases.json 評估。
         let context = PromptContext {
             title: "T",
-            description: "D",
+            guiding_questions: &[],
             stage: 2,
             turn: 2,
             wrap_up_turn: 15,
@@ -2590,7 +2743,7 @@ mod tests {
         ] {
             let context = |turn| PromptContext {
                 title: "T",
-                description: "D",
+                guiding_questions: &[],
                 stage: 3,
                 turn,
                 wrap_up_turn: 15,
@@ -2650,5 +2803,60 @@ mod tests {
         let text =
             collect_background(&ai, any_request(), std::time::Duration::from_millis(200)).await;
         assert!(text.is_err());
+    }
+}
+
+#[cfg(test)]
+mod guiding_question_prompt_tests {
+    use super::*;
+
+    fn context<'a>(language: &'a str, questions: &'a [String]) -> PromptContext<'a> {
+        PromptContext {
+            title: "T",
+            guiding_questions: questions,
+            stage: 1,
+            turn: 1,
+            wrap_up_turn: 15,
+            language,
+        }
+    }
+
+    #[test]
+    fn every_language_lists_the_questions_in_order_as_background_not_a_script() {
+        let questions = vec!["Q1".to_string(), "Q2".to_string()];
+        for (language, marker) in [
+            ("zh-TW", "不是追問腳本"),
+            ("en", "not a script"),
+            ("es", "no un guion"),
+        ] {
+            let prompt = build_system_prompt(&context(language, &questions));
+            assert!(prompt.contains("1. Q1\n2. Q2"), "{language}");
+            assert!(prompt.contains(marker), "{language}");
+        }
+    }
+
+    #[test]
+    fn no_questions_means_no_section_in_any_language() {
+        for language in ["zh-TW", "en", "es"] {
+            let prompt = build_system_prompt(&context(language, &[]));
+            assert!(!prompt.contains("1. "), "{language}");
+            assert_eq!(guiding_questions_inline(language, &[]), "");
+        }
+    }
+
+    #[test]
+    fn the_summary_prompt_mentions_the_questions_after_the_title() {
+        let questions = vec!["Q1".to_string(), "Q2".to_string()];
+        assert!(
+            build_summary_prompt("題", &questions, "zh-TW").contains("「題」（引導問題：Q1；Q2）")
+        );
+        assert!(
+            build_summary_prompt("T", &questions, "en")
+                .contains("\"T\" (guiding questions: Q1; Q2).")
+        );
+        assert!(
+            build_summary_prompt("T", &questions, "es").contains("«T» (preguntas guía: Q1; Q2).")
+        );
+        assert!(!build_summary_prompt("題", &[], "zh-TW").contains("引導問題"));
     }
 }

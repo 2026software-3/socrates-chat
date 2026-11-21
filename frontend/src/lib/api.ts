@@ -7,13 +7,16 @@ export class ApiError extends Error {
   readonly status: number
   readonly code: string
   readonly requestId: string
+  /** 與錯誤有關的欄位（例如教室 AI 設定的 `primary`、`fallback_1`），沒有就是 `undefined`。 */
+  readonly target?: string
 
-  constructor(status: number, code: string, requestId: string) {
+  constructor(status: number, code: string, requestId: string, target?: string) {
     super(code)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.requestId = requestId
+    this.target = target
   }
 }
 
@@ -60,19 +63,21 @@ async function send<T>(method: Method, path: string, body?: unknown, signal?: Ab
 export async function apiErrorFrom(res: Response): Promise<ApiError> {
   let code = 'internal'
   let requestId = res.headers.get('x-request-id') ?? ''
+  let target: string | undefined
   try {
     const data = await res.json()
     code = data?.error?.code ?? code
     requestId = data?.error?.request_id ?? requestId
+    target = typeof data?.error?.target === 'string' ? data.error.target : undefined
   } catch {
     // 非 JSON 錯誤（例如反向代理的 502）
   }
-  return new ApiError(res.status, code, requestId)
+  return new ApiError(res.status, code, requestId, target)
 }
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
-  post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  post: <T>(path: string, body?: unknown, signal?: AbortSignal) => request<T>('POST', path, body, signal),
   put: <T = void>(path: string, body?: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   delete: <T = void>(path: string, body?: unknown) => request<T>('DELETE', path, body),

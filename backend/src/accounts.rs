@@ -74,7 +74,7 @@ pub(crate) async fn list_students(
     let cursor: Option<(Uuid, String)> = query.page.cursor("students")?;
     // 游標只對產生它時的搜尋條件有效；換條件要從第一頁開始
     if cursor.as_ref().is_some_and(|c| c.1 != fingerprint) {
-        return Err(ApiError::bad_request("invalid_cursor", "分頁游標不正確"));
+        return Err(ApiError::invalid_cursor());
     }
     let classroom = visible_classroom(&state, &cu, &raw_id).await?;
     let search = q.map(pagination::like_pattern);
@@ -98,7 +98,7 @@ pub(crate) async fn list_students(
 }
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
-    normalize_email(raw).ok_or(ApiError::bad_request("invalid_email", "電子郵件格式不正確"))
+    normalize_email(raw).ok_or(ApiError::invalid_email())
 }
 
 pub(crate) async fn audit(

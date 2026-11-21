@@ -11,6 +11,7 @@ export type FailureClass =
   | 'rate_limited'
   | 'service_error'
   | 'invalid_output'
+  | 'classroom_ai_unavailable'
   | 'invalid_credentials'
   | 'account_disabled'
   | 'account_locked'
@@ -66,6 +67,7 @@ export const CLASSES_BY_KIND: Record<DiagnosticKind, FailureClass[]> = {
     'rate_limited',
     'service_error',
     'invalid_output',
+    'classroom_ai_unavailable',
   ],
   login: ['invalid_credentials', 'account_disabled'],
   account_lock: ['account_locked'],
@@ -91,6 +93,7 @@ export const CLASS_LABEL: Record<FailureClass, MessageKey> = {
   rate_limited: 'admin.diag.class.rate_limited',
   service_error: 'admin.diag.class.service_error',
   invalid_output: 'admin.diag.class.invalid_output',
+  classroom_ai_unavailable: 'admin.diag.class.classroom_ai_unavailable',
   invalid_credentials: 'admin.diag.class.invalid_credentials',
   account_disabled: 'admin.diag.class.account_disabled',
   account_locked: 'admin.diag.class.account_locked',
@@ -103,6 +106,7 @@ export const FUNCTION_LABEL: Record<string, MessageKey> = {
   claim_group: 'admin.diag.fn.claim_group',
   claim_regroup: 'admin.diag.fn.claim_regroup',
   achievement_translation: 'admin.diag.fn.achievement_translation',
+  radar_scoring: 'admin.diag.fn.radar_scoring',
   voice_transcription: 'admin.diag.fn.voice_transcription',
   voice_synthesis: 'admin.diag.fn.voice_synthesis',
   password_login: 'admin.diag.fn.password_login',

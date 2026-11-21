@@ -71,9 +71,12 @@ fn valid_text(s: &str) -> bool {
 pub struct Topic {
     pub id: Uuid,
     pub title: String,
+    /// Deprecated：引導問題取代題目內容（S-04.8 修訂），之後另案移除。
+    #[schema(deprecated)]
     pub description: String,
-    pub category: Option<String>,
     pub is_active: bool,
+    #[serde(default)]
+    pub guiding_questions: Vec<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -81,16 +84,45 @@ pub(crate) struct NewTopic {
     title: String,
     #[serde(default)]
     description: String,
-    category: Option<String>,
+    #[serde(default)]
+    guiding_questions: Vec<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct TopicPatch {
     title: Option<String>,
     description: Option<String>,
-    #[serde(default, deserialize_with = "nullable")]
-    category: Option<Option<String>>,
     is_active: Option<bool>,
+    guiding_questions: Option<Vec<String>>,
+}
+
+/// 驗證引導問題並回傳去除前後空白後的內容；長度與空白判斷都以去空白後為準，
+/// 寫入資料庫的也是這份結果，避免前後空白讓單題超過 200 字的上限。
+fn validate_guiding_questions(qs: &[String]) -> Result<Vec<String>, ApiError> {
+    if qs.len() > 5 {
+        return Err(ApiError::bad_request(
+            "invalid_guiding_questions",
+            "引導問題最多 5 個",
+        ));
+    }
+    qs.iter()
+        .map(|q| {
+            let trimmed = q.trim();
+            if trimmed.is_empty() {
+                return Err(ApiError::bad_request(
+                    "invalid_guiding_questions",
+                    "單一引導問題不可為空白",
+                ));
+            }
+            if trimmed.chars().count() > 200 {
+                return Err(ApiError::bad_request(
+                    "invalid_guiding_questions",
+                    "引導問題單一最多 200 字",
+                ));
+            }
+            Ok(trimmed.to_string())
+        })
+        .collect()
 }
 
 #[utoipa::path(
@@ -109,7 +141,7 @@ pub(crate) async fn list_topics_for_teacher(
 
 async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     let rows = sqlx::query_as(
-        "SELECT id, title, description, category, is_active FROM topics ORDER BY created_at, id",
+        "SELECT id, title, description, is_active, guiding_questions FROM topics ORDER BY created_at, id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -125,11 +157,13 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     responses((status = 201, description = "已建立", body = Topic))
 )]
 pub(crate) async fn create_topic_for_teacher(
-    _: RequireTeacher,
+    RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Json(b): Json<NewTopic>,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
-    insert_topic(&state, b).await
+    let created = insert_topic(&state, b).await?;
+    crate::topic_dimensions::spawn(&state, created.1.0.id, &user.user.language);
+    Ok(created)
 }
 
 async fn insert_topic(
@@ -137,15 +171,16 @@ async fn insert_topic(
     b: NewTopic,
 ) -> Result<(StatusCode, Json<Topic>), ApiError> {
     if !valid_text(&b.title) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
+    let guiding_questions = validate_guiding_questions(&b.guiding_questions)?;
     let t = sqlx::query_as(
-        "INSERT INTO topics (title, description, category) VALUES ($1, $2, $3)
-         RETURNING id, title, description, category, is_active",
+        "INSERT INTO topics (title, description, guiding_questions) VALUES ($1, $2, $3)
+         RETURNING id, title, description, is_active, guiding_questions",
     )
     .bind(b.title.trim())
     .bind(b.description)
-    .bind(b.category)
+    .bind(guiding_questions)
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
@@ -161,32 +196,54 @@ async fn insert_topic(
     responses((status = 200, description = "更新後的題目", body = Topic))
 )]
 pub(crate) async fn update_topic_for_teacher(
-    _: RequireTeacher,
+    RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(p): Json<TopicPatch>,
 ) -> Result<Json<Topic>, ApiError> {
-    patch_topic(&state, id, p).await
+    let text_changed = p.title.is_some() || p.guiding_questions.is_some();
+    let updated = patch_topic(&state, id, p).await?;
+    if text_changed {
+        // 題目文字改了而維度還沒鎖定時，舊維度已被清掉，重新產生。
+        crate::topic_dimensions::spawn(&state, id, &user.user.language);
+    }
+    Ok(updated)
 }
 
 async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<Topic>, ApiError> {
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
+    let guiding_questions = match p.guiding_questions {
+        Some(ref qs) => Some(validate_guiding_questions(qs)?),
+        None => None,
+    };
     sqlx::query_as(
         "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
-                category = CASE WHEN $4 THEN $5::text ELSE category END,
-                is_active = COALESCE($6, is_active),
+                is_active = COALESCE($4, is_active),
+                guiding_questions = COALESCE($5::text[], guiding_questions),
+                -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
+                dimensions = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
+                    THEN dimensions END,
+                dimensions_prompt_version = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
+                    THEN dimensions_prompt_version END,
+                dimensions_language = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
+                    THEN dimensions_language END,
+                dimensions_pending_languages = CASE WHEN has_had_conversation
+                        OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
+                    THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, category, is_active",
+         RETURNING id, title, description, is_active, guiding_questions",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
-    .bind(p.category.is_some())
-    .bind(p.category.flatten())
     .bind(p.is_active)
+    .bind(guiding_questions)
     .fetch_optional(&state.pool)
     .await?
     .map(Json)
@@ -194,21 +251,22 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
 }
 
 /// 內建題目的固定 ID：重複啟動時不會重複建立，教師改動或停用後也不會被覆寫。
-const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
+pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
 
 /// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
+/// 直接寫入引導問題（S-04.8 修訂：不再寫 description），內容與遷移既有題目的轉換結果相同。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO topics (id, title, description, category) VALUES ($1, $2, $3, $4)
+        "INSERT INTO topics (id, title, guiding_questions) VALUES ($1, $2, $3)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(TROLLEY_TOPIC_ID)
     .bind("電車難題")
-    .bind(
+    .bind(vec![
         "一輛失控的電車正衝向軌道上的五個人。你站在轉轍器旁，只要拉下拉桿，電車就會轉向另一條軌道，\
-         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。",
-    )
-    .bind("倫理學")
+         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。"
+            .to_string(),
+    ])
     .execute(pool)
     .await?;
     Ok(())
@@ -430,7 +488,7 @@ pub(crate) async fn create_activity(
     Json(b): Json<NewActivity>,
 ) -> Result<(StatusCode, Json<Activity>), ApiError> {
     if !valid_text(&b.title) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
     let topic_ids = b
         .topic_ids
@@ -477,7 +535,7 @@ pub(crate) async fn update_activity(
     Json(p): Json<ActivityPatch>,
 ) -> Result<Json<Activity>, ApiError> {
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
-        return Err(ApiError::bad_request("invalid_title", "標題不可為空"));
+        return Err(ApiError::invalid_title());
     }
     // 活動必須有題目：不能清除，若有傳入必須包含至少一個存在且不重複的題目（最多 5 個）
     // 舊欄位 `topic_id` 只換掉第一個題目，其餘題目與順序不變。
@@ -670,7 +728,7 @@ async fn set_archived(
     .await?;
     let (was_archived, classroom_archived) = current.ok_or_else(ApiError::not_found)?;
     if classroom_archived {
-        return Err(ApiError::conflict("classroom_archived", "教室已封存"));
+        return Err(ApiError::classroom_archived());
     }
     let updated = activity_store::set_archived(&mut *tx, id, archived).await?;
     if was_archived != archived {
@@ -798,7 +856,7 @@ pub(crate) async fn available(
     let (activities, topics) = tokio::try_join!(
         activity_store::list_published_with_progress(&state.pool, cu.user.id),
         sqlx::query_as(
-            "SELECT id, title, description, category, is_active FROM topics
+            "SELECT id, title, description, is_active, guiding_questions FROM topics
              WHERE is_active ORDER BY created_at, id",
         )
         .fetch_all(&state.pool),
