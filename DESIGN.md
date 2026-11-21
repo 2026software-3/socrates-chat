@@ -1,0 +1,394 @@
+---
+name: 蘇格拉底・教室（Vedute）
+description: 把羅馬廣場刻成一張銅版畫；AI 在畫裡只負責追問。
+colors:
+  paper: "#E8E1CF"
+  paper-deep: "#DDD4BE"
+  surface: "#FFFFFF"
+  ink: "#1F1A16"
+  ink-soft: "#4A4038"
+  ink-faint: "rgba(31, 26, 22, .28)"
+  placeholder: "#665C4E"
+  chalk: "#A9442B"
+  chalk-deep: "#8A3520"
+  error: "#8A1C12"
+typography:
+  display-han:
+    fontFamily: "Noto Serif TC, Songti TC, serif"
+    fontSize: "clamp(30px, 3.6vw, 40px)"
+    fontWeight: 900
+    lineHeight: 1.3
+    letterSpacing: "0.02em"
+  headline-han:
+    fontFamily: "Noto Serif TC, Songti TC, serif"
+    fontSize: "28px"
+    fontWeight: 900
+    lineHeight: 1.3
+    letterSpacing: "0.02em"
+  title-han:
+    fontFamily: "Noto Serif TC, Songti TC, serif"
+    fontSize: "22px"
+    fontWeight: 700
+    lineHeight: 1.4
+  body:
+    fontFamily: "Noto Serif TC, Songti TC, serif"
+    fontSize: "15px"
+    fontWeight: 400
+    lineHeight: 1.7
+  note:
+    fontFamily: "Noto Serif TC, Songti TC, serif"
+    fontSize: "13px"
+    fontWeight: 400
+    lineHeight: 1.6
+  plate-title:
+    fontFamily: "IM Fell English SC, Times New Roman, serif"
+    fontSize: "clamp(22px, 2.6vw, 34px)"
+    fontWeight: 400
+    lineHeight: 1
+    letterSpacing: "0.14em"
+  latin-label:
+    fontFamily: "IM Fell English SC, Times New Roman, serif"
+    fontSize: "17px"
+    fontWeight: 400
+    letterSpacing: "0.08em"
+  chalk-note:
+    fontFamily: "IM Fell English, Times New Roman, serif"
+    fontSize: "15px"
+    fontWeight: 400
+rounded:
+  none: "0px"
+  hairline: "2px"
+  pin: "50%"
+spacing:
+  xs: "4px"
+  sm: "8px"
+  md: "12px"
+  lg: "24px"
+  xl: "40px"
+  plate-inset: "14px"
+components:
+  button-primary:
+    backgroundColor: "{colors.ink}"
+    textColor: "{colors.paper}"
+    rounded: "{rounded.hairline}"
+    padding: "0 22px"
+    height: "46px"
+  button-primary-hover:
+    backgroundColor: "{colors.chalk}"
+    textColor: "{colors.paper}"
+  button-primary-disabled:
+    backgroundColor: "{colors.ink-soft}"
+    textColor: "{colors.paper}"
+  button-quiet:
+    backgroundColor: "transparent"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.hairline}"
+    padding: "0 22px"
+    height: "46px"
+  link:
+    textColor: "{colors.ink}"
+    height: "44px"
+  input:
+    backgroundColor: "transparent"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.none}"
+    padding: "0 2px"
+    height: "42px"
+  key-station:
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    height: "44px"
+  key-station-current:
+    textColor: "{colors.chalk}"
+  pin:
+    backgroundColor: "{colors.paper}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.pin}"
+    size: "34px"
+---
+
+# Design System: 蘇格拉底・教室（Vedute）
+
+產品與使用者脈絡見 [PRODUCT.md](PRODUCT.md)。本文件的權威實作是 [`prototypes/b-roman-forum/vedute.html`](prototypes/b-roman-forum/vedute.html)，數值以那份檔案為準；兩者不一致時先修本文件或回報，不要各自分歧。
+
+## Overview
+
+**Creative North Star: "A Plate of the Forum"（一張廣場的銅版畫）**
+
+整個入口是一張 18 世紀 Piranesi 風格的羅馬廣場蝕刻版畫（veduta），印在手工紙上。3D 廣場即時「刻」成排線：光暗決定排線層數，線貼在石頭表面、不隨鏡頭漂移，外輪廓是墨線。介面不是浮在畫上的另一層 UI，而是版畫本身的一部分：說明文字印在版畫天空的留白裡，版畫底部的標題與編號圖例（I 廣場、II 講壇、III 檔案館、IV 元老院之門）就是導覽。
+
+敘事依據是 Cicero：他把蘇格拉底式問答帶進拉丁世界，在羅馬廣場上公開詰問。因此只用羅馬建築（檔案館、農神殿、講壇、元老院、尤利亞會堂、卡斯托神殿、灶神殿）與拉丁銘文，語氣是嚴肅的思辨場所，同時保留想走進去探索的好奇。紅粉筆（sanguine）是唯一的強調色，代表「追問」與「目前所在」。
+
+已確認不要的：像博物館導覽、希臘與羅馬混用、AI 生成感的泛用科技介面。
+
+**Key Characteristics:**
+- 單一淺色世界：紙、墨、紅粉筆三種顏色撐起全部畫面，不做深色模式。產品內頁的主內容區用白底（surface），側欄與導覽列用紙色；入口是版畫，維持全頁紙色。
+- 線而不是面：分隔、欄位、提示都用細墨線，不用填色卡片與陰影。
+- 版畫結構即資訊架構：版痕框、版內標題、編號圖例各有功能。
+- 拉丁小型大寫字只作標籤與版題，中文永遠是主要閱讀文字。
+
+## Narrative：一張版的一生（提案，待需求方確認）
+
+每場對話是學生親手刻的一張銅版。AI 只拿紅粉筆在旁邊打草稿、提問，從不替學生下刀；刻定的墨線都是學生自己的理由。對話結束時上墨、過壓印機，印出一張帶版痕的印樣，收進自己的版畫冊。
+
+| 產品 | 版畫工序 | 介面 |
+| --- | --- | --- |
+| 選題、第一個主張 | 塗底・起稿 | 版號 TAV. 與題目刻在版頭 |
+| AI 追問 | 紅粉筆旁註 | INTER. 用紅粉筆：草圖可擦，代表提問而不代答 |
+| 學生修正主張 | 刮除・新狀態 | `Vedute/State Mark`（STATVS I–IV），墨線隨狀態加深 1 → 1.5 → 2px |
+| 想法逐步站得住腳 | 酸蝕 | 想法的刻線＝酸咬深度 |
+| 對話結束、總結 | 壓印・揭紙 | 滾筒掃過、紙揭起、版痕浮現；總結是印樣下緣的刻字 |
+| 學習成果 | 版畫冊（Raccolta） | `Vedute/Proof Card` |
+| 成就 | 收藏印（Lugt 印記） | `Vedute/Collector Stamp` |
+| 教師權限（S-02.1） | 只給看印樣 | 教師只看已印出的印樣（已結束活動）；刻版中只有學生看得到 |
+
+材質與光的細節（依成本排序）：版痕凹壓、版面餘墨（plate tone）、紙的層次與毛邊、紅粉筆筆觸（不規則線）、墨線咬深、水印 S·C 彩蛋、斜照晨光、壓印動態。都不新增顏色。
+
+## Colors
+
+紙色打底、墨色書寫、紅粉筆標記；所有顏色都來自一張紙上的兩種墨。
+
+### Primary
+- **Sanguine Chalk 紅粉筆**（#A9442B）：目前所在的站點、AI 的發言標記（INTER.）、hover、焦點框、選取反白、被劃掉的「看不到」項目。只用於標記，不做大面積填色。
+- **Deep Sanguine 深紅粉筆**（#8A3520）：紅粉筆需要用在 13px 以下小字或 `paper-deep` 底時的替代色（對比 6.17 / 5.45）。
+
+### Neutral
+- **Laid Paper 紙**（#E8E1CF）：頁面底色，加上簾紋、鏈紋與黃斑（見 Elevation）。
+- **Deep Paper 深紙**（#DDD4BE）：需要區隔時的次層底色。
+- **Surface 白**（#FFFFFF）：產品內頁的主內容區與對話框。需求方於 2026-11 指定，比照 Figma [03] Classroom。
+- **Etching Ink 蝕刻墨**（#1F1A16）：正文、墨線、主要按鈕底色、穿門的墨水淹沒。對紙 13.2:1。
+- **Soft Ink 淡墨**（#4A4038）：次要文字、說明、拉丁副標。對紙 7.7:1。
+- **Faint Ink 淡墨線**（rgba(31,26,22,.28)）：版痕框、列表分隔線，只作線不作字。
+- **Placeholder**（#665C4E）：輸入框提示字。對紙 5.0:1，對深紙 4.4:1（不足，見 Known Issues）。
+- **Error 錯誤**（#8A1C12）：欄位錯誤與登入失敗。對紙 7.1:1。
+
+### Named Rules
+**The Two Inks Rule.** 畫面上只有墨與紅粉筆兩種「墨水」。新增狀態色（成功、警告）前，先試著用墨線、劃線、字重表達；真的需要時另立規格，不要直接引入藍綠等外來色。
+
+**The Chalk Is a Mark Rule.** 紅粉筆是手寫在版畫上的記號，不是品牌色塊。單一畫面上紅粉筆面積不超過約 5%。
+
+## Typography
+
+**中文主字體：** Noto Serif TC（fallback Songti TC, serif），權重 400／700／900
+**版題與標籤：** IM Fell English SC（fallback Times New Roman, serif）
+**手寫註記：** IM Fell English Italic（紅粉筆旁註）
+
+**Character：** 中文用宋體／明體撐起印刷書的正式感；拉丁小型大寫取自 18 世紀英國鉛字，只負責版畫上的銘文與編號，讓畫面有出處而不是裝飾。
+
+### Hierarchy
+- **Display**（900，clamp(30px, 3.6vw, 40px)，1.3）：每個站點的主標，一屏一個。手機 28px。
+- **Headline**（900，28px，1.3）：站點面板標題，後接拉丁名作副標（例：講壇 Rostra）。手機 24px。
+- **Title**（700，22px，1.4）：首頁卡片標題。
+- **Body**（400，15px，1.7）：正文，最長約 34em（中文約 34 字一行）。
+- **Note**（400，13px，1.6）：法規性說明、示意聲明、圖例。
+- **Plate title**（IM Fell English SC，clamp(22px, 2.6vw, 34px)，字距 .14em）：版畫底部的 FORVM ROMANVM。
+- **Latin label**（IM Fell English SC，17px，字距 .08em）：拉丁地名、對話標記 DISC.／INTER.、羅馬數字 I–IV。
+
+### Named Rules
+**The Latin Is Engraved Rule.** 拉丁文只出現在「版上刻的字」：版題、地名、編號、發言標記。按鈕、錯誤訊息、說明一律用使用者的語言。
+
+**The No Mono Rule.** 不用等寬字體做「技術感」標籤。
+
+## Layout
+
+- **版畫即視窗**：3D 場景鋪滿整個視窗；距邊 14px（含 safe-area）畫一圈版痕框。
+- **桌面**：左側一欄面板（寬 min(380px, 100%)），印在版畫天空的留白處，背景是向外淡出的紙色橢圓；鏡頭以 `setViewOffset` 把主體推離面板（panelShift 210px）。底部一列：左為版題，右為編號圖例導覽。
+- **手機（< 760px）**：面板改貼底，上緣一條墨線，最高 54vh；版題隱藏，只留圖例；鏡頭再拉遠（phonePush 0.22）。
+- **側邊距**：桌面 max(40px, safe-area + 28px)，手機 max(28px, safe-area + 20px)。
+- **節奏**：面板內 12px 間距；動作列 10px／18px；首頁區塊 24–26px。
+- **首頁（登入後）**：單欄，最寬 760px，置中；以墨線分段，不用卡片。
+
+## Elevation & Depth
+
+完全不用投影。深度只來自三件事：
+
+- **版畫本身的明暗**：3D 場景用排線層數表現光影（見 Components → Engraving）。
+- **紙張質感**：底色疊兩層極淡的黃斑（radial-gradient，rgba(150,110,60,.08–.10)）、垂直鏈紋（每 47px 一條，.035）與水平簾紋（每 3px，.018）。
+- **版痕框**：一圈 1px 淡墨線，內側一道白色高光與一道墨色暗線，模擬銅版壓進紙裡的凹痕。
+
+### Named Rules
+**The Pressed Not Lifted Rule.** 東西是「壓進紙裡」，不是「浮在紙上」。不加 box-shadow 投影、不用毛玻璃、不用浮起的卡片。
+
+## Shapes
+
+- 圓角幾乎為零：按鈕 2px（刀刻的直角），輸入框 0。
+- 唯一的圓：版畫上的編號圖釘（34px 圓）、帳號縮寫圈、旋轉中的載入圈。
+- 線寬：正文分隔 1px、強調墨線 1.5px、雙線分隔（上下兩條 1px，間距 2px）用在首頁標題下。
+
+## Components
+
+### Buttons
+- **Primary**：墨底紙字，46px 高，2px 圓角；hover 換紅粉筆；按下下沉 1px；停用為淡墨且游標為 progress。
+- **Quiet**：透明底、1.5px 墨框；hover 時框與字變紅粉筆。
+- **Link（ui-link）**：墨字、紅粉筆底線（1.5px，offset 5px），至少 44px 點擊高度；hover 字變紅粉筆。次要動作一律用它，不做第三種按鈕。
+
+### Inputs
+- 只有一條 1.5px 底線的「紙上橫線」，透明底、17px 字。
+- 焦點：底線變紅粉筆並加 2px 紅粉筆下緣，不加外框。
+- 錯誤：底線變錯誤色，下方 13px 錯誤字。
+- 標籤 13px 淡墨，在欄位上方。
+
+### 表格與清單
+- 規格以系統設定的部件價格表為準，Figma 在 [00] 03 的 3.7。
+- 桌面（≥ 1024）：
+  - 外框淡墨 1px、圓角 2，內容超出時裁切。
+  - 表頭紙色深底（paper-deep），文字用 Text/Body Strong。
+  - 每列內距上下 12、左右 20，欄距 16，列與列之間一條淡墨線，最後一列不畫。
+  - 資料用 Text/Body，名稱欄用 Body Strong，格子裡不加底色。
+- 平板與手機（< 1024）：**不要橫向捲動**。
+  - 每筆資料改成一張卡片：名稱欄當標題，其他欄寫成「欄名（Text/Note 淡墨）＋值」，操作放在最下面。
+  - 勾選框欄不顯示。
+  - 圖表與比例條改成直排，依寬度等比縮放，文字不縮小。
+
+### 書目（共用書庫、書單、推薦）
+- 每本書都留書封位置：`Book/Cover`（S 32×44、M 56×78、L 112×156），沒有封面圖時是紙色深底＋書背線＋書本圖示。
+- 書目資訊用「圖示＋短文字」（`Data/Meta`），不要用 · 串成一長行：
+  - 作者 user、出版年 clock、語言 languages、來源 file-text、新增者 pencil、版本數 book-open、書單 list-checks。
+- 共用書庫：
+  - 每部作品一張卡片：M 書封、作品名、狀態，以及版本數／語言／書單數。
+  - 下面一個版本一列（`Book/Edition Row`，桌面用 Wide，平板與手機用 Compact）。
+- 新增書目分三步，頂端有步驟提示：
+  1. 找書：搜尋結果附書封與圖示資訊，也可以手動填寫。
+  2. 確認資料：左邊 L 書封，右邊表單分成「基本資料／出版資訊／給學生看的說明」，語言用點選。
+  3. 其他版本：勾選同一作品的其他語言版本。
+
+### Alerts
+- 左側一條 1px 細線加 12px 內距，字色決定性質：錯誤用錯誤色，資訊用墨色。不加底色塊。
+- 帳密錯誤不透露是哪一欄錯；名單外帳號在登入成功後才顯示「尚未開通」。
+- 只用在頁面本身的狀態：載入失敗、無權限、唯讀、尚未開放。操作結果不用 Alert，用 Toast。
+
+### Toast（操作結果的通知）
+- 用途：儲存、複製、加入、移除之後的結果，例如「顯示名稱已更新為「王小明」。」「造型已儲存。」「儲存失敗，請稍後再試。」。浮在畫面上，**不插進內容、不推動版面**。
+- 外觀：紙底、1px 墨框、2px 圓角，內側 3px 一圈淡墨版痕線；左側 20px 圖示（Success 墨色勾、Info 淡墨 i、Error 錯誤色驚嘆號）、15px 訊息、可選的動作（墨字＋1.5px 紅粉筆底線，例如「重試」「復原」）、✕。不用投影，符合 The Pressed Not Lifted Rule。
+- 位置：桌面與平板在內容區右下（距邊 24，寬 360）；手機在底部分頁列上方 12，左右 16，寬度滿版；專注情境在輸入框上方。
+- 行為：Success、Info 4 秒後消失，滑鼠移上去或鍵盤聚焦時暫停；Error 留到使用者關閉。一次只顯示一則，新的取代舊的。程式用 `role="status"`（Error 用 `role="alert"`）。減少動態時不滑入，直接出現。
+- 需要決定或要保留的資訊（刪除確認、臨時密碼、購買成功）仍用對話框；欄位錯誤仍在欄位下方。
+- Figma：`Feedback/Toast`（[00] 03 的 3.5），畫面上加在最上層並設為固定位置。
+
+### 導覽決策（2026-11-10 定案：方案 D「地圖＋刻字」；手機 2026-11-18 改為底部分頁列）
+先依使用者在做什麼選情境，再依寬度決定側欄收不收；所有角色共用同一套。原型：[`prototypes/c-interior/index.html`](prototypes/c-interior/index.html)。
+
+| 情境 | 什麼時候用 | 組成 |
+| --- | --- | --- |
+| 入口 | 還沒登入 | 版畫＋圖例 |
+| 工作情境 | 在系統裡找東西、管理東西 | `Page/Topbar`（中央是目前位置）＋`Nav/Sidebar`（廣場平面圖＋圖例） |
+| 專注情境 | 專心讀或寫單一份內容（對話、教師讀原文、學習總結、邏輯樹） | `Page/Back Header`（右側是所在建築），沒有側欄 |
+
+| 寬度 | 工作情境 | 專注情境 |
+| --- | --- | --- |
+| ≥ 1024 | Topbar 52＋常駐側欄 216＋白色內容區 | 返回列＋置中 760 欄 |
+| 768–1023 | Topbar 加 ☰、收起中文區名；側欄變抽屜（同一個 216 面板） | 同桌面 |
+| < 768 | Topbar 只留位置銘文（⌄）與頭像，沒有 ☰；底部固定分頁列＋平面圖面板（見下）；內距 16 | 收起「返回」字樣與銘文，標題單行截斷；沒有底部分頁列 |
+
+- **每個區域是廣場上的一棟建築**，同一個區域在不同角色用同一棟：
+  - 學生：I 我的教室 Basilica Ivlia、II 個人練習 Aedes Vestae、III 我的對話 Rostra、IV 點數與任務 Aedes Satvrni、V 我的蘇格拉底 Aedes Castoris、VI 個人檔案 Tabvlarivm。
+  - 教師：I 教室管理 Basilica Ivlia、II 題目庫 Tabvlarivm、III 共用書庫 Aedes Satvrni、IV 學生帳號 Cvria、V 學生總結 Rostra；活動與論點分布在教室詳細頁的頁籤（S-04.7、S-14）。
+  - 管理者：I 總覽 Cvria、II 教室管理 Basilica Ivlia、III 教師管理 Aedes Castoris、IV 共用書庫 Aedes Satvrni（2026-11-21 起；修課名單改為教室管理裡的頁籤）、V 題目庫 Tabvlarivm、VI 系統設定 Aedes Vestae、VII 執行日誌 Rostra。
+- **側欄**：上方是廣場平面圖（仿 Nolli 1748 年羅馬地圖），建築平常塗黑，所在那棟打開成白色內部與柱子並標上編號圖釘；下方是圖例（羅馬數字＋中文區名＋拉丁建築名），只有一層。同區子頁用頁內頁籤，清單進詳細用麵包屑。
+- **手機導覽（2026-11-18 定案，提案 C）**：< 768 不用左側抽屜。
+  - 底部固定一列 `Nav/Tab Bar`（63 高，上緣雙墨線），放依編號排序的 3 個常用區域＋「廣場」：學生 I 我的教室、II 個人練習、III 我的對話；教師 I 教室管理、II 題目庫、V 學生總結；管理者 I 總覽、II 教室管理、III 教師管理。目前所在那格紅粉筆字＋上緣 2px 記號；目前區域不在前 3 格時，「廣場」那格標成目前並顯示編號與區名（例如「IV・點數」）。
+  - 點「廣場」或 Topbar 中央的位置銘文（旁邊有 ⌄）打開 `Nav/Plan Sheet`：從底部升起，內容同側欄（放大的平面圖＋兩欄圖例），點建築或區域換頁並收起；往下拖、點遮罩、Esc、✕ 都會關閉，焦點回到原本的按鈕。
+  - 專注情境不放分頁列；內容區底部多留 64，頁尾不被蓋住。
+  - **手勢列安全區**：分頁列、平面圖面板與對話輸入列的底色延伸到螢幕最下緣，內容停在安全區上方（`padding-bottom: env(safe-area-inset-bottom)`；Figma 的 375×812 畫面是最下面 34）。
+- **Topbar**：左為 ☰（768–1023）與品牌「蘇格拉底・教室」（Title/H3）＋拉丁副標「Schola Socratica」（≥ 1024 才顯示，手機連品牌一起收起）；中央是目前位置（編號圖釘＋刻出的拉丁建築名，字詞以 · 分隔＋中文區名）；右為學生點數、頭像＋名字（點開是 `Nav/Account Menu`，語言與登出只放那裡）。不放導覽項目。
+- **頁首**：工作情境的每一張畫面都用 `Page/Header`（該建築的版畫切片＋向左淡出的白＋標題＋刻出的拉丁名＋右上編號），同一區的頁籤之間要一致；詳細頁把上一層放在麵包屑。`Page/Title` 只用於過渡中的舊畫面。手機的 Topbar 不放點數，點數在「點數與任務」頁。
+- **動態**：換頁時依序 ① 平面圖上的建築打開（0.35 秒填色、0.7 秒紅粉筆描邊）② Topbar 中央的拉丁名逐字刻出（每字 0.5 秒、間隔 40ms，從上往下露出）③ 0.38 秒後頁首的拉丁名再刻一次；進入對話頁時返回列的 ROSTRA 也這樣刻出。只有「抵達」才播，同頁更新不重刻；減少動態時直接顯示。
+- Figma：元件在 [00] 03 的 3.1（`Nav/Sidebar`、`Nav/Tab Bar`、`Nav/Plan Sheet` 都選 Role 與 Current），模板在 02 的 Shell Templates；手機的平面圖面板在各頁的「Overlays · 平面圖面板」。[02]–[05] 已於 2026-11-10 換成 D 的殼層，原稿在各頁的「備份 2026-11-10」頁。
+- 要以 PR 記入 `docs/specs/decisions.md`。程式目前以 768 切換、窄版用橫向導覽、學生版沒有 Topbar，需要另行修改。
+
+### Shell（產品內頁）
+- **Colophon（頁尾）**：雙線之下，左為 SCHOLA SOCRATICA · 年份（羅馬數字），右為說明連結。
+- **Pagination**：無框，數字用 Noto Serif TC（IM FELL 的舊式數字 1 會被讀成羅馬數字 I），目前頁紅粉筆＋底線，44px 點擊區。
+- **側欄**：紙底、右側淡墨線；目前項目紅粉筆字＋左側 2px 紅粉筆記號＋淡白底；上方的平面圖見「導覽決策」。
+
+### Navigation：版畫圖例（key）
+- 羅馬數字（IM Fell English SC 20px）＋中文站名（15px），每項至少 44px 高。
+- 目前站點：整項紅粉筆，數字加底線，並設 `aria-current="step"`。
+- 版畫上同一個數字以圖釘形式標在對應建築上，點圖釘等同點圖例。
+
+### Dialogue（講壇站）
+- 左右分邊，一眼看出誰在說話：蘇格拉底（AI）靠左，左側 1.5px 紅粉筆線，標記「蘇格拉底 INTER.」，追問用 700 字重；學生靠右，右側 1.5px 墨線，標記「DISC. 你」。每則寬度隨文字，上限約為欄寬 84%。
+- 不用填色泡泡與圓角，分邊靠位置與側線。教師唯讀檢視把「你」換成學生姓名。
+- **輪到學生回答的那則**（`Chat/Bubble` State=Current）：3px 紅粉筆側線＋紙色底＋「待回答」，同一畫面只有一則；不用深色底。
+- 「想法的刻線」進度條：一條淡墨線上疊 3px 墨線，隨對話輪數由左刻到右。
+- Figma：`Chat/Bubble` 的寬度隨文字（上限 560），由外層 frame 靠左或靠右；`Vedute/Dialogue Line` 是整列寬，自己決定靠邊。
+
+### Visibility list（檔案館站）
+- 看得到的項目前面是墨色勾，看不到的項目用紅粉筆叉並以紅粉筆刪除線劃掉。圖示是自繪 SVG，1.6px 筆畫。
+- 文案依 S-02.1：教師可唯讀查看自己教室已結束活動的對話原文；進行中的對話與個人練習看不到；管理者介面訊息一律顯示為 message。
+
+### Engraving（3D 繪製規則）
+- 材質：Lambert 打光後算出亮度，暗度 d = clamp(1 − lum × 1.08)。
+- 四層排線，依暗度門檻逐層加上（世界座標 triplanar 投影，線不隨鏡頭漂）：
+  1. 門檻 0.10，水平面 0°、立面 90°
+  2. 門檻 0.38，45°
+  3. 門檻 0.58，−45°
+  4. 門檻 0.78，與第 1 層垂直
+- 線寬以螢幕像素計，不以線距比例計，避免近景出現粗條紋。
+- 外輪廓：背面外擴 0.03 的墨色外殼（inverted hull）。
+- 物件色只代表「留住多少光」（stone #FFF、brick #BDBDBD、roof #8C8C8C、bronze #707070…），最後只輸出紙與墨兩色。
+- 鏡頭站點：I 廣場全景、II 講壇、III 檔案館、IV 元老院之門；站點位置要離開所有幾何體，否則畫面會被柱子塞滿。
+
+### Motion
+- **刻版進場**：排線由左到右「刻」出來（uReveal，3.2s，power1.inOut），鏡頭同時從遠處推近（3.6s，power2.out），面板在 2.2s 淡入。提供「略過刻版」。
+- **站點移動**：鏡頭 2.0s power2.inOut。
+- **穿門**：鏡頭推到元老院門前，雙門向內打開，墨水從中心淹滿全畫面（clip-path 圓，0.6s power2.in），首頁淡入。
+- **減少動態**：不播進場、飛行與穿門，直接切換；載入圈停止旋轉。
+- 分頁隱藏或離開視窗時停止繪製並暫停所有 tween。
+
+## Do's and Don'ts
+
+**Do**
+- 讓每個介面元素都說得出它在一張版畫上的身分（版題、圖例、旁註、刻線）。
+- 產品內頁（對話、教室、教師、管理後台）的內容區保持克制：白底、墨線分隔、Noto Serif TC、紅粉筆標記，不放 3D；版畫的世界只出現在殼層（側欄平面圖、Topbar 位置銘文、區域首頁的版畫切片），見「導覽決策」。
+- 新圖示使用 Lucide，統一墨色、1.5px 線寬；需要時自繪，筆畫一致。
+- 所有互動目標至少 44px，焦點可見（紅粉筆 2px）。
+
+**Don't**
+- 不放希臘建築、希臘字母或雅典意象；不寫成博物館解說牌。
+- 不用投影、毛玻璃、漸層文字、填色卡片、等寬字標籤。
+- 不加第三種強調色；不把紅粉筆當大面積背景。
+- 不在管理介面、日誌、報表顯示訊息原文（一律 message）。
+
+## Figma 檔案與接手方式
+
+設計稿在 Figma `zW14xVQcXF8S5rQuD6YzDM`。[00] Guideline 依閱讀順序分章，組員與 agent 從 00 開始讀：
+
+| 章 | 內容 |
+| --- | --- |
+| 00 開始使用 | 檔案地圖、畫新畫面的步驟、命名、交付檢查、給 agent 的速查、元件總表與改名對照、待決定事項 |
+| 01 基礎 | 色彩、字體、版面與線、格線與畫面尺寸、圖示 |
+| 02 版面與導覽 | 導覽決策與 Shell Templates |
+| 03 元件 | 新畫面只用這一章：情境、動作、表單、頁內導覽、回饋、對話、資料、標註 |
+| 04 頁面範例 | 對話頁（專注情境）與我的版畫冊（工作情境） |
+| 05 規則與文案 | 做與不做、隱私與文案 |
+| 06 提案中 | 敘事、材質與光、Story/* 元件（待確認） |
+| 07 入口專用 | Entry/* 元件，只用於 [01] |
+
+舊元件移到 [00L] Legacy：現有畫面裡的 instance 仍然連結，但新畫面不要用。頁面之間的關聯與缺漏在 [98] Flow Map。
+
+## Known Issues
+
+截至 2026-11-03，`vedute.html` 與本規範的已知問題與待辦：
+
+**待確認的規格**
+- Three.js 與 GSAP 已於 2026-11-20 採用（見 `docs/specs/decisions.md` S-11）；無 WebGL 時的替代畫面與 3D 場景的效能上限仍待決定。
+- 連續登入失敗的鎖定策略（S-08.2）、逾時後是否提示進度保留，尚未呈現。
+- 三語（S-11）：IM Fell 只有拉丁字母；英文介面的正文字體與中英混排規則未定。
+
+**可及性與對比**
+- 紅粉筆 #A9442B 在 `paper-deep` 上只有 4.0:1，placeholder 在 `paper-deep` 上 4.4:1，都低於 4.5:1；小字或深紙底請改用 `chalk-deep`。
+- 面板背景是向外淡出的紙色橢圓，3D 排線很密的區域壓在文字後面時可讀性要再驗證。
+- 版畫上的圖釘對螢幕閱讀器是重複的導覽，目前未設 `aria-hidden` 策略，需決定只保留圖例或兩者擇一。
+
+**繪製與效能**
+- 手機版面改成面板貼底後尚未重新實機驗證。
+- 「廢墟版」場景（倒下的柱鼓、碎石板）容易被讀成考古遺址，與「想進去探索」的語氣有落差；可考慮完整建築版或只保留少量殘件。
+- 無 WebGL 時只顯示面板，沒有靜態版畫圖替代；需要一張預先輸出的版畫插圖（也可作社群分享圖與 Figma 參考）。
+- 未量測低階手機的幀率與耗電；像素比上限 1.5，尚無自動降級。
+- 以 `file://` 開啟需要連網載入 CDN；共用程式由 `inline-core.mjs` 內嵌，改 `forum-core.js` 後要重跑。
+
+**設計範圍缺口**
+- 只設計了入口與登入；學生對話介面、教室列表、教師總結與已結束對話、管理後台尚無 Vedute 版本，由組員依本規範在 Figma 繪製；殼層已統一為 D。
+- Figma `zW14xVQcXF8S5rQuD6YzDM`：[00] 已依章節重整（見「Figma 檔案與接手方式」）；[01] Entry 已畫桌面 1440×900、平板 768×1024、手機 375×812 各六張；登入的其他狀態（Google 帳號選擇、首次改密碼、逾時、鎖定）未畫。組員頁面裡用到 Inter 等字體的覆寫、以及寫死的 slate 色，仍需各自重畫時清掉。
+- Figma 的面板紙色淡出用漸層，色停點無法綁定變數，改紙色時要手動同步。

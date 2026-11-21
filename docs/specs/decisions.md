@@ -468,11 +468,14 @@
 | 測試 | Vitest + Testing Library + MSW（單元與元件測試；MSW 為假後端，未處理的請求讓測試失敗） | S-11.4 |
 | Lint | oxlint | S-11.4 |
 | i18n | 自行實作的 `defineMessages`（三語鍵值不一致時 `tsc` 失敗，`i18n.test.ts` 另行檢查），暫不引入 i18n 函式庫 | S-12.1 |
+| 3D 與動畫 | [Three.js](https://threejs.org)（入口的 3D 廣場版畫）、[GSAP](https://gsap.com)（入口與內頁的動畫）；以 npm 套件引入，不從 CDN 載入 | 2026-11-20 |
 
 - **前端 CI**：`.github/workflows/ci.yml` 的 frontend job 依序執行 `npm run lint`、`npm run typecheck`、`npm test`、`npm run build`，任一失敗即擋下 PR。
 - **PoC**：目前的前端已涵蓋登入、題目選擇、對話、儀表板等流程並由 CI 驗證，足以取代原先「呼叫 `/health`」的最小 PoC。
 - **約束不變**：只經由同網域的 `/api` 存取後端、不持有金鑰或 token（S-08.1）；介面文字走三語翻譯（S-12.1）；管理者畫面不得出現對話原文，教師只在自己教室的已結束活動對話中可見（S-02.1）。
 - **不再擴充或更換主要框架**：新增主要依賴（例如圖表、狀態管理、i18n 函式庫）需先經規格討論；一般功能實作所需的小型工具不在此限。各套件版本仍未指定（依 `package-lock.json`）。
+- **Three.js 與 GSAP（2026-11-20 決定）**：Vedute 視覺方向與 Figma 設計稿已定案，入口的 3D 版畫與動畫照設計實作，直接採用這兩個套件，不另開規格討論。設計依據見根目錄 `DESIGN.md` 與 `prototypes/`（`b-roman-forum/vedute.html`、`c-interior/index.html`）。開啟「減少動態」時不播動畫、直接顯示結果。
+  - **仍待決定**：瀏覽器不支援 WebGL 時的替代畫面、入口 3D 場景的效能上限（對照 S-10 的效能門檻）。
 - **i18n 函式庫再評估時機**：西班牙文區域變體定案後用詞有分歧、需要複數或複雜插值、翻譯改由外部人員維護、語言包大到影響載入速度。
 - **仍待決定（以下為建議方案，尚未經需求方確認）**：端對端（E2E）測試與前端覆蓋率。
   - **E2E 建議用 Playwright**：repo 已有 Playwright 錄影腳本（`scripts/demo/`）；支援 Chromium、Firefox、WebKit，可對應 S-10.1／F-21.4 的瀏覽器矩陣；可設定手機與平板 viewport（F-21）；能測 SSE 串流與 HttpOnly cookie。
