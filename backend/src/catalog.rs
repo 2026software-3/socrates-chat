@@ -3,6 +3,7 @@
 //! 題目庫由教師（含助教）與管理者維護，活動由教師建立與發布，所有教師權限相同（S-01.3）。
 //! 系統啟動時會補上內建題目「電車難題」（`seed_builtin_topics`）。
 
+use crate::topic_translations::{Translations, prepare};
 use axum::{
     Json, Router,
     extract::{Path, Query, State, rejection::JsonRejection},
@@ -77,6 +78,13 @@ pub struct Topic {
     pub is_active: bool,
     #[serde(default)]
     pub guiding_questions: Vec<String>,
+    #[sqlx(json)]
+    #[serde(skip_serializing_if = "Translations::is_empty")]
+    pub translations: Translations,
+    #[sqlx(default)]
+    pub title_pending: bool,
+    #[sqlx(default)]
+    pub pending_questions: Vec<i32>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -86,6 +94,8 @@ pub(crate) struct NewTopic {
     description: String,
     #[serde(default)]
     guiding_questions: Vec<String>,
+    #[serde(default)]
+    translations: Translations,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -94,6 +104,8 @@ pub(crate) struct TopicPatch {
     description: Option<String>,
     is_active: Option<bool>,
     guiding_questions: Option<Vec<String>>,
+    #[serde(default)]
+    translations: Translations,
 }
 
 /// 驗證引導問題並回傳去除前後空白後的內容；長度與空白判斷都以去空白後為準，
@@ -141,7 +153,7 @@ pub(crate) async fn list_topics_for_teacher(
 
 async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     let rows = sqlx::query_as(
-        "SELECT id, title, description, is_active, guiding_questions FROM topics ORDER BY created_at, id",
+        "SELECT id, title, description, is_active, guiding_questions, translations FROM topics ORDER BY created_at, id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -174,13 +186,22 @@ async fn insert_topic(
         return Err(ApiError::invalid_title());
     }
     let guiding_questions = validate_guiding_questions(&b.guiding_questions)?;
+    let translations = prepare(
+        state,
+        None,
+        b.title.trim(),
+        &guiding_questions,
+        b.translations,
+    )
+    .await?;
     let t = sqlx::query_as(
-        "INSERT INTO topics (title, description, guiding_questions) VALUES ($1, $2, $3)
-         RETURNING id, title, description, is_active, guiding_questions",
+        "INSERT INTO topics (title, description, guiding_questions, translations) VALUES ($1, $2, $3, $4)
+         RETURNING id, title, description, is_active, guiding_questions, translations",
     )
     .bind(b.title.trim())
     .bind(b.description)
     .bind(guiding_questions)
+    .bind(sqlx::types::Json(translations))
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
@@ -218,8 +239,20 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
         Some(ref qs) => Some(validate_guiding_questions(qs)?),
         None => None,
     };
+    let old: Topic = sqlx::query_as("SELECT id, title, description, is_active, guiding_questions, translations FROM topics WHERE id = $1")
+        .bind(id).fetch_optional(&state.pool).await?.ok_or_else(ApiError::not_found)?;
+    let translations = prepare(
+        state,
+        Some(&old),
+        p.title.as_deref().map(str::trim).unwrap_or(&old.title),
+        guiding_questions
+            .as_deref()
+            .unwrap_or(&old.guiding_questions),
+        p.translations,
+    )
+    .await?;
     sqlx::query_as(
-        "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
+        "UPDATE topics SET translations = $6, title = COALESCE($2, title), description = COALESCE($3, description),
                 is_active = COALESCE($4, is_active),
                 guiding_questions = COALESCE($5::text[], guiding_questions),
                 -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
@@ -236,18 +269,22 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
                         OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
                     THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
-         WHERE id = $1
-         RETURNING id, title, description, is_active, guiding_questions",
+         WHERE id = $1 AND title = $7 AND guiding_questions = $8 AND translations = $9
+         RETURNING id, title, description, is_active, guiding_questions, translations",
     )
     .bind(id)
     .bind(p.title.map(|t| t.trim().to_string()))
     .bind(p.description)
     .bind(p.is_active)
     .bind(guiding_questions)
+    .bind(sqlx::types::Json(translations))
+    .bind(old.title)
+    .bind(old.guiding_questions)
+    .bind(sqlx::types::Json(old.translations))
     .fetch_optional(&state.pool)
     .await?
     .map(Json)
-    .ok_or_else(ApiError::not_found)
+    .ok_or_else(|| ApiError::conflict("topic_changed", "題目已變更，請重新載入"))
 }
 
 /// 內建題目的固定 ID：重複啟動時不會重複建立，教師改動或停用後也不會被覆寫。
@@ -842,24 +879,70 @@ pub(crate) struct Available {
     topics: Vec<Topic>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct CatalogLanguage {
+    language: Option<String>,
+}
+
+pub(crate) fn display_language<'a>(
+    requested: Option<&'a str>,
+    account: &'a str,
+) -> Result<&'a str, ApiError> {
+    match requested.unwrap_or(account) {
+        lang @ ("en" | "es" | "zh-TW") => Ok(lang),
+        _ => Err(ApiError::bad_request("invalid_language", "不支援的語言")),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/catalog",
     tag = "catalog",
     summary = "學生可選的活動與題目（活動須已發布且在開放期間內；教室未封存）",
+    params(("language" = Option<String>, Query, description = "介面語言，預設採用帳號語言")),
     responses((status = 200, description = "可選項目", body = Available))
 )]
 pub(crate) async fn available(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
+    Query(query): Query<CatalogLanguage>,
 ) -> Result<Json<Available>, ApiError> {
-    let (activities, topics) = tokio::try_join!(
+    let language = display_language(query.language.as_deref(), &cu.user.language)?;
+    let (mut activities, mut topics) = tokio::try_join!(
         activity_store::list_published_with_progress(&state.pool, cu.user.id),
-        sqlx::query_as(
-            "SELECT id, title, description, is_active, guiding_questions FROM topics
+        sqlx::query_as::<_, Topic>(
+            "SELECT id, title, description, is_active, guiding_questions, translations FROM topics
              WHERE is_active ORDER BY created_at, id",
         )
         .fetch_all(&state.pool),
     )?;
+    for topic in &mut topics {
+        let all = std::mem::take(&mut topic.translations);
+        if language == "zh-TW" {
+            continue;
+        }
+        let values = all.get(language);
+        if let Some(title) = values.and_then(|v| v.get("title")) {
+            topic.title.clone_from(title);
+        } else {
+            topic.title_pending = true;
+        }
+        for (i, question) in topic.guiding_questions.iter_mut().enumerate() {
+            if let Some(text) = values.and_then(|v| v.get(&format!("q:{question}"))) {
+                question.clone_from(text);
+            } else {
+                topic.pending_questions.push(i as i32);
+            }
+        }
+    }
+    let by_id: std::collections::HashMap<_, _> = topics.iter().map(|t| (t.id, t)).collect();
+    for activity in &mut activities {
+        for progress in &mut activity.topics {
+            if let Some(topic) = by_id.get(&progress.topic_id) {
+                progress.title.clone_from(&topic.title);
+                progress.title_pending = topic.title_pending;
+            }
+        }
+    }
     Ok(Json(Available { activities, topics }))
 }
