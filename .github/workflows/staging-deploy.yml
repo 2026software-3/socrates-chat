@@ -6,10 +6,10 @@ name: Staging deploy (msi_cubi)
 #   部署邏輯與 secrets 都在主機上 root 擁有的檔案中，不取自這個 commit。
 # - 包裝腳本只會部署 deploy/msi-cubi-staging 上的 commit（只接受目前的 head；舊 commit 與分支外的 commit 會被拒絕，回滾要 root 手動）。
 # - 信任邊界：能 push 到 deploy/msi-cubi-staging 的人，仍可以讓 app 原始碼與 Dockerfile 在主機上被建置並執行，
-#   所以真正的防線是分支保護與 environment 的人工核准（見 docs/ntnu-ops.md「自動部署」）。
+#   所以真正的防線是分支保護與 environment 的人工核准（見 docs/ntnu-ops.md §4「信任邊界與 GitHub 設定」）。
 # - 這個 job 掛在 environment `staging-deploy` 下，請在 repo 設定該 environment 的 Required reviewers，
 #   並把 deployment branch 限制為 deploy/msi-cubi-staging。
-# - 設定與故障排除見 docs/ntnu-ops.md 的「staging 自動部署」。
+# - 設定與故障排除見 docs/ntnu-ops.md §4 與 §5。
 on:
   push:
     branches: [deploy/msi-cubi-staging]

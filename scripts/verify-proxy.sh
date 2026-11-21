@@ -41,7 +41,7 @@ wait_for /proxy-health 200
 wait_for /health 200
 
 # 設定檔要通過 Pingap 自己的檢查（pingap -t），並確認逾時與本文大小的設定確實在檔案裡。
-# Pingap 轉發本來就是串流、沒有 nginx 的 proxy_buffering 開關，SSE 逐段送達由下面的行為檢查把關。
+# Pingap 轉發是串流、沒有緩衝開關，SSE 逐段送達由下面的行為檢查把關。
 echo "==> 設定檔檢查"
 "${compose[@]}" exec -T proxy pingap -t -c /opt/pingap/pingap.toml >/dev/null 2>&1 || {
   echo "  FAIL pingap -t 沒通過" >&2

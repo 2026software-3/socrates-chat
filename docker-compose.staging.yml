@@ -1,7 +1,7 @@
-# msi_cubi 上的 staging 環境（2026-11-17 起）：只有 app＋db＋proxy，不接語音（沒有 cascade／Whisper／TTS），資料是空庫加合成資料。
+# msi_cubi 上的 staging 環境：只有 app＋db＋proxy，不接語音（沒有 cascade／Whisper／TTS），資料是空庫加合成資料。
 # 與正式環境（專案 socrates-ntnu）完全獨立：專案名 socrates-staging、自己的 db volume（socrates-staging_pgdata_staging）、
 # 自己的網路；獨立檔案，不疊在 docker-compose.yml 上。
-# 使用（在 ~/socrates-intel，要有 .env.staging，不進版控）：
+# 使用（在 /var/lib/socrates-staging，要有 .env.staging，不進版控；日常部署走自動部署，見 docs/ntnu-ops.md §4）：
 #   docker compose -f docker-compose.staging.yml up -d --no-build
 # 對外：網址 https://staging.se3socrateschat.ntnu.cc，經 Cloudflare for SaaS 進**同一條** tunnel（正式環境的 cloudflared，
 # remote ingress 加 hostname → http://staging-proxy:80）。只有 staging-proxy 加入正式環境的網路（別名 staging-proxy），
@@ -30,7 +30,7 @@ services:
       retries: 15
 
   staging-app:
-    image: socrates-ntnu-app:${STAGING_APP_IMAGE_TAG:?請在專案目錄的 .env（不是 .env.staging）設定 STAGING_APP_IMAGE_TAG，值為預覽版自己的 image tag（不可沿用正式版的 cutover-20261117）}
+    image: socrates-ntnu-app:${STAGING_APP_IMAGE_TAG:?請在專案目錄的 .env（不是 .env.staging）設定 STAGING_APP_IMAGE_TAG，值為預覽版自己的 image tag（不可沿用正式版的 tag）}
     restart: unless-stopped
     mem_limit: 768m
     logging:
@@ -50,7 +50,7 @@ services:
       DEMO_MODE: ${STAGING_DEMO_MODE:-false}
     # 固定位址：Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），staging-app 換 IP 時代理要很久才跟上（S-16）。
     # 位址固定在獨立的 edge 網路（只有 staging-app 與 staging-proxy），其他容器只從下方 ip_range 配置，不會佔用這個位址。
-    # 這樣 default 網路（staging-db 在上面）不必為了固定位址而重建，db 不會被停（2026-11-20 設計，見 docs/ntnu-ops.md）。
+    # 這樣 default 網路（staging-db 在上面）不必為了固定位址而重建，db 不會被停（見 docs/ntnu-ops.md §2）。
     networks:
       default: {}
       edge:
@@ -60,7 +60,7 @@ services:
         condition: service_healthy
 
   staging-proxy:
-    # Pingap（Rust、Cloudflare Pingora；S-16，2026-11-19 由 nginx 改採）；版本固定，升級前要重跑 scripts/verify-proxy.sh。
+    # Pingap（Rust、Cloudflare Pingora；S-16）；版本固定，升級前要重跑 scripts/verify-proxy.sh。
     image: vicanso/pingap:0.16.2
     command: ["pingap", "-c", "/opt/pingap/pingap.toml"]
     restart: unless-stopped
@@ -92,8 +92,7 @@ services:
       retries: 3
 
 networks:
-  # default：staging-db 與 staging-app 之間的網路，2026-11-19 套用過，設定不能再動，否則 compose 會重建它並停掉 staging-db。
-  # 下面的標籤與網段是當時留下的（標籤用來觸發重建、量測中斷時間，PR #644），移除任何一項都會讓 compose 判定設定有變。
+  # default：staging-db 與 staging-app 之間的網路。下面的標籤與網段已套用到現有網路，不能移除或修改，否則 compose 會判定設定有變而重建它，並停掉 staging-db。
   default:
     labels:
       net-rev: "2"

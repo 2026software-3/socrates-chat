@@ -104,7 +104,7 @@ npm run record
 
 ### 正式環境
 
-正式環境的部署方式尚未決定（S-09）。migration 須在部署前單獨執行、不要依賴 `RUN_MIGRATIONS`，並保持 `COOKIE_SECURE=true`；維運流程見 [`docs/specs/S-09.3-ops-procedures.md`](docs/specs/S-09.3-ops-procedures.md)。
+正式環境（NTNU，主機 msi_cubi）與 staging 由 GitHub Actions 自動部署，流程與維運見 [`docs/ntnu-ops.md`](docs/ntnu-ops.md)。規格上正式環境的部署方式仍未定案（S-09）；目前 app 啟動時套用 migration（`RUN_MIGRATIONS=true`），與 [S-09.3](docs/specs/S-09.3-ops-procedures.md) 的規格不同，維持現狀直到維運負責人決定。`COOKIE_SECURE=true` 必須保持。
 
 ## 參與開發
 
