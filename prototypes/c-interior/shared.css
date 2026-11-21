@@ -11,6 +11,14 @@
   --placeholder: #665C4E;
   --chalk: #A9442B;
   --chalk-deep: #8A3520;
+  /* pigments: hand-coloured plate (DESIGN.md Colors, 2026-11-21) */
+  --aerugo: #3B6455;
+  --aerugo-wash: #DCE6E0;
+  --ochra: #74561B;
+  --ochra-wash: #F0E4C4;
+  --ochra-graphic: #B0862F;
+  --caeruleum: #34557A;
+  --caeruleum-wash: #DCE3EC;
   --error: #8A1C12;
   --face-latin: 'IM Fell English SC', 'Times New Roman', serif;
   --face-latin-text: 'IM Fell English', 'Times New Roman', serif;
@@ -90,16 +98,13 @@ html { scrollbar-color: var(--ink-faint) transparent; scrollbar-width: thin; }
 @media (max-width: 767px) { .table { min-width: 600px; } .table td, .table th { white-space: nowrap; } }
 /* leave room for the prototype switcher so the colophon stays readable */
 .work { padding-bottom: 64px; }
-.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
-.status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; }
-.status.live { color: var(--chalk-deep); }
-.status.live::before { background: var(--chalk); box-shadow: none; }
-.status.done { color: var(--ink); }
-.status.done::before { background: var(--ink); box-shadow: none; }
-.status.draft { color: var(--ink-soft); }
+.status { display: inline-flex; align-items: center; min-height: 26px; padding: 0 10px; border-radius: 2px; font-size: 13px; white-space: nowrap;
+  color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--ink-faint); }
+.status.live { color: var(--aerugo); background: var(--aerugo-wash); box-shadow: inset 0 0 0 1px var(--aerugo); }
+.status.draft { color: var(--ochra); background: var(--ochra-wash); box-shadow: inset 0 0 0 1px var(--ochra); }
 
 .alert { padding: 2px 0 2px 12px; border-left: 1px solid currentColor; font-size: 14px; }
-.alert.info { color: var(--ink); }
+.alert.info { color: var(--ink); border-left-color: var(--caeruleum); }
 
 .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--paper-deep); box-shadow: inset 0 0 0 1px var(--ink-faint);
   display: inline-grid; place-items: center; font-size: 13px; font-weight: 700; flex: none; }
@@ -124,7 +129,7 @@ html { scrollbar-color: var(--ink-faint) transparent; scrollbar-width: thin; }
 .topbar .spacer { flex: 1; }
 .topbar .menu-btn { display: none; }
 .points { display: inline-flex; align-items: baseline; gap: 6px; font-size: 13px; color: var(--ink-soft); }
-.points b { font-size: 17px; color: var(--ink); font-weight: 700; }
+.points b { font-size: 17px; color: var(--ochra); font-weight: 700; }
 .side { position: sticky; top: var(--topbar-h); height: calc(100vh - var(--topbar-h)); overflow-y: auto; }
 .work { background: var(--surface); min-width: 0; display: flex; flex-direction: column; }
 .work-inner { width: 100%; max-width: 1120px; padding: 36px var(--gutter) 0; display: flex; flex-direction: column; gap: 32px; flex: 1; }
@@ -185,11 +190,12 @@ html { scrollbar-color: var(--ink-faint) transparent; scrollbar-width: thin; }
 .talk-col { width: 100%; max-width: 760px; margin: 0 auto; padding: 28px max(16px, env(safe-area-inset-left, 0px)) 24px; display: flex; flex-direction: column; gap: 14px; }
 .turn { display: flex; flex-direction: column; gap: 2px; width: fit-content; max-width: 84%; padding: 2px 0 2px 14px; }
 .turn .who { font-size: 13px; font-family: var(--face-latin); letter-spacing: .06em; }
-.turn.ai { align-self: flex-start; border-left: 1.5px solid var(--chalk); font-weight: 700; }
-.turn.ai .who { color: var(--chalk-deep); }
+.turn.ai { align-self: flex-start; border-left: 3px solid var(--caeruleum); background: color-mix(in srgb, var(--caeruleum-wash) 50%, transparent);
+  padding: 10px 16px 12px 14px; font-weight: 700; }
+.turn.ai .who { color: var(--caeruleum); }
 .turn.me { align-self: flex-end; border-left: 0; border-right: 1.5px solid var(--ink); padding: 2px 14px 2px 0; text-align: right; }
 .turn.me .who { color: var(--ink-soft); }
-.turn.current { background: var(--paper); border-left-width: 3px; padding: 10px 16px 12px 14px; }
+.turn.current { background: var(--caeruleum-wash); border-left-color: var(--chalk); }
 .turn.current .who::after { content: '　待回答'; color: var(--chalk-deep); font-family: var(--face-han); letter-spacing: 0; }
 .turn.thinking { color: var(--ink-soft); font-weight: 400; }
 .turn.thinking .dots::after { content: '…'; animation: blink 1.2s steps(3) infinite; }
@@ -199,7 +205,8 @@ html { scrollbar-color: var(--ink-faint) transparent; scrollbar-width: thin; }
 .composer textarea { flex: 1; resize: none; border: 0; border-bottom: 1.5px solid var(--ink); padding: 10px 2px; min-height: 44px; max-height: 160px; background: transparent; outline: none; line-height: 1.6; }
 .composer textarea::placeholder { color: var(--placeholder); }
 .composer textarea:focus { border-bottom-color: var(--chalk); box-shadow: 0 2px 0 var(--chalk); }
-.composer .send { width: 44px; height: 44px; border-radius: 50%; padding: 0; }
+.composer .send { width: 44px; height: 44px; border-radius: 50%; padding: 0; background: var(--chalk); }
+.composer .send:hover { background: var(--chalk-deep); }
 .composer .mic { width: 44px; height: 44px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ink); }
 
 /* proposal switcher (prototype chrome, not part of the design) */
@@ -215,11 +222,11 @@ body:has(#focus:not([hidden])) .proto-bar { bottom: calc(84px + env(safe-area-in
 }
 
 .ico.sm { width: 16px; height: 16px; }
-/* claim distribution: engraved bars (hatching, not fills) */
+/* claim distribution: engraved bars, hatched in caeruleum over its wash */
 .claims { list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; }
 .claims li { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 2.5em; gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--ink-hair); }
 .claims .bar { height: 14px; display: block; }
-.claims .bar i { display: block; height: 100%; width: var(--w); box-shadow: inset 0 0 0 1px var(--ink);
-  background: repeating-linear-gradient(-45deg, var(--ink) 0 1px, transparent 1px 4px); }
+.claims .bar i { display: block; height: 100%; width: var(--w); box-shadow: inset 0 0 0 1px var(--caeruleum);
+  background: repeating-linear-gradient(-45deg, var(--caeruleum) 0 1px, var(--caeruleum-wash) 1px 4px); }
 .claims b { font-size: 17px; text-align: right; }
 @media (max-width: 767px) { .claims li { grid-template-columns: minmax(0, 1fr) 2.5em; } .claims .bar { grid-column: 1 / -1; grid-row: 2; } }

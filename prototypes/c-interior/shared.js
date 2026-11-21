@@ -123,7 +123,7 @@
     const roster = `
       <div class="table-wrap"><table class="table">
         <thead><tr><th scope="col">姓名</th><th scope="col">電子郵件</th><th scope="col">狀態</th></tr></thead>
-        <tbody>${ROSTER.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2] === '已加入' ? '<span class="status done">已加入</span>' : '<span class="status draft">尚未登入</span>'}</td></tr>`).join('')}</tbody>
+        <tbody>${ROSTER.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2] === '已加入' ? '<span class="status live">已加入</span>' : '<span class="status">尚未登入</span>'}</td></tr>`).join('')}</tbody>
       </table></div>`;
     const body = { acts, claims, roster }[tab];
     const crumbs = `<nav class="crumbs" aria-label="麵包屑"><a href="#t-classes" data-go="t-classes">教室管理</a><span aria-hidden="true">/</span><span>哲學概論・週二班</span></nav>`;
