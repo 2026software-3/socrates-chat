@@ -606,6 +606,80 @@ async fn verify_model_reports_a_recognizable_reason_per_failure() {
     );
 }
 
+/// 前 `n` 次請求回 `status`，之後交給健康的供應商（模擬 Google 偶發的 503）。
+fn flaky(status: u16, n: usize) -> Handler {
+    let count = Arc::new(Mutex::new(0usize));
+    let ok = healthy();
+    Arc::new(move |s| {
+        let mut c = count.lock().unwrap();
+        *c += 1;
+        if *c <= n {
+            reply(
+                status,
+                "application/json",
+                r#"{"error":{"message":"busy"}}"#,
+            )
+        } else {
+            ok(s)
+        }
+    })
+}
+
+#[tokio::test]
+async fn verify_model_retries_transient_provider_errors() {
+    for status in [429, 500, 503] {
+        // 串流步驟第一次失敗
+        let (e, seen) = spawn(flaky(status, 1)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Ok(()),
+            "stream {status}"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        // 連續失敗兩次仍在重試額度內
+        let (e, _) = spawn(flaky(status, 2)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Ok(()),
+            "twice {status}"
+        );
+    }
+    // 結構化輸出步驟第一次失敗（串流已成功）
+    let count = Arc::new(Mutex::new(0usize));
+    let ok = healthy();
+    let (e, _) = spawn(Arc::new(move |s| {
+        let body: Value = serde_json::from_str(&s.body).unwrap_or_default();
+        if body["stream"] != json!(true) {
+            let mut c = count.lock().unwrap();
+            *c += 1;
+            if *c == 1 {
+                return reply(503, "application/json", "{}");
+            }
+        }
+        ok(s)
+    }))
+    .await;
+    assert_eq!(
+        verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn verify_model_does_not_retry_definitive_failures() {
+    for (status, want) in [
+        (401, ModelCheckError::AuthFailed),
+        (404, ModelCheckError::ModelNotFound),
+    ] {
+        let (e, seen) = spawn(fixed(status)).await;
+        assert_eq!(
+            verify_model_at(&e, AdapterKind::OpenAI, MODEL, KEY, SHORT).await,
+            Err(want)
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1, "{status}");
+    }
+}
+
 #[tokio::test]
 async fn reason_codes_are_stable_strings() {
     use ModelCheckError::*;

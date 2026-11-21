@@ -34,6 +34,19 @@ pub struct Totals {
     pub unreported_requests: i64,
 }
 
+/// 記用量失敗時的日誌；只記 SQLSTATE，不含內容。
+///
+/// 外鍵錯誤（23503）代表 AI 呼叫途中管理者刪了這把 key（F-40.9）；用量本來就隨 key 一併刪除，
+/// 是預期情況，只留 debug，避免被誤判成資料庫問題。其他失敗仍是 warn。
+pub fn log_record_failure(e: &sqlx::Error) {
+    let class = crate::error::db_error_class(e);
+    if class == "23503" {
+        tracing::debug!(%class, "AI usage not recorded: key was deleted");
+    } else {
+        tracing::warn!(%class, "failed to record AI usage");
+    }
+}
+
 /// 累加一次呼叫。`tokens` 為（輸入, 輸出）；供應商沒回報時傳 `None`，只計請求次數與「未回報」。
 pub async fn record(
     pool: &PgPool,
