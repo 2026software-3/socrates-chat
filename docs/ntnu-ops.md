@@ -153,7 +153,7 @@ AI 金鑰：後端不讀 `.apikeylist`，也不讀 `OPENAI_API_KEYS`。系統用
 
 ### 讓管理者直接改環境變數檔
 
-部署目錄與秘密檔預設是 root 擁有、0600。只動秘密檔的群組與權限，目錄與其他檔案維持 root（部署腳本的 `git reset --hard` 不受影響）。這兩行只需要執行一次，檔案被刪除重建後要重做：
+部署目錄與秘密檔預設是 root 擁有、0600。只動秘密檔的群組與權限，不用 `chgrp -R`，目錄的擁有者維持 root（部署腳本的 `git reset --hard` 不受影響）。這兩行只需要執行一次，檔案被刪除重建後要重做：
 
 ```bash
 # staging
@@ -164,6 +164,12 @@ sudo chmod 660   /var/lib/socrates-staging/.env.staging /var/lib/socrates-stagin
 sudo chgrp docker /var/lib/socrates-prod/.env
 sudo chmod 660   /var/lib/socrates-prod/.env
 ```
+
+**目前狀態（2026-11-22 唯讀查核，msi_cubi）：**
+
+- staging：`.env.staging` 與 `.staging-credentials` 已是 `root:docker` 660，ray520 可直接編輯。
+- 正式：`/var/lib/socrates-prod/.env` 仍是 `root:root` 600，上面的 `chgrp`／`chmod` **尚未套用到正式環境**；ray520 改正式的 `.env` 仍需 sudo。
+- 目錄：`/var/lib/socrates-prod` 是 `root:root` 755。`/var/lib/socrates-staging` 是 `root:docker` 750，群組不是 root，與上面「目錄擁有者維持 root」的說明只有擁有者一致。群組的 `docker` 只讓 ray520 能進入與列出目錄；改回 root 群組是主機上的操作，尚未決定。目錄權限不影響原地編輯既有的 660 檔案。
 
 - 權限不要比 660 更寬。自動部署的 runner（`gha-runner`、`gha-runner-prod`）不在 `docker` 群組，讀不到這些檔案。
 - 編輯器要「原地寫入」：目錄是 root 的，會先寫暫存檔再改名的編輯器會失敗；`nano`、`vim`（預設設定）都可以。
@@ -254,7 +260,7 @@ docker compose $F --profile app --profile cascade --profile proxy --profile tunn
 - 正式資料庫放在命名 volume `socrates-ntnu_pgdata_v2`（`docker-compose.msi-prod.yml` 以 `!override` 取代 `docker-compose.yml` 的 `pgdata`）。staging 資料庫在 `socrates-staging_pgdata_staging`。
 - 不要改成 bind mount 到可能沒掛上的主機路徑：沒掛上時 Docker 不會報錯，而是悄悄建一個空目錄，Postgres 就會初始化一個全新的資料庫。
 - volume 不是備份。備份分兩種：
-  - 正式部署前自動備份：`/var/backups/socrates-prod/socrates-predeploy-*.sql.gz`（保留 14 份）。
+  - 正式部署前自動備份：`/var/backups/socrates-prod/socrates-predeploy-*.sql.gz`（保留 14 份）。此目錄是 root 擁有，ray520 不能直接列出（唯讀查核時 `ls` 回 Permission denied），要用 `sudo ls -lt /var/backups/socrates-prod | head` 檢查。
   - 手動備份（只讀，不影響執行中的資料庫）：
 
     ```bash
