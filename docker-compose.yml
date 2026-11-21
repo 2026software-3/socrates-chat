@@ -18,8 +18,7 @@ services:
       retries: 15
 
   # 後端 ＋ 前端建置產物，單一容器、單一網址（S-08.1）。設定沿用專案根目錄的 .env，
-  # 下列三項為容器內需要的覆寫。RUN_MIGRATIONS 為本機／試用的便利設定；
-  # 正式環境的 migration 流程見 S-09.3。
+  # 下列三項為容器內需要的覆寫。RUN_MIGRATIONS 讓後端啟動時套用 migration（正式與 staging 目前都這樣做，見 docs/ntnu-ops.md §8）。
   app:
     profiles: ["app"]
     build: .
