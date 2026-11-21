@@ -133,7 +133,7 @@
         <div class="tabs" role="tablist" aria-label="教室內容">
           <button class="tab" role="tab" data-tab="acts" aria-selected="${tab === 'acts'}">討論活動</button>
           <button class="tab" role="tab" data-tab="claims" aria-selected="${tab === 'claims'}">論點分布</button>
-          <button class="tab" role="tab" data-tab="roster" aria-selected="${tab === 'roster'}">修課名單</button>
+          <button class="tab" role="tab" data-tab="roster" aria-selected="${tab === 'roster'}">學生名單</button>
         </div>
         <button class="btn" type="button">${icon('plus')}新增討論活動</button>
       </div>

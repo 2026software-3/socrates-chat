@@ -68,6 +68,7 @@
 .work-inner > :not(.veduta) { max-width: 1040px; width: 100%; }
 .veduta { position: relative; min-height: 176px; margin: 0 calc(-1 * var(--gutter)); margin-top: -36px; overflow: hidden; border-bottom: 1px solid var(--ink);
   background: var(--paper) center / cover no-repeat; }
+.veduta::before { content: ''; position: absolute; inset: 0; background: var(--wash, transparent); mix-blend-mode: multiply; opacity: .35; }
 .veduta::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,255,255,.96) 0%, rgba(255,255,255,.72) 34%, rgba(255,255,255,0) 64%); }
 .veduta .label { position: relative; z-index: 1; padding: 28px var(--gutter) 22px; display: flex; flex-direction: column; gap: 4px; justify-content: flex-end; min-height: 176px; }
 .veduta .tav { position: absolute; z-index: 1; right: 16px; top: 12px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--paper); box-shadow: inset 0 0 0 1.2px var(--chalk); color: var(--chalk); font-family: var(--face-latin); font-size: 14px; }
@@ -249,6 +250,9 @@ body:has(.sheet.open) .proto-bar { display: none; }
   // where each building sits in its plate, so the header shows that building rather than the same corner
   const POS = { home: '58% 62%', practice: '92% 58%', talks: '50% 55%', points: '40% 40%', companion: '78% 45%', profile: '50% 40%', 't-classes': '58% 62%', 't-topics': '50% 40%', 't-books': '40% 40%', 't-students': '55% 30%', 't-summaries': '50% 55%' };
 
+  // pigment wash by what the building stands for (DESIGN.md: 頁首淡彩); other areas stay paper and ink
+  const WASH = { home: 'aerugo', 't-classes': 'aerugo', points: 'ochra-graphic', 't-books': 'ochra-graphic', talks: 'caeruleum', 't-summaries': 'caeruleum' };
+
   function side(role, active, nav) {
     return `
       <div class="plan">${planSVG(nav, active)}
@@ -262,7 +266,7 @@ body:has(.sheet.open) .proto-bar { display: none; }
     const n = [...I.NAV.student, ...I.NAV.teacher].find(x => x.id === id);
     const title = id === 't-classes' ? '哲學概論・週二班' : n.zh;
     const sub = id === 'home' ? '本週有 2 個討論活動等你，題目由老師指定。' : id === 't-classes' ? '週二 第 3–4 節・32 位同學' : '';
-    return `<header class="veduta" style="background-image:url(assets/plate-${PLATE[id]}.jpg);background-position:${POS[id]}">
+    return `<header class="veduta" style="background-image:url(assets/plate-${PLATE[id]}.jpg);background-position:${POS[id]}${WASH[id] ? `;--wash:var(--${WASH[id]})` : ''}">
         <span class="tav" aria-hidden="true">${n.n}</span>
         <div class="label">${crumbs}<h1 class="page-title">${title}</h1>${carve(n.la, 380)}${sub ? `<p class="page-sub" style="margin:0">${sub}</p>` : ''}</div>
       </header>`;
