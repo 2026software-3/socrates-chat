@@ -87,6 +87,7 @@ pub mod radar_store;
 pub mod reply;
 pub mod roster;
 pub mod roster_store;
+pub mod service_monitor;
 pub mod student_notifications;
 pub mod summary;
 pub mod summary_translation;
@@ -177,6 +178,7 @@ pub struct AppState {
     pub(crate) key_rotation: Arc<std::sync::atomic::AtomicUsize>,
     /// 把所有供應商端點換成這個位址（測試用，指向假服務）；正式環境一律是 `None`。
     pub(crate) route_endpoint: Option<String>,
+    pub(crate) service_monitor: Arc<service_monitor::Monitor>,
 }
 
 impl AppState {
@@ -197,6 +199,7 @@ impl AppState {
         ));
         Self {
             pool,
+            service_monitor: Arc::new(service_monitor::Monitor::new(&config.monitored_services)),
             config: Arc::new(config),
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
@@ -312,6 +315,7 @@ pub fn app(state: AppState) -> Router {
         .merge(chat::routes())
         .merge(reply::routes())
         .merge(diagnostics::routes())
+        .merge(service_monitor::routes())
         .merge(summary::routes())
         .merge(argument_tree::routes())
         .merge(voice::routes())
@@ -399,12 +403,7 @@ async fn health() -> Json<Health> {
     )
 )]
 pub(crate) async fn ready(State(state): State<AppState>) -> Response {
-    let check = tokio::time::timeout(
-        READY_DB_TIMEOUT,
-        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.pool),
-    )
-    .await;
-    match check {
+    match probe_database(&state.pool).await {
         Ok(Ok(_)) => Json(Health { status: "ok" }).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(class = %error::db_error_class(&e), "readiness check failed");
@@ -415,6 +414,16 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
             database_unavailable()
         }
     }
+}
+
+async fn probe_database(
+    pool: &PgPool,
+) -> Result<Result<i32, sqlx::Error>, tokio::time::error::Elapsed> {
+    tokio::time::timeout(
+        READY_DB_TIMEOUT,
+        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool),
+    )
+    .await
 }
 
 fn database_unavailable() -> Response {
