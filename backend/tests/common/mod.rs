@@ -149,6 +149,9 @@ impl FakeAi {
 #[async_trait]
 impl AiProvider for FakeAi {
     async fn complete_json(&self, req: StructuredRequest) -> Result<StructuredCompletion, AiError> {
+        if req.name == "book_recommendations" {
+            return Err(AiError::unclassified());
+        }
         let content = socrates_chat_backend::ai::collect_background(
             self,
             AiRequest {
