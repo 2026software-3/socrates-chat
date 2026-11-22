@@ -212,11 +212,7 @@ impl AppState {
             request_stats: Arc::default(),
             process_started_at: chrono::Utc::now(),
             last_cleanup: Arc::default(),
-            version: std::env::var("GIT_COMMIT")
-                .ok()
-                .map(|v| v.trim().chars().take(12).collect::<String>())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            version: version_from(std::env::var("GIT_COMMIT").ok().as_deref()),
             config: Arc::new(config),
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
@@ -305,6 +301,29 @@ impl AppState {
     pub fn with_translation_limit(mut self, max: usize, window: std::time::Duration) -> Self {
         self.translation_limit = Arc::new(user_limit::UserLimiter::new(max, window));
         self
+    }
+}
+
+/// 版本字串：取 `GIT_COMMIT` 最後一段（部署的映像標籤像 `staging-abc123456789`）的前 12 碼；
+/// 沒有提供時用套件版本。
+fn version_from(commit: Option<&str>) -> String {
+    commit
+        .and_then(|v| v.trim().rsplit('-').next())
+        .map(|v| v.chars().take(12).collect::<String>())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::version_from;
+
+    #[test]
+    fn takes_the_commit_part_of_an_image_tag() {
+        assert_eq!(version_from(Some("staging-abc123456789")), "abc123456789");
+        assert_eq!(version_from(Some(" abc1234567890123 ")), "abc123456789");
+        assert_eq!(version_from(Some("")), env!("CARGO_PKG_VERSION"));
+        assert_eq!(version_from(None), env!("CARGO_PKG_VERSION"));
     }
 }
 
