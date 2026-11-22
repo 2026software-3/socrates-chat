@@ -341,7 +341,7 @@ components:
   - 進行中、開放中、啟用、已完成：`aerugo-wash` 底＋`aerugo` 框與字。
   - 草稿：`ochra-wash` 底＋`ochra` 框與字。
   - 已結束、停用、已封存：無底＋`ink-faint` 框＋`ink-soft` 字。不用錯誤色，結束不是錯誤。
-- **點數與成就**：點數數字用 `ochra`（Topbar 的點數、「+ 15 點數」、點數紀錄的目前點數與加點），扣點維持墨色。已完成的任務卡是 `aerugo-wash` 底＋`aerugo` 框，完成進度條用 `aerugo`。已解鎖的成就卡是 `ochra-wash` 底＋`ochra-graphic` 框，「已解鎖」用 `ochra`。
+- **點數與成就**：點數數字用 `ochra`（Topbar 的點數、「+ 15 點數」、點數紀錄的目前點數與加點），扣點維持墨色。已完成的任務卡是 `aerugo-wash` 底＋`aerugo` 框，完成進度條用 `aerugo`。已解鎖的成就卡是 `ochra-wash` 底＋`ochra-graphic` 框，「已解鎖」用 `ochra`。手機（< 768）的任務卡和成就卡一樣排成兩欄（各約 166 寬、間距 12）：卡片裡是題目、進度與點數，按鈕滿寬貼在卡片底部；單數時最後一張留在左欄。
 - **圖表**：主色 `caeruleum`，軌道 `caeruleum-wash`；雷達的面是 `caeruleum` 30%＋1px 線＋資料點。論點分布依序用 `caeruleum`、`ochra-graphic`、`aerugo`，每一類都要有圖例文字與人數，不能只靠顏色分辨。手機改成直排時顏色不變。
 - **頁首淡彩**：`Page/Header` 的 Wash 變體在版畫上疊一層顏料（MULTIPLY、35%），依區域的意義選：
   - Basilica Ivlia（教室）＝銅綠。
