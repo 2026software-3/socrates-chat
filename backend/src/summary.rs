@@ -210,8 +210,11 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             // 總結成功時在同一個交易內登記單場雷達圖的第一次計算（S-04.3）：
             // 學生看到總結 ready 時，雷達圖已經是計算中，不會短暫顯示成「尚未計算」
             let mut radar = None;
+            let mut recommend = false;
             if updated > 0 {
                 on_conversation_completed(&mut tx, id, owner).await?;
+                recommend =
+                    crate::book_recommendations::claim_after_summary(&mut tx, id, &language).await;
                 radar = crate::radar::claim_after_summary(
                     &mut tx,
                     id,
@@ -222,6 +225,9 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             tx.commit().await?;
             if updated > 0 {
                 state.summary_translation_wake.notify_one();
+            }
+            if recommend {
+                crate::book_recommendations::spawn(state.clone(), id, 1);
             }
             // 計算在背景進行，失敗不影響總結
             if let Some(claimed) = radar {

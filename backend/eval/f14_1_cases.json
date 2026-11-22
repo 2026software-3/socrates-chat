@@ -1,0 +1,50 @@
+{
+  "zh-TW": {
+    "topic": "分配有限的獎學金時，公平的標準是什麼？",
+    "questions": ["應看家庭資源、現在的需要，還是個人選擇？"],
+    "fairness": "我想知道該補償誰的起跑點，也想知道選擇是否該由本人負責。",
+    "assistant": "有人會主張只看考試成績，不考慮背景。你怎麼看？",
+    "attribution": "我不確定。成績能說明多少？",
+    "sparse": "公平是什麼？",
+    "initial": "我原本認為大家領一樣多才公平。",
+    "revised": "想到有人差一點就得退學，我改成主張先保障就學需求。",
+    "summary": "學生最後支持先保障就學需求。",
+    "distribution": ["起跑點與公正", "討論如何評估家庭資源對教育機會的影響。"],
+    "responsibility": ["選擇與責任", "探討在資源不平等時，個人應為哪些選擇負責。"],
+    "duplicate": ["公平起跑的尺度", "討論如何評估家庭資源對教育機會的影響。"],
+    "irrelevant": ["公平交易冠軍", "一冊二手跑車的銷售指南，不談資源分配或教育機會。"],
+    "title_only": "公平的尺度：需要與機會"
+  },
+  "en": {
+    "topic": "What counts as fair when allocating a limited scholarship fund?",
+    "questions": ["Should family resources, current need, or individual choices matter?"],
+    "fairness": "I wonder whose starting point should be compensated, and which choices are someone's own responsibility.",
+    "assistant": "Some might say only exam scores should count, regardless of background. What do you think?",
+    "attribution": "I am unsure. How much can grades really show?",
+    "sparse": "What is fairness?",
+    "initial": "I originally thought it was fair for everyone to get the same amount.",
+    "revised": "Then I thought of someone nearly having to drop out. I now think help should first go to those who need it to stay enrolled.",
+    "summary": "The student ultimately supports helping those who need funding to stay enrolled first.",
+    "distribution": ["Starting Points and Justice", "Examines how unequal family resources shape educational opportunity."],
+    "responsibility": ["Choice and Responsibility", "Asks which choices people can be held responsible for under unequal conditions."],
+    "duplicate": ["Measuring a Fair Start", "Examines how unequal family resources shape educational opportunity."],
+    "irrelevant": ["The Fair Deal Champion", "A used sports car sales manual unrelated to the distribution of educational resources."],
+    "title_only": "A Measure of Fairness: Need and Opportunity"
+  },
+  "es": {
+    "topic": "¿Qué es justo al repartir un fondo limitado de becas?",
+    "questions": ["¿Importan los recursos familiares, la necesidad actual o las decisiones individuales?"],
+    "fairness": "Me pregunto a quién habría que compensar por su punto de partida y de qué decisiones debe responder cada persona.",
+    "assistant": "Alguien podría proponer que solo cuenten las notas, sin importar el contexto. ¿Qué te parece?",
+    "attribution": "No tengo una postura. ¿Cuánto pueden decirnos las notas?",
+    "sparse": "¿Qué significa la justicia?",
+    "initial": "Al principio pensaba que lo justo era que todas las personas recibieran lo mismo.",
+    "revised": "Pensé en quien casi tiene que abandonar sus estudios. Ahora daría prioridad a quien necesita la beca para seguir estudiando.",
+    "summary": "El estudiante finalmente defiende ayudar primero a quienes necesitan la beca para seguir estudiando.",
+    "distribution": ["Puntos de partida y justicia", "Examina cómo los recursos familiares desiguales afectan las oportunidades educativas."],
+    "responsibility": ["Decisión y responsabilidad", "Estudia de qué decisiones podemos responsabilizar a las personas en condiciones desiguales."],
+    "duplicate": ["Medir un comienzo justo", "Examina cómo los recursos familiares desiguales afectan las oportunidades educativas."],
+    "irrelevant": ["Campeón del trato justo", "Manual de venta de coches deportivos usados; no trata el reparto de recursos educativos."],
+    "title_only": "La medida de la justicia: necesidad y oportunidad"
+  }
+}

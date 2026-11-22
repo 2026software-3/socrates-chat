@@ -456,3 +456,74 @@ async fn related_lookup_failure_or_timeout_is_not_empty_success() {
     let source = source.with_provider_timeout(std::time::Duration::from_millis(1));
     assert!(source.related(&book).await.is_err());
 }
+
+#[tokio::test]
+async fn recommendation_lookup_preserves_only_verified_provider_work_ids() {
+    use socrates_chat_backend::book_sources::RecommendationSource;
+
+    let mut edition = edition_result();
+    edition["works"] = json!([{"key":"/works/OL42W"}]);
+    let (url, google, ol, _) = detailed_server(
+        StatusCode::OK,
+        json!({"items":[{"id":"relevant-volume","volumeInfo":{
+            "title":"Distributing opportunities","language":"en","description":"An introduction to social justice."
+        }}]}).to_string(),
+        StatusCode::OK,
+        ol_result(),
+        edition,
+    ).await;
+    let provider = provider(&url, true);
+    let books = provider
+        .search_recommendations(
+            RecommendationSource::GoogleBooks,
+            "\"Distributing opportunities\" \"Synthetic Author\"",
+        )
+        .await
+        .unwrap();
+    assert_eq!(books.len(), 1);
+    assert_eq!(books[0].book.title, "Distributing opportunities");
+    assert_eq!(ol.load(Ordering::SeqCst), 0);
+    let books = provider
+        .search_recommendations(
+            RecommendationSource::OpenLibrary,
+            "\"Synthetic ethics\" \"Synthetic Author\"",
+        )
+        .await
+        .unwrap();
+    assert_eq!(books.len(), 1);
+    assert_eq!(books[0].work_id.as_deref(), Some("/works/OL42W"));
+    assert_eq!(google.load(Ordering::SeqCst), 1);
+    assert_eq!(ol.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn recommendation_resolves_only_authors_linked_by_the_verified_edition() {
+    use socrates_chat_backend::book_sources::RecommendationSource;
+    let router = Router::new()
+        .route("/search.json", get(|| async { Json(ol_result()) }))
+        .route(
+            "/books/OL42M.json",
+            get(|| async {
+                let mut edition = edition_result();
+                edition["authors"] =
+                    json!([{"key":"/authors/OL7A"}, {"key":"https://invalid.test/author"}]);
+                Json(edition)
+            }),
+        )
+        .route(
+            "/authors/OL7A.json",
+            get(|| async { Json(json!({"key":"/authors/OL7A", "name":"Synthetic Author"})) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let books = provider(&url, true)
+        .search_recommendations(
+            RecommendationSource::OpenLibrary,
+            "\"Synthetic ethics\" \"Synthetic Author\"",
+        )
+        .await
+        .unwrap();
+    assert_eq!(books.len(), 1);
+    assert_eq!(books[0].book.authors.as_deref(), Some("Synthetic Author"));
+}

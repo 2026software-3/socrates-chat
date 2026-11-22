@@ -43,6 +43,12 @@ async fn main() {
         Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
         Err(_) => tracing::error!("failed to recover orphaned summaries"),
     }
+    if socrates_chat_backend::book_recommendations::recover_orphaned(&pool)
+        .await
+        .is_err()
+    {
+        tracing::error!("failed to recover orphaned book recommendations");
+    }
     // 重啟前卡住的雷達圖計算同樣標記為失敗；還在時限內的留給可能仍在執行的實例
     match radar_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
         Ok(0) => {}

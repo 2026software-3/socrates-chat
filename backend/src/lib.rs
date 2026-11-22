@@ -53,6 +53,7 @@ pub mod auth;
 pub mod auth_store;
 pub mod book_editions;
 pub mod book_import;
+pub mod book_recommendations;
 pub mod book_sources;
 pub mod book_store;
 pub mod book_works;
@@ -155,7 +156,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
-    /// 教師外部書目搜尋；可替換為測試來源，不讓測試呼叫真實服務。
+    /// 外部書目來源；可替換為測試來源，不讓測試呼叫真實服務。
     pub book_source: Arc<dyn book_sources::BookSource>,
     pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 正在產生維度的題目，避免同一題目重複呼叫 AI（F-03.4）。
@@ -340,6 +341,7 @@ pub fn app(state: AppState) -> Router {
         .merge(diagnostics::routes())
         .merge(service_monitor::routes())
         .merge(summary::routes())
+        .merge(book_recommendations::routes())
         .merge(argument_tree::routes())
         .merge(voice::routes())
         .merge(cascade::routes())

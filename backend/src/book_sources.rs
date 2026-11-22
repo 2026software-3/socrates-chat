@@ -1,4 +1,4 @@
-//! Teacher book lookup. Credentials stay server-side; provider failures never trigger fallback.
+//! Bibliographic lookup. Credentials stay server-side; provider failures never trigger fallback.
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,9 +25,28 @@ pub struct RelatedEdition {
     pub work_title: String,
     pub book: BookCandidate,
 }
+/// A recommendation search may have an independently verified provider work identifier.
+pub struct RecommendationEdition {
+    pub work_id: Option<String>,
+    pub book: BookCandidate,
+}
+
+#[derive(Clone, Copy)]
+pub enum RecommendationSource {
+    GoogleBooks,
+    OpenLibrary,
+}
+
 #[async_trait]
 pub trait BookSource: Send + Sync {
     async fn search(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError>;
+    async fn search_recommendations(
+        &self,
+        _source: RecommendationSource,
+        _query: &str,
+    ) -> Result<Vec<RecommendationEdition>, BookSourceError> {
+        Err(BookSourceError)
+    }
     async fn related(
         &self,
         _book: &crate::book_store::Book,
@@ -105,6 +124,25 @@ impl HttpBookSource {
         serde_json::from_slice(&bytes).map_err(|_| BookSourceError)
     }
     async fn lookup(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
+        let found: Vec<_> = self
+            .lookup_google(query)
+            .await?
+            .into_iter()
+            .filter(|b| matches_query(b, query))
+            .collect();
+        if !found.is_empty() {
+            return Ok(found);
+        }
+        // The courtesy queue, search and edition verification share one provider budget.
+        Ok(self
+            .openlibrary_with_budget(query, false)
+            .await?
+            .into_iter()
+            .map(|e| e.book)
+            .collect())
+    }
+
+    async fn lookup_google(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
         let key = self
             .key
             .as_deref()
@@ -129,32 +167,80 @@ impl HttpBookSource {
             None if payload.get("totalItems").and_then(Value::as_u64) == Some(0) => &empty,
             None => return Err(BookSourceError),
         };
-        let found: Vec<_> = items
-            .iter()
-            .filter_map(google_candidate)
-            .filter(|b| matches_query(b, query))
-            .collect();
-        if !found.is_empty() {
-            return Ok(found);
-        }
-        // The fallback is one provider operation: its courtesy queue, search and edition
-        // verification share a budget. Google consumed a separate budget before this point.
-        tokio::time::timeout(self.provider_timeout, self.lookup_openlibrary(query))
-            .await
-            .map_err(|_| BookSourceError)?
+        Ok(items.iter().filter_map(google_candidate).collect())
     }
 
-    async fn lookup_openlibrary(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
+    // Resolve an edition's author reference on the fixed provider host, never a URL from data.
+    // One author per edition keeps the search, three editions and authors within ten seconds.
+    async fn edition_author(&self, edition: &Value) -> Result<Option<String>, BookSourceError> {
+        let Some(key) = edition.pointer("/authors/0/key").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        if !key
+            .strip_prefix("/authors/OL")
+            .and_then(|s| s.strip_suffix('A'))
+            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Ok(None);
+        }
+        let mut url = reqwest::Url::parse(&self.openlibrary).map_err(|_| BookSourceError)?;
+        url.set_path(&format!("{key}.json"));
+        url.set_query(None);
+        let author = self.json(self.client.get(url), true).await?;
+        Ok(if author.get("key").and_then(Value::as_str) == Some(key) {
+            text(&author, "name")
+        } else {
+            None
+        })
+    }
+
+    async fn openlibrary_with_budget(
+        &self,
+        query: &str,
+        recommendation: bool,
+    ) -> Result<Vec<RecommendationEdition>, BookSourceError> {
+        tokio::time::timeout(
+            self.provider_timeout,
+            self.lookup_openlibrary(query, recommendation),
+        )
+        .await
+        .map_err(|_| BookSourceError)?
+    }
+
+    async fn lookup_openlibrary(
+        &self,
+        query: &str,
+        recommendation: bool,
+    ) -> Result<Vec<RecommendationEdition>, BookSourceError> {
         let payload=self.json(self.client.get(&self.openlibrary).query(&[("q",query),("limit","5"),("fields","key,title,author_name,editions,editions.key,editions.title,editions.language")]),true).await?;
         let docs = payload
             .get("docs")
             .and_then(Value::as_array)
             .ok_or(BookSourceError)?;
         let mut results = Vec::new();
-        for work in docs.iter().take(5) {
-            let Some(edition) = work.pointer("/editions/docs/0/key").and_then(Value::as_str) else {
-                continue;
-            };
+        // Keep one edition per work in the teacher search. Recommendation search can
+        // spend any remaining lookups on editions already returned under the same work.
+        let mut edition_keys = Vec::new();
+        for index in 0..if recommendation { 3 } else { 1 } {
+            for work in docs.iter().take(5) {
+                let key = work
+                    .pointer("/editions/docs")
+                    .and_then(Value::as_array)
+                    .and_then(|rows| rows.get(index))
+                    .and_then(|row| row.get("key"))
+                    .and_then(Value::as_str);
+                if let Some(key) = key {
+                    edition_keys.push((work, key));
+                }
+            }
+            if edition_keys.len() >= 5 {
+                break;
+            }
+        }
+        for (work, edition) in edition_keys
+            .into_iter()
+            .take(if recommendation { 3 } else { 5 })
+        {
             let code = edition.strip_prefix("/books/").unwrap_or(edition);
             if code.len() < 4
                 || !code.starts_with("OL")
@@ -176,7 +262,11 @@ impl HttpBookSource {
                 continue;
             };
             // Do not assign work-level authors/languages/ISBNs to a specific edition.
-            let authors = None;
+            let authors = if recommendation {
+                self.edition_author(&data).await?
+            } else {
+                None
+            };
             let candidate = BookCandidate {
                 source: "Open Library".into(),
                 source_id: format!("/books/{code}"),
@@ -196,7 +286,8 @@ impl HttpBookSource {
                 source_url: Some(format!("https://openlibrary.org/books/{code}")),
                 description: description(&data),
             };
-            if matches_query(&candidate, query)
+            if recommendation
+                || matches_query(&candidate, query)
                 || work
                     .get("author_name")
                     .and_then(Value::as_array)
@@ -206,7 +297,28 @@ impl HttpBookSource {
                             .any(|name| name.to_lowercase().contains(&query.to_lowercase()))
                     })
             {
-                results.push(candidate)
+                let work_id =
+                    work.get("key")
+                        .and_then(Value::as_str)
+                        .filter(|key| {
+                            key.strip_prefix("/works/OL")
+                                .and_then(|key| key.strip_suffix('W'))
+                                .is_some_and(|id| {
+                                    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+                                })
+                                && data.get("works").and_then(Value::as_array).is_some_and(
+                                    |works| {
+                                        works.iter().any(|work| {
+                                            work.get("key").and_then(Value::as_str) == Some(*key)
+                                        })
+                                    },
+                                )
+                        })
+                        .map(str::to_owned);
+                results.push(RecommendationEdition {
+                    work_id,
+                    book: candidate,
+                });
             }
         }
         Ok(results)
@@ -224,6 +336,25 @@ impl BookSource for HttpBookSource {
     }
     async fn search(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
         self.lookup(query.trim()).await
+    }
+    async fn search_recommendations(
+        &self,
+        source: RecommendationSource,
+        query: &str,
+    ) -> Result<Vec<RecommendationEdition>, BookSourceError> {
+        match source {
+            RecommendationSource::GoogleBooks => Ok(self
+                .lookup_google(query)
+                .await?
+                .into_iter()
+                .take(5)
+                .map(|book| RecommendationEdition {
+                    work_id: None,
+                    book,
+                })
+                .collect()),
+            RecommendationSource::OpenLibrary => self.openlibrary_with_budget(query, true).await,
+        }
     }
 }
 fn text(v: &Value, key: &str) -> Option<String> {
