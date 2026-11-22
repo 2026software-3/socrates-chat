@@ -42,6 +42,7 @@ pub mod accounts;
 pub mod achievement_admin;
 pub mod achievements;
 pub mod activity_store;
+pub mod admin_health;
 pub mod admin_teacher_keys;
 pub mod ai;
 pub mod ai_providers;
@@ -85,6 +86,7 @@ pub mod radar;
 pub mod radar_scoring;
 pub mod radar_store;
 pub mod reply;
+pub mod request_stats;
 pub mod roster;
 pub mod roster_store;
 pub mod service_monitor;
@@ -179,6 +181,13 @@ pub struct AppState {
     /// 把所有供應商端點換成這個位址（測試用，指向假服務）；正式環境一律是 `None`。
     pub(crate) route_endpoint: Option<String>,
     pub(crate) service_monitor: Arc<service_monitor::Monitor>,
+    /// 全站請求統計的記憶體累加（F-39.2）；每分鐘由背景工作寫入資料庫。
+    pub(crate) request_stats: Arc<request_stats::RequestStats>,
+    pub(crate) process_started_at: chrono::DateTime<chrono::Utc>,
+    /// 每日清理最近一次成功的時間（Unix 秒，0 表示尚未成功過）。
+    pub(crate) last_cleanup: Arc<std::sync::atomic::AtomicI64>,
+    /// 版本（git commit 短碼，由部署以 `GIT_COMMIT` 提供；未提供時用套件版本）。
+    pub(crate) version: String,
 }
 
 impl AppState {
@@ -200,6 +209,14 @@ impl AppState {
         Self {
             pool,
             service_monitor: Arc::new(service_monitor::Monitor::new(&config.monitored_services)),
+            request_stats: Arc::default(),
+            process_started_at: chrono::Utc::now(),
+            last_cleanup: Arc::default(),
+            version: std::env::var("GIT_COMMIT")
+                .ok()
+                .map(|v| v.trim().chars().take(12).collect::<String>())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             config: Arc::new(config),
             identity,
             // 所有出站 AI 請求先經過個資遮蔽（S-02.6）
@@ -228,6 +245,17 @@ impl AppState {
             key_rotation: Arc::default(),
             route_endpoint: None,
         }
+    }
+
+    /// 啟動每日清理與請求統計的每分鐘寫入（F-39.2）。
+    pub fn spawn_housekeeping(&self) {
+        diagnostics::spawn_retention(self.pool.clone(), self.last_cleanup.clone());
+        request_stats::spawn(self);
+    }
+
+    /// 立即把累加的請求統計寫入資料庫（背景工作每分鐘呼叫；測試也用）。
+    pub async fn flush_request_stats(&self) {
+        self.request_stats.flush(&self.pool).await;
     }
 
     pub fn with_voice(mut self, voice: Arc<dyn VoiceProvider>) -> Self {
@@ -316,6 +344,7 @@ pub fn app(state: AppState) -> Router {
         .merge(reply::routes())
         .merge(diagnostics::routes())
         .merge(service_monitor::routes())
+        .merge(admin_health::routes())
         .merge(summary::routes())
         .merge(argument_tree::routes())
         .merge(voice::routes())
@@ -354,7 +383,7 @@ pub fn app(state: AppState) -> Router {
             request_timeout,
         ))
         // 最外層：讓所有錯誤回應（含 CSRF 拒絕）都帶 request ID
-        .layer(middleware::from_fn(request_id))
+        .layer(middleware::from_fn_with_state(state.clone(), request_id))
         // 真正的最外層：所有回應（含錯誤與 CSRF 拒絕）都補上安全標頭
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -474,7 +503,7 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
 }
 
 /// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
-async fn request_id(req: Request, next: Next) -> Response {
+async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let request_uuid = uuid::Uuid::new_v4();
     let id = request_uuid.to_string();
     let method = req.method().clone();
@@ -506,6 +535,9 @@ async fn request_id(req: Request, next: Next) -> Response {
         res.headers_mut().insert("x-request-id", v);
     }
     let status = res.status().as_u16();
+    let duration_ms = started.elapsed().as_millis() as u64;
+    // 只累加全站合計；寫入在背景進行，不影響這個請求
+    state.request_stats.record(status, duration_ms);
     let error_code = res
         .extensions()
         .get::<error::ErrorCode>()
