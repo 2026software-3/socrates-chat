@@ -69,16 +69,17 @@ pub async fn prepare(
         for (key, source, changed) in &fields {
             if let Some(value) = supplied.get(language).and_then(|v| v.get(key)) {
                 values.insert(key.clone(), value.trim().to_owned());
-            } else if *changed {
-                jobs.push(async move {
-                    let value = translate(state, language, source).await;
-                    (language, key, value)
-                });
             } else if let Some(value) = old
+                .filter(|_| !*changed)
                 .and_then(|t| t.translations.get(language))
                 .and_then(|v| v.get(key))
             {
                 values.insert(key.clone(), value.clone());
+            } else {
+                jobs.push(async move {
+                    let value = translate(state, language, source).await;
+                    (language, key, value)
+                });
             }
         }
     }

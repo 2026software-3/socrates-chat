@@ -288,7 +288,7 @@ pub(crate) async fn list(
             None => None,
         };
     let rows = sqlx::query_as(concat!(
-        conversation_columns!("COALESCE(topic.translated, topic.original, conversations.title) AS title"),
+        conversation_columns!("COALESCE(topic.translated, conversations.title) AS title"),
         ", ($7 <> 'zh-TW' AND topic.original IS NOT NULL AND topic.translated IS NULL) AS title_pending FROM conversations ",
         "LEFT JOIN LATERAL (SELECT t.title AS original, t.translations -> ($7::text) ->> 'title' AS translated FROM topics t WHERE t.id = conversations.topic_id) topic ON true ",
         classroom_join!(),
