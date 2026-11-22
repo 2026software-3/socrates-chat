@@ -2,7 +2,7 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
     AppState, ai::OpenAiProvider, app, auth_store, catalog, complaints, config::Config, demo,
-    diagnostics, identity::GoogleIdentity, logging, password, radar_store, summary,
+    identity::GoogleIdentity, logging, password, radar_store, service_monitor, summary,
     summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -84,8 +84,9 @@ async fn main() {
     )
     .with_fallbacks(config.openai_fallback_models.clone())
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
-    diagnostics::spawn_retention(pool.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
+    state.spawn_housekeeping();
+    service_monitor::spawn(&state);
     // 重啟前寄到一半的客訴通知信：把逾時仍是 pending 的重新排入寄信
     match complaints::requeue_stale(&state).await {
         0 => {}

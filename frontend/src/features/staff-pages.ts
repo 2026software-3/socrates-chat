@@ -1,6 +1,7 @@
 // 教師與管理者的頁面集中成一個 chunk（由 features/staff.ts 延遲載入）：學生不必下載，
 // 教師與管理者第一次進入任一頁時一次載入，之後換頁不再等待。
 export { AdminHome } from '@/features/admin/admin-home'
+export { ServicesPage } from '@/features/admin/services-page'
 export { DiagnosticsPage } from '@/features/admin/diagnostics-page'
 export { TeachersPage } from '@/features/admin/teachers-page'
 export { TopicsPage } from '@/features/admin/topics-page'

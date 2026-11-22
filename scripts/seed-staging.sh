@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# （staging 專用版：對應 2026-11-13 後的 schema，活動題目在 activity_topics、claim_groups 有 topic_id）
+# （staging 專用版：對應目前的 schema，活動題目在 activity_topics、claim_groups 有 topic_id）
 # 匯入示範資料（發表與試用用，全部是合成資料），直接寫入資料庫，不呼叫 AI：
 #   - 教師 demo.teacher@example.com、學生 11500001A～11500010K（帳號由後端 DEMO_MODE=true 啟動時建立，
 #     見 backend/src/demo_accounts.json；其中 Emma 用英文、Lucía 用西班牙文，可示範教師端總結翻譯）

@@ -1,11 +1,10 @@
 # NTNU 正式環境在 msi_cubi 上的疊加檔。
-# 使用（在 ~/socrates-intel）：
+# 使用（在 /var/lib/socrates-prod；日常部署走自動部署，見 docs/ntnu-ops.md §4）：
 #   F="-f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml"
 #   docker compose $F --profile app --profile cascade --profile proxy --profile tunnel up -d --no-build
-# .env 與 .apikeylist 不進版控；.env 要有 CASCADE_INTEL_TAG、APP_IMAGE_TAG、CLOUDFLARE_TUNNEL_TOKEN、CASCADE_LLM_TOKEN。
+# .env 不進版控；.env 要有 CASCADE_INTEL_TAG、APP_IMAGE_TAG、CLOUDFLARE_TUNNEL_TOKEN、CASCADE_LLM_TOKEN。
 # 沒有 DEMO_MODE（測試堆疊的 browser-test/compose.yml 才有，不可對公網開放）。
-# 資料庫放命名 volume pgdata_v2；搬遷前的備份在 Windows 端 ~/ntnu-backups/，舊資料在 Windows 的 volume 與
-# msi_cubi 測試堆疊的 socrates-intel-test_pgdata（留作退路，不要 down -v）。
+# 資料庫放命名 volume pgdata_v2；舊的 socrates-ntnu_pgdata 留作退路，不要 down -v。
 name: socrates-ntnu
 
 services:
@@ -19,14 +18,14 @@ services:
     build: !reset null
     restart: unless-stopped
     environment:
-      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象（只認這一個）。2026-11-17 起是 https://se3socrateschat.ntnu.cc：
+      # 學生實際開啟的網址，也是 CSRF Origin 檢查的對象（只認這一個）。目前是 https://se3socrateschat.ntnu.cc：
       # 學校 DNS 的 CNAME → socrates.ray-dev.stream（Cloudflare for SaaS 自訂主機名稱，fallback origin 也是它）
       # → Cloudflare Tunnel（cloudflared → proxy → app）。tunnel 與 ray-dev.stream 在同一個 Cloudflare 帳號；
       # tunnel 不能直接用學校帳號下的 ntnu.cc（cfargotunnel.com 只代理同一帳號內的 DNS 記錄），所以才用 SaaS 自訂主機名稱。
       # 備用網址 https://socrates.ray-dev.stream 也能到同一個服務，但寫入請求會因 Origin 不符被 CSRF 擋掉。
       APP_BASE_URL: ${APP_PUBLIC_URL:?設定 .env 的 APP_PUBLIC_URL}
       COOKIE_SECURE: "true"
-      # compose 網段（nginx、cloudflared），由 .env 的 TRUSTED_PROXIES 設定（目前 172.16.0.0/12）；
+      # compose 網段（proxy、cloudflared），由 .env 的 TRUSTED_PROXIES 設定（目前 172.16.0.0/12）；
       # 後端由右往左跳過受信任代理取得 Cloudflare 帶來的真實來源。不要放整段 100.64.0.0/10，否則 tailnet 內任何裝置都能偽造來源
       # 必填：沒設就不要啟動。漏掉代理所在網段時，所有學生會共用同一個來源 IP，登入限流會把整班一起鎖住
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:?設定 .env 的 TRUSTED_PROXIES（compose 網段 172.16.0.0/12）}

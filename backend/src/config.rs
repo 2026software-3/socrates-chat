@@ -86,6 +86,7 @@ pub struct Config {
     /// 教室對話是否依教室設定走教師 key（F-40.5）。正式環境一律為 `true`，沒有對應的環境變數；
     /// 只有既有測試把它設為 `false`，讓教室內的對話繼續用假的系統 AI。
     pub classroom_ai_routing: bool,
+    pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
 }
 
 #[derive(Debug)]
@@ -240,6 +241,13 @@ impl Config {
     }
 
     pub fn from_env() -> Result<Self, ConfigError> {
+        let monitored_services = match env::var("MONITORED_SERVICES") {
+            Ok(value) => crate::service_monitor::MonitoredService::parse(&value)?,
+            Err(env::VarError::NotPresent) => Vec::new(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError("MONITORED_SERVICES must be UTF-8".into()));
+            }
+        };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
@@ -344,6 +352,7 @@ impl Config {
             smtp: crate::mail::SmtpConfig::from_env()?,
             teacher_key_cipher: teacher_key_cipher_from_env()?,
             classroom_ai_routing: true,
+            monitored_services,
             app_base_url,
         })
     }

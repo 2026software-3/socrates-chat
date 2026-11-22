@@ -4,6 +4,7 @@ import { lazyPage } from '@/app/lazy-page'
 const load = () => import('@/features/staff-pages')
 
 export const AdminHome = lazyPage(load, 'AdminHome')
+export const ServicesPage = lazyPage(load, 'ServicesPage')
 export const DiagnosticsPage = lazyPage(load, 'DiagnosticsPage')
 export const TeachersPage = lazyPage(load, 'TeachersPage')
 export const TopicsPage = lazyPage(load, 'TopicsPage')

@@ -5,7 +5,7 @@
 # 映像用獨立的 tag，不會覆蓋 NVIDIA 版的 socrates-cascade:latest；換版時改 CASCADE_INTEL_TAG。
 # 主機需求：核心已載入 xe（iGPU）與 intel_vpu（NPU），/dev/dri/renderD128 與 /dev/accel/accel0 存在；
 # 容器內的使用者要能存取這兩個裝置，RENDER_GID 填主機 render 群組的 gid（`getent group render`，msi_cubi 是 991）。
-# 評測與取捨見 docs/ntnu-ops.md 的 msi_cubi 一節。
+# 元件與已知風險見 docs/ntnu-ops.md §13。
 x-intel-device-access: &intel-gid
   group_add: ["${RENDER_GID:-991}"]
 

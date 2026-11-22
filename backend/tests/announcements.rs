@@ -37,6 +37,17 @@ async fn call(
     (status, bytes)
 }
 
+/// 等到 AI 已收到至少 `n` 個請求，代表慢的那次修改已讀完快照並開始翻譯。
+async fn wait_for_ai_requests(ai: &FakeAi, n: usize) {
+    for _ in 0..200 {
+        if ai.requests.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("AI 沒有在時限內收到 {n} 個請求");
+}
+
 /// 建立一則公告並回傳它；AI 腳本決定翻譯成功或失敗。
 async fn create(app: &axum::Router, admin: &str, body: Value) -> Value {
     let (status, v) = call(app, "POST", ADMIN_LIST, Some(admin), Some(body)).await;
@@ -278,6 +289,121 @@ async fn editing_zh_tw_translates_again_and_overwrites_manual_translations(pool:
     assert_eq!(v["text_zh_tw"], "再見");
     assert_eq!(v["text_en"], "Bye");
     assert_eq!(v["text_es"], "Adiós");
+}
+
+/// 管理者 A 改內文、等翻譯期間，管理者 B 停用公告並改結束時間；A 完成後不能把 B 的變更蓋回去（#527）。
+#[sqlx::test]
+async fn editing_text_during_translation_keeps_concurrent_changes(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Paced(vec!["Bye"], pace),
+        Paced(vec!["Adiós"], pace),
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    let slow = {
+        let (app, admin, path) = (app.clone(), a.admin.clone(), path.clone());
+        tokio::spawn(async move {
+            call(
+                &app,
+                "PATCH",
+                &path,
+                Some(&admin),
+                Some(json!({"text_zh_tw": "再見"})),
+            )
+            .await
+        })
+    };
+    wait_for_ai_requests(&ai, 3).await;
+    let ends = at(3600);
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"enabled": false, "ends_at": ends})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let concurrent_ends = v["ends_at"].clone();
+
+    let (s, v) = slow.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text_zh_tw"], "再見");
+    assert_eq!(v["text_en"], "Bye");
+    assert_eq!(v["text_es"], "Adiós");
+    assert_eq!(v["enabled"], false, "停用被舊快照蓋回啟用");
+    assert_eq!(v["ends_at"], concurrent_ends, "結束時間被舊快照蓋回");
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["enabled"], false);
+    assert_eq!(list[0]["ends_at"], concurrent_ends);
+}
+
+/// 合併兩次修改後的起訖時間若互相衝突，回 400 invalid_period，而不是寫入失敗變成 500。
+#[sqlx::test]
+async fn a_period_made_invalid_by_a_concurrent_change_is_rejected(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Paced(vec!["Bye"], pace),
+        Paced(vec!["Adiós"], pace),
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好", "starts_at": at(-60)}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    // A：開始時間延到兩小時後（當下沒有結束時間，所以合法）
+    let slow = {
+        let (app, admin, path) = (app.clone(), a.admin.clone(), path.clone());
+        tokio::spawn(async move {
+            call(
+                &app,
+                "PATCH",
+                &path,
+                Some(&admin),
+                Some(json!({"text_zh_tw": "再見", "starts_at": at(7200)})),
+            )
+            .await
+        })
+    };
+    wait_for_ai_requests(&ai, 3).await;
+    // B：結束時間設在一小時後，早於 A 要設的開始時間
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"ends_at": at(3600)})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let concurrent_ends = v["ends_at"].clone();
+
+    let (s, v) = slow.await.unwrap();
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["code"], "invalid_period", "{v}");
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["text_zh_tw"], "你好");
+    assert_eq!(list[0]["ends_at"], concurrent_ends);
 }
 
 #[sqlx::test]
@@ -779,4 +905,50 @@ async fn maintenance_also_blocks_the_internal_cascade_endpoint(pool: PgPool) {
     )
     .await;
     assert_json_error(res, StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
+}
+
+/// 重試翻譯進行期間管理者手動存了譯文：重試完成後不能把手動譯文蓋掉。
+#[sqlx::test]
+async fn a_late_retry_does_not_overwrite_a_manual_translation(pool: PgPool) {
+    let pace = Duration::from_millis(300);
+    let ai = FakeAi::with(vec![
+        Fail,
+        Fail,
+        Paced(vec!["AI en"], pace),
+        Paced(vec!["AI es"], pace),
+    ]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "稍後翻譯"}),
+    )
+    .await;
+    let id: uuid::Uuid = made["id"].as_str().unwrap().parse().unwrap();
+    let state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        test_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    let retry = tokio::spawn(async move {
+        socrates_chat_backend::announcements::retry_pending_translation(&state, id).await;
+    });
+    wait_for_ai_requests(&ai, 3).await;
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &format!("{ADMIN_LIST}/{id}"),
+        Some(&a.admin),
+        Some(json!({"text_en": "Manual"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    retry.await.unwrap();
+
+    let (_, list) = call(&app, "GET", ADMIN_LIST, Some(&a.admin), None).await;
+    assert_eq!(list[0]["text_en"], "Manual", "手動譯文被重試蓋掉");
+    assert_eq!(list[0]["text_es"], "AI es");
+    assert_eq!(list[0]["pending_languages"], json!([]));
 }
