@@ -65,21 +65,17 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       DATABASE_URL: postgres://socrates:socrates@localhost:5432/socrates
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: socrates
-          POSTGRES_PASSWORD: socrates
-          POSTGRES_DB: socrates
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U socrates"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 15
     steps:
+      # 測試用拋棄式 Postgres：關 fsync、資料放 tmpfs。sqlx::test 每個測試都建一個資料庫並跑全部 migration，
+      # 瓶頸是磁碟同步；services: 無法傳 -c 參數，所以改用步驟啟動。先在背景起來，與下面的工具安裝並行暖機。
+      - name: Start Postgres (no fsync, tmpfs)
+        working-directory: .
+        run: |
+          docker run -d --name pg --tmpfs /var/lib/postgresql/data:rw \
+            -e POSTGRES_USER=socrates -e POSTGRES_PASSWORD=socrates -e POSTGRES_DB=socrates \
+            -p 127.0.0.1:5432:5432 postgres:16 \
+            -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
+            -c max_connections=600 -c shared_buffers=1GB -c checkpoint_timeout=1h -c max_wal_size=8GB
       - uses: actions/checkout@v7
       # rustup installs the toolchain pinned in backend/rust-toolchain.toml
       - run: rustup show active-toolchain || rustup toolchain install
@@ -90,6 +86,11 @@ jobs:
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
+      - name: Wait for Postgres
+        working-directory: .
+        run: |
+          for i in $(seq 1 60); do docker exec pg pg_isready -U socrates && exit 0; sleep 2; done
+          docker logs pg; exit 1
       # 取代 `cargo test`：nextest 讓各測試檔並行執行（cargo test 是一個檔案接一個檔案），
       # 同時量測覆蓋率；目前只報告，不設門檻（見 docs/specs/decisions.md）。
       # 整合測試用 sqlx::test，每個測試各自一個資料庫，可安全並行。
