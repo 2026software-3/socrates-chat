@@ -584,7 +584,15 @@ async fn topic_translation_uses_display_language_and_preserves_manual_edits(pool
         send(&app, get("/api/catalog", None)).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    let before = ai.topic_translation_requests.lock().unwrap().len();
+    let en_requests = || {
+        ai.topic_translation_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.system.contains("into en."))
+            .count()
+    };
+    let before = en_requests();
     for patch in [correction, json!({"title":"選擇","is_active":true})] {
         let result = json_body(
             send(
@@ -596,7 +604,7 @@ async fn topic_translation_uses_display_language_and_preserves_manual_edits(pool
         .await;
         assert_eq!(result["translations"]["en"]["title"], "Choosing");
     }
-    assert_eq!(ai.topic_translation_requests.lock().unwrap().len(), before);
+    assert_eq!(en_requests(), before);
 }
 
 #[sqlx::test(migrations = false)]
@@ -650,4 +658,86 @@ async fn existing_topic_and_conversation_survive_translation_migration(pool: PgP
         .unwrap();
     assert_eq!(topic["guiding_questions"], json!(["為什麼？"]));
     assert_eq!(topic["pending_questions"], json!([0]));
+}
+
+#[sqlx::test]
+async fn conversation_list_keeps_saved_title_after_topic_rename(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let id = create_topic(&app, &a, "舊題名").await;
+    let conversation = json_body(
+        send(
+            &app,
+            json_req(
+                "POST",
+                "/api/conversations",
+                Some(&a.student),
+                Some(json!({"topic_id": id})),
+            ),
+        )
+        .await,
+    )
+    .await;
+    let renamed = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/topics/{id}"),
+            Some(&a.teacher),
+            Some(json!({"title": "新題名"})),
+        ),
+    )
+    .await;
+    assert_eq!(renamed.status(), StatusCode::OK);
+    let list = json_body(send(&app, get("/api/conversations", Some(&a.student))).await).await;
+    let detail_path = format!(
+        "/api/conversations/{}",
+        conversation["id"].as_str().unwrap()
+    );
+    let detail = json_body(send(&app, get(&detail_path, Some(&a.student))).await).await;
+    assert_eq!(list["items"][0]["title"], "舊題名");
+    assert_eq!(list["items"][0]["title"], detail["title"]);
+}
+
+#[sqlx::test]
+async fn missing_translation_is_retried_on_later_patch(pool: PgPool) {
+    let ai = FakeAi::with(vec![]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let topic = json_body(
+        send(
+            &app,
+            json_req(
+                "POST",
+                "/api/topics",
+                Some(&a.teacher),
+                Some(json!({"title": "選擇"})),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(topic["translations"]["en"], json!({}));
+    let id = topic["id"].as_str().unwrap();
+    for _ in 0..2 {
+        ai.topic_translation_scripts
+            .lock()
+            .unwrap()
+            .push_back(Script::Reply(vec![r#""Choice""#]));
+    }
+    let patched = json_body(
+        send(
+            &app,
+            json_req(
+                "PATCH",
+                &format!("/api/topics/{id}"),
+                Some(&a.teacher),
+                Some(json!({"description": "x"})),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(patched["translations"]["en"]["title"], "Choice");
+    assert_eq!(patched["translations"]["es"]["title"], "Choice");
 }
