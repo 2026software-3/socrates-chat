@@ -41,6 +41,12 @@ services:
     environment:
       DATABASE_URL: postgres://socrates:socrates@db:5432/socrates
       RUN_MIGRATIONS: "true"
+      # 後台「服務」分頁的監控清單（S-09.3）。優先序：
+      #   1. .env 自己設了 MONITORED_SERVICES 就用它（維運可手動覆蓋）；
+      #   2. 否則 .env 有 CASCADE_REALTIME_URL（即啟用 cascade）就自動帶入下方四項；
+      #   3. 兩者都沒有則為空字串，後端視為未設定，只檢查 PostgreSQL。
+      # 位址與各容器 healthcheck 一致；改容器埠或健康檢查路徑時要一起改這裡。
+      MONITORED_SERVICES: '${MONITORED_SERVICES:-${CASCADE_REALTIME_URL:+[{"name":"tts","label":{"zh-TW":"語音合成","en":"Speech synthesis","es":"Síntesis de voz"},"url":"http://cascade-tts:8100/health","impact":{"zh-TW":"語音回覆","en":"Voice replies","es":"Respuestas de voz"}},{"name":"asr","label":{"zh-TW":"語音辨識","en":"Speech recognition","es":"Reconocimiento de voz"},"url":"http://cascade-whisper:8101/openapi.json","impact":{"zh-TW":"語音輸入","en":"Voice input","es":"Entrada de voz"}},{"name":"adapter","label":{"zh-TW":"語音轉接層","en":"Voice adapter","es":"Adaptador de voz"},"url":"http://cascade-adapter:8103/v1/models","impact":{"zh-TW":"語音辨識與語音回覆","en":"Speech recognition and voice replies","es":"Reconocimiento y respuestas de voz"}},{"name":"cascade","label":{"zh-TW":"即時語音對話","en":"Realtime voice","es":"Voz en tiempo real"},"url":"http://cascade:8110/health","impact":{"zh-TW":"即時語音對話","en":"Realtime voice conversations","es":"Conversaciones de voz en tiempo real"}}]}}'
     depends_on:
       db:
         condition: service_healthy
