@@ -239,19 +239,38 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
         Some(ref qs) => Some(validate_guiding_questions(qs)?),
         None => None,
     };
-    let old: Topic = sqlx::query_as("SELECT id, title, description, is_active, guiding_questions, translations FROM topics WHERE id = $1")
-        .bind(id).fetch_optional(&state.pool).await?.ok_or_else(ApiError::not_found)?;
-    let translations = prepare(
+    let title = p.title.as_deref().map(str::trim).map(str::to_owned);
+    let first = fetch_topic(&state.pool, id, false).await?;
+    let mut translations = prepare(
         state,
-        Some(&old),
-        p.title.as_deref().map(str::trim).unwrap_or(&old.title),
+        Some(&first),
+        title.as_deref().unwrap_or(&first.title),
         guiding_questions
             .as_deref()
-            .unwrap_or(&old.guiding_questions),
-        p.translations,
+            .unwrap_or(&first.guiding_questions),
+        p.translations.clone(),
     )
     .await?;
-    sqlx::query_as(
+    // 翻譯可能很久，所以在鎖外進行；寫入前才鎖列重讀，若期間文字或翻譯被改過，
+    // 只補翻譯新增或變動的欄位。
+    let mut tx = state.pool.begin().await?;
+    let locked = fetch_topic(&mut *tx, id, true).await?;
+    if locked.title != first.title
+        || locked.guiding_questions != first.guiding_questions
+        || locked.translations != first.translations
+    {
+        translations = prepare(
+            state,
+            Some(&locked),
+            title.as_deref().unwrap_or(&locked.title),
+            guiding_questions
+                .as_deref()
+                .unwrap_or(&locked.guiding_questions),
+            p.translations,
+        )
+        .await?;
+    }
+    let updated = sqlx::query_as(
         "UPDATE topics SET translations = $6, title = COALESCE($2, title), description = COALESCE($3, description),
                 is_active = COALESCE($4, is_active),
                 guiding_questions = COALESCE($5::text[], guiding_questions),
@@ -269,22 +288,35 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
                         OR (($2::text IS NULL OR $2 = title) AND ($5::text[] IS NULL OR $5 = guiding_questions))
                     THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
-         WHERE id = $1 AND title = $7 AND guiding_questions = $8 AND translations = $9
+         WHERE id = $1
          RETURNING id, title, description, is_active, guiding_questions, translations",
     )
     .bind(id)
-    .bind(p.title.map(|t| t.trim().to_string()))
+    .bind(title)
     .bind(p.description)
     .bind(p.is_active)
     .bind(guiding_questions)
     .bind(sqlx::types::Json(translations))
-    .bind(old.title)
-    .bind(old.guiding_questions)
-    .bind(sqlx::types::Json(old.translations))
-    .fetch_optional(&state.pool)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(updated))
+}
+
+async fn fetch_topic<'e>(
+    conn: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    lock: bool,
+) -> Result<Topic, ApiError> {
+    sqlx::query_as(if lock {
+        "SELECT id, title, description, is_active, guiding_questions, translations FROM topics WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT id, title, description, is_active, guiding_questions, translations FROM topics WHERE id = $1"
+    })
+    .bind(id)
+    .fetch_optional(conn)
     .await?
-    .map(Json)
-    .ok_or_else(|| ApiError::conflict("topic_changed", "題目已變更，請重新載入"))
+    .ok_or_else(ApiError::not_found)
 }
 
 /// 內建題目的固定 ID：重複啟動時不會重複建立，教師改動或停用後也不會被覆寫。

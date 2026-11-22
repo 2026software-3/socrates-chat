@@ -741,3 +741,49 @@ async fn missing_translation_is_retried_on_later_patch(pool: PgPool) {
     assert_eq!(patched["translations"]["en"]["title"], "Choice");
     assert_eq!(patched["translations"]["es"]["title"], "Choice");
 }
+
+#[sqlx::test]
+async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
+    let ai = FakeAi::with(vec![]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let a = seed_actors(&app).await;
+    let id = create_topic(&app, &a, "選擇").await;
+    for _ in 0..2 {
+        ai.topic_translation_scripts
+            .lock()
+            .unwrap()
+            .push_back(Script::Paced(
+                vec![r#""New""#],
+                std::time::Duration::from_millis(600),
+            ));
+    }
+    let path = format!("/api/topics/{id}");
+    let slow = send(
+        &app,
+        json_req(
+            "PATCH",
+            &path,
+            Some(&a.teacher),
+            Some(json!({"title": "新題名"})),
+        ),
+    );
+    let fast = async {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        send(
+            &app,
+            json_req(
+                "PATCH",
+                &path,
+                Some(&a.teacher),
+                Some(json!({"guiding_questions": ["為什麼？"]})),
+            ),
+        )
+        .await
+    };
+    let (slow, fast) = tokio::join!(slow, fast);
+    assert_eq!(fast.status(), StatusCode::OK);
+    assert_eq!(slow.status(), StatusCode::OK);
+    let topic = json_body(slow).await;
+    assert_eq!(topic["title"], "新題名");
+    assert_eq!(topic["guiding_questions"], json!(["為什麼？"]));
+}
