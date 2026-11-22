@@ -48,6 +48,8 @@ services:
       COOKIE_SECURE: "true"
       TRUSTED_PROXIES: 172.16.0.0/12
       DEMO_MODE: ${STAGING_DEMO_MODE:-false}
+      # 後台服務健康度顯示的版本；映像標籤 staging-<sha12> 由後端取最後一段（F-39）
+      GIT_COMMIT: ${STAGING_APP_IMAGE_TAG}
     # 固定位址：Pingap 沿用 DNS 記錄的 TTL（Docker 內建 DNS 是 600 秒），staging-app 換 IP 時代理要很久才跟上（S-16）。
     # 位址固定在獨立的 edge 網路（只有 staging-app 與 staging-proxy），其他容器只從下方 ip_range 配置，不會佔用這個位址。
     # 這樣 default 網路（staging-db 在上面）不必為了固定位址而重建，db 不會被停（見 docs/ntnu-ops.md §2）。
