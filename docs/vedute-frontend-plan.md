@@ -143,7 +143,9 @@ skills 是 Claude 專用；跨 agent 的硬規則一律寫在 AGENTS.md。
 - **Bombadil（UI 屬性測試）、TLA+／Lean**：太新或成本高；等 Playwright 穩定後再試。
 - **自動開 PR／自動合併機器人**：等第 1、2 層清完再開，避免把現有的壞寫法大量複製。
 
-## 5. Issue 結構（草案，開之前再確認）
+## 5. Issue 結構
+
+> 2026-11-23 已開：規格 #667（S-11.6，Playwright）、父 Issue #668（F-41 Vedute 前端改版，sub-issue #669–#690，Milestone M7）。實際編號改為 F-41.1–F-41.22；`.claude/` 不進版控，T-3 改成 F-41.8（AGENTS.md、PR 範本、`docs/agent-setup.md`）；共享 agent 設定的規格 Issue 不開；雲端 AI review 未決定。下表保留為原始草案。
 
 Milestone：**Vedute 前端實作**。
 
