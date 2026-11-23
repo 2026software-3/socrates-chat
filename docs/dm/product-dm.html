@@ -106,11 +106,16 @@
 
   /* ---------- 第 2 頁 ---------- */
   .p2-head {
-    background: var(--navy-deep); color: #fff; padding: 11mm 18mm 8mm;
+    background: var(--navy-deep); color: #fff; padding: 9mm 18mm 7mm;
     display: flex; justify-content: space-between; align-items: flex-end;
   }
-  .p2-head h1 { font-size: 22pt; letter-spacing: .05em; }
+  .p2-head h1 { font-size: 19pt; letter-spacing: .04em; white-space: nowrap; }
   .p2-head h1 em { font-style: normal; color: var(--amber); }
+  .go { display: flex; align-items: center; gap: 4mm; }
+  .go-text { display: flex; flex-direction: column; align-items: flex-end; gap: 1.5mm; }
+  .go-text small { font-size: 9pt; color: #aab4d6; }
+  .qr { width: 25mm; height: 25mm; background: #fff; padding: 3mm; border-radius: 2.5mm; flex: none; }
+  .qr svg { display: block; width: 100%; height: 100%; }
   .p2-head .url {
     background: var(--amber); color: var(--navy-deep); font-weight: 700; font-size: 11.5pt;
     padding: 2mm 5mm; border-radius: 99px;
@@ -198,7 +203,10 @@
 <section class="page">
   <div class="p2-head">
     <h1>怎麼開始使用？<em> 四步上手</em></h1>
-    <span class="url">se3socrateschat.ntnu.cc</span>
+    <div class="go">
+      <div class="go-text"><span class="url">se3socrateschat.ntnu.cc</span><small>掃描 QR code 或輸入網址</small></div>
+      <div class="qr"><svg shape-rendering="crispEdges" role="img" aria-label="前往 se3socrateschat.ntnu.cc 的 QR code" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><path stroke="#141d3d" d="M0 0.5h7m2 0h1m3 0h1m1 0h2m5 0h7m-29 1h1m5 0h1m2 0h3m2 0h7m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m4 0h2m1 0h4m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h2m1 0h1m1 0h2m1 0h3m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m1 0h1m2 0h3m3 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h1m1 0h2m1 0h1m1 0h1m3 0h1m2 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-19 1h3m1 0h1m2 0h2m1 0h1m-20 1h1m2 0h1m1 0h1m1 0h1m1 0h2m1 0h1m1 0h1m1 0h5m1 0h2m1 0h1m-27 1h1m1 0h1m1 0h1m3 0h1m3 0h1m5 0h1m2 0h4m1 0h3m-27 1h2m1 0h2m5 0h3m6 0h1m3 0h1m2 0h1m-28 1h1m1 0h2m2 0h3m2 0h3m2 0h2m1 0h2m1 0h1m1 0h1m1 0h2m-27 1h5m6 0h1m3 0h1m1 0h2m2 0h1m4 0h1m-25 1h2m2 0h1m1 0h4m2 0h3m3 0h1m1 0h1m1 0h1m1 0h1m-27 1h1m2 0h2m2 0h1m1 0h3m4 0h1m1 0h1m1 0h1m1 0h1m3 0h1m-27 1h2m4 0h4m2 0h2m1 0h1m1 0h1m1 0h3m1 0h1m1 0h2m-26 1h1m1 0h2m1 0h1m1 0h3m2 0h1m1 0h1m1 0h1m7 0h1m-28 1h4m4 0h1m3 0h1m1 0h1m2 0h2m3 0h5m1 0h1m-25 1h4m1 0h1m2 0h1m2 0h2m1 0h1m4 0h1m1 0h2m1 0h1m-27 1h4m2 0h1m2 0h3m1 0h6m2 0h3m-26 1h2m2 0h1m1 0h5m1 0h1m4 0h1m2 0h6m1 0h2m-21 1h1m2 0h1m1 0h4m1 0h1m1 0h1m3 0h1m1 0h3m-29 1h7m2 0h3m1 0h4m2 0h2m1 0h1m1 0h1m3 0h1m-29 1h1m5 0h1m3 0h2m1 0h1m2 0h5m3 0h2m2 0h1m-29 1h1m1 0h3m1 0h1m1 0h4m1 0h2m2 0h1m1 0h6m-25 1h1m1 0h3m1 0h1m3 0h2m2 0h1m3 0h1m4 0h1m1 0h3m-28 1h1m1 0h3m1 0h1m2 0h2m1 0h1m2 0h1m3 0h3m3 0h4m-29 1h1m5 0h1m1 0h1m2 0h2m3 0h3m1 0h1m2 0h1m1 0h1m1 0h2m-29 1h7m3 0h2m2 0h1m1 0h2m2 0h1m1 0h1m1 0h2m1 0h1"/></svg></div>
+    </div>
   </div>
 
   <div class="cols">
