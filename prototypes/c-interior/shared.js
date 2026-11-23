@@ -153,27 +153,64 @@
     const last = talk.length - 1;
     col.innerHTML = talk.map((t, i) => {
       const [who, text] = t;
-      if (who === 'thinking') return `<div class="turn ai thinking" aria-live="polite"><span class="who">蘇格拉底　INTER.</span><span>正在想下一個問題<span class="dots"></span></span></div>`;
+      if (who === 'thinking') return `<div class="turn ai thinking"><span class="who">蘇格拉底　INTER.</span><span class="shimmer">正在想下一個問題</span></div>`;
+      if (who === 'stream') return `<div class="turn ai streaming" aria-busy="true"><span class="who">蘇格拉底　INTER.</span><span class="stream-text"></span></div>`;
       const cur = who === 'ai' && i === last ? ' current' : '';
       return `<div class="turn ${who}${cur}"><span class="who">${who === 'ai' ? '蘇格拉底　INTER.' : 'DISC.　你'}</span><span>${esc(text)}</span></div>`;
     }).join('');
     if (cfg.onTalk) cfg.onTalk(rounds, talk);
   }
 
+  /* Reply in two phases, like a commercial LLM: thinking shimmer until the first token,
+     then the same bubble grows at a steady pace with a blinking caret (DESIGN.md Dialogue). */
+  let replying = false;
+  function setComposer(on) {
+    const ta = $('#composer-input'), btn = $('#send');
+    if (!ta) return;
+    ta.disabled = !on; if (btn) btn.disabled = !on;
+    ta.placeholder = on ? '寫下你的回答與理由…' : '蘇格拉底回覆後就可以繼續輸入';
+  }
+  const nearBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+  function streamReply(full) {
+    talk.pop(); talk.push(['stream', '']); renderTalk();
+    const el = $('#talk-col .streaming .stream-text');
+    const caret = document.createElement('i'); caret.className = 'caret'; caret.setAttribute('aria-hidden', 'true');
+    el.append(caret);
+    // fake SSE: bursty chunks arrive; the view drains them at ~60 chars/s, faster when far behind
+    let received = '', shown = 0;
+    const chunks = full.match(/.{1,9}/gu) || [];
+    let ci = 0;
+    const net = setInterval(() => { if (ci < chunks.length) received += chunks[ci++]; else clearInterval(net); }, 90 + Math.random() * 160);
+    let lastT = performance.now(), acc = 0;
+    const tick = now => {
+      const behind = received.length - shown;
+      acc += (now - lastT) / 1000 * (behind > 40 ? 140 : 60); lastT = now;
+      const n = Math.min(behind, Math.floor(acc));
+      if (n > 0) {
+        acc -= n;
+        const span = document.createElement('span'); span.className = 'tok';
+        span.textContent = [...received].slice(shown, shown + n).join('');
+        el.insertBefore(span, caret); shown += n;
+        if (nearBottom()) window.scrollTo({ top: document.body.scrollHeight });
+      }
+      if (shown < [...full].length) return requestAnimationFrame(tick);
+      talk.pop(); talk.push(['ai', full]); renderTalk();
+      const sr = $('#talk-status'); if (sr) sr.textContent = '蘇格拉底：' + full;
+      replying = false; setComposer(true);
+    };
+    requestAnimationFrame(tick);
+  }
+
   function send(text) {
     text = text.trim();
-    if (!text) return;
+    if (!text || replying) return;
+    replying = true; setComposer(false);
     talk.push(['me', text]);
     talk.push(['thinking', '']);
     rounds += 1;
     renderTalk();
     scrollTalk();
-    setTimeout(() => {
-      talk.pop();
-      talk.push(['ai', FOLLOWUPS[(rounds - 6) % FOLLOWUPS.length]]);
-      renderTalk();
-      scrollTalk();
-    }, 1400);
+    setTimeout(() => streamReply(FOLLOWUPS[(rounds - 6) % FOLLOWUPS.length]), 1600);
   }
   const scrollTalk = () => window.scrollTo({ top: document.body.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 
