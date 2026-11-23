@@ -43,7 +43,26 @@ cargo test --release --test load_test -- --ignored --nocapture
 
 **一般 API 整體 p95：159.0 ms（門檻 500 ms），錯誤 0 次，達標。**
 
-### 補充情境
+### 另一台機器：開發者筆電（同一情境）
+
+環境：MSI 筆電，16 執行緒；WSL2；PostgreSQL 跑在 Docker Desktop 的容器（`docker compose`），後端與負載產生器在 WSL 內；release 建置。
+
+| 請求 | 次數 | 錯誤 | p50 (ms) | p95 (ms) | 最大 (ms) |
+| --- | --- | --- | --- | --- | --- |
+| 登入（Google callback） | 60 | 0 | 271.5 | 300.7 | 317.8 |
+| GET /api/me | 60 | 0 | 85.5 | 114.7 | 115.3 |
+| GET /api/catalog | 60 | 0 | 51.6 | 63.6 | 64.4 |
+| POST /api/conversations | 60 | 0 | 63.0 | 82.8 | 83.9 |
+| POST messages：學生訊息已保存 | 180 | 0 | 101.2 | 138.3 | 167.9 |
+| POST messages：串流結束（含假 AI） | 180 | 0 | 156.5 | 189.9 | 215.7 |
+| GET /api/conversations/{id} | 60 | 0 | 58.1 | 88.5 | 110.6 |
+| GET /api/conversations | 120 | 0 | 23.4 | 74.1 | 79.3 |
+| POST /api/conversations/{id}/end | 60 | 0 | 67.4 | 138.6 | 139.4 |
+| GET /api/conversations/{id}/summary | 60 | 0 | 129.0 | 138.0 | 148.5 |
+
+**一般 API 整體 p95：267.5 ms（門檻 500 ms），錯誤 0 次，達標。** 比雲端容器慢，主要差在登入（p95 約 300 ms）。推測是資料庫在 Docker Desktop 的虛擬機裡，每次查詢多一段跨虛擬機的網路，查詢次數多的登入流程影響最大；未另外驗證。
+
+### 補充情境（雲端容器）
 
 | 情境 | 一般 API 整體 p95 | 錯誤 | 說明 |
 | --- | --- | --- | --- |
