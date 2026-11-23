@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>蘇格拉底式對話學習系統｜產品介紹 DM</title>
+<style>
+  @page { size: A4; margin: 0; }
+  :root {
+    --ink: #1c2540;
+    --muted: #5a6480;
+    --navy: #1f2d5c;
+    --navy-deep: #141d3d;
+    --amber: #f2a93b;
+    --amber-soft: #fff3dc;
+    --paper: #fbf9f4;
+    --line: #e4dfd2;
+    --teal: #1f7a7a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: #cfd3dc; }
+  body {
+    font-family: "Noto Sans TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    color: var(--ink);
+    line-height: 1.6;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page {
+    width: 210mm; height: 297mm; margin: 12px auto;
+    background: var(--paper); position: relative; overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    page-break-after: always; break-after: page;
+  }
+  @media print {
+    html { background: none; }
+    .page { margin: 0; box-shadow: none; }
+  }
+
+  /* ---------- 第 1 頁 ---------- */
+  .hero {
+    background: linear-gradient(160deg, var(--navy-deep), var(--navy) 70%);
+    color: #fff; padding: 14mm 18mm 12mm; position: relative; height: 98mm;
+  }
+  .hero::after {
+    content: ""; position: absolute; right: -30mm; top: -30mm; width: 110mm; height: 110mm;
+    border-radius: 50%; border: 2px solid rgba(242,169,59,.35);
+  }
+  .hero::before {
+    content: ""; position: absolute; right: -10mm; top: -10mm; width: 70mm; height: 70mm;
+    border-radius: 50%; border: 2px solid rgba(242,169,59,.6);
+  }
+  .tag {
+    display: inline-block; font-size: 11pt; letter-spacing: .2em; color: var(--amber);
+    border: 1px solid var(--amber); padding: 1mm 4mm; border-radius: 99px;
+  }
+  .hero h1 { font-size: 42pt; line-height: 1.15; margin: 6mm 0 4mm; letter-spacing: .04em; position: relative; z-index: 1; }
+  .hero h1 em { font-style: normal; color: var(--amber); }
+  .hero p.lead { font-size: 13.5pt; max-width: 128mm; color: #dde3f5; position: relative; z-index: 1; }
+  .hero .sub { position: absolute; left: 18mm; bottom: 7mm; font-size: 10.5pt; color: #aab4d6; }
+
+  .section { padding: 0 18mm; }
+  .section h2 {
+    font-size: 17pt; color: var(--navy); margin: 7mm 0 3.5mm;
+    display: flex; align-items: center; gap: 3mm;
+  }
+  .section h2::before { content: ""; width: 3mm; height: 7mm; background: var(--amber); border-radius: 1mm; }
+  .section h2 small { font-size: 10pt; font-weight: 400; color: var(--muted); }
+
+  .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; position: relative; }
+  .stage {
+    background: #fff; border: 1px solid var(--line); border-radius: 3mm; padding: 4mm 4.5mm;
+    position: relative;
+  }
+  .stage .n {
+    display: inline-flex; width: 8mm; height: 8mm; border-radius: 50%; background: var(--navy);
+    color: #fff; font-weight: 700; align-items: center; justify-content: center; margin-bottom: 2mm;
+  }
+  .stage h3 { font-size: 14pt; color: var(--navy); }
+  .stage p { font-size: 10pt; color: var(--muted); margin-top: 1mm; }
+  .stage:not(:last-child)::after {
+    content: "→"; position: absolute; right: -4.2mm; top: 50%; transform: translateY(-50%);
+    color: var(--amber); font-weight: 700; font-size: 13pt; z-index: 2;
+  }
+  .qa {
+    margin-top: 4mm; background: var(--amber-soft); border-left: 3mm solid var(--amber);
+    border-radius: 0 3mm 3mm 0; padding: 3.5mm 5mm; font-size: 10.5pt;
+  }
+  .qa b { color: var(--navy); }
+
+  .features { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3.5mm 5mm; }
+  .feat { display: flex; gap: 3.5mm; }
+  .feat .ic {
+    flex: none; width: 10mm; height: 10mm; border-radius: 2.5mm; background: var(--navy);
+    color: var(--amber); display: flex; align-items: center; justify-content: center; font-size: 14pt;
+  }
+  .feat h4 { font-size: 11.5pt; color: var(--navy); line-height: 1.35; }
+  .feat p { font-size: 9.5pt; color: var(--muted); line-height: 1.5; }
+
+  .privacy {
+    position: absolute; left: 18mm; right: 18mm; bottom: 12mm;
+    display: flex; gap: 4mm; align-items: flex-start;
+    border-top: 1px solid var(--line); padding-top: 4mm; font-size: 9.5pt; color: var(--muted);
+  }
+  .privacy b { color: var(--teal); white-space: nowrap; }
+
+  /* ---------- 第 2 頁 ---------- */
+  .p2-head {
+    background: var(--navy-deep); color: #fff; padding: 11mm 18mm 8mm;
+    display: flex; justify-content: space-between; align-items: flex-end;
+  }
+  .p2-head h1 { font-size: 22pt; letter-spacing: .05em; }
+  .p2-head h1 em { font-style: normal; color: var(--amber); }
+  .p2-head .url {
+    background: var(--amber); color: var(--navy-deep); font-weight: 700; font-size: 11.5pt;
+    padding: 2mm 5mm; border-radius: 99px;
+  }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; padding: 7mm 18mm 0; }
+  .role {
+    font-size: 14pt; font-weight: 700; color: #fff; padding: 2.2mm 4.5mm; border-radius: 2.5mm 2.5mm 0 0;
+  }
+  .role.student { background: var(--navy); }
+  .role.teacher { background: var(--teal); }
+  .steps {
+    list-style: none; counter-reset: s; border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 3mm 3mm; background: #fff; padding: 2mm 4.5mm 3mm;
+  }
+  .steps li { counter-increment: s; position: relative; padding: 4.2mm 0 4.2mm 10mm; border-bottom: 1px dashed var(--line); }
+  .steps li:last-child { border-bottom: 0; }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 4.4mm; width: 7mm; height: 7mm;
+    border-radius: 50%; background: var(--amber); color: var(--navy-deep); font-weight: 700; font-size: 11pt;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps h5 { font-size: 13pt; color: var(--navy); line-height: 1.3; }
+  .steps p { font-size: 10.3pt; color: var(--muted); line-height: 1.6; margin-top: 1mm; }
+  .k {
+    display: inline-block; background: #eef0f7; color: var(--navy); border-radius: 1.2mm;
+    padding: 0 1.4mm; font-size: 8.8pt; font-weight: 600; white-space: nowrap;
+  }
+  .teacher-col .k { background: #e3f2f1; color: #17605f; }
+
+  .tips { margin: 6mm 18mm 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; }
+  .tip { background: var(--amber-soft); border-radius: 3mm; padding: 4mm 4.5mm; font-size: 10pt; line-height: 1.55; }
+  .tip b { display: block; color: var(--navy); font-size: 11.5pt; margin-bottom: 1mm; }
+  .flow { margin: 7mm 18mm 0; display: flex; align-items: center; justify-content: space-between;
+    background: var(--navy); color: #fff; border-radius: 3mm; padding: 4mm 6mm; font-size: 11pt; font-weight: 600; }
+  .flow i { font-style: normal; color: var(--amber); }
+
+  .foot {
+    position: absolute; left: 0; right: 0; bottom: 0; background: var(--navy-deep); color: #c7cfe9;
+    padding: 5mm 18mm; display: flex; justify-content: space-between; font-size: 9.5pt;
+  }
+  .foot strong { color: var(--amber); letter-spacing: .08em; }
+</style>
+</head>
+<body>
+
+<!-- ============ 第 1 頁：產品介紹 ============ -->
+<section class="page">
+  <div class="hero">
+    <span class="tag">蘇格拉底式對話學習系統</span>
+    <h1>不代答，<br><em>只追問。</em></h1>
+    <p class="lead">
+      與 AI 就哲學題目一輪一輪地討論。它不給你標準答案，
+      而是用追問陪你釐清立場、檢視理由、看見自己沒想到的假設。
+    </p>
+    <div class="sub">學生練習思考 ・ 教師掌握學習成果</div>
+  </div>
+
+  <div class="section">
+    <h2>AI 怎麼陪你想 <small>討論畫面上方會顯示目前的追問階段</small></h2>
+    <div class="stages">
+      <div class="stage"><span class="n">1</span><h3>釐清</h3><p>把你的立場與關鍵詞說清楚，AI 先弄懂你的意思。</p></div>
+      <div class="stage"><span class="n">2</span><h3>論證</h3><p>說出支持立場的理由，AI 追問理由背後的假設。</p></div>
+      <div class="stage"><span class="n">3</span><h3>挑戰</h3><p>面對反例與不同觀點，檢驗你的主張站不站得住。</p></div>
+    </div>
+    <div class="qa"><b>例如：</b>你說「電車該轉向」，AI 不會回答對或錯，而是問：「你覺得『犧牲一人』和『放任五人』在道德上差別在哪裡？」</div>
+
+    <h2>你會得到什麼</h2>
+    <div class="features">
+      <div class="feat"><div class="ic">✎</div><div><h4>文字或語音，都能聊</h4><p>可打字，也可按「語音輸入」或「語音對話」直接開口討論。</p></div></div>
+      <div class="feat"><div class="ic">≡</div><div><h4>AI 學習總結</h4><p>結束後整理出你的最終主張、立場與核心理由，隨時回看。</p></div></div>
+      <div class="feat"><div class="ic">◎</div><div><h4>雷達圖與論證樹</h4><p>看見你在這場討論中展現的傾向，以及論點之間的支持與反駁。</p></div></div>
+      <div class="feat"><div class="ic">★</div><div><h4>任務、點數與角色部件</h4><p>完成每日、每週對話任務領點數，解鎖角色部件。</p></div></div>
+      <div class="feat"><div class="ic">文</div><div><h4>三語介面</h4><p>繁體中文、English、Español，AI 對話也使用你選的語言。</p></div></div>
+      <div class="feat"><div class="ic">▦</div><div><h4>教師看得到全班</h4><p>教師查看學生總結與「論點分布」，掌握全班怎麼想。</p></div></div>
+    </div>
+  </div>
+
+  <div class="privacy">
+    <b>隱私說明</b>
+    <span>教師可以看到你在「教室活動」中的對話與總結，「個人練習」不會被看到。送往 AI 前，系統會先遮蔽學號、電話、身分證字號與電子郵件。語音只做即時辨識，不保存錄音。</span>
+  </div>
+</section>
+
+<!-- ============ 第 2 頁：操作指南 ============ -->
+<section class="page">
+  <div class="p2-head">
+    <h1>怎麼開始使用？<em> 四步上手</em></h1>
+    <span class="url">socrates.ray-dev.stream</span>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="role student">學生</div>
+      <ol class="steps">
+        <li>
+          <h5>登入</h5>
+          <p>輸入<span class="k">學號</span>與<span class="k">密碼</span>後按「登入」，也可用「使用 Google 登入」。第一次用臨時密碼登入，須先改密碼。</p>
+        </li>
+        <li>
+          <h5>選擇題目</h5>
+          <p>進入「<span class="k">選擇題目</span>」：<b>教室活動</b>是老師開放的題目，<b>個人練習</b>是題庫自選。按「開始討論」。</p>
+        </li>
+        <li>
+          <h5>與 AI 對話</h5>
+          <p>說出你的第一個想法，再回應 AI 的追問。可用「<span class="k">語音輸入</span>」或「<span class="k">語音對話</span>」。討論得差不多時，按「<span class="k">結束討論</span>」。</p>
+        </li>
+        <li>
+          <h5>查看總結</h5>
+          <p>系統產生 AI 學習總結、雷達圖與論證樹。到「<span class="k">我的對話</span>」可回看、封存或刪除；在「<span class="k">任務</span>」領點數、到「<span class="k">角色部件</span>」解鎖。</p>
+        </li>
+      </ol>
+    </div>
+
+    <div class="teacher-col">
+      <div class="role teacher">教師</div>
+      <ol class="steps">
+        <li>
+          <h5>建立教室、匯入名單</h5>
+          <p>「<span class="k">教室管理</span>」→「+ 建立教室」。在「學生名單」貼上或匯入 CSV，每行「<span class="k">姓名,學號</span>」，不含標題列。</p>
+        </li>
+        <li>
+          <h5>設定 AI</h5>
+          <p>到「<span class="k">API key</span>」新增自己的 key，再進教室的 AI 設定選供應商與模型。<b>未設定時，學生無法使用 AI。</b></p>
+        </li>
+        <li>
+          <h5>建立並發布活動</h5>
+          <p>在教室內「+ 建立活動」，填標題、加入題目（可自「<span class="k">題目庫</span>」選），按「<span class="k">發布活動</span>」。可設定開放與結束時間。</p>
+        </li>
+        <li>
+          <h5>查看學習成果</h5>
+          <p>教室頁的「<span class="k">論點分布</span>」看全班主張分組；點進學生看「<span class="k">學生總結</span>」，已結束的活動對話可看完整原文。</p>
+        </li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="flow">
+    <span>選題目</span><i>→</i><span>說出想法</span><i>→</i><span>AI 追問</span><i>→</i><span>結束討論</span><i>→</i><span>看學習總結</span>
+  </div>
+
+  <div class="tips">
+    <div class="tip"><b>看到「尚未開通」？</b>本系統不開放自行註冊，請聯絡老師把你的學號加入教室名單。</div>
+    <div class="tip"><b>忘記密碼？</b>請聯絡教師或管理者重設，系統會給一組臨時密碼，登入後再自行更改。</div>
+    <div class="tip"><b>想用 Google 登入？</b>先用學號登入，到「個人設定」連結你的 Google 帳號。</div>
+  </div>
+
+  <div class="foot">
+    <span><strong>SOCRATES CHAT</strong>　不代答，只追問</span>
+    <span>操作上有疑問，請洽你的授課教師</span>
+  </div>
+</section>
+
+</body>
+</html>
