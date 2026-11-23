@@ -108,6 +108,7 @@ pub fn test_config() -> Config {
         teacher_key_cipher: None,
         classroom_ai_routing: false,
         monitored_services: vec![],
+        service_probe_interval: socrates_chat_backend::service_monitor::DEFAULT_PROBE_INTERVAL,
     }
 }
 

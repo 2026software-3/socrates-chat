@@ -87,6 +87,8 @@ pub struct Config {
     /// 只有既有測試把它設為 `false`，讓教室內的對話繼續用假的系統 AI。
     pub classroom_ai_routing: bool,
     pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
+    /// 周邊服務背景探測間隔（`SERVICE_PROBE_INTERVAL_SECS`，10 至 300 秒，預設 30 秒，S-09.3）。
+    pub service_probe_interval: Duration,
 }
 
 #[derive(Debug)]
@@ -248,6 +250,15 @@ impl Config {
                 return Err(ConfigError("MONITORED_SERVICES must be UTF-8".into()));
             }
         };
+        let service_probe_interval = match env::var("SERVICE_PROBE_INTERVAL_SECS") {
+            Ok(value) => crate::service_monitor::parse_probe_interval(Some(&value))?,
+            Err(env::VarError::NotPresent) => crate::service_monitor::DEFAULT_PROBE_INTERVAL,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError(
+                    "SERVICE_PROBE_INTERVAL_SECS must be UTF-8".into(),
+                ));
+            }
+        };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
@@ -353,6 +364,7 @@ impl Config {
             teacher_key_cipher: teacher_key_cipher_from_env()?,
             classroom_ai_routing: true,
             monitored_services,
+            service_probe_interval,
             app_base_url,
         })
     }
