@@ -802,6 +802,208 @@ async fn external_source_provenance_rejects_unknown_providers_and_invalid_ids(po
 }
 
 #[sqlx::test]
+async fn merging_disabled_work_requires_admin_reactivation(pool: PgPool) {
+    assert_disabled_source_rejected_before_reactivation(pool, "POST").await;
+}
+
+#[sqlx::test]
+async fn moving_edition_out_of_disabled_work_requires_admin_reactivation(pool: PgPool) {
+    assert_disabled_source_rejected_before_reactivation(pool, "PUT").await;
+}
+
+async fn assert_disabled_source_rejected_before_reactivation(pool: PgPool, method: &str) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+
+    let source = create_book(&app, &a.admin, "停用來源").await;
+    let target = create_book(&app, &a.admin, "啟用目的").await;
+    let source_work = source["work_id"].as_str().unwrap();
+    let target_work = target["work_id"].as_str().unwrap();
+    let edition_url = format!("/api/books/{}", source["id"].as_str().unwrap());
+    let status_url = format!("/api/book-works/{source_work}/status");
+    let (url, request) = if method == "POST" {
+        (
+            format!("/api/book-works/{source_work}/merge"),
+            json!({"target_work_id":target_work,"confirm_title":"停用來源"}),
+        )
+    } else {
+        (
+            format!("{edition_url}/work"),
+            json!({"work_id":target_work,"confirm_title":"停用來源"}),
+        )
+    };
+
+    let disabled = send(
+        &app,
+        json_req(
+            "PATCH",
+            &status_url,
+            Some(&a.admin),
+            Some(json!({"is_active":false})),
+        ),
+    )
+    .await;
+    assert_eq!(disabled.status(), StatusCode::OK);
+    let disabled = json_body(disabled).await;
+    assert_eq!(disabled["is_active"], false);
+    assert_eq!(disabled["editions"][0]["is_active"], true);
+
+    for cookie in [&a.teacher, &a.admin] {
+        let rejected = send(
+            &app,
+            json_req(method, &url, Some(cookie), Some(request.clone())),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::CONFLICT, "{method} {url}");
+        assert_json_error(rejected, StatusCode::CONFLICT, "book_work_inactive").await;
+    }
+    let unchanged =
+        json_body(send(&app, json_req("GET", &edition_url, Some(&a.teacher), None)).await).await;
+    assert_eq!(unchanged["work_id"], source_work);
+    assert_eq!(unchanged["is_active"], true);
+
+    let reactivated = send(
+        &app,
+        json_req(
+            "PATCH",
+            &status_url,
+            Some(&a.admin),
+            Some(json!({"is_active":true})),
+        ),
+    )
+    .await;
+    assert_eq!(reactivated.status(), StatusCode::OK);
+    let grouped = send(
+        &app,
+        json_req(method, &url, Some(&a.teacher), Some(request)),
+    )
+    .await;
+    assert_eq!(grouped.status(), StatusCode::OK);
+    let changed =
+        json_body(send(&app, json_req("GET", &edition_url, Some(&a.teacher), None)).await).await;
+    assert_eq!(changed["work_id"], target_work);
+    assert_eq!(changed["is_active"], true);
+}
+
+#[sqlx::test]
+async fn work_merge_preserves_all_rows_when_a_source_list_is_archived(pool: PgPool) {
+    let app = test_app(pool);
+    let a = seed_actors(&app).await;
+    let source = create_book(&app, &a.teacher, "來源作品").await;
+    let target = create_book(&app, &a.teacher, "保留作品").await;
+    let source_work = &source["work_id"];
+    let target_work = &target["work_id"];
+    let topic = create_topic(&app, &a, "封存書單").await;
+    let list_url = format!("/api/topics/{topic}/books");
+    let save_list = |path: &str, ids: Value| {
+        json_req(
+            "PUT",
+            path,
+            Some(&a.teacher),
+            Some(json!({"work_ids": ids})),
+        )
+    };
+    assert_eq!(
+        send(
+            &app,
+            save_list(&list_url, json!([source_work, target_work]))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let archived = create_activity(&app, &a, "封存活動", &topic).await;
+    let active = create_activity(&app, &a, "一般活動", &topic).await;
+    let archived_list = format!("/api/activities/{archived}/topics/{topic}/books");
+    let active_list = format!("/api/activities/{active}/topics/{topic}/books");
+    assert_eq!(
+        send(&app, save_list(&active_list, json!([source_work])))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let paths = ["/api/book-works", &list_url, &archived_list, &active_list];
+    let merge_url = format!("/api/book-works/{}/merge", source_work.as_str().unwrap());
+    let merge_request = || {
+        json_req(
+            "POST",
+            &merge_url,
+            Some(&a.teacher),
+            Some(json!({"target_work_id": target_work, "confirm_title": "來源作品"})),
+        )
+    };
+
+    let archive_url = format!("/api/activities/{archived}/archive");
+    let restore_url = format!("/api/activities/{archived}/unarchive");
+    let classroom_url = format!("/api/classrooms/{}", a.classroom);
+    for (archive, restore) in [
+        (
+            json_req("POST", &archive_url, Some(&a.teacher), None),
+            json_req("POST", &restore_url, Some(&a.teacher), None),
+        ),
+        (
+            json_req(
+                "PATCH",
+                &classroom_url,
+                Some(&a.teacher),
+                Some(json!({"is_archived": true})),
+            ),
+            json_req(
+                "PATCH",
+                &classroom_url,
+                Some(&a.teacher),
+                Some(json!({"is_archived": false})),
+            ),
+        ),
+    ] {
+        assert_eq!(send(&app, archive).await.status(), StatusCode::OK);
+        let mut before = Vec::new();
+        for path in paths {
+            let res = send(&app, json_req("GET", path, Some(&a.teacher), None)).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            before.push(json_body(res).await);
+        }
+        let res = send(&app, merge_request()).await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(res).await["error"]["code"],
+            "book_work_archived_list"
+        );
+        for (path, original) in paths.into_iter().zip(before) {
+            let res = send(&app, json_req("GET", path, Some(&a.teacher), None)).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(json_body(res).await, original, "{path}");
+        }
+        assert_eq!(send(&app, restore).await.status(), StatusCode::OK);
+    }
+
+    assert_eq!(
+        send(&app, save_list(&archived_list, json!([target_work])))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let res = send(&app, json_req("POST", &archive_url, Some(&a.teacher), None)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let merged = send(&app, merge_request()).await;
+    assert_eq!(merged.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(merged).await["editions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for path in [list_url, archived_list, active_list] {
+        let res = send(&app, json_req("GET", &path, Some(&a.teacher), None)).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let rows = json_body(res).await;
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["id"], *target_work);
+    }
+}
+
+#[sqlx::test]
 async fn work_grouping_redirects_lists_without_granting_metadata_ownership(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;

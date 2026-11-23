@@ -301,3 +301,21 @@ async fn an_unconfirmed_candidate_does_not_supply_metadata_for_a_specific_isbn(p
     assert!(books[0].authors.is_none());
     assert!(books[0].publication_year.is_none());
 }
+
+#[sqlx::test]
+async fn equivalent_language_codes_do_not_block_csv_supplementation(pool: PgPool) {
+    let mut external = candidate("Synthetic aliases");
+    external.language = Some("eng".into());
+    let report = import_csv(
+        &pool,
+        "title,language\nSynthetic aliases,英文\n",
+        &Candidates(vec![external]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.added, 1);
+    assert_eq!(report.rows[0].reason, None);
+    let books = book_store::list(&pool, None, None, 10).await.unwrap();
+    assert_eq!(books[0].language.as_deref(), Some("en"));
+    assert!(books[0].authors.is_some());
+}

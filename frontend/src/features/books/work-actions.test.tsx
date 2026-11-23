@@ -42,3 +42,47 @@ it('shows empty-source warning before moving the last edition and sends edition 
  await userEvent.click(within(dialog).getByRole('button', { name: '確認' }))
  await waitFor(() => expect(payload).toEqual({ work_id: 'target', confirm_title: 'Edition' }))
 })
+it('explains that an administrator must reactivate the source work when regrouping fails', async () => {
+  mockMe(makeMe({ teacher: true }))
+  const changed = vi.fn()
+  server.use(
+    http.get('/api/book-works/source/impact', () =>
+      HttpResponse.json({ edition_count: 1, topic_count: 0, activity_topic_count: 0 })),
+    http.post('/api/book-works/source/merge', () =>
+      HttpResponse.json({ error: { code: 'book_work_inactive', request_id: 'test' } }, { status: 409 })),
+  )
+  renderApp(<Ready><WorkActions work={source} works={[source, target]} changed={changed} /></Ready>)
+
+  await userEvent.click(await screen.findByRole('button', { name: '合併作品' }))
+  const dialog = await screen.findByRole('alertdialog')
+  await userEvent.selectOptions(within(dialog).getByLabelText('目的作品'), 'target')
+  const confirm = within(dialog).getByRole('button', { name: '確認' })
+  await waitFor(() => expect(confirm).toBeEnabled())
+  await userEvent.click(confirm)
+
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('來源作品已停用，請先由管理者重新啟用。')
+  expect(changed).not.toHaveBeenCalled()
+})
+
+it('shows the archived-list conflict and keeps the merge dialog open', async () => {
+  mockMe(makeMe({ teacher: true }))
+  const changed = vi.fn()
+  server.use(
+    http.get('/api/book-works/source/impact', () => HttpResponse.json({
+      edition_count: 1, topic_count: 1, activity_topic_count: 2,
+    })),
+    http.post('/api/book-works/source/merge', () => HttpResponse.json({
+      error: { code: 'book_work_archived_list', request_id: 'archived-list-merge' },
+    }, { status: 409 })),
+  )
+  renderApp(<Ready><WorkActions work={source} works={[source, target]} changed={changed} /></Ready>)
+  await userEvent.click(await screen.findByRole('button', { name: '合併作品' }))
+  const dialog = await screen.findByRole('alertdialog')
+  await userEvent.selectOptions(within(dialog).getByLabelText('目的作品'), 'target')
+  const confirm = within(dialog).getByRole('button', { name: '確認' })
+  await waitFor(() => expect(confirm).toBeEnabled())
+  await userEvent.click(confirm)
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('來源作品已列入封存活動或封存教室的書單，無法合併。')
+  expect(dialog).toBeInTheDocument()
+  expect(changed).not.toHaveBeenCalled()
+})

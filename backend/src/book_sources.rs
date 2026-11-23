@@ -105,11 +105,11 @@ impl HttpBookSource {
         serde_json::from_slice(&bytes).map_err(|_| BookSourceError)
     }
     async fn lookup(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
-        let key = self
-            .key
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or(BookSourceError)?;
+        let Some(key) = self.key.as_deref().filter(|s| !s.trim().is_empty()) else {
+            return tokio::time::timeout(self.provider_timeout, self.lookup_openlibrary(query))
+                .await
+                .map_err(|_| BookSourceError)?;
+        };
         let payload = self
             .json(
                 self.client

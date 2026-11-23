@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { errorText, useT } from '@/i18n'
 import { bookLanguage, normalizeBookLanguage } from './book-filtering'
 import { BookSearch } from './book-search'
-import { textLimits, safeBookUrl, validIsbn } from './book-validation'
+import { textLimits, safeBookUrl, validIsbn, validBookLanguage, validPublicationYear } from './book-validation'
 import type { BookCandidate, BookInput } from './types'
 
 const emptyBook: BookInput = { external_sources: [], title: '', authors: null, language: null, publication_year: null, isbn: null, source_url: null, description: null, recommendation_note: null }
@@ -48,7 +48,7 @@ export function BookForm({ initial = emptyBook, save, cancel }: { initial?: Book
         continue
       }
       const limit = textLimits[field]
-      if ((limit && [...proposed].length > limit) || (field === 'source_url' && !safeBookUrl(proposed)) || (field === 'isbn' && !validIsbn(proposed))) {
+      if ((limit && [...proposed].length > limit) || (field === 'source_url' && !safeBookUrl(proposed)) || (field === 'isbn' && !validIsbn(proposed)) || (field === 'language' && !validBookLanguage(proposed)) || (field === 'publication_year' && !validPublicationYear(proposed))) {
         skipped = true
         if (!fillOnly && value[field] === imported.current[field]) {
           if (field === 'title') next.title = ''
@@ -78,6 +78,8 @@ export function BookForm({ initial = emptyBook, save, cancel }: { initial?: Book
     }
     if (value.source_url?.trim() && !safeBookUrl(value.source_url.trim())) issues.source_url = t('books.invalidUrl')
     if (value.isbn?.trim() && !validIsbn(value.isbn)) issues.isbn = t('books.invalidIsbn')
+    if (!validBookLanguage(value.language ?? '')) issues.language = t('error.invalid_book_language')
+    if (!validPublicationYear(value.publication_year ?? '')) issues.publication_year = t('error.invalid_book_publication_year')
     setValidation(issues)
     if (Object.keys(issues).length) return
     setPending(true)

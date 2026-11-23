@@ -190,7 +190,7 @@ async fn google_errors_and_malformed_payloads_do_not_trigger_fallback() {
 }
 
 #[tokio::test]
-async fn missing_key_makes_no_external_request_and_fallback_failure_is_not_empty_success() {
+async fn missing_key_uses_openlibrary_and_failure_is_not_empty_success() {
     let (url, g, o, _) = detailed_server(
         StatusCode::OK,
         json!({"totalItems":0}).to_string(),
@@ -206,7 +206,7 @@ async fn missing_key_makes_no_external_request_and_fallback_failure_is_not_empty
             .is_err()
     );
     assert_eq!(g.load(Ordering::SeqCst), 0);
-    assert_eq!(o.load(Ordering::SeqCst), 0);
+    assert_eq!(o.load(Ordering::SeqCst), 1);
     assert!(
         provider(&url, true)
             .search("Synthetic ethics")
@@ -214,7 +214,7 @@ async fn missing_key_makes_no_external_request_and_fallback_failure_is_not_empty
             .is_err()
     );
     assert_eq!(g.load(Ordering::SeqCst), 1);
-    assert_eq!(o.load(Ordering::SeqCst), 1);
+    assert_eq!(o.load(Ordering::SeqCst), 2);
     let (url, _, o, _) = detailed_server(
         StatusCode::OK,
         json!({"totalItems":0}).to_string(),
@@ -455,4 +455,27 @@ async fn related_lookup_failure_or_timeout_is_not_empty_success() {
     assert!(source.related(&book).await.is_err());
     let source = source.with_provider_timeout(std::time::Duration::from_millis(1));
     assert!(source.related(&book).await.is_err());
+}
+
+#[tokio::test]
+async fn absent_or_blank_google_key_uses_verified_openlibrary_editions() {
+    for key in [None, Some("   ".into())] {
+        let (url, g, o, e) = detailed_server(
+            StatusCode::OK,
+            json!({"totalItems":0}).to_string(),
+            StatusCode::OK,
+            ol_result(),
+            edition_result(),
+        )
+        .await;
+        let source =
+            HttpBookSource::with_urls(key, format!("{url}/volumes"), format!("{url}/search.json"));
+        let books = source.search("Synthetic ethics").await.unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].source, "Open Library");
+        assert_eq!(books[0].source_id, "/books/OL42M");
+        assert_eq!(g.load(Ordering::SeqCst), 0);
+        assert_eq!(o.load(Ordering::SeqCst), 1);
+        assert_eq!(e.load(Ordering::SeqCst), 1);
+    }
 }

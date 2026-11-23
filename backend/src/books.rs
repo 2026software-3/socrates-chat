@@ -35,6 +35,19 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// 同一個欄位驗證供 HTTP 與開發團隊 CSV 匯入使用，不讓匯入繞過規格上限。
+pub(crate) fn canonical_book_language(raw: &str) -> String {
+    let value = raw.trim();
+    match value.to_lowercase().as_str() {
+        "中文" | "chinese" | "chi" | "zho" => "zh".into(),
+        "繁體中文" => "zh-Hant".into(),
+        "简体中文" | "簡體中文" => "zh-Hans".into(),
+        "英文" | "英語" | "english" | "eng" => "en".into(),
+        "西文" | "西班牙文" | "西班牙語" | "spanish" | "español" | "spa" => "es".into(),
+        "其他" => "other".into(),
+        _ => value.to_owned(),
+    }
+}
+
 pub fn normalize_book(mut data: BookData) -> Result<BookData, ApiError> {
     data.title = data.title.trim().to_owned();
     if data.title.is_empty() || data.title.chars().count() > 255 {
@@ -69,14 +82,28 @@ pub fn normalize_book(mut data: BookData) -> Result<BookData, ApiError> {
             ));
         }
     }
-    data.language = data
-        .language
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-    data.publication_year = data
+    data.language = data.language.map(|v| canonical_book_language(&v));
+    data.language = optional(data.language, 35, "invalid_book_language")?;
+    if data.language.as_ref().is_some_and(|v| {
+        !v.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+    }) {
+        return Err(ApiError::bad_request(
+            "invalid_book_language",
+            "語言代碼格式不符",
+        ));
+    }
+    data.publication_year = optional(data.publication_year, 4, "invalid_book_publication_year")?;
+    if data
         .publication_year
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
+        .as_ref()
+        .is_some_and(|v| v.len() != 4 || !v.bytes().all(|c| c.is_ascii_digit()) || v == "0000")
+    {
+        return Err(ApiError::bad_request(
+            "invalid_book_publication_year",
+            "出版年須為 0001 至 9999 的四位數年份",
+        ));
+    }
     data.isbn = data
         .isbn
         .map(|s| s.trim().to_owned())

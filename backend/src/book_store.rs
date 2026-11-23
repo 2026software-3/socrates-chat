@@ -20,7 +20,13 @@ pub struct BookData {
     pub title: String,
     #[schema(max_length = 1000)]
     pub authors: Option<String>,
+    /// 語言代碼；既有文字名稱會轉為代碼。
+    #[schema(max_length = 35)]
     pub language: Option<String>,
+    #[schema(
+        max_length = 4,
+        pattern = "^(000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})$"
+    )]
     pub publication_year: Option<String>,
     pub isbn: Option<String>,
     #[schema(max_length = 8192)]
@@ -231,6 +237,16 @@ pub async fn get_work<'e>(
         .await
 }
 
+pub(crate) async fn work_is_active<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar("SELECT is_active FROM book_works WHERE id=$1")
+        .bind(id)
+        .fetch_optional(executor)
+        .await
+}
+
 pub async fn topic_books<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     topic_id: Uuid,
@@ -297,12 +313,60 @@ pub async fn delete_work(conn: &mut PgConnection, id: Uuid) -> Result<bool, sqlx
         > 0)
 }
 
+#[derive(Debug)]
+pub enum MergeWorkError {
+    ArchivedList,
+    Database(sqlx::Error),
+}
+
+impl From<sqlx::Error> for MergeWorkError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+/// Requires the catalog lock. Lock classrooms before activities, matching classroom
+/// deletion, so archiving or cascading deletion cannot race with redirecting links.
+async fn has_archived_source_list(
+    conn: &mut PgConnection,
+    source: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let classrooms: Vec<bool> = sqlx::query_scalar(
+        "SELECT cl.is_archived FROM classrooms cl
+         WHERE EXISTS (
+             SELECT 1 FROM activity_topic_books ab
+             JOIN activities a ON a.id = ab.activity_id
+             WHERE ab.book_id = $1 AND a.classroom_id = cl.id
+         )
+         ORDER BY cl.id FOR SHARE OF cl",
+    )
+    .bind(source)
+    .fetch_all(&mut *conn)
+    .await?;
+    if classrooms.into_iter().any(|archived| archived) {
+        return Ok(true);
+    }
+
+    let activities: Vec<bool> = sqlx::query_scalar(
+        "SELECT a.is_archived FROM activities a
+         WHERE EXISTS (
+             SELECT 1 FROM activity_topic_books ab
+             WHERE ab.book_id = $1 AND ab.activity_id = a.id
+         )
+         ORDER BY a.id FOR SHARE OF a",
+    )
+    .bind(source)
+    .fetch_all(conn)
+    .await?;
+    Ok(activities.into_iter().any(|archived| archived))
+}
+
 /// Requires a transaction; preserve target status and all edition metadata while redirecting links.
 pub async fn merge_works(
     conn: &mut PgConnection,
     source: Uuid,
     target: Uuid,
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, MergeWorkError> {
     lock_catalog(conn).await?;
     if source == target {
         return Ok(false);
@@ -314,6 +378,9 @@ pub async fn merge_works(
             .await?;
     if ids.len() != 2 {
         return Ok(false);
+    }
+    if has_archived_source_list(conn, source).await? {
+        return Err(MergeWorkError::ArchivedList);
     }
     sqlx::query("INSERT INTO topic_books(topic_id,book_id) SELECT topic_id,$2 FROM topic_books WHERE book_id=$1 ON CONFLICT DO NOTHING").bind(source).bind(target).execute(&mut *conn).await?;
     sqlx::query("INSERT INTO activity_topic_books(activity_id,topic_id,book_id) SELECT activity_id,topic_id,$2 FROM activity_topic_books WHERE book_id=$1 ON CONFLICT DO NOTHING").bind(source).bind(target).execute(&mut *conn).await?;
@@ -477,4 +544,18 @@ pub async fn sync_activity_topics(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Only changes the shared work title; edition metadata and list identity remain stable.
+pub async fn rename_work(
+    conn: &mut PgConnection,
+    id: Uuid,
+    title: &str,
+) -> Result<Option<BookWork>, sqlx::Error> {
+    sqlx::query("UPDATE book_works SET title=$2,updated_at=now() WHERE id=$1")
+        .bind(id)
+        .bind(title)
+        .execute(&mut *conn)
+        .await?;
+    get_work(conn, id).await
 }

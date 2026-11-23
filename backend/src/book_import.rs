@@ -232,7 +232,10 @@ pub async fn import_csv(
                         .language
                         .as_ref()
                         .zip(candidate.language.as_ref())
-                        .is_some_and(|(a, b)| normalized(a) != normalized(b))
+                        .is_some_and(|(a, b)| {
+                            !crate::books::canonical_book_language(a)
+                                .eq_ignore_ascii_case(&crate::books::canonical_book_language(b))
+                        })
                     || data
                         .publication_year
                         .as_ref()

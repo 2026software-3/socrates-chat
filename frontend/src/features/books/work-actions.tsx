@@ -7,6 +7,7 @@ import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { useT } from '@/i18n'
 import { api } from '@/lib/api'
 import { useFetch } from '@/lib/use-fetch'
+import { RenameWork } from './rename-work'
 import type { Book, BookWork, WorkImpact } from './types'
 
 type Action = 'merge' | 'move' | 'delete' | 'status'
@@ -40,8 +41,8 @@ function WorkActionDialog({ work, book, works, action, close, changed }: { work?
   </ConfirmDialog>
 }
 export function WorkActions({ work, works, changed }: { work: BookWork; works: BookWork[]; changed: () => void }) {
-  const t = useT(); const me = useMe(); const [action, setAction] = useState<Action>()
-  return <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setAction('merge')}>{t('books.workAction.merge')}</Button>{me.roles.admin ? <><Button variant="outline" onClick={() => setAction('status')}>{t('books.workAction.status')}</Button><Button variant="destructive" onClick={() => setAction('delete')}>{t('books.workAction.delete')}</Button></> : null}{action ? <WorkActionDialog work={work} works={works} action={action} close={() => setAction(undefined)} changed={changed} /> : null}</div>
+  const t = useT(); const me = useMe(); const [action, setAction] = useState<Action>(); const [renaming, setRenaming] = useState(false)
+  return <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setRenaming(true)}>{t('books.renameWork')}</Button>{renaming ? <RenameWork work={work} close={() => setRenaming(false)} changed={changed} /> : null}<Button variant="outline" onClick={() => setAction('merge')}>{t('books.workAction.merge')}</Button>{me.roles.admin ? <><Button variant="outline" onClick={() => setAction('status')}>{t('books.workAction.status')}</Button><Button variant="destructive" onClick={() => setAction('delete')}>{t('books.workAction.delete')}</Button></> : null}{action ? <WorkActionDialog work={work} works={works} action={action} close={() => setAction(undefined)} changed={changed} /> : null}</div>
 }
 export function MoveEditionButton({ book, works, changed }: { book: Book; works: BookWork[]; changed: () => void }) {
   const t = useT(); const [open, setOpen] = useState(false)

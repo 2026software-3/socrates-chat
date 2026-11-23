@@ -2,6 +2,13 @@ import { defineMessages } from '@/i18n/define'
 
 export const bookMessages = defineMessages({
   "zh-TW": {
+    "error.invalid_book_language": "語言代碼最多 35 個字元，只能包含英數字、連字號或底線。",
+    "error.invalid_book_publication_year": "出版年請填 0001～9999 的四位數年份，或留白。",
+    "books.renameWork": "修改作品名稱",
+    "books.renameWorkHint": "不會變更版本書名、書單關聯或已保存的推薦。",
+    "books.workTitle": "作品名稱",
+    "books.saveWorkTitle": "儲存作品名稱",
+
     "books.relatedSearch": "搜尋其他版本",
     "books.relatedTitle": "其他版本：{title}",
     "books.relatedHint": "僅列出 Open Library 部分候選，不保證找齊譯本。請確認是同一作品再加入；已收錄的版本會略過。",
@@ -96,8 +103,6 @@ export const bookMessages = defineMessages({
     "error.invalid_book": "書目資料不正確，請重新確認。",
     "error.invalid_book_title": "書名不可空白或超過 255 個字元。",
     "error.invalid_book_authors": "作者欄位不可超過 1,000 個字元。",
-    "error.invalid_book_language": "語言格式不正確。",
-    "error.invalid_book_publication_year": "出版年格式不正確。",
     "error.invalid_book_isbn": "ISBN 格式或檢查碼不正確。",
     "error.invalid_book_source_url": "來源連結格式不正確或超過上限。",
     "error.invalid_book_description": "簡介不可超過 5,000 個字元。",
@@ -119,9 +124,18 @@ export const bookMessages = defineMessages({
     "books.deleteLastEdition": "這是最後一個版本，刪除時會一併刪除作品與書單關聯。",
     "books.noEditions": "尚無版本，無可推薦版本。",
     "error.invalid_book_work": "作品歸屬不正確，請重新選擇目的作品。",
+    "error.book_work_inactive": "來源作品已停用，請先由管理者重新啟用。",
+    "error.book_work_archived_list": "來源作品已列入封存活動或封存教室的書單，無法合併。",
     "books.noActiveEditions": "全部版本已停用，無可推薦版本。"
   },
   "en": {
+    "error.invalid_book_language": "Language codes must be at most 35 letters, digits, hyphens or underscores.",
+    "error.invalid_book_publication_year": "Enter a four-digit publication year from 0001 to 9999, or leave blank.",
+    "books.renameWork": "Rename work",
+    "books.renameWorkHint": "Edition titles, reading-list links and saved recommendations remain unchanged.",
+    "books.workTitle": "Work title",
+    "books.saveWorkTitle": "Save work title",
+
     "books.relatedSearch": "Find other editions",
     "books.relatedTitle": "Other editions: {title}",
     "books.relatedHint": "Partial Open Library candidates; translations may be missing. Confirm these belong to the same work before adding. Existing editions are skipped.",
@@ -216,8 +230,6 @@ export const bookMessages = defineMessages({
     "error.invalid_book": "Invalid book data. Please review.",
     "error.invalid_book_title": "Title is required and must not exceed 255 characters.",
     "error.invalid_book_authors": "Authors must not exceed 1,000 characters.",
-    "error.invalid_book_language": "Invalid language format.",
-    "error.invalid_book_publication_year": "Invalid publication year.",
     "error.invalid_book_isbn": "Invalid ISBN.",
     "error.invalid_book_source_url": "Source URL is invalid or too long.",
     "error.invalid_book_description": "Description must not exceed 5,000 characters.",
@@ -239,9 +251,18 @@ export const bookMessages = defineMessages({
     "books.deleteLastEdition": "This is the last edition. Deleting it also deletes the work and its reading-list links.",
     "books.noEditions": "No editions available for recommendations.",
     "error.invalid_book_work": "Invalid work assignment. Select a different destination work.",
+    "error.book_work_inactive": "The source work is inactive. An administrator must reactivate it first.",
+    "error.book_work_archived_list": "The source work is on a reading list for an archived activity or classroom and cannot be merged.",
     "books.noActiveEditions": "All editions are inactive; none are available for recommendations."
   },
   "es": {
+    "error.invalid_book_language": "El código de idioma admite hasta 35 letras, dígitos, guiones o guiones bajos.",
+    "error.invalid_book_publication_year": "Introduce un año de cuatro dígitos entre 0001 y 9999 o deja el campo vacío.",
+    "books.renameWork": "Cambiar nombre de la obra",
+    "books.renameWorkHint": "No cambia los títulos de las ediciones, las listas ni las recomendaciones guardadas.",
+    "books.workTitle": "Título de la obra",
+    "books.saveWorkTitle": "Guardar título de la obra",
+
     "books.relatedSearch": "Buscar otras ediciones",
     "books.relatedTitle": "Otras ediciones: {title}",
     "books.relatedHint": "Candidatos parciales de Open Library; pueden faltar traducciones. Confirma que pertenecen a la misma obra. Se omiten ediciones existentes.",
@@ -336,8 +357,6 @@ export const bookMessages = defineMessages({
     "error.invalid_book": "Datos de libro inválidos. Revise los campos.",
     "error.invalid_book_title": "El título es obligatorio y no puede superar 255 caracteres.",
     "error.invalid_book_authors": "Los autores no pueden superar 1000 caracteres.",
-    "error.invalid_book_language": "Formato de idioma inválido.",
-    "error.invalid_book_publication_year": "Año de publicación inválido.",
     "error.invalid_book_isbn": "ISBN inválido.",
     "error.invalid_book_source_url": "El enlace es inválido o demasiado largo.",
     "error.invalid_book_description": "La descripción no puede superar 5000 caracteres.",
@@ -359,6 +378,8 @@ export const bookMessages = defineMessages({
     "books.deleteLastEdition": "Es la última edición. Al eliminarla también se eliminan la obra y sus vínculos a listas.",
     "books.noEditions": "No hay ediciones para recomendar.",
     "error.invalid_book_work": "La asignación de obra no es válida. Elige otra obra de destino.",
+    "error.book_work_inactive": "La obra de origen está desactivada. Un administrador debe reactivarla primero.",
+    "error.book_work_archived_list": "La obra de origen figura en la lista de lectura de una actividad archivada o de una actividad de un aula archivada. Por eso no se puede fusionar.",
     "books.noActiveEditions": "Todas las ediciones están inactivas; ninguna está disponible para recomendar."
   }
 })
