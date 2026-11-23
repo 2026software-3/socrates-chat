@@ -16,14 +16,13 @@
 
 ## 1. PR #653 合併前要補的
 
-1. **`.gitignore` 加上 `.secrets/` 與 `*.pem`**。目前 `.secrets/github-app/*.pem` 只靠個人的全域 gitignore 擋住，其他組員的電腦不會忽略。
-2. **更新 PR 描述**：補上 Figma 定稿後新增的規範（DESIGN.md 新增的段落清單：目錄列兩種外框、標題 Title/H3、純圖示按鈕不加框、停用不用透明度、開關五種狀態、各頁定案規格），以及「Figma 為頁面的依據、HTML 原型只代表殼層與動畫」。
-3. **列出需要需求方確認的產品面項目**（設計稿先畫了，但屬於產品規格，不能當成已決定）：
+1. **更新 PR 描述**（已完成）：補上 Figma 定稿後新增的規範（DESIGN.md 新增的段落清單：目錄列兩種外框、標題 Title/H3、純圖示按鈕不加框、停用不用透明度、開關五種狀態、各頁定案規格），以及「Figma 為頁面的依據、HTML 原型只代表殼層與動畫」。
+2. **列出需要需求方確認的產品面項目**（已寫進 PR 描述）（設計稿先畫了，但屬於產品規格，不能當成已決定）：
    - 隱私設定的「公開開關」：S-02.3／S-07.3 尚未決定，Figma 有現況與「待確認提案」兩組。
    - 管理者總覽的六張區域卡與關鍵數字、學生總結列表的進度卡、題目庫「使用中的活動數」：需要後端提供的資料。
    - 主張與理由頁的「論證標籤」（判準／前提／追問／反例／修正）與 AI 理由群組：對應 S-04.5、F-15。
    - 這些寫進 `docs/specs/open-decisions.md`，或在 PR 描述標成「待確認」。
-4. **找一位 reviewer approve**（required check）。
+3. **找一位 reviewer approve**（required check）。
 
 ## 2. 設計稿收尾（Figma，可與開發平行）
 
@@ -135,7 +134,7 @@ Milestone：**Vedute 前端實作**。
 
 ## 6. 建議順序
 
-1. **第 0 週**：#653 補 `.gitignore` 與描述 → 核准合併；開兩張規格 Issue（Playwright、共享 agent 設定）。
+1. **第 0 週**：#653 核准合併；開兩張規格 Issue（Playwright、共享 agent 設定）。
 2. **第 1 週**：F-DS.1、T-1、T-4 先完成（其他人都依賴）；F-DS.2、F-DS.3 平行；T-2、T-3 同時進行。
 3. **第 2–3 週**：F-DS.4 殼層完成後，各組員依分工平行做頁面；設計端同步補完 §2 的狀態畫面。
 4. **持續**：每張頁面 PR 附三寬度截圖，由設計負責人 review；視覺回歸基準在合併時更新。
@@ -146,4 +145,4 @@ Milestone：**Vedute 前端實作**。
 2. 是否採用 Playwright（規格決策）。
 3. 是否把 `.claude/` 共享設定與 skills 納入版控。
 4. 是否啟用雲端 AI review（`claude-code-action`）與 API key 的費用。
-5. GitHub App（`.secrets/github-app/` 的私鑰）的 App ID 與 installation，用來開 Issue 與寫入 org Project。
+5. GitHub App（維護者本機的私鑰）的 App ID 與 installation，用來開 Issue 與寫入 org Project。
