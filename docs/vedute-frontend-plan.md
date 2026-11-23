@@ -108,6 +108,41 @@ shadcn/ui 的 `components/ui/` 保留不手改，Vedute 元件包在外面：
 
 skills 是 Claude 專用；跨 agent 的硬規則一律寫在 AGENTS.md。
 
+### 4.4 信任倒金字塔：先把規則變成確定性檢查（參考 Lauren Tan〈All Code Is Slop (Except Mine)〉）
+
+原則：每次糾正 agent，先問「能不能變成一條 lint／型別／測試，或從 API 設計消滅這類錯誤」，最後才是在 AGENTS.md 加一行字。投資順序：程式碼庫的 API 與邊界 → 靜態檢查 → 執行期驗證 → 文件 → 人工 review。也就是：**先清地基，再自動化**，不要把會產出垃圾的流程自動化。
+
+`frontend/src` 量測結果（2026-11-23）：
+
+| 指標 | 數量 | 問題 |
+| --- | --- | --- |
+| 功能頁面裡的 `useEffect` | 25 | 多數是輪詢與資料同步，agent 會照抄 |
+| `setTimeout`（非測試） | 21 | 幾乎都是手寫輪詢（use-radar、use-summary、argument-tree-panel） |
+| 原始色碼（tsx、css） | 34 | 新設計要全部走 token |
+| features 之間互相 import | 約 75 處 | 沒有邊界，改一個功能會牽動別的 |
+| 直接 `fetch(` 不經 `src/lib` | 4 | 繞過統一的錯誤處理 |
+| 註解行 | 993 | 部分是解釋 workaround；規則應該寫進 lint 訊息 |
+
+這次就導入（多數不需要新增主要依賴）：
+
+| 層 | 做法 | 工具 |
+| --- | --- | --- |
+| 1 API 設計 | 在 `src/lib` 提供 `usePolling`、`useInterval`、`useServerResource` 等少數封裝，功能頁不再自己寫 `useEffect`＋`setTimeout`；Vedute 元件是唯一的 UI 入口 | 現有程式 |
+| 2 靜態檢查 | oxlint 規則＋**寫給 agent 看的修正提示**（訊息直接說根因與正確寫法）：功能目錄禁用 `useEffect`、`setTimeout`、`fetch`（`no-restricted-imports`／`no-restricted-globals`／自訂規則）；禁止 features 直接 import `components/ui`（只能用 `components/vedute`）；禁止 features 互相 import | oxlint（已有）；必要時用 oxlint 的 JS plugin 寫自訂規則 |
+| 2 靜態檢查 | 設計規則：禁止原始色碼、任意 `text-[..px]`、`opacity-*` 做停用；只能用 token class | oxlint 自訂規則或 CI 腳本 |
+| 2 靜態檢查 | TypeScript 6 已預設 strict；再開 `noUncheckedIndexedAccess` | tsconfig |
+| 2 邊界 | 依資料夾鎖死相依方向：`app → features → components/vedute → components/ui → lib`，在 CI 檢查 | oxlint `no-restricted-imports` overrides；不夠用再評估 dependency-cruiser（dev 依賴，需規格決策） |
+| 3 執行驗證 | agent 自己啟動 dev server、用 Playwright 操作頁面，檢查 console 錯誤、三寬度截圖、操作錄影；**涉及 UI 的 PR 必須附截圖或錄影**，CI 上傳 trace／影片當 artifact | Playwright（規格決策 S-11.x） |
+| 3 執行驗證 | 純邏輯（階段刻度換算、i18n 鍵一致、token 對比、比例長條）用屬性測試 | fast-check（小型 dev 依賴，併入 S-11.x 討論） |
+| 4 文件 | AGENTS.md 只留 lint 表達不了的原則，重複的規則刪掉、改成 lint 訊息；新增「功能地圖」`docs/design/figma-map.md`（路由 ↔ feature 目錄 ↔ Figma 節點 ↔ 測試），讓 agent 精準定位而不是猜 | 文件＋產生腳本 |
+| 5 人工 review | review 重點從看 diff 改成看驗證產出（截圖、錄影、axe 報告、狀態圖） | PR 範本 |
+
+之後再評估（現在不導入）：
+
+- **XState／狀態機**：屬主要依賴。先用 Mermaid 狀態圖寫在文件裡（對話、語音、總結產生流程），review 時看圖。
+- **Bombadil（UI 屬性測試）、TLA+／Lean**：太新或成本高；等 Playwright 穩定後再試。
+- **自動開 PR／自動合併機器人**：等第 1、2 層清完再開，避免把現有的壞寫法大量複製。
+
 ## 5. Issue 結構（草案，開之前再確認）
 
 Milestone：**Vedute 前端實作**。
@@ -124,7 +159,10 @@ Milestone：**Vedute 前端實作**。
 | T-1 | 工具 | 設計規則 lint 與 token 對比測試 | F-DS.1 |
 | T-2 | 工具 | Playwright＋MSW 點擊測試、三寬度截圖、axe，加進 CI | S-11.x |
 | T-3 | 工具 | 共享 `.claude/`、hooks、`/implement-screen`、`/verify-screen`、AGENTS.md 前端段落、PR 範本 | S-xx |
-| T-4 | 工具 | Figma 節點對照表 `docs/design/figma-map.md` | — |
+| T-4 | 工具 | Figma 節點對照表與功能地圖 `docs/design/figma-map.md` | — |
+| T-5 | 工具 | `src/lib` 封裝輪詢與資料同步（`usePolling` 等），功能頁移除自寫的 `useEffect`＋`setTimeout` | — |
+| T-6 | 工具 | oxlint 教學型規則與資料夾相依邊界（禁 useEffect／setTimeout／fetch／跨 feature import／直接用 components/ui），訊息寫明修正方式 | T-5、F-DS.2 |
+| T-7 | 工具 | AGENTS.md 精簡：可寫成 lint 的規則移出，只留原則 | T-6 |
 | P-學生 | 頁面 | 我的教室、教室活動、個人練習、我的對話、點數與任務、我的蘇格拉底、個人檔案三頁籤、活動詳細、對話頁與結束摘要、AI 學習總結 | F-DS.4 |
 | P-教師 | 頁面 | 我的教室、教室三頁籤（討論活動、論點分布＋主張與理由、學生名單）、題目庫＋新增題目、共用書庫＋書單、學生帳號、學生總結、對話原文 | F-DS.4 |
 | P-管理者 | 頁面 | 總覽、參與概況、教師管理、系統設定 | F-DS.4 |
