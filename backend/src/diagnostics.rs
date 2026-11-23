@@ -735,7 +735,7 @@ fn diagnostics_unavailable() -> ApiError {
 }
 
 pub async fn purge_expired(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let (diagnostics, services) = tokio::join!(
+    let (diagnostics, services, requests) = tokio::join!(
         sqlx::query(
             "DELETE FROM diagnostic_events WHERE occurred_at < now() - interval '720 hours'"
         )
@@ -744,18 +744,26 @@ pub async fn purge_expired(pool: &PgPool) -> Result<u64, sqlx::Error> {
             "DELETE FROM service_status_events WHERE occurred_at < now() - interval '720 hours'"
         )
         .execute(pool),
+        sqlx::query("DELETE FROM request_stats_hourly WHERE hour < now() - interval '720 hours'")
+            .execute(pool),
     );
-    Ok(diagnostics?.rows_affected() + services?.rows_affected())
+    Ok(diagnostics?.rows_affected() + services?.rows_affected() + requests?.rows_affected())
 }
 
-pub fn spawn_retention(pool: PgPool) {
+pub fn spawn_retention(pool: PgPool, last_success: std::sync::Arc<std::sync::atomic::AtomicI64>) {
     tokio::spawn(async move {
         let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
         daily.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             daily.tick().await;
-            if let Err(error) = purge_expired(&pool).await {
-                tracing::warn!(class = %crate::error::db_error_class(&error), "diagnostic retention cleanup failed");
+            match purge_expired(&pool).await {
+                Ok(_) => last_success.store(
+                    chrono::Utc::now().timestamp(),
+                    std::sync::atomic::Ordering::Relaxed,
+                ),
+                Err(error) => {
+                    tracing::warn!(class = %crate::error::db_error_class(&error), "diagnostic retention cleanup failed");
+                }
             }
         }
     });

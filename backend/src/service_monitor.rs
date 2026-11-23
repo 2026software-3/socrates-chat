@@ -393,6 +393,20 @@ impl Monitor {
         lock(&service.outbox).drain(..written);
     }
 
+    /// 周邊服務（不含資料庫）的狀態摘要，給首頁健康度使用。
+    pub(crate) fn summary(&self) -> ServiceSummary {
+        let mut summary = ServiceSummary::default();
+        for service in self.services.iter().filter(|s| s.name != DATABASE) {
+            summary.total += 1;
+            match lock(&service.state).current.status {
+                Status::Healthy => summary.healthy += 1,
+                Status::Unhealthy => summary.unhealthy += 1,
+                Status::Checking | Status::NoData => summary.unknown += 1,
+            }
+        }
+        summary
+    }
+
     async fn view(&self, pool: &PgPool, period_days: i64) -> ServicesView {
         let now = Utc::now();
         let names: Vec<_> = self
@@ -531,6 +545,16 @@ pub(crate) struct ServiceView {
     /// Healthy time divided by known time (0–1), null when no known interval exists.
     availability: Option<f64>,
     recent_events: Vec<StatusEvent>,
+}
+
+/// 周邊服務的狀態摘要（不含資料庫）。
+#[derive(Default, Serialize, ToSchema)]
+pub(crate) struct ServiceSummary {
+    pub total: u32,
+    pub healthy: u32,
+    pub unhealthy: u32,
+    /// 檢查中或尚無資料
+    pub unknown: u32,
 }
 
 #[derive(Serialize, ToSchema)]
