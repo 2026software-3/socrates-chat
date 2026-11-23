@@ -9,6 +9,7 @@ import {
   AdminTasksPage,
   DiagnosticsPage,
   RosterPage,
+  ServicesPage,
   SystemAiPage,
   TeachersPage,
   TopicsPage,
@@ -24,6 +25,7 @@ export const adminFeature: Feature = {
     { path: '/admin/system-ai', element: <SystemAiPage />, access: 'admin' },
     { path: '/admin/roster', element: <RosterPage />, access: 'admin' },
     { path: '/admin/topics', element: <TopicsPage />, access: 'admin' },
+    { path: '/admin/services', element: <ServicesPage />, access: 'admin' },
     { path: '/admin/diagnostics', element: <DiagnosticsPage />, access: 'admin' },
     { path: '/admin/tasks', element: <AdminTasksPage />, access: 'admin' },
     { path: '/admin/parts', element: <AdminPartsPage />, access: 'admin' },
@@ -33,6 +35,7 @@ export const adminFeature: Feature = {
   nav: [
     { to: '/admin/teachers', labelKey: 'admin.nav.teachers', access: 'admin' },
     { to: '/admin/system-ai', labelKey: 'systemAi.nav', access: 'admin' },
+    { to: '/admin/services', labelKey: 'admin.nav.services', access: 'admin' },
     { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics', access: 'admin' },
     { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
     { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },

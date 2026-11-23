@@ -19,6 +19,21 @@ export const server = setupServer(
   http.get('/api/teacher/keys/models', ({ request }) =>
     HttpResponse.json({ provider: new URL(request.url).searchParams.get('provider'), status: 'no_key', models: [] }),
   ),
+  // 後台首頁的服務健康度：沒有特別要測的測試回一個正常的合成值（有請求資料，避免與其他區塊的「尚無資料」撞字）
+  http.get('/api/admin/health', () =>
+    HttpResponse.json({
+      status: 'healthy',
+      period_days: 1,
+      database: { status: 'healthy', response_time_ms: 2 },
+      services: { total: 0, healthy: 0, unhealthy: 0, unknown: 0 },
+      pool: { size: 1, idle: 1, max: 10 },
+      process: { started_at: '2026-11-22T00:00:00Z', uptime_seconds: 3600, version: 'test' },
+      maintenance: false,
+      cleanup: { last_success_at: null },
+      stats_available: true,
+      requests: { total: 10, error_5xx_ratio: 0, p95_ms: 100 },
+    }),
+  ),
   // 沒開示範模式的後端：登入頁的示範帳號面板找不到清單就不顯示
   http.get('/api/demo/accounts', () => HttpResponse.json({ error: { code: 'not_found', request_id: 'test' } }, { status: 404 })),
 )

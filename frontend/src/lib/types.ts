@@ -22,6 +22,9 @@ export type Topic = {
   title: string
   description: string
   is_active: boolean
+  title_pending?: boolean
+  pending_questions?: number[]
+  translations?: Record<string, Record<string, string>>
   guiding_questions?: string[]
 }
 
@@ -44,6 +47,7 @@ export type Activity = {
 
 /** 學生在活動中某一題的進度（F-29.6）。 */
 export type TopicProgress = {
+  title_pending?: boolean
   topic_id: string
   title: string
   /** 這位學生在此題的對話；還沒開始為 null */
@@ -61,6 +65,7 @@ export type Available = { activities: StudentActivity[]; topics: Topic[] }
 export type ConversationStatus = 'active' | 'ended'
 
 export type Conversation = {
+  title_pending?: boolean
   id: string
   activity_id: string | null
   /** 活動對話所屬活動目前的名稱；個人練習為 null */

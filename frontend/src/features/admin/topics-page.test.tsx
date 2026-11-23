@@ -63,6 +63,17 @@ describe('TopicsPage', () => {
     expect(screen.getByText(/已經開始的對話不受影響/)).toBeInTheDocument()
   })
 
+  it('saves a manual English title without changing the source or other translations', async () => {
+    const { calls } = mockTopics([topic('1', { translations: { en: { title: 'Before' }, es: { title: 'Antes' } } })])
+    render()
+    await userEvent.click(await screen.findByRole('button', { name: '編輯「Topic 1」' }))
+    const field = screen.getByRole('textbox', { name: 'en — Topic 1' })
+    await userEvent.clear(field)
+    await userEvent.type(field, 'After')
+    await userEvent.click(screen.getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(calls[0]?.body).toEqual({ translations: { en: { title: 'After' } } }))
+  })
+
   it('shows loading and empty states', async () => {
     mockTopics([])
     render()

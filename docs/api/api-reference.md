@@ -45,6 +45,7 @@
 - `GET /api/admin/diagnostics` 回 `{ items, next_cursor }`，由新到舊。可篩選 `from`（含）、`to`（不含，均為 RFC 3339）、`kind`（`ai`、`login`、`account_lock`）、`failure_class`、`request_id`、`user_id`、`classroom_id`。最後三個欄位使用 UUID。分頁沿用 `limit` 和 `cursor`，更改條件後須從第一頁查詢。
 - `GET /api/admin/services?period_days=30` 回 `{ services, period_days, history_available }`。期間可選 1–30 天，預設 30。服務狀態為 `checking`、`no_data`、`healthy` 或 `unhealthy`，異常服務排在前面。每列包含檢查時間、回應時間（毫秒）、最近正常時間及目前狀態起始時間。最多回傳 10 筆最近變化，可用率是 0–1 的比例，無已知時段為 `null`。歷史查詢失敗時，仍回傳目前狀態並標記 `history_available: false`。
 - `POST /api/admin/services/check` 接受 `{ name }`，回傳該服務目前狀態。服務不存在回 `404 service_not_found`，同一服務 10 秒內再次立即檢查回 `429 service_check_rate_limited`。
+- `GET /api/admin/health?period_days=1` 回 `{ status, period_days, database, services, pool, process, maintenance, cleanup, stats_available, requests }`。`status` 為 `healthy`、`degraded` 或 `unhealthy`；期間可選 1–30 天，預設 1。`services` 是周邊服務（不含資料庫）的 `{ total, healthy, unhealthy, unknown }`；`process.version` 取自環境變數 `GIT_COMMIT`（未設定時為套件版本）。`requests` 為 `{ total, error_5xx_ratio, p95_ms }`，期間內沒有請求時為 `null`；統計讀取失敗時 `stats_available: false` 且 `requests: null`，資料庫連不上時仍回 200 並標示資料庫異常。僅系統管理者可用。
 - 失敗分類包括 AI 的 `connection_failed`、`timeout`、`invalid_key`、`quota_exceeded`、`rate_limited`、`service_error`、`invalid_output`、`classroom_ai_unavailable`（教室的 AI 不可用：沒有設定模型、沒有可用的教師 key、所有 key 都失敗等；還沒呼叫供應商就失敗時沒有耗時與模型，原因記在伺服器日誌的 `classroom AI unavailable` 一行），以及登入的 `invalid_credentials`、`account_disabled`、`account_locked`。每筆失敗有時間、request ID、功能、路由模板、狀態碼及固定 error code。AI 另有耗時、重試次數（該次嘗試之前已重試的次數加上供應商內部換金鑰或換備援模型的次數；成功事件同樣如此，模型為實際回覆的模型）及可用的模型名稱。診斷分類只供紀錄，不影響金鑰冷卻與備援模型的決定。可依 request ID 到容器 stdout 查相關記錄。
 - PostgreSQL 保存最近 30 天，每日清理到期事件，查詢也會排除到期事件。成功只供統計。帳號或教室可用內部 ID 關聯，未知帳號的失敗仍可從系統清單查看；因為任何人都能對不存在的信箱嘗試登入，這類事件每種每小時最多保留 100 筆，已鎖定後的登入嘗試不寫事件，Google 登入只記錄停用帳號的拒絕。診斷寫入在背景進行，不增加請求延遲；寫入積壓時新事件會被丟棄，不影響原請求結果。兩個端點只允許管理者，查詢端點無法讀取時回 `503 diagnostics_unavailable`。
 - 程序記憶體的 request 日誌與 `GET /api/admin/logs` 已移除（#465）：成功的請求不再有後台可查，完整請求日誌以容器 stdout 的 `request completed`（含 request ID）為準；持久化診斷只保存失敗事件。
@@ -66,6 +67,8 @@
 - 教師時間表單依瀏覽器時區輸入及顯示，傳送時轉 UTC；已有人開始對話的活動仍可修改時間。建立活動須選擇未封存的教室。
 
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
+- 題名與引導問題的中文原文仍用 `title`、`guiding_questions`。教師讀寫的 `translations` 依目標語言（`en`、`es`）分組，每組的 `title` 是題名譯文，`q:<中文引導問題>` 是該問題的譯文。PATCH 只送需要修改的譯文。順序以 `guiding_questions` 為準。
+- 學生的 `GET /api/catalog` 和 `GET /api/conversations` 接受選填的 `language`（`zh-TW`、`en`、`es`，預設帳號語言）。回應直接帶顯示文字；`title_pending` 表示題名缺譯，`pending_questions` 為缺譯引導問題的零起算索引。單場對話的引導問題使用建立時保存的語言。
 - 題目可附 0 到 5 個引導問題（`guiding_questions` 字串陣列，S-04.8、F-32.1）：建立與修改時選填，建立未帶預設為 `[]`，修改未帶保留原值，修改帶 `[]` 清空；每個問題最多 200 字，超過 5 個或單一超過 200 字回 `400 invalid_guiding_questions`；題目已有對話後仍可修改引導問題（不鎖定），不影響既有總結；學生呼叫 `GET /api/catalog` 的題目清單亦帶有此欄位。
 - AI 不再讀題目或對話的 `description`（F-32.5）：對話提示、總結、單場雷達評分與 AI 產生雷達維度都改帶題目目前的引導問題；教師在題目還沒有對話時修改引導問題，未鎖定的維度會丟掉並重新產生。
 - 引導問題將取代題目的 `description`（S-04.8 2026-11 修訂）：`description` 欄位標為 deprecated，目前讀寫行為不變、之後另案改為寫入忽略並移除；migration `20261117000000` 已把引導問題為空、`description` 非空的既有題目轉成引導問題（`description` 欄位保留）。
