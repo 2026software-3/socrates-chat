@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { delay, http, HttpResponse } from 'msw'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { ServicesPage } from '@/features/admin/services-page'
 import type { ServiceRow, ServicesView } from '@/features/admin/service-health-model'
@@ -136,11 +136,14 @@ describe('services page', () => {
     mockMe(makeMe({ admin: true }))
     mockServices(() => view([TTS]))
     let calls = 0
+    let releaseResponse!: () => void
+    const responseReady = new Promise<void>((resolve) => { releaseResponse = resolve })
     server.use(
       http.post('/api/admin/services/check', async ({ request }) => {
         calls += 1
         expect(await request.json()).toEqual({ name: 'tts' })
-        await delay(50)
+        // 先驗證等待狀態，再由測試放行回應，避免 CI 較慢時錯過 50ms 的視窗。
+        await responseReady
         return HttpResponse.json(
           row({ ...TTS, status: 'healthy', failure: null, response_time_ms: 7, availability: null, recent_events: [] }),
         )
@@ -150,10 +153,15 @@ describe('services page', () => {
     renderApp(<ServicesPage />)
     await screen.findByText('語音合成')
     const button = screen.getByRole('button', { name: '立即檢查 語音合成' })
-    await user.click(button)
-    expect(await screen.findByRole('button', { name: '立即檢查 語音合成' })).toBeDisabled()
-    expect(within(card('語音合成')).getAllByText('檢查中…').length).toBeGreaterThan(0)
+    try {
+      await user.click(button)
+      await waitFor(() => expect(button).toBeDisabled())
+      expect(within(card('語音合成')).getAllByText('檢查中…').length).toBeGreaterThan(0)
+    } finally {
+      releaseResponse()
+    }
     await waitFor(() => expect(within(card('語音合成')).getByText('7 毫秒')).toBeInTheDocument())
+    expect(button).toBeEnabled()
     expect(within(card('語音合成')).getByText('50%')).toBeInTheDocument()
     expect(calls).toBe(1)
   })
