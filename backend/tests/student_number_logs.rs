@@ -106,6 +106,29 @@ async fn logs_never_contain_student_numbers(pool: PgPool) {
         }
     }
 
+    // F-30.5：成功與失敗的更正請求，日誌都不能記下新舊學號。
+    let correction_path = format!(
+        "/api/students/{}/student-number",
+        me["id"].as_str().unwrap()
+    );
+    for (number, expected) in [
+        ("12345679b", StatusCode::NO_CONTENT),
+        (SEEDED_NUMBER, StatusCode::CONFLICT),
+        ("invalid-number", StatusCode::BAD_REQUEST),
+    ] {
+        let res = send(
+            &app,
+            json_req(
+                "PUT",
+                &correction_path,
+                Some(&a.teacher),
+                Some(json!({"student_number": number})),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), expected);
+    }
+
     let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(
         output.contains("request completed") && output.contains("/api/auth/login"),
@@ -118,6 +141,9 @@ async fn logs_never_contain_student_numbers(pool: PgPool) {
         ("學號（小寫）", lower.as_str()),
         ("預設學生學號（大寫）", SEEDED_NUMBER),
         ("預設學生學號（小寫）", seeded_lower.as_str()),
+        ("更正後學號（大寫）", "12345679B"),
+        ("更正後學號（小寫）", "12345679b"),
+        ("格式錯誤學號", "invalid-number"),
     ] {
         assert!(!output.contains(secret), "日誌不應包含：{name}");
     }

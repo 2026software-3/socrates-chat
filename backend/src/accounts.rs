@@ -45,6 +45,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/classrooms/{id}/students", get(list_students))
         .route("/api/students/{email}", delete(delete_student))
+        .route(
+            "/api/students/{id}/student-number",
+            put(correct_student_number),
+        )
         .route("/api/admin/users/{id}/status", put(set_status))
 }
 
@@ -99,6 +103,107 @@ pub(crate) async fn list_students(
 
 fn email_or_400(raw: &str) -> Result<String, ApiError> {
     normalize_email(raw).ok_or(ApiError::invalid_email())
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CorrectStudentNumberBody {
+    student_number: String,
+}
+
+/// 學號、全教室名單、稽核與通知一起提交。先驗證對象可見性，再檢查輸入，避免洩漏帳號存在與否。
+#[utoipa::path(
+    put,
+    path = "/api/students/{id}/student-number",
+    tag = "roster",
+    summary = "更正學生學號（不接受電子郵件變更）",
+    params(("id" = Uuid, Path, description = "學生帳號內部 UUID")),
+    request_body = CorrectStudentNumberBody,
+    responses(
+        (status = 204, description = "已更正；相同學號不重複稽核與通知"),
+        (status = 400, description = "invalid_body / invalid_student_number", body = crate::error::ErrorBody),
+        (status = 409, description = "student_number_in_use / not_a_student", body = crate::error::ErrorBody),
+        crate::error::CommonErrors
+    )
+)]
+pub(crate) async fn correct_student_number(
+    RequireTeacher(cu): RequireTeacher,
+    State(state): State<AppState>,
+    Path(raw_id): Path<String>,
+    body: Result<Json<CorrectStudentNumberBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let id = Uuid::parse_str(&raw_id).map_err(|_| ApiError::not_found())?;
+    let mut tx = state.pool.begin().await?;
+    // 與匯入共用 advisory lock，避免匯入在更正期間依舊學號找到帳號。
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(crate::roster::IMPORT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+    let account: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT u.email, u.student_id, u.is_admin FROM users u
+         WHERE u.id = $1 AND ($2 OR EXISTS (
+             SELECT 1 FROM enrollments e JOIN classrooms c ON c.id = e.classroom_id
+             WHERE e.user_id = u.id AND c.created_by = $3
+         )) FOR UPDATE OF u",
+    )
+    .bind(id)
+    .bind(cu.roles.admin)
+    .bind(cu.user.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (email, old_number, is_admin) = account.ok_or_else(ApiError::not_found)?;
+    if old_number.is_none()
+        || is_admin
+        || if let Some(email) = &email {
+            is_staff_email(&state, &mut tx, email).await?
+        } else {
+            false
+        }
+    {
+        return Err(ApiError::conflict("not_a_student", "只能更正學生學號"));
+    }
+    let Json(body) =
+        body.map_err(|_| ApiError::bad_request("invalid_body", "請求內容不符合格式"))?;
+    let number = body.student_number.to_ascii_uppercase();
+    if !crate::roster::is_valid_student_number(&number) {
+        return Err(ApiError::bad_request(
+            "invalid_student_number",
+            "學號格式不正確",
+        ));
+    }
+    if old_number.as_deref() == Some(number.as_str()) {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    // UNIQUE 約束也涵蓋並行寫入；錯誤只回固定代碼，不回顯學號或資料庫錯誤內容。
+    if let Err(error) =
+        sqlx::query("UPDATE users SET student_id = $2, updated_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(number)
+            .execute(&mut *tx)
+            .await
+    {
+        if error
+            .as_database_error()
+            .is_some_and(|e| e.is_unique_violation())
+        {
+            return Err(ApiError::conflict(
+                "student_number_in_use",
+                "學號已被其他帳號使用",
+            ));
+        }
+        return Err(error.into());
+    }
+    audit(
+        &mut *tx,
+        cu.user.id,
+        "student_number_corrected",
+        &id.to_string(),
+        None,
+    )
+    .await?;
+    crate::student_notifications::record_student_number_correction(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn audit(
