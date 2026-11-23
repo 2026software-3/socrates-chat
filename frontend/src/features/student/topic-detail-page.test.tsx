@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { describe, expect, it } from 'vitest'
+import { LangSwitcher } from '@/components/lang-switcher'
 import { TopicDetailPage } from '@/features/student/topic-detail-page'
 import { AvailablePage } from '@/features/student/available-page'
 import { makeConversation } from '@/features/chat/test-data'
@@ -44,6 +45,33 @@ describe('student topic detail page', () => {
     const items = within(section).getAllByRole('listitem')
     expect(items.map((li) => li.textContent)).toEqual(['Who is responsible?', 'Does intent matter?'])
     expect(screen.getByRole('button', { name: '開始討論' })).toBeEnabled()
+  })
+
+  it('loads the English title and ordered questions when the student switches language', async () => {
+    const me = makeMe({ student: true })
+    mockMe(me)
+    server.use(
+      http.patch('/api/me', () => HttpResponse.json({ ...me, language: 'en' })),
+      http.get('/api/catalog', ({ request }) => {
+        const english = new URL(request.url).searchParams.get('language') === 'en'
+        return HttpResponse.json({ activities: [], topics: [topic(english ? {
+          title: 'A choice', guiding_questions: ['Who decides?', 'Why?'],
+        } : { title: '選擇', guiding_questions: ['誰決定？', '為什麼？'] })] })
+      }),
+    )
+    renderApp(<><LangSwitcher /><Routes><Route path="/topics/:topicId" element={<TopicDetailPage />} /></Routes></>, { route: '/topics/top-1' })
+    await screen.findByRole('heading', { name: '選擇' })
+    await userEvent.selectOptions(screen.getByRole('combobox'), 'en')
+    await screen.findByRole('heading', { name: 'A choice' })
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Who decides?', 'Why?'])
+  })
+
+  it('marks only the guiding question awaiting translation', async () => {
+    mockCatalog([{ ...topic({ guiding_questions: ['Who is responsible?', '意圖重要嗎？'] }), pending_questions: [1] }])
+    renderDetail()
+    const items = await screen.findAllByRole('listitem')
+    expect(within(items[0]).queryByRole('status')).toBeNull()
+    expect(within(items[1]).getByRole('status')).toHaveTextContent('翻譯尚待完成')
   })
 
   it('hides the guiding questions block when the topic has none', async () => {
