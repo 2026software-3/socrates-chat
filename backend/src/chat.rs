@@ -45,6 +45,8 @@ pub struct Conversation {
     pub classroom_id: Option<Uuid>,
     /// 活動對話所屬活動目前的名稱；個人練習為 null
     pub activity_title: Option<String>,
+    #[sqlx(default)]
+    pub title_pending: bool,
     pub title: String,
     pub description: String,
     pub language: String,
@@ -62,9 +64,10 @@ pub struct Conversation {
     /// 來源教室已封存（顯示「已封存」）；個人練習為 false（S-14）
     pub classroom_archived: bool,
     /// 該題目目前的引導問題（S-04.8）：給 AI 提示、總結、論證樹、雷達評分用，也供詳情 API 回傳；
-    /// 不隨對話列表輸出。題目已不存在或沒有引導問題時為空。
+    /// 不隨對話列表輸出；只有單場與 AI 路徑會讀取，其他查詢不含此欄時為空。
     #[serde(skip)]
     #[schema(ignore)]
+    #[sqlx(default)]
     pub guiding_questions: Vec<String>,
 }
 
@@ -78,19 +81,39 @@ macro_rules! classroom_join {
     };
 }
 
+macro_rules! conversation_columns {
+    ($title:literal) => {
+        concat!(
+        "SELECT id, activity_id, topic_id, classroom_id,
+                (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
+                ", $title, ", description, language, status, stage,
+                turn_count, converge_ready, created_at,
+                COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
+                ended_at,
+                archived_at IS NOT NULL AS is_archived,
+                src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived")
+    };
+}
+
+/// 列表與單場共用的欄位；不讀題目的引導問題（列表不輸出，省掉每列一次子查詢）。
 macro_rules! conversation_select {
     ($tail:literal) => {
         concat!(
-            "SELECT id, activity_id, topic_id, classroom_id,
-                    (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
-                    title, description, language, status, stage,
-                    turn_count, converge_ready, created_at,
-                    COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
-                    ended_at,
-                    archived_at IS NOT NULL AS is_archived,
-                    src.classroom_name, src.classroom_archived IS TRUE AS classroom_archived,
-                    COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions
-             FROM conversations",
+            conversation_columns!("title"),
+            " FROM conversations",
+            classroom_join!(),
+            $tail
+        )
+    };
+}
+
+/// 同 [`conversation_select`]，另外取出題目給 AI 用的引導問題（S-04.8，含無引導問題時的說明回退）。
+/// 只給 AI 路徑與單場讀取用。
+macro_rules! conversation_select_with_guiding {
+    ($tail:literal) => {
+        concat!(
+            conversation_columns!("title"),
+            ", COALESCE((SELECT ARRAY(SELECT COALESCE(t.translations -> conversations.language ->> ('q:' || question), question) FROM unnest(t.guiding_questions) WITH ORDINALITY AS q(question, pos) ORDER BY pos) FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions FROM conversations",
             classroom_join!(),
             $tail
         )
@@ -118,6 +141,7 @@ pub(crate) struct ConversationPage {
 /// 分頁參數加上封存篩選。
 #[derive(Deserialize)]
 pub(crate) struct ConversationQuery {
+    language: Option<String>,
     #[serde(flatten)]
     page: Pagination,
     archived: Option<String>,
@@ -241,7 +265,7 @@ pub(crate) async fn create(
     path = "/api/conversations",
     tag = "conversations",
     summary = "我的對話列表（不含訊息）",
-    params(("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的"), ("activity_id" = Option<Uuid>, Query, description = "只列這個活動的對話")),
+    params(("language" = Option<String>, Query, description = "題名顯示語言"), ("limit" = Option<u16>, Query, description = "1–200，預設 50"), ("cursor" = Option<String>, Query, description = "前頁 next_cursor"), ("archived" = Option<bool>, Query, description = "true 只列已封存的對話；預設只列未封存的"), ("activity_id" = Option<Uuid>, Query, description = "只列這個活動的對話")),
     responses((status = 200, description = "對話分頁，依 updated_at DESC, id ASC（無訊息時以 created_at 代替）", body = ConversationPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_archived / invalid_activity_id", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn list(
@@ -250,6 +274,7 @@ pub(crate) async fn list(
     Query(query): Query<ConversationQuery>,
 ) -> Result<Json<Page<Conversation>>, ApiError> {
     let archived = pagination::parse_archived(query.archived.as_deref())?;
+    let language = crate::catalog::display_language(query.language.as_deref(), &cu.user.language)?;
     let query_activity = query.activity_id;
     let query = query.page;
     let limit = query.limit()?;
@@ -262,7 +287,11 @@ pub(crate) async fn list(
             })?),
             None => None,
         };
-    let rows = sqlx::query_as(conversation_select!(
+    let rows = sqlx::query_as(concat!(
+        conversation_columns!("COALESCE(topic.translated, conversations.title) AS title"),
+        ", ($7 <> 'zh-TW' AND topic.original IS NOT NULL AND topic.translated IS NULL) AS title_pending FROM conversations ",
+        "LEFT JOIN LATERAL (SELECT t.title AS original, t.translations -> ($7::text) ->> 'title' AS translated FROM topics t WHERE t.id = conversations.topic_id) topic ON true ",
+        classroom_join!(),
         "WHERE user_id = $1 AND (archived_at IS NOT NULL) = $2
            AND ($3::uuid IS NULL OR activity_id = $3)
            AND (
@@ -278,6 +307,7 @@ pub(crate) async fn list(
     .bind(after_time)
     .bind(after_id)
     .bind((limit + 1) as i64)
+    .bind(language)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(pagination::page(
@@ -303,12 +333,14 @@ pub(crate) async fn owned_conversation_in<'e>(
     user_id: Uuid,
     id: Uuid,
 ) -> Result<Conversation, ApiError> {
-    sqlx::query_as(conversation_select!("WHERE id = $1 AND user_id = $2"))
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await?
-        .ok_or_else(ApiError::not_found)
+    sqlx::query_as(conversation_select_with_guiding!(
+        "WHERE id = $1 AND user_id = $2"
+    ))
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(ApiError::not_found)
 }
 
 /// 學生實際聽到的訊息內容與條件：被打斷的語音回覆只算聽到的部分，一個字都沒聽到就不算存在。
@@ -356,11 +388,11 @@ pub(crate) async fn detail(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Detail>, ApiError> {
-    let conversation = owned_conversation(&state, cu.user.id, id).await?;
+    let mut conversation = owned_conversation(&state, cu.user.id, id).await?;
     // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
     let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;
-    let guiding_questions = conversation.guiding_questions.clone();
+    let guiding_questions = std::mem::take(&mut conversation.guiding_questions);
     Ok(Json(Detail {
         conversation,
         messages,
@@ -423,8 +455,7 @@ pub(crate) enum Submitted {
 }
 
 /// 保存學生訊息並更新回合數；文字與語音對話共用。`answered_only` 時，上一則學生訊息
-/// 還沒有回覆就回 `unanswered_message`；語音的呼叫端接到後改走 [`rejoin_message`]，把新的發言
-/// 存成獨立的一則併進去回覆，不讓學生卡在沒有重試畫面的語音裡。
+/// 還沒有回覆就拒絕：語音對話沒有重試的畫面，不能把新的發言疊上去。
 ///
 /// 資料庫往返（不含教室的封存檢查）：`BEGIN`、查詢對話、claim 回合與寫入（一個語句）、`COMMIT`。
 pub(crate) async fn submit_message(

@@ -223,6 +223,8 @@ pub struct PublishedActivity {
 /// 學生在活動中某一題的進度（F-29.6）。
 #[derive(Debug, Serialize, FromRow, utoipa::ToSchema)]
 pub struct TopicProgress {
+    #[sqlx(default)]
+    pub title_pending: bool,
     pub topic_id: Uuid,
     pub title: String,
     /// 這位學生在此題的對話；還沒開始為 null

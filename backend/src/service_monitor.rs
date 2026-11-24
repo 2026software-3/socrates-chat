@@ -29,7 +29,10 @@ use crate::{
 };
 
 const DATABASE: &str = "database";
-const PROBE_INTERVAL: Duration = Duration::from_secs(30);
+/// 背景探測間隔：預設 30 秒，可用 `SERVICE_PROBE_INTERVAL_SECS` 在 10 至 300 秒之間調整（S-09.3）。
+pub const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+const MIN_PROBE_INTERVAL_SECS: u64 = 10;
+const MAX_PROBE_INTERVAL_SECS: u64 = 300;
 const MANUAL_INTERVAL: Duration = Duration::from_secs(10);
 const HISTORY_TIMEOUT: Duration = Duration::from_secs(2);
 const RETENTION_DAYS: i64 = 30;
@@ -451,11 +454,30 @@ impl Monitor {
     }
 }
 
+/// 解析 `SERVICE_PROBE_INTERVAL_SECS`：未設定或空白用預設 30 秒；
+/// 不是整數或不在 10 至 300 秒內時回錯誤，讓啟動失敗而不是悄悄改用別的值。
+pub fn parse_probe_interval(raw: Option<&str>) -> Result<Duration, ConfigError> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(DEFAULT_PROBE_INTERVAL);
+    };
+    raw.parse::<u64>()
+        .ok()
+        .filter(|secs| (MIN_PROBE_INTERVAL_SECS..=MAX_PROBE_INTERVAL_SECS).contains(secs))
+        .map(Duration::from_secs)
+        .ok_or_else(|| {
+            ConfigError(format!(
+                "SERVICE_PROBE_INTERVAL_SECS must be a whole number of seconds between \
+                 {MIN_PROBE_INTERVAL_SECS} and {MAX_PROBE_INTERVAL_SECS}"
+            ))
+        })
+}
+
 pub fn spawn(state: &AppState) {
     let monitor = state.service_monitor.clone();
     let pool = state.pool.clone();
+    let probe_interval = state.config.service_probe_interval;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(PROBE_INTERVAL);
+        let mut interval = tokio::time::interval(probe_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
@@ -811,6 +833,44 @@ mod tests {
         assert_eq!(state.current.status, Status::NoData);
         state.observe(failed(), t0 + TimeDelta::seconds(30), Trigger::Scheduled);
         assert_eq!(state.current.status, Status::Unhealthy);
+    }
+
+    #[test]
+    fn probe_interval_defaults_to_30_seconds_when_unset_or_blank() {
+        for raw in [None, Some(""), Some("  \n")] {
+            assert_eq!(parse_probe_interval(raw).unwrap(), Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn probe_interval_accepts_the_whole_10_to_300_second_range() {
+        assert_eq!(
+            parse_probe_interval(Some("10")).unwrap(),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            parse_probe_interval(Some(" 60 ")).unwrap(),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            parse_probe_interval(Some("300")).unwrap(),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn probe_interval_outside_the_range_or_not_a_whole_number_fails_startup() {
+        for raw in ["0", "9", "301", "3600", "-30", "30.5", "30s", "abc"] {
+            let error = parse_probe_interval(Some(raw)).unwrap_err().to_string();
+            assert!(
+                error.contains("SERVICE_PROBE_INTERVAL_SECS"),
+                "{raw}: {error}"
+            );
+            assert!(
+                error.contains("10") && error.contains("300"),
+                "{raw}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -110,6 +110,7 @@ pub fn test_config() -> Config {
         teacher_key_cipher: None,
         classroom_ai_routing: false,
         monitored_services: vec![],
+        service_probe_interval: socrates_chat_backend::service_monitor::DEFAULT_PROBE_INTERVAL,
     }
 }
 
@@ -131,6 +132,8 @@ pub enum Script {
 #[derive(Default)]
 pub struct FakeAi {
     scripts: Mutex<VecDeque<Script>>,
+    pub topic_translation_scripts: Mutex<VecDeque<Script>>,
+    pub topic_translation_requests: Mutex<Vec<AiRequest>>,
     pub requests: Mutex<Vec<AiRequest>>,
 }
 
@@ -138,7 +141,7 @@ impl FakeAi {
     pub fn with(scripts: Vec<Script>) -> Arc<Self> {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
-            requests: Mutex::default(),
+            ..Self::default()
         })
     }
 
@@ -170,8 +173,13 @@ impl AiProvider for FakeAi {
     }
 
     async fn stream_chat(&self, req: AiRequest) -> Result<AiStream, AiError> {
-        self.requests.lock().unwrap().push(req);
-        let script = self.scripts.lock().unwrap().pop_front();
+        let script = if req.system.starts_with("topic-translation-v1:") {
+            self.topic_translation_requests.lock().unwrap().push(req);
+            self.topic_translation_scripts.lock().unwrap().pop_front()
+        } else {
+            self.requests.lock().unwrap().push(req);
+            self.scripts.lock().unwrap().pop_front()
+        };
         match script {
             Some(Script::Reply(chunks)) => {
                 Ok(stream::iter(chunks.into_iter().map(|c| Ok(c.to_string()))).boxed())

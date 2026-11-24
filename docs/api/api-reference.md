@@ -67,6 +67,8 @@
 - 教師時間表單依瀏覽器時區輸入及顯示，傳送時轉 UTC；已有人開始對話的活動仍可修改時間。建立活動須選擇未封存的教室。
 
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
+- 題名與引導問題的中文原文仍用 `title`、`guiding_questions`。教師讀寫的 `translations` 依目標語言（`en`、`es`）分組，每組的 `title` 是題名譯文，`q:<中文引導問題>` 是該問題的譯文。PATCH 只送需要修改的譯文。順序以 `guiding_questions` 為準。
+- 學生的 `GET /api/catalog` 和 `GET /api/conversations` 接受選填的 `language`（`zh-TW`、`en`、`es`，預設帳號語言）。回應直接帶顯示文字；`title_pending` 表示題名缺譯，`pending_questions` 為缺譯引導問題的零起算索引。單場對話的引導問題使用建立時保存的語言。
 - 題目可附 0 到 5 個引導問題（`guiding_questions` 字串陣列，S-04.8、F-32.1）：建立與修改時選填，建立未帶預設為 `[]`，修改未帶保留原值，修改帶 `[]` 清空；每個問題最多 200 字，超過 5 個或單一超過 200 字回 `400 invalid_guiding_questions`；題目已有對話後仍可修改引導問題（不鎖定），不影響既有總結；學生呼叫 `GET /api/catalog` 的題目清單亦帶有此欄位。
 - AI 不再讀題目或對話的 `description`（F-32.5）：對話提示、總結、單場雷達評分與 AI 產生雷達維度都改帶題目目前的引導問題；教師在題目還沒有對話時修改引導問題，未鎖定的維度會丟掉並重新產生。
 - 引導問題將取代題目的 `description`（S-04.8 2026-11 修訂）：`description` 欄位標為 deprecated，目前讀寫行為不變、之後另案改為寫入忽略並移除；migration `20261117000000` 已把引導問題為空、`description` 非空的既有題目轉成引導問題（`description` 欄位保留）。

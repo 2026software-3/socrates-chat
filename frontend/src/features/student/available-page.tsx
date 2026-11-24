@@ -14,7 +14,7 @@ type Source = { activity_id: string; topic_id: string } | { topic_id: string }
 
 type Item =
   | { kind: 'activity'; key: string; activity: StudentActivity }
-  | { kind: 'topic'; key: string; title: string; description: string; source: Source }
+  | { kind: 'topic'; key: string; title: string; titlePending?: boolean; description: string; source: Source }
 
 /** 搜尋比對的文字：活動含每題標題。 */
 function searchTexts(i: Item): string[] {
@@ -41,7 +41,7 @@ export function AvailablePage() {
   const { lang } = useI18n()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
-  const { data, error, loading, reload } = useFetch<Available>('/api/catalog')
+  const { data, error, loading, reload } = useFetch<Available>(`/api/catalog?language=${lang}`)
   const [startingKey, setStartingKey] = useState<string>()
   const [startError, setStartError] = useState<unknown>()
   const busy = useRef(false)
@@ -97,6 +97,7 @@ export function AvailablePage() {
         kind: 'topic',
         key: `t:${x.id}`,
         title: x.title,
+        titlePending: x.title_pending,
         description: x.description,
         source: { topic_id: x.id },
       }),
@@ -220,6 +221,7 @@ function Section({ title, level, emptyText, items, startingKey, onStart, layout 
                 <article className="bg-background flex h-full flex-col justify-between gap-3 rounded-xl border p-5 break-words">
                   <div className="flex min-w-0 flex-col gap-1">
                     <span className="font-medium">{item.title}</span>
+                    {item.titlePending && <small>{t('admin.dimensions.translationPending')}</small>}
                     <span className="text-muted-foreground text-xs">
                       {t('student.available.bank')}
                     </span>
@@ -232,7 +234,7 @@ function Section({ title, level, emptyText, items, startingKey, onStart, layout 
                       variant="outline"
                       onClick={() => onStart(item.key, item.source)}
                       disabled={startingKey !== undefined}
-                      aria-label={t('student.available.startNamed', { title: item.title })}
+                      aria-label={t('student.available.startPracticeNamed', { title: item.title })}
                     >
                       {startingKey === item.key ? t('student.available.starting') : t('student.available.startPractice')}
                     </Button>
@@ -279,6 +281,7 @@ function ActivityCard({ activity, startingKey, onStart }: ActivityCardProps) {
             <li key={topic.topic_id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm">{topic.title}</span>
+                {topic.title_pending && <small>{t('admin.dimensions.translationPending')}</small>}
                 <span className="text-muted-foreground text-xs">{t(topicStatusKey(topic))}</span>
                 <Link
                   to={`/topics/${encodeURIComponent(topic.topic_id)}?activity=${encodeURIComponent(activity.id)}`}

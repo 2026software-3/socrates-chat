@@ -199,7 +199,9 @@ describe('student available page', () => {
   it('names start buttons with a translated pattern', async () => {
     mockAvailable()
     renderPage()
-    expect(await screen.findByRole('button', { name: '開始討論：Topic One' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '開始討論：Act A' })).toBeInTheDocument()
+    // 可見文字要是無障礙名稱的一部分（WCAG 2.5.3，axe label-content-name-mismatch）
+    expect(screen.getByRole('button', { name: '開始練習：Topic One' })).toHaveTextContent('開始練習')
   })
 
   it('shows activity_already_started in words, not as a code', async () => {
