@@ -108,7 +108,7 @@ jobs:
           path: backend/lcov.info
 
   frontend:
-    name: Frontend (lint, typecheck, test, build)
+    name: Frontend (lint, typecheck, test, build, e2e)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -125,6 +125,19 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # 點擊測試、三寬度截圖與 axe（S-11.6）。在官方 Playwright Docker image 裡跑（版本跟著 @playwright/test），
+      # 與本機 `npm run test:e2e:linux` 產生基準截圖的環境完全相同；Vite dev server＋MSW，不需要後端。
+      - name: Playwright (click, screenshot, axe)
+        run: npm run test:e2e:linux
+      - name: Upload Playwright report, traces and screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 14
 
   scripts:
     name: Scripts (project-status tests)

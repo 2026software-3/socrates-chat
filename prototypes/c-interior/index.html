@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>系統內頁：地圖與刻字</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=Noto+Serif+TC:wght@400;700;900&display=swap">
+<link rel="stylesheet" href="shared.css">
+<style>
+/* Proposal D — A unchanged, with two things borrowed from C: the topbar's current location is centred and set as a
+   carved inscription, and the Latin names are cut in letter by letter where the visitor arrives somewhere.
+   Base notes from A follow.
+   Proposal A — Pianta del Foro. The sidebar is a Nolli figure-ground plan of the Forum: every area of the
+   product is a building, buildings are black poché, and the one you are in is drawn open (white, with its
+   columns) and pinned with its numeral, the way Nolli opened public interiors on his 1748 plan of Rome. */
+:root { --side-w: 216px; }
+@media (max-width: 1023px) { .side { width: var(--side-w); } }
+.topbar { border-bottom: 1px solid var(--ink); box-shadow: 0 3px 0 -2px var(--ink); }
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand b { font-size: 17px; font-weight: 900; letter-spacing: .04em; white-space: nowrap; }
+.brand .latin { font-size: 14px; color: var(--ink-soft); letter-spacing: .14em; white-space: nowrap; }
+.here { flex: 1; display: flex; justify-content: center; align-items: center; gap: 12px; min-width: 0; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+.here .num { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--paper); box-shadow: inset 0 0 0 1.2px var(--chalk); color: var(--chalk); font-family: var(--face-latin); font-size: 13px; }
+.insc { font-family: var(--face-latin); font-size: 19px; letter-spacing: .26em; color: var(--ink); white-space: nowrap; text-shadow: 0 1px 0 rgba(255, 255, 255, .7), 0 -1px 0 rgba(31, 26, 22, .18); }
+.insc span { display: inline-block; }
+.insc .dot { color: var(--chalk); margin: 0 .08em; }
+.insc.cut span { animation: chisel .5s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--d, 0ms) + var(--i) * 40ms); }
+@keyframes chisel { from { clip-path: inset(0 0 100% 0); transform: translateY(-2px); opacity: .2; } to { clip-path: inset(0 0 0 0); transform: none; opacity: 1; } }
+.veduta .label .insc { font-size: 14px; letter-spacing: .14em; color: var(--ink-soft); text-shadow: none; }
+.back-bar .loc .insc { font-size: 15px; letter-spacing: .2em; color: var(--chalk-deep); text-shadow: none; }
+.side { border-right: 1px solid var(--ink-faint); padding: 18px 16px 24px; display: flex; flex-direction: column; gap: 14px; }
+
+/* the plan */
+.plan { position: relative; }
+.plan svg { display: block; width: 100%; height: auto; }
+.plan .cap { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; font-size: 12px; color: var(--ink-soft); }
+.plan .cap .latin { letter-spacing: .12em; font-size: 12px; }
+.bld { cursor: pointer; }
+.bld .poche { fill: var(--ink); transition: fill .35s ease; }
+.bld .open { opacity: 0; transition: opacity .35s ease; pointer-events: none; }
+.bld .rim { fill: none; stroke: var(--chalk); stroke-width: 1.4; stroke-dasharray: 400; stroke-dashoffset: 400; transition: stroke-dashoffset .7s cubic-bezier(.2, .7, .2, 1); }
+.bld.is-here .poche { fill: #FBF8F1; }
+.bld.is-here .open { opacity: 1; }
+.bld.is-here .rim { stroke-dashoffset: 0; }
+.bld.is-hover:not(.is-here) .poche { fill: var(--chalk-deep); }
+.bld.inert { cursor: default; }
+.bld.inert .poche { fill: var(--ink-soft); }
+.pinmark circle { fill: var(--paper); stroke: var(--chalk); stroke-width: 1.2; }
+.pinmark text { font-family: var(--face-latin); font-size: 8.5px; fill: var(--chalk); text-anchor: middle; dominant-baseline: central; }
+
+/* the legend = nav */
+.legend { list-style: none; margin: 0; padding: 0; border-top: 1.5px solid var(--ink); }
+.legend a { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; column-gap: 8px; min-height: 48px; padding: 6px 8px 6px 6px; text-decoration: none; border-bottom: 1px solid var(--ink-hair); position: relative; }
+.legend .n { font-family: var(--face-latin); font-size: 17px; text-align: center; color: var(--ink-soft); }
+.legend .zh { font-size: 15px; line-height: 1.35; }
+.legend .la { grid-column: 2; font-family: var(--face-latin); font-size: 12px; letter-spacing: .1em; color: var(--ink-soft); line-height: 1.2; }
+.legend a:hover .zh, .legend a.is-hover .zh { color: var(--chalk); }
+.legend a[aria-current="page"] { background: rgba(251, 248, 241, .7); }
+.legend a[aria-current="page"]::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--chalk); }
+.legend a[aria-current="page"] .n, .legend a[aria-current="page"] .zh { color: var(--chalk); }
+.legend a[aria-current="page"] .zh { font-weight: 700; }
+.side .foot { margin-top: auto; font-size: 12px; color: var(--ink-soft); }
+
+/* page head: the building's veduta, cut from the entry plate */
+.work-inner { max-width: none; }
+.work-inner > :not(.veduta) { max-width: 1040px; width: 100%; }
+.veduta { position: relative; min-height: 176px; margin: 0 calc(-1 * var(--gutter)); margin-top: -36px; overflow: hidden; border-bottom: 1px solid var(--ink);
+  background: var(--paper) center / cover no-repeat; }
+.veduta::before { content: ''; position: absolute; inset: 0; background: var(--wash, transparent); mix-blend-mode: multiply; opacity: .35; }
+.veduta::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,255,255,.96) 0%, rgba(255,255,255,.72) 34%, rgba(255,255,255,0) 64%); }
+.veduta .label { position: relative; z-index: 1; padding: 28px var(--gutter) 22px; display: flex; flex-direction: column; gap: 4px; justify-content: flex-end; min-height: 176px; }
+.veduta .tav { position: absolute; z-index: 1; right: 16px; top: 12px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--paper); box-shadow: inset 0 0 0 1.2px var(--chalk); color: var(--chalk); font-family: var(--face-latin); font-size: 14px; }
+
+.back-bar { border-bottom: 1px solid var(--ink); box-shadow: 0 3px 0 -2px var(--ink); }
+.back-bar .loc { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+.back-bar .loc svg { width: 28px; height: 28px; }
+@media (max-width: 1023px) { .brand .latin { display: none; } .here { justify-content: center; overflow: hidden; } .here .zh { display: none; } .insc { font-size: 17px; letter-spacing: .2em; } }
+@media (max-width: 767px) { .brand .latin { display: none; } .veduta { min-height: 0; margin-top: -24px; } .veduta .label { min-height: 150px; } .veduta::after { background: linear-gradient(90deg, rgba(255,255,255,.95) 0%, rgba(255,255,255,.8) 60%, rgba(255,255,255,.3) 100%); } .back-bar .loc .insc { display: none; } .brand { display: none; } .topbar .points { display: none; } .here .num { display: none; } .insc { font-size: 15px; letter-spacing: .16em; } }
+
+/* colophon: a paper band across the whole work area, double rule on top (matches Figma Shell/Colophon) */
+.work { padding-bottom: 0; }
+.site-foot { margin-top: 56px; background: var(--paper); padding: 20px var(--gutter) 84px; display: flex; flex-direction: column; gap: 12px; }
+.site-foot .rule { height: 4px; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+.site-foot .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px 24px; flex-wrap: wrap; font-size: 13px; color: var(--ink-soft); }
+.site-foot .letter { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.site-foot .letter .latin { letter-spacing: .14em; color: var(--ink); }
+.site-foot .links { display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline; }
+.site-foot .links a { text-decoration: none; min-height: 32px; display: inline-flex; align-items: center; }
+.site-foot .links a:hover { color: var(--chalk); text-decoration: underline; text-underline-offset: 4px; }
+.site-foot .note { font-size: 12px; color: var(--ink-soft); }
+@media (max-width: 767px) { .site-foot .row { flex-direction: column; align-items: flex-start; } }
+
+/* ---------- mobile (< 768): proposal C — bottom tab bar (3 frequent areas + 廣場) and a plan bottom sheet ---------- */
+.tabbar, .sheet, .sheet-scrim { display: none; }
+.here-btn { background: none; border: 0; padding: 0; font: inherit; color: inherit; display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: default; }
+.here-btn .chev { display: none; }
+@media (max-width: 767px) {
+  .topbar .menu-btn { display: none; }
+  .here { justify-content: center; }
+  .here-btn { cursor: pointer; gap: 4px; }
+  .here-btn .chev { display: inline-grid; color: var(--chalk-deep); }
+  .here-btn:active .insc { color: var(--chalk); }
+  .work { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  .site-foot { padding-bottom: 28px; }
+  .proto-bar { bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important; }
+
+  .tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 25;
+    background: var(--paper); border-top: 1px solid var(--ink); box-shadow: 0 -3px 0 -2px var(--ink);
+    padding: 0 max(4px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(4px, env(safe-area-inset-left, 0px)); }
+  .tab-i { position: relative; min-height: 60px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    background: none; border: 0; padding: 6px 2px; color: var(--ink-soft); text-decoration: none; cursor: pointer; font: inherit; }
+  .tab-i .n { font-family: var(--face-latin); font-size: 17px; line-height: 1.1; color: inherit; }
+  .tab-i .zh { font-size: 12px; line-height: 1.3; white-space: nowrap; }
+  .tab-i svg { width: 30px; height: 21px; display: block; }
+  .tab-i[aria-current="page"] { color: var(--chalk-deep); }
+  .tab-i[aria-current="page"] .zh { font-weight: 700; }
+  .tab-i[aria-current="page"]::before { content: ''; position: absolute; top: -1px; left: 26%; right: 26%; height: 2px; background: var(--chalk); }
+  .tab-i:focus-visible { outline-offset: -4px; }
+
+  .sheet-scrim { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(31, 26, 22, .36); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+  .sheet-scrim.open { opacity: 1; pointer-events: auto; }
+  .sheet { display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; max-height: 88vh;
+    background-color: var(--paper); border-top: 1px solid var(--ink); box-shadow: 0 -3px 0 -2px var(--ink);
+    transform: translateY(102%); transition: transform .32s cubic-bezier(.2, .7, .2, 1); visibility: hidden;
+    padding: 0 max(16px, env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+  .sheet.open { transform: none; visibility: visible; }
+  .sheet.dragging { transition: none; }
+  .sheet .grab { display: grid; place-items: center; height: 26px; cursor: grab; touch-action: none; }
+  .sheet .grab::before { content: ''; width: 40px; height: 4px; border-radius: 2px; background: var(--ink-faint); }
+  .sheet .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 8px; touch-action: none; }
+  .sheet .head .latin { font-size: 13px; letter-spacing: .26em; color: var(--ink); }
+  .sheet .head .where { font-size: 13px; color: var(--ink-soft); }
+  .sheet .close { margin-left: auto; }
+  .sheet .body { overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
+  .sheet .plan svg { width: 100%; height: auto; display: block; background: rgba(251, 248, 241, .55); }
+  .sheet .hint { font-size: 12px; color: var(--ink-soft); }
+  .sheet .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; border-top: 1.5px solid var(--ink); }
+  .sheet .legend a { min-height: 52px; }
+}
+body:has(.sheet.open) .proto-bar { display: none; }
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) { .sheet, .sheet-scrim { transition: none; } }
+</style>
+</head>
+<body class="laid">
+<div id="work" class="shell">
+  <header class="topbar laid">
+    <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="開啟導覽" aria-expanded="false" aria-controls="side"></button>
+    <div class="brand"><b>蘇格拉底・教室</b><span class="latin">Schola Socratica</span></div>
+    <div class="here" id="here" aria-live="polite"></div>
+    <div class="points" id="points"></div>
+    <div class="account" id="account"></div>
+  </header>
+  <aside class="side laid" id="side" aria-label="主導覽"></aside>
+  <main class="work">
+    <div class="work-inner" id="page"></div>
+    <footer class="site-foot">
+      <div class="rule" aria-hidden="true"></div>
+      <div class="row">
+        <p class="letter"><span class="latin">Schola Socratica · MMXXVI</span><span>蘇格拉底・教室</span></p>
+        <nav class="links" aria-label="頁尾"><a href="#">使用說明</a><a href="#">紀錄與隱私</a><span>語言：繁體中文</span></nav>
+      </div>
+      <p class="note">示意原型・資料皆為合成</p>
+    </footer>
+  </main>
+  <nav class="tabbar" id="tabbar" aria-label="主要區域"></nav>
+</div>
+<div class="sheet-scrim" id="sheet-scrim"></div>
+<section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h" aria-hidden="true">
+  <div class="grab" id="sheet-grab" aria-hidden="true"></div>
+  <div class="head" id="sheet-head"><span class="latin" id="sheet-h">Pianta del Foro</span><span class="where" id="sheet-where"></span><button class="icon-btn close" type="button" id="sheet-close" aria-label="關閉平面圖"></button></div>
+  <div class="body" id="sheet-body"></div>
+</section>
+<div class="scrim" id="scrim" hidden></div>
+
+<div id="focus" class="focus" hidden>
+  <header class="back-bar laid">
+    <button class="back" type="button" data-go="home" id="back"></button>
+    <h1>民主一定比較公平嗎？</h1>
+    <div class="spacer"></div>
+    <span class="loc" id="loc"></span>
+  </header>
+  <main><div class="talk-col" id="talk-col"></div><p class="sr" role="status" id="talk-status"></p></main>
+  <div class="composer-wrap">
+    <form class="composer" id="composer">
+      <button class="icon-btn mic" type="button" aria-label="語音輸入" id="mic"></button>
+      <label class="sr" for="composer-input">你的回答</label>
+      <textarea id="composer-input" rows="1" placeholder="寫下你的回答與理由…"></textarea>
+      <button class="btn send" type="submit" aria-label="送出" id="send"></button>
+    </form>
+  </div>
+</div>
+
+<nav class="proto-bar" aria-label="原型：切換身分與畫面">
+  <button class="opt" type="button" data-go="home">學生</button><button class="opt" type="button" data-go="t-classes">教師</button><button class="opt" type="button" data-go="talk">對話</button>
+</nav>
+
+<script src="shared.js"></script>
+<script>
+(function () {
+  const I = window.Interior;
+  document.getElementById('menu-btn').innerHTML = I.icon('menu');
+  document.getElementById('back').innerHTML = I.icon('back') + '<span class="lbl">回到我的教室</span>';
+  document.getElementById('mic').innerHTML = I.icon('mic');
+  document.getElementById('send').innerHTML = I.icon('send');
+
+  /* Building footprints on a 220×150 plan, west (Capitoline) at left, as on Nolli's sheet. */
+  const B = {
+    tabularium: { poche: '<rect x="8" y="16" width="24" height="78"/>', open: dots(12, 22, 3, 9, 8, 8), pin: [20, 55] },
+    saturn: { poche: '<rect x="42" y="78" width="18" height="26"/><rect x="60" y="84" width="6" height="14"/>', open: dots(46, 82, 2, 3, 9, 8), pin: [51, 91] },
+    rostra: { poche: '<path d="M40 52h26v9H40z"/><path d="M40 61q13 7 26 0" fill="none" stroke="currentColor"/>', open: '', pin: [53, 56] },
+    curia: { poche: '<rect x="80" y="10" width="24" height="28"/>', open: dots(84, 15, 3, 3, 8, 8), pin: [92, 24] },
+    basilica: { poche: '<rect x="70" y="104" width="86" height="32"/>', open: dots(76, 110, 2, 10, 8.4, 20), pin: [113, 120] },
+    castor: { poche: '<rect x="164" y="100" width="22" height="36"/><rect x="167" y="94" width="16" height="6"/>', open: dots(168, 106, 2, 4, 14, 8), pin: [175, 118] },
+    vesta: { poche: '<circle cx="196" cy="74" r="11"/>', open: ring(196, 74, 7.5, 10), pin: [196, 74] },
+  };
+  function dots(x, y, cols, rows, dx, dy) { let s = ''; for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) s += `<circle cx="${x + i * dx}" cy="${y + j * dy}" r="1"/>`; return s; }
+  function ring(cx, cy, r, n) { let s = ''; for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; s += `<circle cx="${(cx + r * Math.cos(a)).toFixed(1)}" cy="${(cy + r * Math.sin(a)).toFixed(1)}" r="1"/>`; } return s; }
+  function rim(svgPoche) { return svgPoche.replace(/<(rect|circle|path)/g, '<$1 class="rim"').replace(/fill="none" stroke="currentColor"/g, ''); }
+
+  function planSVG(nav, active) {
+    const used = Object.fromEntries(nav.map(n => [n.b, n]));
+    const blds = Object.entries(B).map(([k, v]) => {
+      const n = used[k];
+      const cls = n ? (n.id === active ? 'bld is-here' : 'bld') : 'bld inert';
+      return `<g class="${cls}" data-b="${k}"${n ? ` data-go="${n.id}"` : ''}><g class="poche">${v.poche}</g><g class="open" fill="var(--ink)">${v.open}</g>${n ? rim(v.poche) : ''}</g>`;
+    }).join('');
+    const here = nav.find(n => n.id === active);
+    const pin = here ? `<g class="pinmark" transform="translate(${B[here.b].pin[0]} ${B[here.b].pin[1] - (here.b === 'vesta' ? 0 : 0)})"><circle r="7"/><text>${here.n}</text></g>` : '';
+    return `<svg viewBox="0 0 220 150" aria-hidden="true">
+      <defs>
+        <pattern id="blk" width="3.2" height="3.2" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path d="M0 0v3.2" stroke="var(--ink)" stroke-width=".55"/></pattern>
+      </defs>
+      <rect x=".5" y=".5" width="219" height="149" fill="none" stroke="var(--ink-faint)"/>
+      <g fill="url(#blk)" stroke="var(--ink)" stroke-width=".5">
+        <path d="M0 0h70v6H38v4H0z"/><path d="M112 0h108v40h-6V12h-60l-8-6h-34z"/><path d="M0 100h4v50H0z"/>
+        <path d="M60 140h96v10H60z"/><path d="M200 96h20v54h-30v-10h10z"/><path d="M118 44h30v20h-30z"/>
+      </g>
+      <path d="M32 66 C 70 70, 120 70, 150 68 S 200 62, 220 60" fill="none" stroke="var(--ink-soft)" stroke-width=".8" stroke-dasharray="2.5 2"/>
+      <text x="124" y="80" font-family="IM Fell English SC, serif" font-size="6.5" letter-spacing="1.2" fill="var(--ink-soft)">VIA SACRA</text>
+      <text x="86" y="60" font-family="IM Fell English SC, serif" font-size="7" letter-spacing="1.6" fill="var(--ink-soft)">FORVM</text>
+      ${blds}${pin}
+      <g transform="translate(206 22)" fill="none" stroke="var(--ink)" stroke-width=".7"><path d="M0 -9 L3 3 L0 1 L-3 3 Z" fill="var(--ink)"/><text y="-11" font-family="IM Fell English SC, serif" font-size="6" text-anchor="middle" stroke="none" fill="var(--ink)">N</text></g>
+      <g transform="translate(10 140)" stroke="var(--ink)" stroke-width=".7"><path d="M0 0h40M0 -2v4M20 -2v4M40 -2v4"/><text x="44" y="2" font-family="IM Fell English SC, serif" font-size="5.5" stroke="none" fill="var(--ink-soft)">PASSVS C</text></g>
+    </svg>`;
+  }
+
+  const PLATE = { home: 1, practice: 1, talks: 2, points: 4, companion: 1, profile: 3, 't-classes': 1, 't-topics': 3, 't-books': 4, 't-students': 4, 't-summaries': 2 };
+  // where each building sits in its plate, so the header shows that building rather than the same corner
+  const POS = { home: '58% 62%', practice: '92% 58%', talks: '50% 55%', points: '40% 40%', companion: '78% 45%', profile: '50% 40%', 't-classes': '58% 62%', 't-topics': '50% 40%', 't-books': '40% 40%', 't-students': '55% 30%', 't-summaries': '50% 55%' };
+
+  // pigment wash by what the building stands for (DESIGN.md: 頁首淡彩); other areas stay paper and ink
+  const WASH = { home: 'aerugo', 't-classes': 'aerugo', points: 'ochra-graphic', 't-books': 'ochra-graphic', talks: 'caeruleum', 't-summaries': 'caeruleum' };
+
+  function side(role, active, nav) {
+    return `
+      <div class="plan">${planSVG(nav, active)}
+        <div class="cap"><span class="latin">Pianta del Foro</span><span>你在 ${nav.find(n => n.id === active)?.n || '—'}</span></div>
+      </div>
+      <ol class="legend">${nav.map(n => `<li><a href="#${n.id}" data-go="${n.id}" data-b="${n.b}"${n.id === active ? ' aria-current="page"' : ''}><span class="n">${n.n}</span><span class="zh">${n.zh}</span><span class="la">${n.la}</span></a></li>`).join('')}</ol>
+      <p class="foot">${role === 'teacher' ? '教師與助教權限相同。' : '名單外的帳號看不到這張地圖。'}</p>`;
+  }
+
+  function pageHead(id, crumbs = '') {
+    const n = [...I.NAV.student, ...I.NAV.teacher].find(x => x.id === id);
+    const title = id === 't-classes' ? '哲學概論・週二班' : n.zh;
+    const sub = id === 'home' ? '本週有 2 個討論活動等你，題目由老師指定。' : id === 't-classes' ? '週二 第 3–4 節・32 位同學' : '';
+    return `<header class="veduta" style="background-image:url(assets/plate-${PLATE[id]}.jpg);background-position:${POS[id]}${WASH[id] ? `;--wash:var(--${WASH[id]})` : ''}">
+        <span class="tav" aria-hidden="true">${n.n}</span>
+        <div class="label">${crumbs}<h1 class="page-title">${title}</h1>${carve(n.la, 380)}${sub ? `<p class="page-sub" style="margin:0">${sub}</p>` : ''}</div>
+      </header>`;
+  }
+
+  /* ---------- mobile: bottom tab bar + plan sheet (proposal C) ---------- */
+  const SHORT = { points: '點數', companion: '蘇格拉底', profile: '檔案', practice: '練習', 't-books': '書庫', 't-students': '學生帳號' };
+  const FREQ = { student: ['home', 'practice', 'talks'], teacher: ['t-classes', 't-topics', 't-summaries'] };
+  const plazaIcon = '<svg viewBox="0 0 30 21" aria-hidden="true"><rect x=".5" y=".5" width="29" height="20" fill="none" stroke="currentColor"/><rect x="3" y="3" width="4" height="12" fill="currentColor"/><rect x="11" y="13" width="13" height="5" fill="currentColor"/><rect x="13" y="2" width="4" height="5" fill="currentColor"/><circle cx="25" cy="9" r="2.2" fill="currentColor"/><path d="M5 10 Q15 12 29 9" fill="none" stroke="currentColor" stroke-width=".8" stroke-dasharray="1.6 1.2"/></svg>';
+  const mq = matchMedia('(max-width: 767px)');
+  let lastNav = [], lastActive = '', lastRole = 'student', opener = null;
+  function renderTabbar(role, active, nav) {
+    const ids = FREQ[role] || nav.slice(0, 3).map(n => n.id);
+    const items = nav.filter(n => ids.includes(n.id)); /* always in plate order: I, II, III… */
+    const elsewhere = !ids.includes(active);
+    const cur = nav.find(n => n.id === active);
+    document.getElementById('tabbar').innerHTML = items.map(n => `<a class="tab-i" href="#${n.id}" data-go="${n.id}"${n.id === active ? ' aria-current="page"' : ''}><span class="n">${n.n}</span><span class="zh">${n.zh}</span></a>`).join('')
+      + `<button class="tab-i" type="button" id="plaza-tab" aria-haspopup="dialog" aria-controls="sheet"${elsewhere ? ' aria-current="page"' : ''}>${plazaIcon}<span class="zh">${elsewhere && cur ? cur.n + '・' + (SHORT[cur.id] || cur.zh) : '廣場'}</span></button>`;
+  }
+  function renderSheet(role, active, nav) {
+    const cur = nav.find(n => n.id === active);
+    document.getElementById('sheet-where').textContent = cur ? `你在 ${cur.n}・${cur.zh}` : '';
+    document.getElementById('sheet-body').innerHTML = `<div class="plan">${planSVG(nav, active)}</div><p class="hint">點建築或下面的區域前往；往下滑關閉。</p>
+      <ol class="legend">${nav.map(n => `<li><a href="#${n.id}" data-go="${n.id}" data-b="${n.b}"${n.id === active ? ' aria-current="page"' : ''}><span class="n">${n.n}</span><span class="zh">${n.zh}</span><span class="la">${n.la}</span></a></li>`).join('')}</ol>`;
+  }
+  const sheet = document.getElementById('sheet'), scrim = document.getElementById('sheet-scrim');
+  function openSheet(from) {
+    if (!mq.matches) return;
+    opener = from || null;
+    renderSheet(lastRole, lastActive, lastNav);
+    sheet.setAttribute('aria-hidden', 'false'); sheet.classList.add('open'); scrim.classList.add('open');
+    const b = sheet.querySelector('.bld.is-here'); if (b) { b.classList.remove('is-here'); requestAnimationFrame(() => requestAnimationFrame(() => b.classList.add('is-here'))); }
+    setTimeout(() => document.getElementById('sheet-close').focus(), 50);
+  }
+  function closeSheet(restore = true) {
+    if (!sheet.classList.contains('open')) return;
+    sheet.classList.remove('open'); scrim.classList.remove('open'); sheet.style.transform = ''; sheet.setAttribute('aria-hidden', 'true');
+    if (restore && opener) opener.focus();
+  }
+  document.getElementById('sheet-close').innerHTML = I.icon('close');
+  document.getElementById('sheet-close').addEventListener('click', () => closeSheet());
+  scrim.addEventListener('click', () => closeSheet());
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
+  document.addEventListener('click', e => {
+    const t = e.target.closest('#plaza-tab, .here-btn');
+    if (t) { if (mq.matches) openSheet(t); return; }
+    if (e.target.closest('#sheet [data-go]')) closeSheet(false);
+  });
+  // drag the grab bar or header down to dismiss
+  (function () {
+    let y0 = null, dy = 0;
+    const start = e => { y0 = e.clientY; dy = 0; sheet.classList.add('dragging'); e.target.setPointerCapture?.(e.pointerId); };
+    const move = e => { if (y0 === null) return; dy = Math.max(0, e.clientY - y0); sheet.style.transform = `translateY(${dy}px)`; };
+    const end = () => { if (y0 === null) return; sheet.classList.remove('dragging'); y0 = null; if (dy > 90) closeSheet(); else sheet.style.transform = ''; };
+    for (const el of [document.getElementById('sheet-grab'), document.getElementById('sheet-head')]) {
+      el.addEventListener('pointerdown', e => { if (e.target.closest('button')) return; start(e); });
+      el.addEventListener('pointermove', move); el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+    }
+  })();
+  mq.addEventListener('change', () => { if (!mq.matches) closeSheet(false); });
+
+  function onRoute(r, role, n) {
+    const here = document.getElementById('here');
+    lastNav = I.NAV[role]; lastActive = r; lastRole = role;
+    renderTabbar(role, r, lastNav);
+    closeSheet(false);
+    here.innerHTML = n ? `<button class="here-btn" type="button" aria-haspopup="dialog" aria-controls="sheet" aria-label="目前位置：${n.zh}，開啟廣場平面圖"><span class="num" aria-hidden="true">${n.n}</span>${carve(n.la)}<span class="zh">${n.zh}</span><span class="chev" aria-hidden="true">${I.icon('chevron', 'ico sm')}</span></button>` : '';
+    // hover link between legend and plan
+    const side = document.getElementById('side');
+    side.querySelectorAll('[data-b]').forEach(el => {
+      const k = el.dataset.b;
+      el.addEventListener('pointerenter', () => side.querySelectorAll(`[data-b="${k}"]`).forEach(x => x.classList.add('is-hover')));
+      el.addEventListener('pointerleave', () => side.querySelectorAll(`[data-b="${k}"]`).forEach(x => x.classList.remove('is-hover')));
+    });
+    // replay the "opening" of the building the visitor just entered
+    const b = side.querySelector('.bld.is-here');
+    if (b) { b.classList.remove('is-here'); requestAnimationFrame(() => requestAnimationFrame(() => b.classList.add('is-here'))); }
+  }
+
+  // Roman inscriptions run words together with an interpunct; letters are cut in one after another.
+  function carve(text, delay = 0) {
+    let i = 0;
+    return `<span class="insc cut" style="--d:${delay}ms" aria-hidden="true">${text.toUpperCase().split(' ').map(w => [...w].map(ch => `<span style="--i:${i++}">${ch}</span>`).join('')).join(`<span class="dot" style="--i:${i++}">·</span>`)}</span>`;
+  }
+
+  function onFocus() {
+    document.getElementById('loc').innerHTML = `<svg viewBox="-9 -9 18 18" aria-hidden="true"><circle r="8" fill="var(--paper)" stroke="var(--chalk)" stroke-width="1.2"/><text font-family="IM Fell English SC, serif" font-size="8" fill="var(--chalk)" text-anchor="middle" dominant-baseline="central">III</text></svg>${carve('Rostra')}<span id="round"></span>`;
+    onTalk(I.rounds);
+  }
+  function onTalk(r) { const el = document.getElementById('round'); if (el) el.textContent = `講壇・第 ${r} 輪`; }
+
+  I.init({ side, pageHead, onRoute, onFocus, onTalk });
+})();
+</script>
+</body>
+</html>

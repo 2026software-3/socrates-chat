@@ -1,0 +1,677 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>追問廣場 Prototype</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@700;900&display=swap">
+<style>
+/* Proposal A: a public square where the AI only asks. Ink line drawing on cool paper,
+   one lamp-yellow for "the question", one blue for actions; the login card is the arch you walk through. */
+:root {
+  --paper: #F2F4F7;
+  --card: #FFFFFF;
+  --ink: #0E1A2B;
+  --ink-2: #2B3A55;
+  --ink-3: #55627A;
+  --line: #7C8AA3;
+  --rule: #C9D1DE;
+  --hush: #E6EAF1;
+  --stage-dot: #2C3E5C;
+  --stage-line: #8FA0BE;
+  --lamp: #F5B700;
+  --act: #1D4ED8;
+  --act-press: #1A43BC;
+  --act-off: #8EA6E6;
+  --err: #8A1C12;
+  --err-bg: #FDECEA;
+  --err-ink: #6E140C;
+  --info-bg: #EAF0FE;
+  --info-ink: #12307F;
+  --note-bg: #FFF6DC;
+  --note-line: #8A5A00;
+  --note-ink: #5A3A00;
+  --serif: 'Noto Serif TC', 'Songti TC', serif;
+  --sans: 'Noto Sans TC', 'PingFang TC', system-ui, sans-serif;
+  --gutter: max(16px, env(safe-area-inset-left, 0px));
+  --gutter-r: max(16px, env(safe-area-inset-right, 0px));
+  color-scheme: light;
+}
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+html { overflow-x: clip; }
+body { margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 16px; overflow-x: clip; }
+::selection { background: var(--lamp); color: var(--ink); }
+input { caret-color: var(--act); }
+a { color: var(--act); text-underline-offset: 3px; }
+a:hover { color: var(--ink); }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--act); outline-offset: 2px; }
+h1, h2 { text-wrap: balance; }
+.wrap { width: 100%; max-width: 1280px; margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter-r); }
+@media (min-width: 760px) { .wrap { padding-left: max(40px, env(safe-area-inset-left, 0px)); padding-right: max(40px, env(safe-area-inset-right, 0px)); } }
+
+/* ---- controls ---- */
+.btn { min-height: 48px; padding: 0 22px; border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; transition: background-color .15s, transform .1s; }
+.btn:active { transform: translateY(1px); }
+.btn-p { border: 0; background: var(--act); color: #FFFFFF; }
+.btn-p:hover { background: var(--act-press); color: #FFFFFF; }
+.btn-p[disabled] { background: var(--act-off); cursor: progress; transform: none; }
+.btn-g { border: 1.5px solid var(--ink); background: var(--card); color: var(--ink); font-weight: 500; }
+.btn-g:hover { background: var(--hush); }
+.pill { min-height: 44px; padding: 0 16px; border-radius: 999px; border: 0; background: transparent; font-size: 15px; cursor: pointer; }
+.pill:hover { background: var(--hush); }
+.pill.outlined { border: 1.5px solid var(--line); }
+.chip { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1.5px dashed var(--line); background: var(--card); color: var(--ink-2); font-size: 13px; cursor: pointer; }
+.chip:hover { border-style: solid; border-color: var(--ink); color: var(--ink); }
+.spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .45); border-top-color: #FFFFFF; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { display: none; } }
+
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label { font-size: 14px; font-weight: 500; }
+.field input { height: 48px; padding: 0 14px; border: 1.5px solid var(--line); border-radius: 10px; font-size: 16px; background: var(--card); }
+.field input::placeholder { color: #66738A; }
+.field input[aria-invalid="true"] { border: 2px solid var(--err); }
+.field .msg { font-size: 13px; color: var(--err); }
+
+.alert { display: flex; gap: 10px; align-items: flex-start; border-radius: 10px; padding: 9px 12px; font-size: 14px; line-height: 1.5; border: 1.5px solid; }
+.alert svg { flex: none; margin-top: 2px; }
+.alert.bad { background: var(--err-bg); border-color: var(--err); color: var(--err-ink); }
+.alert.info { background: var(--info-bg); border-color: var(--act); color: var(--info-ink); }
+.note { font-size: 14px; line-height: 1.6; background: var(--note-bg); border: 1.5px solid var(--note-line); border-radius: 10px; padding: 10px 14px; color: var(--note-ink); }
+
+/* ---- public header ---- */
+.top { padding-top: max(12px, env(safe-area-inset-top, 0px)); padding-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 12px; border: 0; background: transparent; padding: 4px; min-height: 44px; cursor: pointer; font-family: var(--serif); font-weight: 900; font-size: 20px; letter-spacing: .04em; }
+.top nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 759px) {
+  .brand { font-size: 17px; }
+  .top nav .pill:not(.outlined) { display: none; }
+  .top nav .btn-p { display: none; }
+}
+
+/* ---- entry ---- */
+.entry { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); gap: 56px; align-items: start; padding-top: 24px; padding-bottom: 64px; }
+.pitch { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.pitch h1 { margin: 0; font-family: var(--serif); font-weight: 900; font-size: clamp(38px, 5.4vw, 72px); line-height: 1.16; letter-spacing: .01em; }
+.hl { background: linear-gradient(transparent 62%, var(--lamp) 62%, var(--lamp) 92%, transparent 92%); }
+.pitch p { margin: 0; max-width: 34em; font-size: 18px; line-height: 1.7; color: var(--ink-2); }
+.tags { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.tags li { font-size: 13px; border: 1.5px solid var(--ink); border-radius: 999px; padding: 5px 14px; }
+.door-col { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+@media (max-width: 959px) {
+  .entry { grid-template-columns: minmax(0, 1fr); gap: 28px; padding-top: 8px; }
+  .door-col { order: 2; }
+  .pitch p, .tags { display: none; }
+}
+
+/* the stage: rough idea polished into a circle by three questions */
+.stage { position: relative; background: var(--ink); background-image: radial-gradient(circle at 1.5px 1.5px, var(--stage-dot) 1px, transparent 1.2px); background-size: 20px 20px; border-radius: 20px; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 8px; padding: 18px; max-width: 620px; min-height: 300px; }
+.talk { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.b { max-width: 270px; padding: 8px 12px; font-size: 14px; line-height: 20px; }
+.b.s { border: 1.5px solid var(--stage-line); border-radius: 14px 14px 14px 4px; color: var(--paper); }
+.b.a { margin-left: 40px; background: var(--lamp); border-radius: 14px 14px 4px 14px; color: var(--ink); font-weight: 500; }
+.idea { width: 100%; height: auto; align-self: center; overflow: visible; }
+.done { position: absolute; right: 22px; bottom: 14px; font-size: 13px; color: var(--lamp); display: flex; align-items: center; gap: 6px; }
+@media (max-width: 759px) {
+  .stage { grid-template-columns: minmax(0, 1fr) 112px; min-height: 0; padding: 14px; border-radius: 16px; }
+  .b.later { display: none; }
+  .b.a { margin-left: 16px; }
+}
+
+/* the arch: login card */
+.door { width: 100%; max-width: 440px; margin: 0; background: var(--card); border: 2px solid var(--ink); border-radius: 220px 220px 20px 20px; padding: 44px 36px 28px; display: flex; flex-direction: column; gap: 13px; box-shadow: 8px 8px 0 var(--ink); }
+.door .head { text-align: center; }
+.door h2 { margin: 0; font-family: var(--serif); font-weight: 900; font-size: 28px; }
+.door .head p { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
+.lamp-wrap { display: flex; justify-content: center; }
+.or { display: flex; align-items: center; gap: 12px; color: var(--ink-3); font-size: 13px; }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1.5px solid var(--rule); }
+.g-mark { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--ink); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.fine { font-size: 13px; line-height: 1.65; color: var(--ink-3); text-align: center; margin: 0; }
+.demo { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; max-width: 460px; }
+.demo span { font-size: 13px; color: var(--ink-3); }
+@media (max-width: 759px) {
+  .door { border-radius: 32px 32px 16px 16px; padding: 24px 20px 20px; box-shadow: 5px 5px 0 var(--ink); }
+  .door .lamp-wrap { display: none; }
+  .door h2 { font-size: 24px; }
+}
+
+/* roles band */
+.roles { background: var(--ink); color: var(--paper); }
+.roles .wrap { padding-top: 56px; padding-bottom: 56px; display: flex; flex-direction: column; gap: 28px; }
+.roles h2 { margin: 0; font-family: var(--serif); font-weight: 900; font-size: 36px; }
+.roles .lede { margin: 6px 0 0; color: #C9D1DE; }
+.role-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0; border-top: 1.5px solid var(--stage-line); }
+.role-list div { padding: 20px 24px 4px 0; display: flex; flex-direction: column; gap: 8px; }
+.role-list h3 { margin: 0; font-family: var(--serif); font-size: 24px; color: var(--lamp); }
+.role-list p { margin: 0; font-size: 15px; line-height: 1.7; color: #C9D1DE; max-width: 30em; }
+.foot { padding-top: 24px; padding-bottom: max(24px, env(safe-area-inset-bottom, 0px)); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--ink-3); }
+
+/* ---- how it works ---- */
+.how { padding-top: 32px; padding-bottom: 64px; display: flex; flex-direction: column; gap: 36px; }
+.how h1 { margin: 0; font-family: var(--serif); font-weight: 900; font-size: clamp(34px, 4.4vw, 48px); }
+.how .lede { margin: 8px 0 0; font-size: 18px; color: var(--ink-2); }
+.steps { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; list-style: none; margin: 0; padding: 0; }
+.steps-line { position: absolute; left: 12%; right: 12%; top: 88px; border-top: 2px dashed var(--ink); }
+.steps li { position: relative; background: var(--card); border: 2px solid var(--ink); border-radius: 20px; padding: 28px; display: flex; flex-direction: column; gap: 12px; }
+.steps li.mark { background: var(--note-bg); }
+.steps svg { align-self: center; background: var(--paper); border-radius: 50%; }
+.steps .n { font-size: 14px; color: var(--ink-3); }
+.steps h2 { margin: 0; font-family: var(--serif); font-size: 26px; }
+.steps p { margin: 0; font-size: 16px; line-height: 1.7; color: var(--ink-2); }
+.row { display: flex; flex-wrap: wrap; gap: 12px; }
+@media (max-width: 859px) { .steps { grid-template-columns: minmax(0, 1fr); } .steps-line { display: none; } }
+
+/* ---- centred single cards: google chooser, not-yet-open ---- */
+.center { min-height: calc(100vh - 72px); display: flex; align-items: center; justify-content: center; padding-top: 24px; padding-bottom: 48px; }
+.chooser { width: 100%; max-width: 480px; background: var(--card); border: 1.5px solid var(--rule); border-radius: 16px; overflow: hidden; }
+.chooser .head { padding: 28px 28px 16px; text-align: center; display: flex; flex-direction: column; gap: 6px; }
+.chooser h1 { margin: 0; font-size: 24px; }
+.chooser p { margin: 0; color: var(--ink-2); font-size: 15px; }
+.chooser .sim { font-size: 13px; color: var(--ink-3); }
+.acct { width: 100%; min-height: 60px; display: flex; align-items: center; gap: 14px; padding: 0 20px; border: 0; border-top: 1px solid #DDE3EC; background: var(--card); text-align: left; cursor: pointer; font-size: 15px; }
+.acct:hover { background: var(--paper); }
+.acct i { font-style: normal; width: 34px; height: 34px; border-radius: 50%; background: var(--hush); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+.chooser .actions { padding: 16px 20px; display: flex; justify-content: flex-end; border-top: 1px solid #DDE3EC; }
+.blocked { width: 100%; max-width: 460px; background: var(--card); border: 2px solid var(--ink); border-radius: 230px 230px 20px 20px; padding: 56px 36px 32px; display: flex; flex-direction: column; gap: 14px; box-shadow: 8px 8px 0 var(--ink); text-align: center; }
+.blocked h1 { margin: 0; font-family: var(--serif); font-weight: 900; font-size: 28px; }
+.blocked p { margin: 0; font-size: 15px; line-height: 1.7; color: var(--ink-2); overflow-wrap: anywhere; }
+@media (max-width: 759px) { .blocked { border-radius: 120px 120px 16px 16px; padding: 44px 20px 24px; box-shadow: 5px 5px 0 var(--ink); } }
+
+/* ---- signed-in home ---- */
+.app-top { background: var(--card); border-bottom: 1.5px solid var(--rule); }
+.app-top .wrap { min-height: 64px; padding-top: max(8px, env(safe-area-inset-top, 0px)); padding-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.app-top .who { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.role-tag { font-size: 13px; font-weight: 700; background: var(--lamp); border-radius: 999px; padding: 3px 12px; }
+.me { font-size: 14px; color: var(--ink-3); }
+@media (max-width: 559px) { .me { display: none; } }
+.home { padding-top: 36px; padding-bottom: 64px; display: flex; flex-direction: column; gap: 22px; }
+.home h1 { margin: 0; font-family: var(--serif); font-weight: 900; font-size: 36px; }
+.home-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rooms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+.room { background: var(--card); border: 1.5px solid var(--ink); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.room h2 { margin: 0; font-size: 22px; }
+.room .t { font-size: 14px; color: var(--ink-3); }
+.act { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-top: 1px solid #DDE3EC; padding-top: 12px; }
+.act .st { display: flex; align-items: center; gap: 10px; }
+.badge { font-size: 13px; background: var(--hush); border-radius: 999px; padding: 3px 10px; }
+.act .btn { min-height: 40px; padding: 0 16px; font-size: 14px; }
+.table-scroll { position: relative; overflow-x: auto; border: 1.5px solid var(--ink); border-radius: 12px; background: var(--card); }
+table { width: 100%; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; min-width: 560px; }
+th { text-align: left; background: var(--hush); padding: 12px 16px; font-weight: 700; }
+td { padding: 12px 16px; border-top: 1px solid #DDE3EC; }
+tr.muted td { color: var(--ink-3); }
+.panel { background: var(--card); border: 1.5px solid var(--ink); border-radius: 12px; padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.panel h2 { margin: 0; font-size: 20px; }
+.panel p { margin: 4px 0 0; font-size: 14px; color: var(--ink-3); }
+.masked { color: var(--ink-3); }
+
+/* ---- door transition overlay ---- */
+.door-clip { position: fixed; inset: 0; z-index: 50; overflow: hidden; pointer-events: none; }
+.door-ov { position: absolute; background: var(--ink); border-radius: 220px 220px 20px 20px; pointer-events: none; will-change: transform, opacity; }
+.door-ov .disc { position: absolute; border-radius: 50%; background: var(--lamp); }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="logo" viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" fill="none" stroke="#0E1A2B" stroke-width="2"/><text x="18" y="25" text-anchor="middle" font-family="Noto Serif TC, serif" font-weight="900" font-size="20" fill="#0E1A2B">?</text><circle cx="18" cy="3" r="3" fill="#F5B700" stroke="#0E1A2B" stroke-width="1.5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 5V10M9 12.5V13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 4.5V9.5L12 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+
+<!-- public header (entry, how, google, blocked) -->
+<header id="public-top" class="wrap top">
+  <button type="button" class="brand" data-go="entry" aria-label="回到入口">
+    <svg width="34" height="34" aria-hidden="true"><use href="#logo"/></svg><span data-t="brand">蘇格拉底・教室</span>
+  </button>
+  <nav aria-label="主要導覽">
+    <button type="button" class="pill" data-go="how" data-t="navHow">運作方式</button>
+    <button type="button" class="pill" data-go="how-teacher" data-t="navTeacher">給教師</button>
+    <button type="button" class="pill outlined" id="lang" aria-label="切換語言 Switch language" data-t="langBtn">EN</button>
+    <button type="button" class="btn btn-p" data-go="login" style="border-radius:999px;min-height:44px;font-size:15px" data-t="navLogin">登入</button>
+  </nav>
+</header>
+
+<!-- ① entry -->
+<div data-screen="entry">
+  <main class="wrap entry">
+    <section class="pitch" aria-labelledby="h-entry">
+      <h1 id="h-entry" data-rise tabindex="-1"><span data-t="h1a">我們不給答案，</span><br><span data-t="h1b">只問</span><span class="hl" data-t="h1hl">下一句</span><span data-t="h1end">。</span></h1>
+      <p data-rise data-t="sub">在老師指定的哲學題目上，與 AI 展開多輪對話。它會追問你的理由，直到想法站得住腳。</p>
+      <ul class="tags" data-rise>
+        <li data-t="tag1">不代答，只追問</li>
+        <li data-t="tag2">進行中的對話只有你看得到</li>
+        <li data-t="tag3">名單內帳號才能進入</li>
+      </ul>
+      <div class="stage" id="stage" data-rise role="img" aria-label="示意動畫：學生與 AI 往返三輪對話，右側粗糙的多邊形想法被追問打磨成圓。">
+        <div class="talk" aria-hidden="true">
+          <div class="b s">民主一定比較公平。</div>
+          <div class="b a">「公平」指的是誰的標準？</div>
+          <div class="b s later">多數人同意就是標準。</div>
+          <div class="b a later">少數人被忽略時呢？</div>
+          <div class="b s later">那要加上保障少數。</div>
+          <div class="b a later">你剛才改變了什麼主張？</div>
+        </div>
+        <svg class="idea" viewBox="0 0 210 210" aria-hidden="true">
+          <circle id="glow" cx="105" cy="105" r="86" fill="none" stroke="#F5B700" stroke-width="2" opacity=".55"/>
+          <polygon id="node" points="" fill="rgba(245,183,0,.14)" stroke="#F2F4F7" stroke-width="2.5" stroke-linejoin="round"/>
+          <text x="105" y="111" text-anchor="middle" font-family="Noto Sans TC, sans-serif" font-size="16" fill="#F2F4F7">我的想法</text>
+          <text class="mk" x="168" y="42" font-family="Noto Serif TC, serif" font-weight="900" font-size="30" fill="#F5B700">?</text>
+          <text class="mk" x="184" y="170" font-family="Noto Serif TC, serif" font-weight="900" font-size="26" fill="#F5B700">?</text>
+          <text class="mk" x="20" y="36" font-family="Noto Serif TC, serif" font-weight="900" font-size="24" fill="#F5B700">?</text>
+        </svg>
+        <div class="done" id="done" aria-hidden="true"><svg width="14" height="14"><use href="#i-check"/></svg>想法更清楚了</div>
+      </div>
+    </section>
+
+    <section class="door-col" aria-labelledby="h-login">
+      <form class="door" id="login" data-rise novalidate>
+        <div class="lamp-wrap">
+          <svg id="lamp" width="52" height="52" viewBox="0 0 64 64" aria-hidden="true"><g stroke="#0E1A2B" stroke-width="2" stroke-linecap="round"><path d="M32 4V10M10 14L14 18M54 14L50 18M4 34H10M54 34H60"/></g><circle cx="32" cy="34" r="14" fill="#F5B700" stroke="#0E1A2B" stroke-width="2"/><path d="M26 52H38M28 58H36" stroke="#0E1A2B" stroke-width="2" stroke-linecap="round"/></svg>
+        </div>
+        <div class="head">
+          <h2 id="h-login" data-t="loginTitle">進入教室</h2>
+          <p data-t="loginSub">登入後會帶你到自己的教室</p>
+        </div>
+        <div class="alert bad" id="a-bad" role="alert" hidden><svg width="18" height="18"><use href="#i-alert"/></svg><span data-t="bad">電子郵件或密碼不正確，請再試一次。</span></div>
+        <div class="alert info" id="a-timeout" role="status" hidden><svg width="18" height="18"><use href="#i-clock"/></svg><span data-t="timeout">為保護你的帳號，已自動登出，請重新登入。</span></div>
+        <div class="field">
+          <label for="email" data-t="email">電子郵件</label>
+          <input id="email" type="email" autocomplete="username" placeholder="name@school.edu" aria-describedby="email-err">
+          <div class="msg" id="email-err" hidden></div>
+        </div>
+        <div class="field">
+          <label for="pw" data-t="pw">密碼</label>
+          <input id="pw" type="password" autocomplete="current-password" placeholder="••••••••" aria-describedby="pw-err">
+          <div class="msg" id="pw-err" hidden></div>
+        </div>
+        <button type="submit" class="btn btn-p" id="submit"><span class="spin" hidden></span><span id="submit-label" data-t="loginBtn">登入</span></button>
+        <div class="or" data-t="or">或</div>
+        <button type="button" class="btn btn-g" data-go="google"><span class="g-mark" aria-hidden="true">G</span><span data-t="google">使用 Google 帳號登入</span></button>
+        <p class="fine"><span data-t="foot1">本系統不開放自行註冊，帳號由教師或管理者匯入名單後開通。</span><br><span data-t="foot2">忘記密碼？請聯絡管理者重設。</span></p>
+      </form>
+      <div class="demo" data-rise>
+        <span data-t="demo">示意帳號：</span>
+        <button type="button" class="chip" data-demo="student@demo.tw">學生</button>
+        <button type="button" class="chip" data-demo="teacher@demo.tw">教師</button>
+        <button type="button" class="chip" data-demo="admin@demo.tw">管理者</button>
+        <button type="button" class="chip" data-demo="outsider@demo.tw">名單外</button>
+      </div>
+    </section>
+  </main>
+
+  <section class="roles" aria-labelledby="h-roles">
+    <div class="wrap">
+      <div>
+        <h2 id="h-roles">一扇門，三種身分</h2>
+        <p class="lede">登入後依帳號身分導向對應首頁。</p>
+      </div>
+      <div class="role-list">
+        <div><h3>學生</h3><p>進入自己的教室與討論活動，逐題與 AI 對話，完成後留下反思。</p></div>
+        <div><h3>教師</h3><p>建立教室與活動、匯入修課名單，查看學習總結；活動結束後可唯讀查看對話原文。</p></div>
+        <div><h3>系統管理者</h3><p>管理所有教室與帳號、重設密碼；介面中的訊息內容一律顯示為 message。</p></div>
+      </div>
+    </div>
+  </section>
+  <footer class="wrap foot">
+    <span>蘇格拉底・教室，單一課程專用</span>
+    <span>Prototype：帳號與資料皆為示意，GSAP 為待確認的新增依賴</span>
+  </footer>
+</div>
+
+<!-- ② how it works -->
+<main data-screen="how" class="wrap how" hidden>
+  <div data-rise>
+    <h1 id="h-how" tabindex="-1">一次對話，三個階段</h1>
+    <p class="lede">AI 不替你寫答案。它的工作是讓你的理由更清楚。</p>
+  </div>
+  <div style="position:relative">
+  <div class="steps-line" id="steps-line" aria-hidden="true"></div>
+  <ol class="steps">
+    <li data-rise>
+      <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true"><rect x="34" y="28" width="52" height="64" rx="6" fill="#FFFFFF" stroke="#0E1A2B" stroke-width="2.5"/><text x="60" y="72" text-anchor="middle" font-family="Noto Serif TC, serif" font-weight="900" font-size="36" fill="#0E1A2B">?</text></svg>
+      <span class="n">第一步</span><h2>選題</h2>
+      <p>教師在教室裡建立討論活動並指定哲學題目，你從活動進入對話；也可以自己做個人練習。</p>
+    </li>
+    <li data-rise>
+      <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true"><rect x="22" y="34" width="54" height="24" rx="10" fill="none" stroke="#0E1A2B" stroke-width="2.5"/><rect x="44" y="66" width="54" height="24" rx="10" fill="#F5B700" stroke="#0E1A2B" stroke-width="2.5"/></svg>
+      <span class="n">第二步</span><h2>追問</h2>
+      <p>你提出主張，AI 追問理由、反例與定義。可以打字，也可以用語音。</p>
+    </li>
+    <li data-rise id="step-teacher">
+      <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true"><rect x="36" y="26" width="48" height="62" rx="6" fill="#FFFFFF" stroke="#0E1A2B" stroke-width="2.5"/><path d="M46 42H74M46 52H74M46 62H64" stroke="#0E1A2B" stroke-width="2.5" stroke-linecap="round"/><rect x="66" y="70" width="24" height="20" rx="3" fill="#F5B700" stroke="#0E1A2B" stroke-width="2.5"/><path d="M71 70V65A7 7 0 0 1 85 65V70" fill="none" stroke="#0E1A2B" stroke-width="2.5"/></svg>
+      <span class="n">第三步</span><h2>總結</h2>
+      <p>對話結束後產生學習總結。教師看得到總結；活動結束後可唯讀查看對話原文。進行中的對話與個人練習，教師看不到。</p>
+    </li>
+  </ol>
+  </div>
+  <div class="row" data-rise>
+    <button type="button" class="btn btn-p" data-go="login">我準備好了，登入</button>
+    <button type="button" class="btn btn-g" data-go="entry">返回入口</button>
+  </div>
+</main>
+
+<!-- ③ Google account chooser (simulated) -->
+<main data-screen="google" class="wrap center" hidden>
+  <div class="chooser" data-rise>
+    <div class="head">
+      <span class="sim">示意畫面，實際由 Google 提供</span>
+      <h1 id="h-google" tabindex="-1">選擇帳號</h1>
+      <p>以繼續前往「蘇格拉底・教室」</p>
+    </div>
+    <button type="button" class="acct" data-gpick="student@demo.tw"><i aria-hidden="true">S</i>student@demo.tw</button>
+    <button type="button" class="acct" data-gpick="outsider@demo.tw"><i aria-hidden="true">O</i>outsider@demo.tw</button>
+    <button type="button" class="acct" data-gpick="teacher@demo.tw"><i aria-hidden="true">T</i>teacher@demo.tw</button>
+    <div class="actions"><button type="button" class="btn btn-g" data-go="entry">取消</button></div>
+  </div>
+</main>
+
+<!-- ④ not yet open (account outside every roster) -->
+<main data-screen="blocked" class="wrap center" hidden>
+  <div class="blocked" data-rise>
+    <div style="display:flex;justify-content:center"><svg width="64" height="64" viewBox="0 0 56 56" aria-hidden="true"><path d="M10 52V24A18 18 0 0 1 46 24V52Z" fill="none" stroke="#0E1A2B" stroke-width="2"/><path d="M10 52H46" stroke="#0E1A2B" stroke-width="2"/><rect x="21" y="30" width="14" height="12" rx="2" fill="#F5B700" stroke="#0E1A2B" stroke-width="1.8"/><path d="M23 30V26A5 5 0 0 1 33 26V30" fill="none" stroke="#0E1A2B" stroke-width="1.8"/></svg></div>
+    <h1 id="h-blocked" tabindex="-1">你的帳號尚未開通</h1>
+    <p><b id="blocked-who"></b> 不在任何教室的修課名單內。請聯絡你的教師或管理者，請對方把這個信箱加入名單。</p>
+    <div class="alert bad" id="recheck-msg" role="status" hidden><svg width="18" height="18"><use href="#i-alert"/></svg><span>剛剛重新檢查過，仍未在名單內。</span></div>
+    <button type="button" class="btn btn-p" id="recheck">我已被加入，重新檢查</button>
+    <button type="button" class="btn btn-g" data-go="login-fresh">改用其他帳號登入</button>
+  </div>
+</main>
+
+<!-- ⑤ signed-in home, by role -->
+<div data-screen="home" hidden>
+  <header class="app-top">
+    <div class="wrap">
+      <div class="who">
+        <svg width="28" height="28" aria-hidden="true"><use href="#logo"/></svg>
+        <span style="font-family:var(--serif);font-weight:900;font-size:18px">蘇格拉底・教室</span>
+        <span class="role-tag" id="role-tag"></span>
+      </div>
+      <div class="who">
+        <span class="me" id="me"></span>
+        <button type="button" class="pill outlined" id="sim-timeout" style="border-style:dashed;font-size:14px">模擬逾時</button>
+        <button type="button" class="btn btn-g" id="logout" style="min-height:44px;padding:0 18px">登出</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap home" data-role="student">
+    <h1 data-rise tabindex="-1">我的教室</h1>
+    <div class="rooms">
+      <section class="room" data-rise>
+        <h2>[教室名稱 A]</h2><div class="t">[教師姓名]</div>
+        <div class="act"><span>[活動名稱 1]</span><span class="st"><span class="badge">進行中</span><button type="button" class="btn btn-p">繼續對話</button></span></div>
+        <div class="act"><span>[活動名稱 2]</span><span class="st"><span class="badge">已結束</span><button type="button" class="btn btn-g">查看總結</button></span></div>
+      </section>
+      <section class="room" data-rise>
+        <h2>[教室名稱 B]</h2><div class="t">[教師姓名]</div>
+        <div class="act"><span>[活動名稱 3]</span><span class="st"><span class="badge">尚未開始</span><button type="button" class="btn btn-p">開始對話</button></span></div>
+        <div class="act"><span>個人練習</span><span class="st"><span class="badge">只有你看得到</span><button type="button" class="btn btn-g">自由選題</button></span></div>
+      </section>
+    </div>
+  </main>
+
+  <main class="wrap home" data-role="teacher">
+    <div class="home-head" data-rise><h1 tabindex="-1">我的教室</h1><button type="button" class="btn btn-p">建立教室</button></div>
+    <div class="note" role="note" data-rise>你看得到學生的學習總結；活動結束後，也能唯讀查看該活動的對話原文。進行中的對話與學生的個人練習看不到。</div>
+    <div class="table-scroll" data-rise>
+      <table>
+        <thead><tr><th scope="col">教室</th><th scope="col">學生</th><th scope="col">活動</th><th scope="col">狀態</th><th scope="col"><span class="sr">操作</span></th></tr></thead>
+        <tbody>
+          <tr><td>[教室名稱 A]</td><td>[N]</td><td>[N]</td><td>使用中</td><td><a href="#" data-noop>學習總結與已結束對話</a></td></tr>
+          <tr><td>[教室名稱 B]</td><td>[N]</td><td>[N]</td><td>使用中</td><td><a href="#" data-noop>學習總結與已結束對話</a></td></tr>
+          <tr class="muted"><td>[教室名稱 C]</td><td>[N]</td><td>[N]</td><td>已封存（唯讀）</td><td><a href="#" data-noop>查看</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <main class="wrap home" data-role="admin">
+    <h1 data-rise tabindex="-1">所有教室</h1>
+    <div class="note" role="note" data-rise>介面中每則訊息內容一律顯示為 message；學習總結、反思與分析結果等敏感欄位遮蔽。</div>
+    <div class="table-scroll" data-rise>
+      <table>
+        <thead><tr><th scope="col">教室</th><th scope="col">教師</th><th scope="col">名單人數</th><th scope="col">最新訊息</th><th scope="col">狀態</th></tr></thead>
+        <tbody>
+          <tr><td>[教室名稱 A]</td><td>[教師姓名]</td><td>[N]</td><td class="masked">message</td><td>使用中</td></tr>
+          <tr><td>[教室名稱 B]</td><td>[教師姓名]</td><td>[N]</td><td class="masked">message</td><td>已封存</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <section class="panel" data-rise>
+      <div><h2>帳號與密碼</h2><p>不開放自行註冊；密碼由管理者重設。</p></div>
+      <button type="button" class="btn btn-g">重設密碼</button>
+    </section>
+  </main>
+</div>
+
+<div class="sr" id="live" aria-live="polite"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" integrity="sha512-7eHRwcbYkK4d9g/6tD/mhkf++eoTHwpNM9woBxtPUBWm67zeAfFC+HrdoE2GanKeocly/VxeLvIqwvCdk7qScg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+(() => {
+  const g = window.gsap || null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const narrow = matchMedia('(max-width: 759px)');
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const animate = () => g && !reduced.matches;
+
+  const ACCOUNTS = { 'student@demo.tw': 'student', 'teacher@demo.tw': 'teacher', 'admin@demo.tw': 'admin', 'outsider@demo.tw': null };
+  const ROLE_LABEL = { student: '學生', teacher: '教師', admin: '系統管理者' };
+
+  /* ---------- i18n (entry only; the rest of the prototype is zh) ---------- */
+  const T = {
+    zh: { brand: '蘇格拉底・教室', navHow: '運作方式', navTeacher: '給教師', navLogin: '登入', langBtn: 'EN', h1a: '我們不給答案，', h1b: '只問', h1hl: '下一句', h1end: '。', sub: '在老師指定的哲學題目上，與 AI 展開多輪對話。它會追問你的理由，直到想法站得住腳。', tag1: '不代答，只追問', tag2: '進行中的對話只有你看得到', tag3: '名單內帳號才能進入', loginTitle: '進入教室', loginSub: '登入後會帶你到自己的教室', email: '電子郵件', pw: '密碼', loginBtn: '登入', loggingIn: '登入中', or: '或', google: '使用 Google 帳號登入', foot1: '本系統不開放自行註冊，帳號由教師或管理者匯入名單後開通。', foot2: '忘記密碼？請聯絡管理者重設。', bad: '電子郵件或密碼不正確，請再試一次。', timeout: '為保護你的帳號，已自動登出，請重新登入。', demo: '示意帳號：', eEmpty: '請輸入電子郵件。', eFormat: '電子郵件格式不正確，例如 name@school.edu。', ePw: '請輸入密碼。' },
+    en: { brand: 'Socrates Classroom', navHow: 'How it works', navTeacher: 'For teachers', navLogin: 'Sign in', langBtn: '中文', h1a: "We don't give answers.", h1b: 'We ask the next ', h1hl: 'question', h1end: '.', sub: 'Discuss the philosophy topic your teacher set, over many turns. The AI keeps asking for your reasons until your idea holds up.', tag1: 'Questions, not answers', tag2: 'Ongoing chats are yours alone', tag3: 'Roster accounts only', loginTitle: 'Enter your classroom', loginSub: 'We take you to your own classroom', email: 'Email', pw: 'Password', loginBtn: 'Sign in', loggingIn: 'Signing in', or: 'or', google: 'Continue with Google', foot1: 'No self sign-up. Teachers or admins add you to a roster.', foot2: 'Forgot your password? Ask an admin to reset it.', bad: 'Email or password is incorrect. Please try again.', timeout: 'You were signed out to protect your account. Please sign in again.', demo: 'Demo accounts:', eEmpty: 'Enter your email.', eFormat: 'That email doesn’t look right, e.g. name@school.edu.', ePw: 'Enter your password.' },
+  };
+  let lang = 'zh';
+  const t = (k) => T[lang][k];
+  function applyLang() {
+    document.documentElement.lang = lang === 'zh' ? 'zh-Hant' : 'en';
+    $$('[data-t]').forEach((el) => { el.textContent = t(el.dataset.t); });
+    if (state.loading) $('#submit-label').textContent = t('loggingIn');
+    validate(false);
+  }
+
+  /* ---------- screens ---------- */
+  const state = { screen: 'entry', role: null, who: '', loading: false, banner: null, touched: false };
+  function show(name, { focus = true } = {}) {
+    state.screen = name;
+    $$('[data-screen]').forEach((s) => { s.hidden = s.dataset.screen !== name; });
+    $('#public-top').hidden = name === 'home';
+    if (name === 'home') $$('.home').forEach((m) => { m.hidden = m.dataset.role !== state.role; });
+    window.scrollTo(0, 0);
+    name === 'entry' ? startStage() : stopStage();
+    const root = name === 'home' ? $(`.home[data-role="${state.role}"]`) : $(`[data-screen="${name}"]`);
+    if (animate()) g.from($$('[data-rise]', root), { y: 18, autoAlpha: 0, duration: 0.5, stagger: 0.06, ease: 'power3.out', clearProps: 'transform,opacity,visibility' });
+    if (name === 'how' && animate()) g.from('#steps-line', { scaleX: 0, transformOrigin: 'left center', duration: 1.1, delay: 0.25, ease: 'power2.inOut' });
+    if (focus) { const h = $('h1', root); if (h) h.focus({ preventScroll: true }); }
+  }
+  function goLogin(fresh) {
+    if (fresh) { $('#email').value = ''; $('#pw').value = ''; setBanner(null); state.touched = false; validate(false); }
+    show('entry', { focus: false });
+    const form = $('#login');
+    form.scrollIntoView({ block: 'center', behavior: reduced.matches ? 'auto' : 'smooth' });
+    $('#email').focus({ preventScroll: true });
+  }
+  document.addEventListener('click', (e) => {
+    const go = e.target.closest('[data-go]');
+    if (go) {
+      const to = go.dataset.go;
+      if (to === 'login') return goLogin(false);
+      if (to === 'login-fresh') return goLogin(true);
+      if (to === 'how-teacher') { $('#step-teacher').classList.add('mark'); return show('how'); }
+      if (to === 'how') $('#step-teacher').classList.remove('mark');
+      if (to === 'google') setBanner(null);
+      return show(to);
+    }
+    if (e.target.closest('[data-noop]')) e.preventDefault();
+  });
+
+  /* ---------- login ---------- */
+  function setBanner(kind) {
+    state.banner = kind;
+    $('#a-bad').hidden = kind !== 'bad';
+    $('#a-timeout').hidden = kind !== 'timeout';
+  }
+  function fieldError(input, msgEl, text) {
+    input.setAttribute('aria-invalid', text ? 'true' : 'false');
+    msgEl.textContent = text || '';
+    msgEl.hidden = !text;
+  }
+  function validate(mark = true) {
+    if (mark) state.touched = true;
+    if (!state.touched) { fieldError($('#email'), $('#email-err'), ''); fieldError($('#pw'), $('#pw-err'), ''); return true; }
+    const email = $('#email').value.trim();
+    const eErr = !email ? t('eEmpty') : !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? t('eFormat') : '';
+    const pErr = $('#pw').value ? '' : t('ePw');
+    fieldError($('#email'), $('#email-err'), eErr);
+    fieldError($('#pw'), $('#pw-err'), pErr);
+    return !eErr && !pErr;
+  }
+  ['#email', '#pw'].forEach((s) => $(s).addEventListener('input', () => { if (state.touched) validate(false); }));
+  function setLoading(on) {
+    state.loading = on;
+    const b = $('#submit');
+    b.disabled = on;
+    $('.spin', b).hidden = !on;
+    $('#submit-label').textContent = on ? t('loggingIn') : t('loginBtn');
+    b.setAttribute('aria-busy', on ? 'true' : 'false');
+  }
+  $('#login').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (state.loading) return;
+    if (!validate(true)) { $('[aria-invalid="true"]').focus(); return; }
+    setBanner(null);
+    setLoading(true);
+    setTimeout(() => route($('#email').value.trim().toLowerCase()), 700);
+  });
+  function route(email) {
+    setLoading(false);
+    if (!(email in ACCOUNTS)) { setBanner('bad'); $('#pw').value = ''; $('#pw').focus(); return; }
+    const role = ACCOUNTS[email];
+    state.who = email;
+    if (!role) {
+      $('#blocked-who').textContent = email;
+      $('#recheck-msg').hidden = true;
+      return show('blocked');
+    }
+    state.role = role;
+    $('#role-tag').textContent = ROLE_LABEL[role];
+    $('#me').textContent = email;
+    passThroughDoor(() => { $('#pw').value = ''; show('home'); $('#live').textContent = `已登入，${ROLE_LABEL[role]}首頁`; });
+  }
+  $$('[data-demo]').forEach((b) => b.addEventListener('click', () => {
+    $('#email').value = b.dataset.demo; $('#pw').value = 'demo-pass'; setBanner(null); state.touched = false; validate(false);
+    $('#submit').focus();
+  }));
+  $$('[data-gpick]').forEach((b) => b.addEventListener('click', () => {
+    $('#email').value = b.dataset.gpick; $('#pw').value = '';
+    show('entry', { focus: false });
+    setLoading(true);
+    setTimeout(() => route(b.dataset.gpick), 600);
+  }));
+  $('#recheck').addEventListener('click', () => { $('#recheck-msg').hidden = false; });
+  $('#logout').addEventListener('click', () => {
+    state.role = null; state.who = ''; $('#email').value = ''; $('#pw').value = ''; state.touched = false; validate(false); setBanner(null);
+    show('entry');
+  });
+  $('#sim-timeout').addEventListener('click', () => {
+    const who = state.who; state.role = null;
+    $('#email').value = who; $('#pw').value = ''; state.touched = false; validate(false); setBanner('timeout');
+    goLogin(false); $('#pw').focus({ preventScroll: true });
+  });
+  $('#lang').addEventListener('click', () => { lang = lang === 'zh' ? 'en' : 'zh'; applyLang(); });
+
+  /* ---------- the door: the arch grows from the lamp until you are through it ---------- */
+  function passThroughDoor(arrive) {
+    const card = $('#login');
+    if (!animate()) return arrive();
+    const r = card.getBoundingClientRect();
+    const lampEl = $('#lamp');
+    const lr = lampEl.offsetParent ? lampEl.getBoundingClientRect() : { left: r.left + r.width / 2 - 26, top: r.top + 44, width: 52, height: 52 };
+    const ov = document.createElement('div');
+    ov.className = 'door-ov';
+    ov.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;border-radius:${getComputedStyle(card).borderRadius}`;
+    const disc = document.createElement('div');
+    disc.className = 'disc';
+    const d = Math.min(lr.width, 56);
+    disc.style.cssText = `width:${d}px;height:${d}px;left:${lr.left - r.left + (lr.width - d) / 2}px;top:${lr.top - r.top + (lr.height - d) / 2}px`;
+    ov.appendChild(disc);
+    const clip = document.createElement('div');
+    clip.className = 'door-clip';
+    clip.appendChild(ov);
+    document.body.appendChild(clip);
+    const ox = lr.left - r.left + lr.width / 2, oy = lr.top - r.top + lr.height / 2;
+    const reach = Math.hypot(innerWidth, innerHeight) * 2.2 / Math.min(r.width, r.height);
+    g.timeline({ onComplete: () => clip.remove() })
+      .set(ov, { transformOrigin: `${ox}px ${oy}px`, autoAlpha: 0 })
+      .to(ov, { autoAlpha: 1, duration: 0.15, ease: 'none' })
+      .to(disc, { scale: 1.4, duration: 0.15 }, '<')
+      .to(ov, { scale: Math.max(5.5, reach), duration: 0.9, ease: 'power3.in' })
+      .to(disc, { scale: 0.35, duration: 0.9, ease: 'power3.in' }, '<')
+      .add(arrive, '+=0.2')
+      .to(ov, { autoAlpha: 0, duration: 0.5, ease: 'power1.out' });
+  }
+
+  /* ---------- the stage: three rounds of claim, question, polish ---------- */
+  const node = $('#node');
+  const NOISE = [0.5, -0.35, 0.4, -0.5, 0.3, -0.4, 0.5, -0.3, 0.45, -0.45, 0.35, -0.4];
+  const polish = { p: 0 };
+  function draw() {
+    let pts = '';
+    for (let i = 0; i < 12; i++) {
+      const a = (i * Math.PI) / 6;
+      const r = 58 * (1 + NOISE[i] * (1 - polish.p) * 0.9);
+      pts += `${(105 + r * Math.cos(a)).toFixed(1)},${(105 + r * Math.sin(a)).toFixed(1)} `;
+    }
+    node.setAttribute('points', pts.trim());
+  }
+  let stageTl = null, lampTw = null, stageSeen = true;
+  function stopStage() { stageTl?.kill(); lampTw?.kill(); stageTl = lampTw = null; }
+  function startStage() {
+    stopStage();
+    const bubbles = $$('#stage .b').filter((b) => getComputedStyle(b).display !== 'none');
+    const marks = $$('#stage .mk');
+    const glow = $('#glow'), done = $('#done');
+    if (!animate()) {
+      polish.p = 1; draw();
+      if (g) g.set([...bubbles, glow, done], { clearProps: 'all' });
+      return;
+    }
+    lampTw = g.to('#lamp', { scale: 1.12, transformOrigin: '50% 50%', duration: 1.8, yoyo: true, repeat: -1, ease: 'sine.inOut' });
+    const rounds = bubbles.length / 2;
+    const tl = g.timeline({ repeat: -1, repeatDelay: 0.4, defaults: { ease: 'power2.out' } });
+    tl.set(bubbles, { autoAlpha: 0, y: 10 }).set([done, glow, marks], { autoAlpha: 0 }).call(() => { polish.p = 0; draw(); });
+    for (let i = 0; i < rounds; i++) {
+      tl.to(bubbles[i * 2], { autoAlpha: 1, y: 0, duration: 0.5 }, '+=0.5')
+        .to(bubbles[i * 2 + 1], { autoAlpha: 1, y: 0, duration: 0.5 }, '+=0.7')
+        .fromTo(marks[i], { autoAlpha: 0, y: 0 }, { autoAlpha: 1, y: -22, duration: 0.8 }, '<')
+        .fromTo(polish, { p: i / rounds }, { p: (i + 1) / rounds, duration: rounds === 1 ? 1.4 : 0.8, ease: 'power1.inOut', onUpdate: draw }, '>-0.1')
+        .to(marks[i], { autoAlpha: 0, duration: 0.3 }, '>-0.2');
+    }
+    tl.to(glow, { autoAlpha: 0.55, duration: 0.6 }).to(done, { autoAlpha: 1, duration: 0.5 }, '<')
+      .to([bubbles, done, glow], { autoAlpha: 0, duration: 0.6 }, '+=2.2');
+    stageTl = tl;
+    syncPause();
+  }
+  function syncPause() {
+    const run = !document.hidden && stageSeen;
+    stageTl && (run ? stageTl.resume() : stageTl.pause());
+    lampTw && (run ? lampTw.resume() : lampTw.pause());
+  }
+  document.addEventListener('visibilitychange', syncPause);
+  if ('IntersectionObserver' in window) new IntersectionObserver(([e]) => { stageSeen = e.isIntersecting; syncPause(); }).observe($('#stage'));
+  const restage = () => { if (state.screen === 'entry') startStage(); };
+  narrow.addEventListener('change', restage);
+  reduced.addEventListener('change', restage);
+
+  draw();
+  show('entry', { focus: false });
+})();
+</script>
