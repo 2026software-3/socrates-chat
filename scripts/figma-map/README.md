@@ -23,7 +23,9 @@ node scripts/figma-map/build.mjs
 node scripts/figma-map/build.mjs --check
 ```
 
-`--check` 在以下情況失敗（exit 1）：有 frame 沒對到任何畫面、同一狀態同一寬度有兩個 frame、`screens.mjs` 列出的檔案不存在、文件不是最新。
+`--check` 在以下情況失敗（exit 1）：有 frame 沒對到任何畫面、同一狀態同一寬度有兩個 frame、`screens.mjs` 列出的檔案不存在、有管理者版本的畫面路由沒列 `/admin`、文件不是最新。
+
+CI（`.github/workflows/figma-map.yml`）在 `frontend/src/**`、`scripts/figma-map/**` 或文件有改動時跑 `--check`。前端 PR 搬檔或改名而失敗時，照錯誤訊息改 `screens.mjs`，再重新產生文件。
 
 ## frame 名稱怎麼對到同一列
 
