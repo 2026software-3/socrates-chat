@@ -22,6 +22,8 @@ npm run typecheck  # tsc -b
 npm run lint       # oxlint
 npm test           # vitest run
 npm run build
+npm run test:e2e        # Playwright：點擊測試、截圖、axe（本機瀏覽器）
+npm run test:e2e:linux  # 同上，但在官方 Playwright Docker image 裡跑（與 CI 相同，比對進版控的基準截圖）
 ```
 
 後端 API 說明見 [`docs/api/api-reference.md`](../docs/api/api-reference.md)。
@@ -36,7 +38,8 @@ src/
   features/     每個功能一個目錄：index.tsx（匯出 Feature）、messages.ts（三語翻譯）、頁面與測試
   i18n/         語言、翻譯彙整（zh-TW、en、es；預設 zh-TW）
   lib/          API 客戶端、型別、useFetch
-  test/         MSW 假後端與 renderApp 測試輔助
+  test/         MSW 假後端（handlers.ts 共用、server.ts 給 Vitest、browser.ts 給 Playwright）與 renderApp 測試輔助
+tests/e2e/      Playwright 點擊測試、截圖與 axe（S-11.6）；__screenshots__/ 是基準截圖
 ```
 
 ### 新增一個功能
@@ -51,3 +54,36 @@ src/
 - 先寫會失敗的測試（AGENTS.md：SDD + TDD）。
 - 只用合成資料。
 - 授權相關畫面要有測試：未登入、角色不符、名單外帳號（`尚未開通`）。
+
+### 點擊測試、截圖與無障礙（Playwright，S-11.6）
+
+- 測試放在 `tests/e2e/*.spec.ts`。`playwright.config.ts` 會用 `vite --mode e2e`（port 5174）啟動 dev server，
+  瀏覽器內的 MSW（`src/test/browser.ts`）代替後端，**不需要後端與資料庫**。`e2e` 以外的模式不會載入 MSW，正式建置也不含它。
+- 每個測試跑三種寬度（project `mobile` 375×812、`tablet` 768×1024、`desktop` 1440×900），只用 Chromium。
+  只跑一種：`npx playwright test --project=desktop`；除錯：`npx playwright test --ui` 或 `--debug`。
+- 第一次在本機跑要先裝瀏覽器：`npx playwright install chromium`。`npm run test:e2e:linux` 需要 Docker。
+- 共用 fixture 在 `tests/e2e/fixtures.ts`：
+  - `loginAs('student' | 'teacher' | 'admin')`：用合成帳號從登入頁登入（帳號見 `src/test/e2e-accounts.ts`）。
+  - `expectNoA11yViolations(page)`：axe 掃整頁，serious／critical 視為失敗。
+  - `expectScreenshot(page, '名稱.png')`：等字型載入後整頁截圖比對（動畫關閉、游標隱藏）。
+  - 時間固定為 `FIXED_NOW`、時區 Asia/Taipei、語系 zh-TW、減少動態；沒有假資料的 `/api` 請求或未捕捉的例外會讓測試失敗。
+
+#### 新增一個畫面的測試
+
+1. 畫面需要的端點加進 `src/test/browser.ts` 的 `e2eHandlers`（只用合成資料）；Vitest 也用得到的預設值放 `src/test/handlers.ts`。
+2. 在 `tests/e2e/` 新增 `<畫面>.spec.ts`，從 `./fixtures` 匯入 `test`、`expect`：`loginAs` → `page.goto(...)` → 用角色與文字斷言 →
+   `expectNoA11yViolations(page)` → `expectScreenshot(page, '<畫面>.png')`。
+3. `npm run test:e2e:linux` 產生 Linux 基準截圖，看過 `tests/e2e/__screenshots__/` 裡的新圖再一起提交。
+
+#### 基準截圖
+
+- 只有 `*-linux.png` 進版控；CI（`.github/workflows/ci.yml` 的 frontend job）在同一個 Docker image（`linux/amd64`）裡比對，
+  不會因為作業系統或字型不同而誤判。CI 不會寫入新的基準：缺基準或有差異都會失敗，報告、trace 與差異圖會上傳成 `playwright-report` artifact。
+- 畫面**有意**改變時更新基準，並在 PR 裡說明：
+
+  ```bash
+  npm run test:e2e:linux -- --update-snapshots
+  ```
+
+- 在 macOS 直接跑 `npm run test:e2e` 時，第一次會寫出 `*-darwin.png`（已被 `.gitignore` 排除），之後拿來比對自己的改動；
+  要重來就刪掉這些檔案。
