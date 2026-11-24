@@ -121,7 +121,7 @@ impl Modify for SessionCookie {
         classroom_ai_settings::get_settings, classroom_ai_settings::put_settings, classroom_ai_settings::get_provider,
         classrooms::list_classrooms, classrooms::create_classroom,
         classrooms::get_classroom, classrooms::update_classroom, classrooms::delete_classroom,
-        roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
+        roster::list_admins, roster::add_admin, roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
         accounts::delete_student,

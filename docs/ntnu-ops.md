@@ -183,7 +183,7 @@ SMTP_PASSWORD=...
 
 ### 重設其他使用者的密碼（忘記密碼）
 
-- 由另一位管理者呼叫 `POST /api/admin/users/reset-password`，body 為 `{"email": "..."}`。
+- 由另一位管理者在後台「管理者管理」頁（`/admin/admins`）點該帳號的鑰匙圖示，或呼叫 `POST /api/admin/users/reset-password`，body 為 `{"email": "..."}`。新增管理者也在同一頁（`POST /api/admin/admins`）。
 - 回應中的 `temporary_password` 只會出現這一次，要交給本人，不要寫進日誌、聊天或 issue。
 - 該使用者的所有 session 會立即失效，登入後必須改密碼。
 - 這個呼叫同樣需要 `Origin` 標頭等於公開網址。
