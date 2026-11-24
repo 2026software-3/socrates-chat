@@ -84,7 +84,7 @@ const node = (overrides: Partial<VoiceNodeRow>): VoiceNodeRow => ({
 })
 
 describe('voice nodes on the services page', () => {
-  it('shows each node like a service, plus its node status and sessions', async () => {
+  it('lists nodes as ordinary services, with node status and sessions on the card', async () => {
     mockMe(makeMe({ admin: true }))
     mockServices(() =>
       view([DATABASE], {
@@ -96,9 +96,8 @@ describe('voice nodes on the services page', () => {
       }),
     )
     renderApp(<ServicesPage />)
-    const section = (await screen.findByRole('heading', { name: '即時語音節點' })).closest('section') as HTMLElement
-    const inCard = (label: string) =>
-      within(within(section).getByText(label).closest('[data-slot="card"]') as HTMLElement)
+    await screen.findByText('raynb')
+    const inCard = (label: string) => within(screen.getByText(label).closest('[data-slot="card"]') as HTMLElement)
     const raynb = inCard('raynb')
     expect(raynb.getByText('1 / 2')).toBeInTheDocument()
     expect(raynb.getByText('運作中')).toBeInTheDocument()
@@ -127,12 +126,16 @@ describe('voice nodes on the services page', () => {
     expect(await screen.findByRole('status', { name: 'raynb: 正常' })).toBeInTheDocument()
   })
 
-  it('has no voice node section when there are none', async () => {
+  it('filters nodes together with other services', async () => {
     mockMe(makeMe({ admin: true }))
-    mockServices(() => view([DATABASE]))
+    mockServices(() =>
+      view([DATABASE], { voice_nodes: [node({}), node({ name: 'voice-node:3', label: 'old', status: 'unhealthy', failure: 'timeout' })] }),
+    )
     renderApp(<ServicesPage />)
-    await screen.findByText('PostgreSQL')
-    expect(screen.queryByRole('heading', { name: '即時語音節點' })).not.toBeInTheDocument()
+    await userEvent.click(await screen.findByRole('button', { name: '異常' }))
+    expect(screen.getByText('old')).toBeInTheDocument()
+    expect(screen.queryByText('raynb')).not.toBeInTheDocument()
+    expect(screen.queryByText('PostgreSQL')).not.toBeInTheDocument()
   })
 })
 
