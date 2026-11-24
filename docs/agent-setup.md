@@ -20,13 +20,15 @@ cd frontend && npm ci
 cd frontend && npx playwright install chromium
 ```
 
-最後一行在 F-41.7（#675，Playwright＋MSW 點擊測試）合併後才需要；Playwright 的版本以 `frontend/package.json` 為準。
+最後一行裝 Playwright 用的瀏覽器。產生或更新基準截圖要用 `npm run test:e2e:linux`，需要 Docker（與 CI 同一個 image，截圖才會一致）。
 
 提交前在 `frontend/` 執行：
 
 ```bash
-npm run lint && npm run typecheck && npm test && npm run build
+npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e:linux
 ```
+
+`npm run lint` 會一起跑設計 lint（`npm run lint:design`），錯誤訊息會直接寫出該用哪個 token 或寫法。
 
 ## 2. Claude Code 建議安裝的 skills
 
@@ -40,7 +42,7 @@ npm run lint && npm run typecheck && npm test && npm run build
 | run、code-review、simplify（內建） | 使用 | 本機把 app 跑起來驗證、開 PR 前自我 review |
 | gsap-scrolltrigger、gsap-plugins、gsap-utils、gsap-frameworks | 選用 | 目前沒有捲動驅動或 Vue／Svelte 需求 |
 | hallmark | **不要用** | 它的用途是從零設計新網站，會和既定的 Vedute 設計系統衝突 |
-| figma-code-connect | 先不用 | 需要 Figma 付費方案的 Dev Mode；先用節點對照表 `docs/design/figma-map.md`（F-41.9）代替 |
+| figma-code-connect | 先不用 | 需要 Figma 付費方案的 Dev Mode；先用節點對照表 [`docs/design/figma-map.md`](design/figma-map.md) 代替 |
 
 安裝方式：在 Claude Code 輸入 `/plugin` 搜尋上表的名稱安裝（GSAP 與 Figma 都是官方發布的 plugin）。裝好後輸入 `/skills` 確認列表裡有它們。
 
@@ -72,12 +74,13 @@ npm run lint && npm run typecheck && npm test && npm run build
 | 頁面 | node-id |
 | --- | --- |
 | [00] Guideline | `0:1` |
+| [01] 入口 | `8:2` |
 | [02] 對話 | `21:240` |
 | [03] 學生 | `21:241` |
 | [04] 成果 | `466:702` |
 | [05] 教師與管理者 | `21:243` |
 
-各路由對應的畫面節點見 `docs/design/figma-map.md`（F-41.9）。Figma 連結的 `node-id=21-241` 就是 `21:241`。
+每個畫面在三種寬度、各狀態的 frame 節點，以及對應的路由、功能目錄、測試與 Issue，見 [`docs/design/figma-map.md`](design/figma-map.md)。Figma 連結的 `node-id=21-241` 就是 `21:241`。
 
 ## 4. Codex 與 Cursor
 
@@ -85,15 +88,23 @@ npm run lint && npm run typecheck && npm test && npm run build
 - 上面的 Claude skills 沒有一對一的對應。支援 SKILL.md 格式 skills 的版本可以安裝同名的 GSAP、Figma skills；沒有的話，動畫數值直接讀 HTML 原型（`prototypes/b-roman-forum/vedute.html`、`prototypes/c-interior/index.html`），設計檢查改由 lint 與截圖驗證負責。
 - 不要把 Cursor Rules 或 Codex 設定寫進 repo；有需要所有人遵守的規則，開 PR 改 `AGENTS.md`。
 
-## 5. 驗證畫面：`verify:screen`
+## 5. 驗證畫面
 
-規劃的指令（由 F-41.7 #675 加入 `frontend/package.json`，本 PR 不加，避免與 #675 衝突）：
+不另外加 `verify:screen` 指令：每個畫面都寫一支 `frontend/tests/e2e/<畫面>.spec.ts`，它就是這個畫面的驗證。寫法見 [`frontend/README.md`](../frontend/README.md)「點擊測試、截圖與無障礙」，重點：
+
+- 從 `./fixtures` 匯入 `test`、`expect`，`loginAs(...)` → `page.goto(...)` → 用角色與文字斷言 → `expectNoA11yViolations(page)` → `expectScreenshot(page, '<畫面>.png')`。
+- 畫面要的 API 假資料加在 `src/test/browser.ts` 的 `e2eHandlers`，只用合成資料；不需要後端與資料庫。
+- 每支測試自動跑 375、768、1440 三種寬度；axe 的 serious、critical 視為失敗（S-11.6），minor、moderate 會附在報告裡。
 
 ```bash
-cd frontend && npm run verify:screen -- /classrooms
+cd frontend && npm run test:e2e:linux -- tests/e2e/<畫面>.spec.ts
 ```
 
-預期行為：以 MSW 假資料啟動前端，對指定路由跑 Playwright，產出 375、768、1440 三種寬度的截圖與 axe 報告，有 console 錯誤或 axe 違規時失敗。實際參數與輸出位置以 #675 合併後的 `frontend/README.md` 為準；在那之前，用 `npm run dev` 搭配瀏覽器手動截三種寬度。
+```bash
+cd frontend && npm run test:e2e:linux -- tests/e2e/<畫面>.spec.ts --update-snapshots
+```
+
+第一行驗證；第二行在畫面有意改變時更新基準截圖，看過 `tests/e2e/__screenshots__/` 的新圖再提交。只想在 macOS 快速看自己的改動，可用 `npm run test:e2e`（寫出的 `*-darwin.png` 不進版控）。
 
 ## 6. 指令範本（一個畫面 Issue）
 
@@ -103,10 +114,10 @@ cd frontend && npm run verify:screen -- /classrooms
 實作 GitHub issue #<編號>（用 `gh issue view <編號>` 讀取）。
 
 1. 先讀 AGENTS.md（特別是「前端與設計」）、DESIGN.md 開頭的「設計依據分工」與 Issue 提到的章節、docs/design/figma-map.md 中這個路由的列。
-2. 用 Figma MCP 讀節點 <Figma 連結或 node-id>（三種寬度各自的 frame 都要讀），取得版面、文字樣式與狀態；動畫與材質改看 HTML 原型 <原型路徑與區段>。
-3. 先寫會失敗的測試：Vitest＋MSW 的元件測試，以及 frontend/tests/e2e/ 的 Playwright 點擊測試，涵蓋主要操作、載入（skeleton）、錯誤、空資料與權限情境。只用合成資料。
+2. 用 Figma MCP 讀 figma-map.md 列出的 frame 節點（1440、768、375 與各狀態都要讀），取得版面、文字樣式與狀態；動畫與材質改看 HTML 原型 <原型路徑與區段>。
+3. 先寫會失敗的測試：Vitest＋MSW 的元件測試，以及 frontend/tests/e2e/<畫面>.spec.ts 的 Playwright 點擊測試（含 expectNoA11yViolations、expectScreenshot），涵蓋主要操作、載入（skeleton）、錯誤、空資料與權限情境。只用合成資料。
 4. 最小實作：只用 tokens.css 的 token、type-* 文字樣式與 src/components/vedute/ 的元件；不寫原始色碼或任意值，不改 src/components/ui/，不新增主要依賴。文案三種語言都要加。
-5. 在 frontend/ 跑 npm run lint、npm run typecheck、npm test、npm run build、npm run verify:screen -- <路由>，全部通過；把 375／768／1440 截圖與 Figma 對照，列出差異並修正。
+5. 在 frontend/ 跑 npm run lint、npm run typecheck、npm test、npm run build、npm run test:e2e:linux -- tests/e2e/<畫面>.spec.ts，全部通過（axe 不能有 serious、critical）；把 tests/e2e/__screenshots__/ 的 375／768／1440 截圖與 Figma 對照，列出差異並修正。
 6. Figma、DESIGN.md、原型之間不一致或規格沒寫到時，停下來問，不要自行決定。
 7. 依 CONTRIBUTING.md 開分支、commit，開 draft PR，填好 PR 範本的「前端與設計」段落（Figma 節點、三寬度截圖、axe 結果、清單勾選），並寫 Closes #<編號>。
 ```
