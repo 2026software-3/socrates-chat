@@ -40,6 +40,46 @@ test('Vedute component states, keyboard and pointer interactions', async ({ page
   await expect(page.getByRole('button', { name: '關閉通知' })).toHaveCount(0)
 })
 
+test('Vedute interaction motion and disabled options', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.goto('/__design')
+
+  const field = page.getByRole('textbox', { name: '活動名稱' })
+  await field.focus()
+  await expect(field).toHaveCSS('background-size', '100% 2px')
+
+  const tab = page.getByRole('tab', { name: '已封存' })
+  await tab.click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  expect(await tab.evaluate((el) => getComputedStyle(el, '::after').transitionProperty)).toBe('scale')
+
+  const switchThumb = page.getByRole('switch', { name: '活動通知' }).locator('[data-slot="switch-thumb"]')
+  await expect(switchThumb).toHaveCSS('transition-duration', '0.32s, 0.25s')
+
+  const icon = page.getByRole('button', { name: '編輯' })
+  await icon.hover()
+  await expect(icon).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await page.mouse.down()
+  await expect(icon).toHaveCSS('translate', '0px 1px')
+  await expect(icon.locator('svg')).toHaveCSS('scale', '0.9')
+  await page.mouse.up()
+
+  await page.getByRole('combobox', { name: '教室' }).click()
+  const archived = page.getByRole('option', { name: '已封存的教室' })
+  await expect(archived).toBeDisabled()
+  await expect(archived).toHaveCSS('cursor', 'not-allowed')
+  await archived.click({ force: true })
+  await expect(page.getByRole('listbox')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  await page.getByRole('button', { name: '顯示儲存失敗' }).click()
+  const notice = page.locator('.vedute-toast')
+  await expect(notice).toHaveCSS('animation-name', 'vedute-toast-enter')
+  await page.getByRole('button', { name: '關閉通知' }).click()
+  await expect(notice).toHaveCSS('animation-name', 'vedute-toast-exit')
+  await expect(notice).toHaveCount(0)
+})
+
 test('Vedute visual baseline and accessibility', async ({ page }) => {
   await page.goto('/__design')
   await page.getByRole('button', { name: '顯示儲存失敗' }).click()

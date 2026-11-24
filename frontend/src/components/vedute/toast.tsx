@@ -29,6 +29,12 @@ type ToastProps = {
 }
 
 export function Toast({ notification, dismissLabel, onDismiss, placement = 'viewport' }: ToastProps) {
+  const [last, setLast] = useState(notification)
+  if (notification && last !== notification) setLast(notification)
+
+  const displayed = notification ?? last
+  const exiting = notification === null
+
   return (
     <>
       <span className="sr-only" role="status">
@@ -37,20 +43,23 @@ export function Toast({ notification, dismissLabel, onDismiss, placement = 'view
       <span className="sr-only" role="alert">
         {notification?.kind === 'error' && notification.message}
       </span>
-      {notification && (
-        <ToastCard key={notification.id} notification={notification} dismissLabel={dismissLabel}
-          placement={placement} onDismiss={() => onDismiss(notification.id)} />
+      {displayed && (
+        <ToastCard key={displayed.id} notification={displayed} dismissLabel={dismissLabel}
+          placement={placement} exiting={exiting}
+          onExit={() => setLast(null)} onDismiss={() => onDismiss(displayed.id)} />
       )}
     </>
   )
 }
 
 function ToastCard({
-  notification: { kind, message, action }, dismissLabel, placement, onDismiss,
+  notification: { kind, message, action }, dismissLabel, placement, exiting, onExit, onDismiss,
 }: {
   notification: ToastNotification
   dismissLabel: string
   placement: NonNullable<ToastProps['placement']>
+  exiting: boolean
+  onExit: () => void
   onDismiss: () => void
 }) {
   const [hovered, setHovered] = useState(false)
@@ -60,8 +69,14 @@ function ToastCard({
   const Icon = icons[kind]
   const paused = hovered || focused
 
+  const finishExit = useEffectEvent(onExit)
+
   useEffect(() => {
-    if (kind === 'error' || paused) return
+    if (exiting && window.matchMedia('(prefers-reduced-motion: reduce)').matches) finishExit()
+  }, [exiting])
+
+  useEffect(() => {
+    if (kind === 'error' || paused || exiting) return
 
     const started = performance.now()
     const timer = window.setTimeout(dismiss, remaining.current)
@@ -69,10 +84,13 @@ function ToastCard({
       window.clearTimeout(timer)
       remaining.current = Math.max(0, remaining.current - (performance.now() - started))
     }
-  }, [kind, paused])
+  }, [kind, paused, exiting])
 
   return (
-    <div className="vedute-toast" data-placement={placement}
+    <div className="vedute-toast" data-placement={placement} data-exiting={exiting || undefined} inert={exiting}
+      onAnimationEnd={(event) => {
+        if (exiting && event.target === event.currentTarget && event.animationName === 'vedute-toast-exit') onExit()
+      }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       onFocus={() => setFocused(true)}
       onBlur={(event) => {
