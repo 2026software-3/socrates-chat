@@ -205,7 +205,8 @@ function Form({ me, update, password }: { me: Me; update: (me: Me) => void; pass
               }}
             />
             <p id="profile-name-hint" className="text-muted-foreground flex justify-between gap-2 text-xs">
-              <span>{t('profile.hint', { max: DISPLAY_NAME_MAX })}</span>
+              {/* 留空時：學生回到匯入名單的姓名，教師與管理者沒有匯入姓名，回到顯示電子郵件 */}
+              <span>{t(me.roles.student ? 'profile.hint' : 'profile.hintStaff', { max: DISPLAY_NAME_MAX })}</span>
               <span className={tooLong ? 'text-destructive font-medium' : undefined}>
                 {length} / {DISPLAY_NAME_MAX}
               </span>

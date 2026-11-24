@@ -90,6 +90,9 @@ describe('the account page', () => {
   it('clearing a teacher name sends null and the header falls back to the email', async () => {
     const patches = mockProfileApi({ teacher: true }, '王老師')
     renderApp(null, { route: '/account' })
+    // 教師沒有匯入名單的姓名：提示說留空會顯示電子郵件，而不是學生那句「匯入名單時的姓名」
+    expect(await screen.findByText('留空則顯示你的電子郵件', { exact: false })).toBeInTheDocument()
+    expect(screen.queryByText('匯入名單時的姓名', { exact: false })).not.toBeInTheDocument()
     await userEvent.clear(await screen.findByLabelText('顯示名稱'))
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
