@@ -224,6 +224,17 @@ fn read_first_key_file(candidates: &[PathBuf], required: bool) -> Result<Vec<Str
 }
 
 impl Config {
+    /// 環境變數 `ADMIN_EMAILS` 的第一個管理者信箱（小寫）；只有本人能重設其密碼。
+    pub fn primary_admin_email(&self) -> Option<&str> {
+        self.admin_emails.first().map(String::as_str)
+    }
+
+    /// 該信箱是否為 `ADMIN_EMAILS` 的第一個管理者（不分大小寫）。
+    pub fn is_primary_admin_email(&self, email: &str) -> bool {
+        self.primary_admin_email()
+            .is_some_and(|primary| primary.eq_ignore_ascii_case(email))
+    }
+
     /// 回覆產生的 claim 超過多久視為殘留（秒）：兩次嘗試的上限再加一點餘裕。
     pub fn generation_stale_secs(&self) -> f64 {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
@@ -454,5 +465,25 @@ mod tests {
             parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
             ["google/gemma:free", "nvidia/x:free", "a"]
         );
+    }
+
+    #[test]
+    fn primary_admin_is_the_first_entry_in_admin_emails() {
+        let emails = parse_admin_emails(" First@Example.com , second@example.com ");
+        assert_eq!(
+            emails.first().map(String::as_str),
+            Some("first@example.com")
+        );
+        assert!(
+            emails
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("FIRST@example.com"))
+        );
+        assert!(
+            !emails
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("second@example.com"))
+        );
+        assert!(parse_admin_emails(" , ").is_empty());
     }
 }

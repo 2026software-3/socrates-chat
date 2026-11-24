@@ -578,6 +578,7 @@ export const overlaySectionIssue = 672
 /** 現有路由中沒有 Figma 畫面的（實作時沿用 Vedute 元件與殼層，不另畫）。 */
 export const routesWithoutFigma = [
   ['/complaint', 'features/complaints/complaint-page.tsx', '客訴（S-17）'],
+  ['/admin/admins', 'features/admin/admins-page.tsx', '管理者管理（S-08.2）'],
   ['/admin/complaints', 'features/complaints/admin-complaints-page.tsx', '管理者客訴列表'],
   ['/admin/services', 'features/admin/services-page.tsx', '服務健康度（S-09.3）'],
   ['/admin/diagnostics', 'features/admin/diagnostics-page.tsx', '診斷'],
