@@ -10,13 +10,26 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ConfirmDialog, ConfirmFact } from '@/features/chat/confirm-dialog'
 import { errorText, useI18n, useT } from '@/i18n'
+import { translateInBrowser } from '@/lib/browser-translator'
 import { api } from '@/lib/api'
 import type { Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 import { GuidingQuestionsField } from './guiding-questions-field'
 import { TopicDimensionsDialog } from './topic-dimensions'
 
-type TopicInput = { title: string; questions: string[] }
+type TopicInput = { title: string; questions: string[]; translations?: Topic['translations'] }
+
+async function translateTopicFields(language: 'en' | 'es', sources: string[]) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      translateInBrowser('zh-TW', language, sources),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 5000) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /** 去頭尾空白並略過空白項目。 */
 const cleanQuestions = (qs: string[]) => qs.map((q) => q.trim()).filter(Boolean)
@@ -42,13 +55,32 @@ function TopicForm({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
 
+  const fields = [
+    { key: 'title', source: v.title.trim(), changed: v.title.trim() !== initial.title },
+    ...cleanQuestions(v.questions).map((source) => ({ key: `q:${source}`, source, changed: !initial.questions.includes(source) })),
+  ].filter((field) => field.source)
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     if (pending || !v.title.trim()) return
     setPending(true)
     setError(undefined)
     try {
-      await onSubmit(v)
+      const translations: NonNullable<Topic['translations']> = {}
+      const changed = fields.filter((field) => field.changed)
+      await Promise.all((['en', 'es'] as const).map(async (language) => {
+        const values: Record<string, string> = {}
+        const generated = changed.length ? await translateTopicFields(language, changed.map((f) => f.source)) : null
+        changed.forEach((field, index) => {
+          if (generated?.[index]) values[field.key] = generated[index]
+        })
+        for (const field of fields.filter((f) => !f.changed)) {
+          const edited = v.translations?.[language]?.[field.key]?.trim()
+          if (edited && edited !== initial.translations?.[language]?.[field.key]) values[field.key] = edited
+        }
+        if (Object.keys(values).length) translations[language] = values
+      }))
+      await onSubmit({ ...v, translations: Object.keys(translations).length ? translations : undefined })
       setV(initial)
     } catch (err) {
       setError(err)
@@ -70,6 +102,23 @@ function TopicForm({
         />
       </div>
       <GuidingQuestionsField idPrefix={idPrefix} value={v.questions} onChange={(questions) => setV({ ...v, questions })} />
+      {initial.title && fields.some((field) => field.changed) && <p role="status">{t('admin.topics.overwriteTranslations')}</p>}
+      {initial.title && (['en', 'es'] as const).map((language) => (
+        <fieldset key={language} className="space-y-2">
+          <legend>{language === 'en' ? 'English' : 'Español'}</legend>
+          {fields.filter((field) => !field.changed).map((field, index) => (
+            <label key={index} className="block">
+              {field.source}
+              <Input aria-label={`${language} — ${field.source}`}
+                placeholder={t('admin.topics.pendingTranslation')}
+                value={v.translations?.[language]?.[field.key] ?? ''}
+                onChange={(e) => setV({ ...v, translations: { ...v.translations,
+                  [language]: { ...v.translations?.[language], [field.key]: e.target.value },
+                } })} />
+            </label>
+          ))}
+        </fieldset>
+      ))}
       <div aria-live="polite">
         {error ? (
           <Alert variant="destructive" role="alert">
@@ -131,7 +180,7 @@ export function TopicsPage() {
   }
 
   async function create(v: TopicInput) {
-    const body: { title: string; guiding_questions?: string[] } = { title: v.title.trim() }
+    const body: Pick<Topic, 'title' | 'guiding_questions' | 'translations'> = { title: v.title.trim(), translations: v.translations }
     const questions = cleanQuestions(v.questions)
     if (questions.length > 0) body.guiding_questions = questions
     setNotice(undefined)
@@ -142,14 +191,15 @@ export function TopicsPage() {
   }
 
   async function edit(topic: Topic, v: TopicInput) {
-    const body: Partial<Pick<Topic, 'title' | 'guiding_questions'>> = {}
+    const body: Partial<Pick<Topic, 'title' | 'guiding_questions' | 'translations'>> = {}
     if (v.title.trim() !== topic.title) body.title = v.title.trim()
     const questions = cleanQuestions(v.questions)
     const before = topic.guiding_questions ?? []
     if (questions.length !== before.length || questions.some((q, i) => q !== before[i])) body.guiding_questions = questions
+    if (v.translations) body.translations = v.translations
     if (Object.keys(body).length > 0) {
-      await api.patch(`/api/topics/${encodeURIComponent(topic.id)}`, body)
-      patch(topic.id, body)
+      const updated = await api.patch<Topic>(`/api/topics/${encodeURIComponent(topic.id)}`, body)
+      patch(topic.id, updated ?? body)
     }
     setEditing(undefined)
   }
@@ -306,7 +356,7 @@ export function TopicsPage() {
             <TopicForm
               key={editing.id}
               idPrefix="edit"
-              initial={{ title: editing.title, questions: editing.guiding_questions ?? [] }}
+              initial={{ title: editing.title, questions: editing.guiding_questions ?? [], translations: editing.translations }}
               submitLabel={t('common.save')}
               pendingLabel={t('admin.topics.saving')}
               onSubmit={(v) => edit(editing, v)}

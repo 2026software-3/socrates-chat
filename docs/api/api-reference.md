@@ -52,12 +52,13 @@
 
 ### 帳號管理
 
-- 重設密碼：`POST /api/admin/users/reset-password`，請求的 `email` 與 `student_number` **恰好擇一**（都有或都沒有回 `400 invalid_target`）。
-  - `{ email }`：有帳號就更新，沒有就建立；`email` 格式錯誤回 `400 invalid_email`。
+- 重設密碼：`POST /api/admin/users/reset-password`，請求的 `email` 與 `student_number` **恰好擇一**（都有或都沒有回 `400 invalid_target`）。環境變數 `ADMIN_EMAILS` 的第一個管理者帳號受保護，只有本人可重設自己的密碼，其他管理者呼叫回 `403 protected_admin`。
+  - `{ email }`：有帳號就更新，沒有就建立；`email` 格式錯誤回 `400 invalid_email`（目標為 `ADMIN_EMAILS` 第一個管理者且操作者非本人時，直接回 `403 protected_admin`，不建立也不更動帳號）。
   - `{ student_number }`（#413，沒有電子郵件的學生）：學號不分大小寫、轉大寫比對；格式錯誤回 `400 invalid_student_number`；學號不屬於任何已有帳號的學生回 `404`，**不建立帳號**。稽核對象用信箱，沒有信箱時用帳號的內部識別碼，日誌與錯誤回應都不含學號。
   - 回應 `{ email, temporary_password }`：`email` 為帳號的信箱，沒有信箱的學生為 `null`；臨時密碼**只出現在這次回應**。
   - 兩種方式都清除該使用者所有 session 與登入鎖定（含學號與信箱兩種登入帳號輸入的計數），並要求下次登入先改密碼；寫入稽核日誌。
 - `PUT /api/admin/users/{id}/status` 接受 `{ disabled, reason? }`，id 為使用者 UUID（學生列表的 `id`，沒有帳號時為 null）；舊 disable／enable POST 已移除。同值重送回 204 且不重複稽核。停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
+- 管理者管理：`GET /api/admin/admins` 回傳 `{ emails, primary_email }`（`primary_email` 為 `ADMIN_EMAILS` 第一個信箱，未設定時為 `null`）；`POST /api/admin/admins` 接受 `{ email }`，沒有帳號就建立並回臨時密碼，既有非學生帳號則升為管理者不動密碼（學生帳號回 `409 is_student`）。
 - 新增教師重複送出也回 204（冪等）。
 
 ## 題庫與活動
@@ -67,6 +68,8 @@
 - 教師時間表單依瀏覽器時區輸入及顯示，傳送時轉 UTC；已有人開始對話的活動仍可修改時間。建立活動須選擇未封存的教室。
 
 - 教師和管理者統一使用 `GET /api/topics`、`POST /api/topics`、`PATCH /api/topics/{id}`；原 `/api/admin/topics` 的三種方法已移除（#292–#294）。
+- 題名與引導問題的中文原文仍用 `title`、`guiding_questions`。教師讀寫的 `translations` 依目標語言（`en`、`es`）分組，每組的 `title` 是題名譯文，`q:<中文引導問題>` 是該問題的譯文。PATCH 只送需要修改的譯文。順序以 `guiding_questions` 為準。
+- 學生的 `GET /api/catalog` 和 `GET /api/conversations` 接受選填的 `language`（`zh-TW`、`en`、`es`，預設帳號語言）。回應直接帶顯示文字；`title_pending` 表示題名缺譯，`pending_questions` 為缺譯引導問題的零起算索引。單場對話的引導問題使用建立時保存的語言。
 - 題目可附 0 到 5 個引導問題（`guiding_questions` 字串陣列，S-04.8、F-32.1）：建立與修改時選填，建立未帶預設為 `[]`，修改未帶保留原值，修改帶 `[]` 清空；每個問題最多 200 字，超過 5 個或單一超過 200 字回 `400 invalid_guiding_questions`；題目已有對話後仍可修改引導問題（不鎖定），不影響既有總結；學生呼叫 `GET /api/catalog` 的題目清單亦帶有此欄位。
 - AI 不再讀題目或對話的 `description`（F-32.5）：對話提示、總結、單場雷達評分與 AI 產生雷達維度都改帶題目目前的引導問題；教師在題目還沒有對話時修改引導問題，未鎖定的維度會丟掉並重新產生。
 - 引導問題將取代題目的 `description`（S-04.8 2026-11 修訂）：`description` 欄位標為 deprecated，目前讀寫行為不變、之後另案改為寫入忽略並移除；migration `20261117000000` 已把引導問題為空、`description` 非空的既有題目轉成引導問題（`description` 欄位保留）。

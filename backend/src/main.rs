@@ -110,6 +110,21 @@ async fn main() {
         .expect("failed to bind listener");
     tracing::info!("listening on {addr}");
 
+    // 內部端點的獨立監聽器（S-19 7.4）：部署方只把這個埠開在私網
+    if let Some(internal) = state.config.internal_listen_addr {
+        let listener = tokio::net::TcpListener::bind(internal)
+            .await
+            .expect("failed to bind internal listener");
+        tracing::info!("internal listener on {internal}");
+        let router = socrates_chat_backend::internal_app(state.clone());
+        tokio::spawn(async move {
+            if axum::serve(listener, router).await.is_err() {
+                tracing::error!("internal listener stopped");
+            }
+        });
+    }
+    socrates_chat_backend::voice_nodes::spawn(&state);
+
     // ConnectInfo 提供 TCP 對端位址，登入的 IP 限流要用（S-08.2）
     axum::serve(
         listener,

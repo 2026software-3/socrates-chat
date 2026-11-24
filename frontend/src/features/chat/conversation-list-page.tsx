@@ -24,7 +24,8 @@ export function ConversationListPage() {
 
 function ConversationList({ archived, onViewChange, cursor, onNext, onPrevious, onRestart }: { archived: boolean; onViewChange: (archived: boolean) => void; cursor: string | null; onNext: (cursor: string) => void; onPrevious?: () => void; onRestart: () => void }) {
   const t = useT()
-  const { data, error, loading, reload } = useFetch<PageResult<Conversation>>(`/api/conversations?${new URLSearchParams({ ...(archived ? { archived: 'true' } : {}), ...(cursor ? { cursor } : {}) }).toString()}`)
+  const { lang } = useI18n()
+  const { data, error, loading, reload } = useFetch<PageResult<Conversation>>(`/api/conversations?${new URLSearchParams({ language: lang, ...(archived ? { archived: 'true' } : {}), ...(cursor ? { cursor } : {}) }).toString()}`)
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set())
   const [target, setTarget] = useState<Conversation>()
   const [pending, setPending] = useState(false)
@@ -148,7 +149,7 @@ function ConversationRow({ conversation: c, onArchive, onDelete }: { conversatio
   const ended = c.status === 'ended'
   return (
     <TableRow>
-      <TableCell className="max-w-72 font-medium break-words whitespace-normal">{c.title}</TableCell>
+      <TableCell className="max-w-72 font-medium break-words whitespace-normal">{c.title}{c.title_pending && <small> {t('admin.dimensions.translationPending')}</small>}</TableCell>
       <TableCell className="max-w-56 break-words whitespace-normal">{sourceLabel(t, c)}</TableCell>
       <TableCell className="tabular-nums">{c.turn_count}</TableCell>
       <TableCell>{formatDate(c.updated_at, lang)}</TableCell>

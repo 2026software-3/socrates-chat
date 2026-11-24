@@ -3,6 +3,7 @@
 //! 題目庫由教師（含助教）與管理者維護，活動由教師建立與發布，所有教師權限相同（S-01.3）。
 //! 系統啟動時會補上內建題目「電車難題」（`seed_builtin_topics`）。
 
+use crate::topic_translations::{Translations, prepare};
 use axum::{
     Json, Router,
     extract::{Path, Query, State, rejection::JsonRejection},
@@ -77,6 +78,13 @@ pub struct Topic {
     pub is_active: bool,
     #[serde(default)]
     pub guiding_questions: Vec<String>,
+    #[sqlx(json)]
+    #[serde(skip_serializing_if = "Translations::is_empty")]
+    pub translations: Translations,
+    #[sqlx(default)]
+    pub title_pending: bool,
+    #[sqlx(default)]
+    pub pending_questions: Vec<i32>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -86,6 +94,8 @@ pub(crate) struct NewTopic {
     description: String,
     #[serde(default)]
     guiding_questions: Vec<String>,
+    #[serde(default)]
+    translations: Translations,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -94,31 +104,37 @@ pub(crate) struct TopicPatch {
     description: Option<String>,
     is_active: Option<bool>,
     guiding_questions: Option<Vec<String>>,
+    #[serde(default)]
+    translations: Translations,
 }
 
-fn validate_guiding_questions(qs: &[String]) -> Result<(), ApiError> {
+/// 驗證引導問題並回傳去除前後空白後的內容；長度與空白判斷都以去空白後為準，
+/// 寫入資料庫的也是這份結果，避免前後空白讓單題超過 200 字的上限。
+fn validate_guiding_questions(qs: &[String]) -> Result<Vec<String>, ApiError> {
     if qs.len() > 5 {
         return Err(ApiError::bad_request(
             "invalid_guiding_questions",
             "引導問題最多 5 個",
         ));
     }
-    for q in qs {
-        let trimmed = q.trim();
-        if trimmed.is_empty() {
-            return Err(ApiError::bad_request(
-                "invalid_guiding_questions",
-                "單一引導問題不可為空白",
-            ));
-        }
-        if trimmed.chars().count() > 200 {
-            return Err(ApiError::bad_request(
-                "invalid_guiding_questions",
-                "引導問題單一最多 200 字",
-            ));
-        }
-    }
-    Ok(())
+    qs.iter()
+        .map(|q| {
+            let trimmed = q.trim();
+            if trimmed.is_empty() {
+                return Err(ApiError::bad_request(
+                    "invalid_guiding_questions",
+                    "單一引導問題不可為空白",
+                ));
+            }
+            if trimmed.chars().count() > 200 {
+                return Err(ApiError::bad_request(
+                    "invalid_guiding_questions",
+                    "引導問題單一最多 200 字",
+                ));
+            }
+            Ok(trimmed.to_string())
+        })
+        .collect()
 }
 
 #[utoipa::path(
@@ -137,7 +153,7 @@ pub(crate) async fn list_topics_for_teacher(
 
 async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     let rows = sqlx::query_as(
-        "SELECT id, title, description, is_active, guiding_questions FROM topics ORDER BY created_at, id",
+        "SELECT id, title, description, is_active, guiding_questions, translations FROM topics ORDER BY created_at, id",
     )
     .fetch_all(&state.pool)
     .await?;
@@ -169,14 +185,23 @@ async fn insert_topic(
     if !valid_text(&b.title) {
         return Err(ApiError::invalid_title());
     }
-    validate_guiding_questions(&b.guiding_questions)?;
+    let guiding_questions = validate_guiding_questions(&b.guiding_questions)?;
+    let translations = prepare(
+        state,
+        None,
+        b.title.trim(),
+        &guiding_questions,
+        b.translations,
+    )
+    .await?;
     let t = sqlx::query_as(
-        "INSERT INTO topics (title, description, guiding_questions) VALUES ($1, $2, $3)
-         RETURNING id, title, description, is_active, guiding_questions",
+        "INSERT INTO topics (title, description, guiding_questions, translations) VALUES ($1, $2, $3, $4)
+         RETURNING id, title, description, is_active, guiding_questions, translations",
     )
     .bind(b.title.trim())
     .bind(b.description)
-    .bind(&b.guiding_questions)
+    .bind(guiding_questions)
+    .bind(sqlx::types::Json(translations))
     .fetch_one(&state.pool)
     .await?;
     Ok((StatusCode::CREATED, Json(t)))
@@ -210,11 +235,43 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
     if p.title.as_deref().is_some_and(|t| !valid_text(t)) {
         return Err(ApiError::invalid_title());
     }
-    if let Some(ref qs) = p.guiding_questions {
-        validate_guiding_questions(qs)?;
+    let guiding_questions = match p.guiding_questions {
+        Some(ref qs) => Some(validate_guiding_questions(qs)?),
+        None => None,
+    };
+    let title = p.title.as_deref().map(str::trim).map(str::to_owned);
+    let first = fetch_topic(&state.pool, id, false).await?;
+    let mut translations = prepare(
+        state,
+        Some(&first),
+        title.as_deref().unwrap_or(&first.title),
+        guiding_questions
+            .as_deref()
+            .unwrap_or(&first.guiding_questions),
+        p.translations.clone(),
+    )
+    .await?;
+    // 翻譯可能很久，所以在鎖外進行；寫入前才鎖列重讀，若期間文字或翻譯被改過，
+    // 只補翻譯新增或變動的欄位。
+    let mut tx = state.pool.begin().await?;
+    let locked = fetch_topic(&mut *tx, id, true).await?;
+    if locked.title != first.title
+        || locked.guiding_questions != first.guiding_questions
+        || locked.translations != first.translations
+    {
+        translations = prepare(
+            state,
+            Some(&locked),
+            title.as_deref().unwrap_or(&locked.title),
+            guiding_questions
+                .as_deref()
+                .unwrap_or(&locked.guiding_questions),
+            p.translations,
+        )
+        .await?;
     }
-    sqlx::query_as(
-        "UPDATE topics SET title = COALESCE($2, title), description = COALESCE($3, description),
+    let updated = sqlx::query_as(
+        "UPDATE topics SET translations = $6, title = COALESCE($2, title), description = COALESCE($3, description),
                 is_active = COALESCE($4, is_active),
                 guiding_questions = COALESCE($5::text[], guiding_questions),
                 -- 還沒有對話時，題目文字一變就丟掉舊維度；已有對話則維持不變（評分準則已鎖定）。
@@ -232,16 +289,33 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
                     THEN dimensions_pending_languages ELSE '{}' END,
                 updated_at = now()
          WHERE id = $1
-         RETURNING id, title, description, is_active, guiding_questions",
+         RETURNING id, title, description, is_active, guiding_questions, translations",
     )
     .bind(id)
-    .bind(p.title.map(|t| t.trim().to_string()))
+    .bind(title)
     .bind(p.description)
     .bind(p.is_active)
-    .bind(p.guiding_questions)
-    .fetch_optional(&state.pool)
+    .bind(guiding_questions)
+    .bind(sqlx::types::Json(translations))
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(updated))
+}
+
+async fn fetch_topic<'e>(
+    conn: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    lock: bool,
+) -> Result<Topic, ApiError> {
+    sqlx::query_as(if lock {
+        "SELECT id, title, description, is_active, guiding_questions, translations FROM topics WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT id, title, description, is_active, guiding_questions, translations FROM topics WHERE id = $1"
+    })
+    .bind(id)
+    .fetch_optional(conn)
     .await?
-    .map(Json)
     .ok_or_else(ApiError::not_found)
 }
 
@@ -249,17 +323,19 @@ async fn patch_topic(state: &AppState, id: Uuid, p: TopicPatch) -> Result<Json<T
 pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001);
 
 /// 補上內建題目「電車難題」；已存在（含被教師修改或停用）時不動它。
+/// 直接寫入引導問題（S-04.8 修訂：不再寫 description），內容與遷移既有題目的轉換結果相同。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO topics (id, title, description) VALUES ($1, $2, $3)
+        "INSERT INTO topics (id, title, guiding_questions) VALUES ($1, $2, $3)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(TROLLEY_TOPIC_ID)
     .bind("電車難題")
-    .bind(
+    .bind(vec![
         "一輛失控的電車正衝向軌道上的五個人。你站在轉轍器旁，只要拉下拉桿，電車就會轉向另一條軌道，\
-         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。",
-    )
+         但那條軌道上有一個人。你會拉下拉桿嗎？請說明你的理由。"
+            .to_string(),
+    ])
     .execute(pool)
     .await?;
     Ok(())
@@ -835,24 +911,70 @@ pub(crate) struct Available {
     topics: Vec<Topic>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct CatalogLanguage {
+    language: Option<String>,
+}
+
+pub(crate) fn display_language<'a>(
+    requested: Option<&'a str>,
+    account: &'a str,
+) -> Result<&'a str, ApiError> {
+    match requested.unwrap_or(account) {
+        lang @ ("en" | "es" | "zh-TW") => Ok(lang),
+        _ => Err(ApiError::bad_request("invalid_language", "不支援的語言")),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/catalog",
     tag = "catalog",
     summary = "學生可選的活動與題目（活動須已發布且在開放期間內；教室未封存）",
+    params(("language" = Option<String>, Query, description = "介面語言，預設採用帳號語言")),
     responses((status = 200, description = "可選項目", body = Available))
 )]
 pub(crate) async fn available(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
+    Query(query): Query<CatalogLanguage>,
 ) -> Result<Json<Available>, ApiError> {
-    let (activities, topics) = tokio::try_join!(
+    let language = display_language(query.language.as_deref(), &cu.user.language)?;
+    let (mut activities, mut topics) = tokio::try_join!(
         activity_store::list_published_with_progress(&state.pool, cu.user.id),
-        sqlx::query_as(
-            "SELECT id, title, description, is_active, guiding_questions FROM topics
+        sqlx::query_as::<_, Topic>(
+            "SELECT id, title, description, is_active, guiding_questions, translations FROM topics
              WHERE is_active ORDER BY created_at, id",
         )
         .fetch_all(&state.pool),
     )?;
+    for topic in &mut topics {
+        let all = std::mem::take(&mut topic.translations);
+        if language == "zh-TW" {
+            continue;
+        }
+        let values = all.get(language);
+        if let Some(title) = values.and_then(|v| v.get("title")) {
+            topic.title.clone_from(title);
+        } else {
+            topic.title_pending = true;
+        }
+        for (i, question) in topic.guiding_questions.iter_mut().enumerate() {
+            if let Some(text) = values.and_then(|v| v.get(&format!("q:{question}"))) {
+                question.clone_from(text);
+            } else {
+                topic.pending_questions.push(i as i32);
+            }
+        }
+    }
+    let by_id: std::collections::HashMap<_, _> = topics.iter().map(|t| (t.id, t)).collect();
+    for activity in &mut activities {
+        for progress in &mut activity.topics {
+            if let Some(topic) = by_id.get(&progress.topic_id) {
+                progress.title.clone_from(&topic.title);
+                progress.title_pending = topic.title_pending;
+            }
+        }
+    }
     Ok(Json(Available { activities, topics }))
 }

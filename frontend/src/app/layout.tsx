@@ -113,7 +113,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
   if (student) {
     return (
       <div className={cn('flex flex-col md:flex-row', fullBleed ? 'h-svh' : 'min-h-svh')}>
-        <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:px-3 md:py-4', STUDENT_SIDEBAR, STUDENT_STICKY)}>
+        <aside className={cn('bg-paper flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:px-3 md:py-4', STUDENT_SIDEBAR, STUDENT_STICKY)}>
           <Link to="/" className="px-2.5 pt-2 pb-2 text-lg leading-7 font-medium md:pb-4">
             {t('app.name')}
           </Link>
@@ -140,7 +140,7 @@ export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children
         <AccountAvatar me={me} />
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <aside className={cn('bg-surface flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:py-4', WORKSPACE_SIDEBAR, WORKSPACE_STICKY)}>
+        <aside className={cn('bg-paper flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:py-4', WORKSPACE_SIDEBAR, WORKSPACE_STICKY)}>
           <MainNav items={items} label="main" />
           <Account me={me} />
         </aside>

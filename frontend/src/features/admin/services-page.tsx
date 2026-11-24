@@ -12,6 +12,7 @@ import {
   type ServiceRow,
   type ServicesView,
   type ServiceStatus,
+  type VoiceNodeRow,
 } from '@/features/admin/service-health-model'
 import { errorText, useI18n, useT, type MessageKey } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
@@ -64,9 +65,10 @@ export function ServicesPage() {
   const fresh = checked.source === view.data ? checked.rows : {}
 
   const rows = useMemo(() => {
-    const merged = (view.data?.services ?? []).map((row) => {
+    // 語音節點與其他服務同列：節點多帶 node_status 與場次，卡片再顯示出來
+    const merged = [...(view.data?.services ?? []), ...(view.data?.voice_nodes ?? [])].map((row) => {
       const latest = fresh[row.name]
-      return latest ? { ...latest, availability: row.availability, recent_events: row.recent_events } : row
+      return latest ? { ...row, ...latest, availability: row.availability, recent_events: row.recent_events } : row
     })
     // 異常的排在前面；其餘維持後端的順序
     return [...merged].sort((a, b) => Number(b.status === 'unhealthy') - Number(a.status === 'unhealthy'))
@@ -154,13 +156,40 @@ export function ServicesPage() {
   )
 }
 
+const NODE_STATUS_LABEL = {
+  active: 'admin.services.voiceNodes.status.active',
+  draining: 'admin.services.voiceNodes.status.draining',
+  disabled: 'admin.services.voiceNodes.status.disabled',
+} as const satisfies Record<VoiceNodeRow['node_status'], MessageKey>
+
+/** 語音節點才有的欄位：節點狀態與目前場次。 */
+function VoiceNodeFacts({ row }: { row: VoiceNodeRow }) {
+  const t = useT()
+  return (
+    <>
+      <div>
+        <dt className="text-muted-foreground">{t('admin.services.voiceNodes.nodeStatus')}</dt>
+        <dd>{t(NODE_STATUS_LABEL[row.node_status])}</dd>
+      </div>
+      <div>
+        <dt className="text-muted-foreground">{t('admin.services.voiceNodes.sessions')}</dt>
+        <dd>
+          {row.max_sessions === null
+            ? t('admin.services.voiceNodes.sessionsUnlimited', { n: row.sessions })
+            : t('admin.services.voiceNodes.sessionsValue', { n: row.sessions, max: row.max_sessions })}
+        </dd>
+      </div>
+    </>
+  )
+}
+
 function ServiceCard({
   row,
   period,
   historyAvailable,
   onChecked,
 }: {
-  row: ServiceRow
+  row: ServiceRow | VoiceNodeRow
   period: Period
   historyAvailable: boolean
   onChecked: (row: ServiceRow) => void
@@ -263,6 +292,7 @@ function ServiceCard({
             <dt className="text-muted-foreground">{t('admin.services.availability', { period: t(PERIOD_LABEL[period]) })}</dt>
             <dd>{row.availability === null ? '–' : percent.format(row.availability)}</dd>
           </div>
+          {'node_status' in row ? <VoiceNodeFacts row={row} /> : null}
           {since ? (
             <div>
               <dt className="sr-only">{t(STATE_LABEL[row.status])}</dt>

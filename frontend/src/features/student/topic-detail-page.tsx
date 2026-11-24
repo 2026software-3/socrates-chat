@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { errorText, useT } from '@/i18n'
+import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import type { Available, Conversation } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
@@ -15,11 +15,12 @@ import { useFetch } from '@/lib/use-fetch'
  */
 export function TopicDetailPage() {
   const t = useT()
+  const { lang } = useI18n()
   const navigate = useNavigate()
   const { topicId = '' } = useParams()
   const [search] = useSearchParams()
   const activityId = search.get('activity')
-  const { data, error, loading, reload } = useFetch<Available>('/api/catalog')
+  const { data, error, loading, reload } = useFetch<Available>(`/api/catalog?language=${lang}`)
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<unknown>()
 
@@ -62,6 +63,7 @@ export function TopicDetailPage() {
       {back}
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl leading-8 font-medium break-words">{topic.title}</h1>
+        {topic.title_pending && <span role="status">{t('admin.dimensions.translationPending')}</span>}
       </div>
       {questions.length > 0 ? (
         <section aria-labelledby="topic-guiding-heading" className="flex flex-col gap-3">
@@ -72,6 +74,7 @@ export function TopicDetailPage() {
             {questions.map((q, i) => (
               <li key={i} className="break-words whitespace-pre-line">
                 {q}
+                {topic.pending_questions?.includes(i) && <span role="status"> {t('admin.dimensions.translationPending')}</span>}
               </li>
             ))}
           </ol>

@@ -33,3 +33,10 @@ __pycache__/
 
 # msi_cubi staging 的私有憑證（管理者初始密碼等，不進版控）
 .staging-credentials
+
+# 本機 AI agent 設定與自行安裝的 skills（各人自理，不進版控）
+.claude/
+skills-lock.json
+
+# 設計工具（impeccable）的本機工作檔
+.impeccable/

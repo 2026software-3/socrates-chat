@@ -63,6 +63,11 @@ pub struct Config {
     pub cascade_realtime_url: Option<String>,
     /// cascade 呼叫內部 LLM 端點用的共用密鑰。
     pub cascade_llm_token: Option<String>,
+    /// 環境節點的場次上限（`CASCADE_MAX_SESSIONS`）；沒設就不限（S-19）。
+    pub cascade_max_sessions: Option<usize>,
+    /// 內部端點（`/internal/cascade/*`）改由這個位址的獨立監聽器提供（`INTERNAL_LISTEN_ADDR`）；
+    /// 沒設時與公開端點同埠（S-19）。
+    pub internal_listen_addr: Option<std::net::SocketAddr>,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -87,6 +92,8 @@ pub struct Config {
     /// 只有既有測試把它設為 `false`，讓教室內的對話繼續用假的系統 AI。
     pub classroom_ai_routing: bool,
     pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
+    /// 周邊服務背景探測間隔（`SERVICE_PROBE_INTERVAL_SECS`，10 至 300 秒，預設 30 秒，S-09.3）。
+    pub service_probe_interval: Duration,
 }
 
 #[derive(Debug)]
@@ -114,6 +121,21 @@ fn teacher_key_cipher_from_env()
             .map(|c| Some(Arc::new(c)))
             .map_err(|e| ConfigError(e.to_string())),
         _ => Ok(None),
+    }
+}
+
+/// 選填的環境變數：沒設或空字串是 `None`；設了但 `parse` 不認得就是設定錯誤。
+fn optional_env<T>(
+    name: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, ConfigError> {
+    match env::var(name) {
+        Ok(v) if v.trim().is_empty() => Ok(None),
+        Ok(v) => parse(&v)
+            .map(Some)
+            .ok_or_else(|| ConfigError(format!("invalid {name}"))),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError(format!("{name} must be UTF-8"))),
     }
 }
 
@@ -220,6 +242,17 @@ fn read_first_key_file(candidates: &[PathBuf], required: bool) -> Result<Vec<Str
 }
 
 impl Config {
+    /// 環境變數 `ADMIN_EMAILS` 的第一個管理者信箱（小寫）；只有本人能重設其密碼。
+    pub fn primary_admin_email(&self) -> Option<&str> {
+        self.admin_emails.first().map(String::as_str)
+    }
+
+    /// 該信箱是否為 `ADMIN_EMAILS` 的第一個管理者（不分大小寫）。
+    pub fn is_primary_admin_email(&self, email: &str) -> bool {
+        self.primary_admin_email()
+            .is_some_and(|primary| primary.eq_ignore_ascii_case(email))
+    }
+
     /// 回覆產生的 claim 超過多久視為殘留（秒）：兩次嘗試的上限再加一點餘裕。
     pub fn generation_stale_secs(&self) -> f64 {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
@@ -246,6 +279,15 @@ impl Config {
             Err(env::VarError::NotPresent) => Vec::new(),
             Err(env::VarError::NotUnicode(_)) => {
                 return Err(ConfigError("MONITORED_SERVICES must be UTF-8".into()));
+            }
+        };
+        let service_probe_interval = match env::var("SERVICE_PROBE_INTERVAL_SECS") {
+            Ok(value) => crate::service_monitor::parse_probe_interval(Some(&value))?,
+            Err(env::VarError::NotPresent) => crate::service_monitor::DEFAULT_PROBE_INTERVAL,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError(
+                    "SERVICE_PROBE_INTERVAL_SECS must be UTF-8".into(),
+                ));
             }
         };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
@@ -330,6 +372,10 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty()),
             cascade_llm_token: env::var("CASCADE_LLM_TOKEN").ok().filter(|v| !v.is_empty()),
+            cascade_max_sessions: optional_env("CASCADE_MAX_SESSIONS", |v| {
+                v.trim().parse::<usize>().ok().filter(|n| *n >= 1)
+            })?,
+            internal_listen_addr: optional_env("INTERNAL_LISTEN_ADDR", |v| v.trim().parse().ok())?,
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")
@@ -353,6 +399,7 @@ impl Config {
             teacher_key_cipher: teacher_key_cipher_from_env()?,
             classroom_ai_routing: true,
             monitored_services,
+            service_probe_interval,
             app_base_url,
         })
     }
@@ -437,5 +484,25 @@ mod tests {
             parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
             ["google/gemma:free", "nvidia/x:free", "a"]
         );
+    }
+
+    #[test]
+    fn primary_admin_is_the_first_entry_in_admin_emails() {
+        let emails = parse_admin_emails(" First@Example.com , second@example.com ");
+        assert_eq!(
+            emails.first().map(String::as_str),
+            Some("first@example.com")
+        );
+        assert!(
+            emails
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("FIRST@example.com"))
+        );
+        assert!(
+            !emails
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("second@example.com"))
+        );
+        assert!(parse_admin_emails(" , ").is_empty());
     }
 }
