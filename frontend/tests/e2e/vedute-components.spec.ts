@@ -60,8 +60,9 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
   await icon.hover()
   await expect(icon).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await page.mouse.down()
-  await expect(icon).toHaveCSS('translate', '0px 1px')
-  await expect(icon.locator('svg')).toHaveCSS('scale', '0.9')
+  await expect(icon).toHaveCSS('translate', 'none')
+  await expect(icon.locator('svg')).toHaveCSS('scale', 'none')
+  await expect(icon.locator('svg')).toHaveCSS('stroke-width', '3px')
   await page.mouse.up()
 
   await page.getByRole('combobox', { name: '教室' }).click()

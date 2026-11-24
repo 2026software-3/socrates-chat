@@ -11,7 +11,8 @@
 }
 
 .vedute-button:not(:disabled):active {
-  @apply translate-y-px bg-paper-deep;
+  @apply bg-paper-deep;
+  translate: none;
   transition-duration: 0s;
 }
 
@@ -28,11 +29,11 @@
 }
 
 .vedute-button[data-vedute-variant="icon"]:not(:disabled):active svg {
-  @apply scale-90;
+  @apply stroke-3;
 }
 
 .vedute-button[data-vedute-variant="primary"]:not(:disabled):active::after {
-  @apply inset-0 border-paper;
+  @apply border-paper;
 }
 
 .vedute-button:focus-visible,
