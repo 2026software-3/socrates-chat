@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/admin/teachers", get(list_teachers).post(add_teacher))
         .route("/api/admin/teachers/{email}", delete(remove_teacher))
+        .route("/api/admin/admins", get(list_admins).post(add_admin))
         .route("/api/classrooms/{id}/roster", get(list_roster))
         .route("/api/classrooms/{id}/roster/import", post(import_roster))
         .route(
@@ -145,6 +146,100 @@ async fn delete_email(
     audit(&mut *tx, actor, action, &email.to_lowercase(), None).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- 管理者（管理者操作）----
+
+const LIST_ADMINS: &str =
+    "SELECT email FROM users WHERE is_admin AND email IS NOT NULL ORDER BY email";
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/admins",
+    tag = "admin",
+    summary = "列出管理者",
+    responses((status = 200, description = "管理者信箱", body = EmailList), crate::error::CommonErrors)
+)]
+pub(crate) async fn list_admins(
+    _: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<EmailList>, ApiError> {
+    Ok(Json(EmailList {
+        emails: list_emails(&state.pool, LIST_ADMINS).await?,
+    }))
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct AddAdminResponse {
+    /// 正規化後的信箱。
+    email: String,
+    /// 只在新建帳號時出現，且只出現這一次；既有帳號升為管理者不動密碼，為 `null`。
+    temporary_password: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/admin/admins",
+    tag = "admin",
+    summary = "新增管理者（沒有帳號就建立並產生臨時密碼；已是管理者則不做事）",
+    request_body = EmailBody,
+    responses(
+        (status = 200, description = "完成；新建帳號時回臨時密碼", body = AddAdminResponse),
+        (status = 400, description = "invalid_email", body = crate::error::ErrorBody),
+        (status = 409, description = "is_student（學生帳號不能升為管理者）", body = crate::error::ErrorBody),
+        crate::error::CommonErrors
+    )
+)]
+pub(crate) async fn add_admin(
+    RequireAdmin(cu): RequireAdmin,
+    State(state): State<AppState>,
+    Json(body): Json<EmailBody>,
+) -> Result<Json<AddAdminResponse>, ApiError> {
+    let email = normalize_email(&body.email).ok_or(ApiError::invalid_email())?;
+    let temporary_password = password::generate_temporary();
+    let hash = hash_blocking(temporary_password.clone()).await?;
+    let mut tx = state.pool.begin().await?;
+    let existing: Option<(uuid::Uuid, bool, bool)> = sqlx::query_as(
+        "SELECT id, is_admin, student_id IS NOT NULL FROM users WHERE email = $1 FOR UPDATE",
+    )
+    .bind(&email)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let issued = match existing {
+        Some((_, _, true)) => {
+            return Err(ApiError::conflict("is_student", "學生帳號不能設為管理者"));
+        }
+        // 已是管理者：沒有改變任何事，不記錄
+        Some((_, true, _)) => None,
+        Some((id, false, _)) => {
+            sqlx::query("UPDATE users SET is_admin = true, updated_at = now() WHERE id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            audit(&mut *tx, cu.user.id, "admin_added", &email, None).await?;
+            None
+        }
+        None => {
+            let created = sqlx::query(
+                "INSERT INTO users (email, password_hash, must_change_password, is_admin)
+                 VALUES ($1, $2, true, true) ON CONFLICT (email) DO NOTHING",
+            )
+            .bind(&email)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
+            if created.rows_affected() == 0 {
+                return Err(ApiError::conflict("conflict", "帳號剛被建立，請重試"));
+            }
+            audit(&mut *tx, cu.user.id, "admin_added", &email, None).await?;
+            Some(temporary_password)
+        }
+    };
+    tx.commit().await?;
+    Ok(Json(AddAdminResponse {
+        email,
+        temporary_password: issued,
+    }))
 }
 
 // ---- 教室的修課名單（教室的建立者或管理者操作；他人的教室與不存在的教室一律 404）----
