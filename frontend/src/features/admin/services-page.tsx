@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { ErrorBlock, LoadingBlock, PageHeader } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -72,6 +72,15 @@ export function ServicesPage() {
     // 異常的排在前面；其餘維持後端的順序
     return [...merged].sort((a, b) => Number(b.status === 'unhealthy') - Number(a.status === 'unhealthy'))
   }, [view.data, fresh])
+
+  const voiceRows = useMemo(
+    () =>
+      (view.data?.voice_nodes ?? []).map((node) => {
+        const latest = fresh[node.name]
+        return latest ? { ...node, ...latest, availability: node.availability, recent_events: node.recent_events } : node
+      }),
+    [view.data, fresh],
+  )
 
   const failed = view.error !== undefined && view.data === undefined
   const onlyDatabase = view.data !== undefined && rows.every((row) => row.target === null)
@@ -149,7 +158,19 @@ export function ServicesPage() {
               ))}
             </ul>
           )}
-          {view.data.voice_nodes.length > 0 ? <VoiceNodes nodes={view.data.voice_nodes} /> : null}
+          {voiceRows.length > 0 ? (
+            <VoiceNodes
+              nodes={voiceRows}
+              period={period}
+              historyAvailable={view.data.history_available}
+              onChecked={(next) =>
+                setChecked((current) => ({
+                  source: view.data,
+                  rows: { ...(current.source === view.data ? current.rows : {}), [next.name]: next },
+                }))
+              }
+            />
+          ) : null}
         </>
       ) : null}
     </div>
@@ -160,10 +181,20 @@ const NODE_STATUS_LABEL = {
   active: 'admin.services.voiceNodes.status.active',
   draining: 'admin.services.voiceNodes.status.draining',
   disabled: 'admin.services.voiceNodes.status.disabled',
-} as const satisfies Record<VoiceNodeRow['status'], MessageKey>
+} as const satisfies Record<VoiceNodeRow['node_status'], MessageKey>
 
-/** 即時語音節點（S-19）：每個節點一張卡，狀態、健康與目前場次數。 */
-function VoiceNodes({ nodes }: { nodes: VoiceNodeRow[] }) {
+/** 即時語音節點（S-19）：與上方的服務同樣的卡片，另顯示節點狀態與目前場次。 */
+function VoiceNodes({
+  nodes,
+  period,
+  historyAvailable,
+  onChecked,
+}: {
+  nodes: VoiceNodeRow[]
+  period: Period
+  historyAvailable: boolean
+  onChecked: (row: ServiceRow) => void
+}) {
   const t = useT()
   return (
     <section aria-labelledby="voice-nodes-title" className="space-y-3">
@@ -174,38 +205,32 @@ function VoiceNodes({ nodes }: { nodes: VoiceNodeRow[] }) {
         <p className="text-muted-foreground text-sm">{t('admin.services.voiceNodes.intro')}</p>
       </div>
       <ul className="space-y-4">
-        {nodes.map((node) => {
-          const health = t(node.healthy ? 'admin.services.state.healthy' : 'admin.services.state.unhealthy')
-          return (
-            <li key={node.name}>
-              <Card>
-                <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2">
-                  <CardTitle className="text-base">{node.name}</CardTitle>
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline">{t(NODE_STATUS_LABEL[node.status])}</Badge>
-                    <Badge
-                      variant={node.healthy ? 'secondary' : 'destructive'}
-                      role="status"
-                      aria-label={`${node.name}: ${health}`}
-                    >
-                      {health}
-                    </Badge>
+        {nodes.map((node) => (
+          <li key={node.name}>
+            <ServiceCard
+              row={node}
+              period={period}
+              historyAvailable={historyAvailable}
+              onChecked={onChecked}
+              facts={
+                <>
+                  <div>
+                    <dt className="text-muted-foreground">{t('admin.services.voiceNodes.nodeStatus')}</dt>
+                    <dd>{t(NODE_STATUS_LABEL[node.node_status])}</dd>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  <dl className="text-sm">
+                  <div>
                     <dt className="text-muted-foreground">{t('admin.services.voiceNodes.sessions')}</dt>
                     <dd>
                       {node.max_sessions === null
                         ? t('admin.services.voiceNodes.sessionsUnlimited', { n: node.sessions })
                         : t('admin.services.voiceNodes.sessionsValue', { n: node.sessions, max: node.max_sessions })}
                     </dd>
-                  </dl>
-                </CardContent>
-              </Card>
-            </li>
-          )
-        })}
+                  </div>
+                </>
+              }
+            />
+          </li>
+        ))}
       </ul>
     </section>
   )
@@ -216,11 +241,14 @@ function ServiceCard({
   period,
   historyAvailable,
   onChecked,
+  facts,
 }: {
   row: ServiceRow
   period: Period
   historyAvailable: boolean
   onChecked: (row: ServiceRow) => void
+  /** 額外的欄位（`dl` 的子項），例如語音節點的場次 */
+  facts?: ReactNode
 }) {
   const t = useT()
   const { lang } = useI18n()
@@ -320,6 +348,7 @@ function ServiceCard({
             <dt className="text-muted-foreground">{t('admin.services.availability', { period: t(PERIOD_LABEL[period]) })}</dt>
             <dd>{row.availability === null ? '–' : percent.format(row.availability)}</dd>
           </div>
+          {facts}
           {since ? (
             <div>
               <dt className="sr-only">{t(STATE_LABEL[row.status])}</dt>
