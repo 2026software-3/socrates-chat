@@ -175,6 +175,7 @@ pub(crate) async fn create(
         if let Err(error) =
             generate(&state, id, attempt, input, language, classroom, &mut charge).await
         {
+            charge.refund();
             tracing::error!(class = %db_error_class(&error), "argument tree generation bookkeeping failed");
             let _ = sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
                                 WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
@@ -209,11 +210,17 @@ struct AiCharge {
     user: Uuid,
     slot: Option<Instant>,
 }
-impl Drop for AiCharge {
-    fn drop(&mut self) {
+impl AiCharge {
+    fn refund(&mut self) {
         if let Some(slot) = self.slot.take() {
             self.state.refund_ai(self.user, slot);
         }
+    }
+}
+
+impl Drop for AiCharge {
+    fn drop(&mut self) {
+        self.refund();
     }
 }
 
@@ -312,6 +319,8 @@ async fn generate(
             }
         }
         Err(failure) => {
+            // A visible failure must already have its quota returned for immediate retries.
+            charge.refund();
             // 只記分類與階段，不記任何對話或模型輸出的內容
             tracing::warn!(
                 class = failure.error.class.code(),

@@ -1,3 +1,4 @@
+import { TopicBooksDialog } from '@/features/books/book-list'
 import { Pencil } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -158,6 +159,7 @@ export function TopicsPage() {
   const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set())
   const [actionError, setActionError] = useState<unknown>()
   const [notice, setNotice] = useState<string>()
+  const [bookTopic, setBookTopic] = useState<Topic>()
   const [editing, setEditing] = useState<Topic>()
   const [reviewing, setReviewing] = useState<Topic>()
   const [creating, setCreating] = useState(false)
@@ -290,6 +292,7 @@ export function TopicsPage() {
                           <Button variant="ghost" size="icon" aria-label={t('admin.topics.edit', { title: x.title })} onClick={() => setEditing(x)}>
                             <Pencil aria-hidden />
                           </Button>
+                          <Button variant="outline" aria-label={t('books.openList', { title: x.title })} onClick={() => setBookTopic(x)}>{t('books.topicList')}</Button>
                           <Button variant="outline" onClick={() => setReviewing(x)}>
                             {t('admin.dimensions.open')}
                           </Button>
@@ -343,6 +346,8 @@ export function TopicsPage() {
           <ConfirmFact label={t('admin.topics.fact.topic')}>{confirming.topic.title}</ConfirmFact>
         </ConfirmDialog>
       ) : null}
+
+      {bookTopic ? <TopicBooksDialog key={bookTopic.id} topic={bookTopic} close={() => setBookTopic(undefined)} /> : null}
 
       {reviewing ? <TopicDimensionsDialog key={reviewing.id} topic={reviewing} close={() => setReviewing(undefined)} /> : null}
 

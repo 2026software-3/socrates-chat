@@ -52,6 +52,12 @@ pub mod announcements;
 pub mod argument_tree;
 pub mod auth;
 pub mod auth_store;
+pub mod book_editions;
+pub mod book_import;
+pub mod book_sources;
+pub mod book_store;
+pub mod book_works;
+pub mod books;
 pub mod cascade;
 pub mod catalog;
 pub mod chat;
@@ -113,8 +119,11 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 15] = [
+pub const LONG_RUNNING_ROUTES: [&str; 17] = [
     "/api/topics/{id}/dimensions/retry",
+    // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
+    "/api/books/search",
+    "/api/books/{id}/editions",
     // 管理者新增成就時同步翻譯名稱與說明
     "/api/admin/achievements",
     // 管理者新增、修改公告時同步翻譯內文
@@ -149,6 +158,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    /// 教師外部書目搜尋；可替換為測試來源，不讓測試呼叫真實服務。
+    pub book_source: Arc<dyn book_sources::BookSource>,
     pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 正在產生維度的題目，避免同一題目重複呼叫 AI（F-03.4）。
     pub(crate) dimension_jobs: Arc<topic_dimensions::Jobs>,
@@ -199,6 +210,9 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let book_source = Arc::new(book_sources::HttpBookSource::new(
+            config.google_books_api_key.clone(),
+        ));
         let google_translation = config
             .google_translation_api_key
             .as_deref()
@@ -221,6 +235,7 @@ impl AppState {
             google_translation,
             dimension_jobs: Arc::default(),
             voice,
+            book_source,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
             live: Arc::default(),
@@ -242,6 +257,11 @@ impl AppState {
             key_rotation: Arc::default(),
             route_endpoint: None,
         }
+    }
+
+    pub fn with_book_source(mut self, source: Arc<dyn book_sources::BookSource>) -> Self {
+        self.book_source = source;
+        self
     }
 
     /// 啟動每日清理與請求統計的每分鐘寫入（F-39.2）。
@@ -358,6 +378,9 @@ pub fn app(state: AppState) -> Router {
         .merge(dashboard::routes())
         .merge(claims::routes())
         .merge(catalog::routes())
+        .merge(books::routes())
+        .merge(book_editions::routes())
+        .merge(book_works::routes())
         .merge(topic_dimensions::routes())
         .merge(radar::routes())
         .merge(chat::routes())
