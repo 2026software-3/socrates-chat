@@ -23,6 +23,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/auth/auth-context'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
 import { ResetPasswordDialog, type ResetTarget } from '@/features/admin/reset-password-dialog'
+import { CorrectStudentNumberDialog } from './correct-student-number-dialog'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { LoadMore } from '@/components/load-more'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -265,6 +266,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const auth = useAuth()
   const isAdmin = auth.status === 'authed' && auth.me.roles.admin
   const [toReset, setToReset] = useState<ResetTarget>()
+  const [toCorrect, setToCorrect] = useState<StudentRow>()
   const [action, setAction] = useState<AccountAction | null>(null)
   const [reason, setReason] = useState('')
   const [confirmText, setConfirmText] = useState('')
@@ -331,6 +333,10 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   /** 每位學生可做的操作：管理者另有重設密碼、停用與復原。 */
   const rowActions = (s: StudentRow) => (
     <>
+      {s.id && s.has_account ? (
+        <Button variant="outline" size="sm" aria-label={t('teacher.roster.correctLabel', { number: s.student_number })}
+          onClick={() => setToCorrect(s)}>{t('teacher.roster.correctNumber')}</Button>
+      ) : null}
       {resetButton(s)}
       {isAdmin && s.id ? (
         s.disabled ? (
@@ -492,6 +498,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
       />
 
       <ResetPasswordDialog target={toReset} onClose={() => setToReset(undefined)} />
+      {toCorrect ? <CorrectStudentNumberDialog student={toCorrect} onClose={() => setToCorrect(undefined)} onCorrected={roster.reload} /> : null}
 
       <AccountDialog
         open={action?.kind === 'remove'}

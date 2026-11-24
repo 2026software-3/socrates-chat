@@ -124,7 +124,7 @@ impl Modify for SessionCookie {
         roster::list_teachers, roster::add_teacher, roster::remove_teacher, roster::list_roster,
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
-        accounts::delete_student,
+        accounts::delete_student, accounts::correct_student_number,
         catalog::list_topics_for_teacher,
         catalog::create_topic_for_teacher,
         crate::topic_dimensions::read,

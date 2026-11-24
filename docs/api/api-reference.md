@@ -98,6 +98,13 @@
 - DELETE 刻意保留 JSON body，以沿用確認欄位與驗證規則；前端 fetch 與後端 Axum 均支援。部署的 proxy／client 必須保留 DELETE body。
 - 學生列表只有完成對話的**數量**，沒有內容。
 
+### 更正學號（F-30.5，#408）
+
+- `PUT /api/students/{id}/student-number`：`id` 為學生帳號的內部 UUID，請求為 `{ "student_number": "12345678a" }`。只接受學號欄位，不接受電子郵件或其他欄位。教師與管理者不能替學生設定或修改電子郵件（S-01.4；Issue 舊版的補電子郵件情境已不適用）。
+- 教師只能更正目前在自己至少一間教室名單內的學生，包含同時在其他教師教室的學生；管理者可更正未在名單內的學生。未登入回 `401 unauthorized`，學生本人與名單外帳號回 `403 forbidden`；對教師不可見、不存在或格式錯誤的對象 UUID 一律回 `404 not_found`。先判斷對象權限，再驗證請求，不讓輸入錯誤洩漏帳號是否存在。教師與管理者帳號不適用（可見時回 `409 not_a_student`）。
+- 學號必須是 8 位 ASCII 數字加 1 個英文字母，不接受空白；儲存為大寫。格式錯誤回 `400 invalid_student_number`，被其他帳號使用回 `409 student_number_in_use`；缺少欄位、型別錯誤、非 JSON 或多出欄位回 `400 invalid_body`。錯誤沿用 `{ "error": { "code": "...", "request_id": "..." } }`，不回顯學號。
+- 成功回 `204`（無本文），所有教室的名單同步更新；更新、稽核與站內通知一起提交或回滾。稽核動作為 `student_number_corrected`，只記操作者 UUID、時間、對象帳號 UUID（沿用 `target_email` 欄位），不記學號、電子郵件或新舊值。通知沿用 F-30.6 的 `student_number_corrected` 類型與時間，不含學號。大小寫正規化後與原學號相同時回 `204`，不重複通知或稽核。
+
 ## 教室（F-28.1）
 
 - 教師建立教室；同一位教師可建立多間。教室名稱必填，前後空白會去除，最多 255 字元，且不分大小寫全域唯一；重複名稱回 `409 classroom_name_taken`，空白或超長名稱回 `400 invalid_classroom_name`。年度標籤最多 100 字元、說明最多 2,000 字元，超限分別回 `invalid_classroom_year_label`、`invalid_classroom_description`。選填欄位前後空白會去除，空字串會保存為 `null`。

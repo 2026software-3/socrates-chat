@@ -334,7 +334,7 @@ pub(crate) async fn is_staff_email(
 }
 
 /// 匯入交易共用的 advisory lock 鍵。
-const IMPORT_LOCK_KEY: i64 = 393;
+pub(crate) const IMPORT_LOCK_KEY: i64 = 393;
 
 #[utoipa::path(
     post,
