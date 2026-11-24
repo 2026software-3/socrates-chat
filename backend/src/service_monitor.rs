@@ -450,6 +450,7 @@ impl Monitor {
             services,
             history_available: history.is_some(),
             period_days,
+            voice_nodes: Vec::new(),
         }
     }
 }
@@ -579,11 +580,25 @@ pub(crate) struct ServiceSummary {
     pub unknown: u32,
 }
 
+/// 即時語音節點（S-19）：由登錄表與場次計數即時組成，不經過周邊服務的健康檢查，也沒有歷史。
+#[derive(Serialize, ToSchema)]
+pub(crate) struct VoiceNodeStatus {
+    name: String,
+    /// `active`、`draining` 或 `disabled`
+    status: String,
+    /// 連續 3 次探測失敗（或連線失敗）即為 false
+    healthy: bool,
+    sessions: usize,
+    /// 環境節點預設不設上限
+    max_sessions: Option<usize>,
+}
+
 #[derive(Serialize, ToSchema)]
 pub(crate) struct ServicesView {
     services: Vec<ServiceView>,
     history_available: bool,
     period_days: i64,
+    voice_nodes: Vec<VoiceNodeStatus>,
 }
 
 #[derive(Deserialize)]
@@ -624,9 +639,22 @@ pub(crate) async fn list(
         .map(|Query(query)| query.period_days.unwrap_or(RETENTION_DAYS))
         .filter(|days| (1..=RETENTION_DAYS).contains(days))
         .ok_or_else(|| ApiError::bad_request("invalid_service_period", "期間須介於 1 至 30 天"))?;
-    Ok(Json(
-        state.service_monitor.view(&state.pool, period_days).await,
-    ))
+    let mut view = state.service_monitor.view(&state.pool, period_days).await;
+    let counts = state.voice_sessions.counts();
+    view.voice_nodes = state
+        .voice_nodes
+        .all(&state)
+        .await
+        .into_iter()
+        .map(|node| VoiceNodeStatus {
+            healthy: state.voice_nodes.is_healthy(node.id),
+            sessions: counts.get(&node.id).copied().unwrap_or(0),
+            status: node.status.as_str().into(),
+            max_sessions: node.max_sessions,
+            name: node.name,
+        })
+        .collect();
+    Ok(Json(view))
 }
 
 #[utoipa::path(post, path = "/api/admin/services/check", tag = "admin", request_body = CheckBody,
