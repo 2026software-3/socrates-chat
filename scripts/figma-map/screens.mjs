@@ -500,18 +500,26 @@ export const pages = [
       {
         name: 'E61–E65 共用書庫與書目',
         match: /^E6[1-5](-[12])? /,
-        route: null,
-        feature: null,
-        tests: [],
+        route: '/teacher/books、/admin/books',
+        feature: 'features/books',
+        tests: [
+          'features/books/books.test.tsx',
+          'features/books/work-actions.test.tsx',
+          'features/books/related-editions.test.tsx',
+          'features/books/book-language.test.tsx',
+          'features/books/book-works.test.ts',
+          'features/books/book-review-fixes.test.tsx',
+        ],
         issue: 688,
-        note: '依 S-06.3、PR #652（2026-11-21）；前端尚未實作。',
+        note: '依 S-06.3、PR #652（2026-11-21）。',
       },
       {
         name: 'E66–E67 題目預設書單、活動內本題書單',
         match: /^E6[67] /,
-        route: null,
-        feature: null,
-        tests: [],
+        route:
+          '/teacher/topics、/admin/topics、/teacher/classrooms/:classroomId/activities/:activityId、/admin/classrooms/:classroomId/activities/:activityId（對話框）',
+        feature: 'features/books/book-list.tsx',
+        tests: ['features/books/book-lists.test.tsx'],
         issue: 688,
       },
       {

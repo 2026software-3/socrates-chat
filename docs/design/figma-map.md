@@ -411,8 +411,8 @@ Figma 頁面：[21:243](https://www.figma.com/design/zW14xVQcXF8S5rQuD6YzDM/socr
 | E36 已結束活動 · 學生參與名單 | `/teacher/classrooms/:classroomId/activities/:activityId`、`/admin/classrooms/:classroomId/activities/:activityId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687（待確認） | 尚未重畫（舊稿） |
 | E41–E44 題目庫、新增／編輯、停用、啟用 | `/teacher/topics`、`/admin/topics` | `admin/topics-page.tsx` | `admin/topics-page.test.tsx`<br>`teacher/topic-bank.test.tsx` | #688 | 已重畫 |
 | E51–E55 AI 題目建議 | 尚無路由 | — | — | #688（待確認） | 尚未重畫（舊稿） |
-| E61–E65 共用書庫與書目 | 尚無路由 | — | — | #688 | 已重畫 |
-| E66–E67 題目預設書單、活動內本題書單 | 尚無路由 | — | — | #688 | 已重畫 |
+| E61–E65 共用書庫與書目 | `/teacher/books`、`/admin/books` | `books` | `books/books.test.tsx`<br>`books/work-actions.test.tsx`<br>`books/related-editions.test.tsx`<br>`books/book-language.test.tsx`<br>`books/book-works.test.ts`<br>`books/book-review-fixes.test.tsx` | #688 | 已重畫 |
+| E66–E67 題目預設書單、活動內本題書單 | `/teacher/topics`、`/admin/topics`、`/teacher/classrooms/:classroomId/activities/:activityId`、`/admin/classrooms/:classroomId/activities/:activityId`（對話框） | `books/book-list.tsx` | `books/book-lists.test.tsx` | #688 | 已重畫 |
 | E71–E77 學生帳號（列表、移出、刪除、停用、復原、重設密碼） | `/teacher/roster`、`/admin/roster` | `teacher/roster-page.tsx` | `teacher/roster-page.test.tsx`<br>`teacher/account-management.test.tsx` | #689 | 已重畫 |
 | E81 管理者總覽 | `/admin` | `admin/admin-home.tsx` | `admin/admin-home.test.tsx` | #689 | 已重畫 |
 | E82–E85 教師管理 | `/admin/teachers` | `admin/teachers-page.tsx` | `admin/teachers-page.test.tsx` | —（待確認） | 尚未重畫（舊稿） |
@@ -556,7 +556,7 @@ Figma 頁面：[21:243](https://www.figma.com/design/zW14xVQcXF8S5rQuD6YzDM/socr
 
 #### E61–E65 共用書庫與書目
 
-依 S-06.3、PR #652（2026-11-21）；前端尚未實作。
+依 S-06.3、PR #652（2026-11-21）。
 
 | 狀態 | 1440 | 768 | 375 | 狀態 |
 | --- | --- | --- | --- | --- |
