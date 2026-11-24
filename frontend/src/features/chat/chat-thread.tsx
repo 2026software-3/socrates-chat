@@ -80,7 +80,7 @@ function StudentMessage() {
   return (
     <MessagePrimitive.Root data-role="student" className="flex flex-col items-end gap-1">
       <span className="sr-only">{t('chat.thread.you')}</span>
-      <div className="bg-surface max-w-[85%] rounded-2xl border px-5 py-3 text-sm md:max-w-[560px]">
+      <div className="bg-paper max-w-[85%] rounded-2xl border px-5 py-3 text-sm md:max-w-[560px]">
         <MessagePrimitive.Parts components={{ Text: PlainText }} />
       </div>
     </MessagePrimitive.Root>
