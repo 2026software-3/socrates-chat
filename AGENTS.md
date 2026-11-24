@@ -78,7 +78,7 @@ cargo run                          # 啟動於 127.0.0.1:3000
   - [ ] `frontend/tests/e2e/<畫面>.spec.ts` 的 Playwright 點擊測試涵蓋主要操作與錯誤、空資料狀態，並呼叫 `expectNoA11yViolations`、`expectScreenshot`（寫法見 [`frontend/README.md`](frontend/README.md)）
   - [ ] 375、768、1440 三種寬度的基準截圖與 Figma 節點對照過
   - [ ] axe 沒有 serious、critical 違規（S-11.6）
-  - [ ] 只用 token 與 Vedute 元件，`npm run lint`、`npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e:linux` 通過
+  - [ ] 只用 token 與 Vedute 元件，CI 全綠（本機只跑 lint、typecheck、改到的測試與受影響的 e2e spec，見 [`docs/agent-setup.md`](docs/agent-setup.md)「本機跑什麼、交給 CI 跑什麼」）
 - **不能做的事**：新增或更換主要依賴（需先經規格討論）；把 `.claude/` 或個人 agent 設定加進版控（共用規則只寫在本檔與 `docs/`）；照抄原型或 Figma 的示意文字取代真實資料與 i18n。
 
 ## 架構邊界
