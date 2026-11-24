@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright（tests/e2e/）：報告、trace 與失敗截圖；基準截圖只有 Linux 的進版控
+/test-results/
+/playwright-report/
+/blob-report/
+/tests/e2e/__screenshots__/**/*-darwin.png
+/tests/e2e/__screenshots__/**/*-win32.png
