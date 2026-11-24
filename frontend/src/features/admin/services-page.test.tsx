@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { ServicesPage } from '@/features/admin/services-page'
-import type { ServiceRow, ServicesView } from '@/features/admin/service-health-model'
+import type { ServiceRow, ServicesView, VoiceNodeRow } from '@/features/admin/service-health-model'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -69,28 +69,62 @@ function mockServices(build: (days: string) => ServicesView | Response) {
 
 const card = (name: string) => screen.getByText(name).closest('[data-slot="card"]') as HTMLElement
 
+const node = (overrides: Partial<VoiceNodeRow>): VoiceNodeRow => ({
+  ...row({
+    name: 'voice-node:1',
+    label: 'raynb',
+    impact: { 'zh-TW': '即時語音', en: 'Real-time voice' },
+    target: '100.64.0.1:8110/health',
+  }),
+  node_status: 'active',
+  healthy: true,
+  sessions: 1,
+  max_sessions: 2,
+  ...overrides,
+})
+
 describe('voice nodes on the services page', () => {
-  it('shows each node with its status, health and sessions', async () => {
+  it('shows each node like a service, plus its node status and sessions', async () => {
     mockMe(makeMe({ admin: true }))
     mockServices(() =>
       view([DATABASE], {
         voice_nodes: [
-          { name: 'raynb', status: 'active', healthy: true, sessions: 1, max_sessions: 2 },
-          { name: 'env', status: 'active', healthy: false, sessions: 3, max_sessions: null },
-          { name: 'old', status: 'draining', healthy: true, sessions: 0, max_sessions: 1 },
+          node({}),
+          node({ name: 'voice-node:2', label: 'env', sessions: 3, max_sessions: null }),
+          node({ name: 'voice-node:3', label: 'old', node_status: 'draining', status: 'unhealthy', failure: 'timeout' }),
         ],
       }),
     )
     renderApp(<ServicesPage />)
     const section = (await screen.findByRole('heading', { name: '即時語音節點' })).closest('section') as HTMLElement
-    const raynb = within(within(section).getByText('raynb').closest('[data-slot="card"]') as HTMLElement)
+    const inCard = (label: string) =>
+      within(within(section).getByText(label).closest('[data-slot="card"]') as HTMLElement)
+    const raynb = inCard('raynb')
     expect(raynb.getByText('1 / 2')).toBeInTheDocument()
-    expect(raynb.getByRole('status', { name: 'raynb: 正常' })).toBeInTheDocument()
-    const env = within(within(section).getByText('env').closest('[data-slot="card"]') as HTMLElement)
-    expect(env.getByText('3（無上限）')).toBeInTheDocument()
-    expect(env.getByRole('status', { name: 'env: 異常' })).toBeInTheDocument()
-    const old = within(within(section).getByText('old').closest('[data-slot="card"]') as HTMLElement)
+    expect(raynb.getByText('運作中')).toBeInTheDocument()
+    expect(raynb.getByText('100.64.0.1:8110/health')).toBeInTheDocument()
+    expect(raynb.getByText('99.87%')).toBeInTheDocument()
+    expect(raynb.getByRole('button', { name: '立即檢查 raynb' })).toBeInTheDocument()
+    expect(inCard('env').getByText('3（無上限）')).toBeInTheDocument()
+    const old = inCard('old')
     expect(old.getByText('排空中（不接新場次）')).toBeInTheDocument()
+    expect(old.getByRole('status', { name: 'old: 異常' })).toBeInTheDocument()
+  })
+
+  it('checks a node now through the same endpoint as other services', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockServices(() => view([DATABASE], { voice_nodes: [node({ status: 'unhealthy', failure: 'timeout' })] }))
+    let asked: unknown
+    server.use(
+      http.post('/api/admin/services/check', async ({ request }) => {
+        asked = await request.json()
+        return HttpResponse.json(row({ name: 'voice-node:1', label: 'raynb', status: 'healthy' }))
+      }),
+    )
+    renderApp(<ServicesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '立即檢查 raynb' }))
+    await waitFor(() => expect(asked).toEqual({ name: 'voice-node:1' }))
+    expect(await screen.findByRole('status', { name: 'raynb: 正常' })).toBeInTheDocument()
   })
 
   it('has no voice node section when there are none', async () => {

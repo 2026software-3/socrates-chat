@@ -54,10 +54,10 @@ export type ServiceRow = {
   recent_events: StatusEvent[]
 }
 
-/** 即時語音節點（S-19）：即時狀態，沒有歷史與可用率。 */
-export type VoiceNodeRow = {
-  name: string
-  status: 'active' | 'draining' | 'disabled'
+/** 即時語音節點（S-19）：監控欄位與周邊服務相同，另有節點自己的狀態與場次。 */
+export type VoiceNodeRow = ServiceRow & {
+  node_status: 'active' | 'draining' | 'disabled'
+  /** 接新場次的路由判斷，與 `status` 的判斷規則不同 */
   healthy: boolean
   sessions: number
   max_sessions: number | null
