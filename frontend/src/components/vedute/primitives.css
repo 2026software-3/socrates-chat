@@ -222,15 +222,40 @@ textarea.vedute-input {
 }
 
 .vedute-select-content {
-  @apply rounded-sm bg-surface text-ink shadow-none ring-1 ring-ink-soft motion-reduce:animate-none;
+  @apply w-(--radix-select-trigger-width) min-w-0 max-w-(--radix-select-content-available-width) rounded-none border border-ink bg-paper text-ink shadow-none ring-0 animate-none;
+}
+
+.vedute-select-content [data-position="popper"] {
+  @apply h-auto min-w-0;
+}
+
+.vedute-select-content :is([data-slot="select-scroll-up-button"], [data-slot="select-scroll-down-button"]) {
+  @apply bg-paper;
 }
 
 .vedute-select-item {
-  @apply type-body min-h-11 pl-3 text-ink;
+  @apply type-body min-h-11 rounded-none border-l-2 border-transparent px-3 text-ink;
 }
 
-.vedute-select-item:not([data-disabled]):is(:focus, :hover) {
-  @apply bg-paper-deep text-ink;
+/* The leading span is shadcn's generated check indicator. */
+.vedute-select-item > span:first-child {
+  @apply hidden;
+}
+
+.vedute-select-item > span:last-child {
+  color: inherit;
+}
+
+.vedute-select-item[data-state="checked"] {
+  @apply type-body-strong border-chalk bg-surface text-chalk-deep;
+}
+
+.vedute-select-item[data-highlighted]:not([data-disabled]) {
+  @apply bg-surface/60;
+}
+
+.vedute-select-item:focus-visible {
+  @apply outline-1 outline-solid -outline-offset-2 outline-ink-soft;
 }
 
 .vedute-select-item[data-disabled] {
@@ -276,7 +301,7 @@ textarea.vedute-input {
 }
 
 .vedute-alert {
-  @apply type-body block rounded-none border-0 border-l border-caeruleum bg-transparent p-0 pl-3 text-ink;
+  @apply type-note block rounded-none border-0 border-l border-caeruleum bg-transparent py-1 pl-3 pr-0 text-ink;
 }
 
 .vedute-alert[data-kind="error"] {

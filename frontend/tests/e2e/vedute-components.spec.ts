@@ -1,4 +1,21 @@
+import type { Locator } from '@playwright/test'
 import { expect, expectNoA11yViolations, expectScreenshot, test } from './fixtures'
+
+// Capture the short press state in the browser before its release timer can expire.
+async function quickPress(button: Locator) {
+  return button.evaluate(async (element: HTMLElement) => {
+    element.click()
+    await Promise.resolve()
+    const style = getComputedStyle(element)
+    return {
+      pressed: element.hasAttribute('data-pressed'),
+      background: style.backgroundColor,
+      color: style.color,
+      translate: style.translate,
+      scale: style.scale,
+    }
+  })
+}
 
 test('Vedute component states, keyboard and pointer interactions', async ({ page }) => {
   await page.goto('/__design')
@@ -79,11 +96,9 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
       await Promise.all(el.getAnimations().map((animation) => animation.finished))
     })
     const hovered = await button.evaluate((el) => getComputedStyle(el).backgroundColor)
-    await button.click()
-    await expect(button).toHaveAttribute('data-pressed', '')
-    await expect(button).not.toHaveCSS('background-color', hovered)
-    await expect(button).toHaveCSS('translate', 'none')
-    await expect(button).toHaveCSS('scale', 'none')
+    const pressed = await quickPress(button)
+    expect(pressed).toMatchObject({ pressed: true, translate: 'none', scale: 'none' })
+    expect(pressed.background).not.toBe(hovered)
     await expect(button).not.toHaveAttribute('data-pressed')
     await expect(button).toHaveCSS('background-color', hovered)
   }
@@ -103,10 +118,9 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
     await control.hover()
     await expect(control).toHaveCSS('color', 'rgb(169, 68, 43)')
     await expect(control).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
-    await control.click()
-    await expect(control).toHaveAttribute('data-pressed', '')
-    await expect(control).toHaveCSS('color', pressedPageColor)
-    await expect(control).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    expect(await quickPress(control)).toMatchObject({
+      pressed: true, color: pressedPageColor, background: 'rgba(0, 0, 0, 0)',
+    })
     await expect(selected).toHaveAttribute('aria-current', 'page')
     await expect(control).toHaveCSS('color', 'rgb(169, 68, 43)')
   }
@@ -169,9 +183,48 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
   await expect(notice).toHaveCount(0)
 })
 
+test('Vedute select distinguishes the current value from keyboard focus', async ({ page }) => {
+  await page.goto('/__design')
+  const trigger = page.getByRole('combobox', { name: '教室' })
+  await trigger.click()
+  await page.getByRole('option', { name: '倫理學討論室' }).click()
+  const fieldBox = (await trigger.boundingBox())!
+  await trigger.press('Enter')
+
+  const menu = page.getByRole('listbox')
+  const current = menu.getByRole('option', { name: '倫理學討論室' })
+  const next = menu.getByRole('option', { name: '知識論討論室' })
+  await expect(current).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(next).toBeFocused()
+  await expect(current).toHaveCSS('border-left-color', 'rgb(169, 68, 43)')
+  await expect(current).toHaveCSS('border-left-width', '2px')
+  await expect(current).toHaveCSS('font-weight', '700')
+  await expect(current.locator('svg:visible')).toHaveCount(0)
+  await expect(next).toHaveCSS('border-left-color', 'rgba(0, 0, 0, 0)')
+  await expect(next).toHaveCSS('outline-style', 'solid')
+  const menuBox = (await menu.boundingBox())!
+  expect(Math.abs(menuBox.x - fieldBox.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(menuBox.width - fieldBox.width)).toBeLessThanOrEqual(1)
+  // Popper may open above the field when the viewport has less space below it.
+  expect(menuBox.y >= fieldBox.y + fieldBox.height || menuBox.y + menuBox.height <= fieldBox.y).toBe(true)
+
+  await page.keyboard.press('Tab')
+  await expect(next).toBeFocused()
+  await page.mouse.move(0, 0)
+  await expect(menu).toBeVisible()
+  await page.evaluate(() => document.fonts.ready)
+  await expect(menu).toHaveScreenshot('vedute-select.png')
+  await page.keyboard.press('Escape')
+  await expect(trigger).toHaveText('倫理學討論室')
+  await expect(trigger).toBeFocused()
+  await expectNoA11yViolations(page)
+})
+
 test('Vedute visual baseline and accessibility', async ({ page }) => {
   await page.goto('/__design')
   await page.getByRole('button', { name: '顯示儲存失敗' }).click()
+  await expect(page.getByRole('alert').filter({ hasText: '無法載入學生名單。' })).toHaveCSS('font-size', '13px')
   const disabled = page.getByRole('button', { name: '儲存中…' })
   await expect(disabled).toHaveCSS('opacity', '1')
   await expect(page.getByRole('textbox', { name: '活動名稱' })).toHaveCSS('box-shadow', 'none')

@@ -22,7 +22,7 @@ export function Select({
           <SelectTrigger {...attributes} className={cn('vedute-input', className)}>
             <SelectValue placeholder={placeholder} />
           </SelectTrigger>
-          <SelectContent className="vedute-select-content">
+          <SelectContent position="popper" align="start" className="vedute-select-content">
             {options.map((option) => (
               <SelectItem key={option.value} value={option.value} disabled={option.disabled} className="vedute-select-item">
                 {option.label}
