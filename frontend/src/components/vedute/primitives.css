@@ -259,7 +259,7 @@ textarea.vedute-input {
 }
 
 .vedute-select-item[data-disabled] {
-  @apply pointer-events-auto cursor-not-allowed bg-ink/5 text-ink-soft line-through;
+  @apply pointer-events-auto cursor-not-allowed bg-ink/2 text-placeholder;
 }
 
 .vedute-tabs-list {
