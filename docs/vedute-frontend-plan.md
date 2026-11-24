@@ -103,8 +103,7 @@ shadcn/ui 的 `components/ui/` 保留不手改，Vedute 元件包在外面：
 | Figma 官方 plugin（figma-use、figma-design-to-code、figma-implement-motion） | **統一安裝** | 用 Figma MCP 直接讀節點與變數，避免看截圖猜樣式。 |
 | run、code-review、simplify（內建） | 使用 | 本機跑起來驗證、PR 前自我 review。 |
 | gsap-scrolltrigger、gsap-plugins、gsap-utils、gsap-frameworks | 選用 | 目前沒有捲動驅動或 Vue／Svelte 需求。 |
-| hallmark | **不統一** | 用途是「從零設計新網站」，會跟既定的 Vedute 系統衝突。 |
-| figma-code-connect | 待定 | Code Connect 需要 Figma 付費方案的 Dev Mode；可先用節點對照表代替。 |
+| figma-code-connect | **統一安裝** | 全組是 Figma Education，有 Dev Mode；把 Figma 元件對到 `components/vedute`。 |
 
 skills 是 Claude 專用；跨 agent 的硬規則一律寫在 AGENTS.md。
 
