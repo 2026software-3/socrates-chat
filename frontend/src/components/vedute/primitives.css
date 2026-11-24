@@ -110,7 +110,6 @@
 .vedute-button:disabled,
 .vedute-switch,
 .vedute-input,
-.vedute-select-item,
 .vedute-tab {
   @apply opacity-100;
 }
@@ -221,45 +220,87 @@ textarea.vedute-input {
   @apply field-sizing-fixed resize-y;
 }
 
+/* 下拉選單：一張壓在紙上的紙條。紙底、1px 墨框、內側一圈淡墨版痕線，不加投影（The Pressed Not Lifted Rule）。 */
+.vedute-select-trigger {
+  @apply flex items-center justify-between gap-2 text-left;
+}
+
+.vedute-select-chevron {
+  @apply size-4 shrink-0 text-ink-soft;
+  transition: rotate var(--vedute-motion);
+}
+
+.vedute-select-trigger[data-state="open"] {
+  @apply border-chalk;
+  background-size: 100% --spacing(0.5);
+}
+
+.vedute-select-trigger[data-state="open"] .vedute-select-chevron {
+  @apply text-chalk;
+  rotate: 180deg;
+}
+
 .vedute-select-content {
-  @apply w-(--radix-select-trigger-width) min-w-0 max-w-(--radix-select-content-available-width) rounded-none border border-ink bg-paper text-ink shadow-none ring-0 animate-none;
+  @apply relative z-50 w-(--radix-select-trigger-width) min-w-48 max-w-(--radix-select-content-available-width) overflow-hidden rounded-sm border border-ink bg-paper text-ink;
+  max-height: min(--spacing(80), var(--radix-select-content-available-height));
+  animation: vedute-select-enter 140ms ease-out both;
 }
 
-.vedute-select-content [data-position="popper"] {
-  @apply h-auto min-w-0;
+.vedute-select-content::before {
+  @apply pointer-events-none absolute inset-0.5 z-10 border border-ink-faint content-[''];
 }
 
-.vedute-select-content :is([data-slot="select-scroll-up-button"], [data-slot="select-scroll-down-button"]) {
-  @apply bg-paper;
+.vedute-select-viewport {
+  @apply p-1.5;
 }
 
 .vedute-select-item {
-  @apply type-body min-h-11 rounded-none border-l-2 border-transparent bg-transparent px-3 text-ink;
+  @apply type-body relative flex min-h-11 cursor-pointer items-center gap-3 py-2 pr-3 pl-4 text-ink outline-none select-none;
 }
 
-/* The leading span is shadcn's generated check indicator. */
-.vedute-select-item > span:first-child {
-  @apply hidden;
+/* 目前指到（滑鼠或鍵盤）：深紙底＋左側 3px 紅粉筆線，跟頁籤、目前位置同一種記號。 */
+.vedute-select-item::before {
+  @apply pointer-events-none absolute inset-y-1 left-1 w-[3px] bg-chalk content-[''];
+  scale: 1 0;
+  transition: scale 120ms ease-out;
 }
 
-.vedute-select-item > span:last-child {
-  color: inherit;
+.vedute-select-item[data-highlighted] {
+  @apply bg-paper-deep;
+}
+
+.vedute-select-item[data-highlighted]::before {
+  scale: 1 1;
 }
 
 .vedute-select-item[data-state="checked"] {
-  @apply type-body-strong border-chalk;
+  @apply type-body-strong;
 }
 
-.vedute-select-item[data-highlighted]:hover:not([data-disabled], :focus-visible) {
-  @apply underline decoration-ink-soft underline-offset-4;
+.vedute-select-hint {
+  @apply type-note ml-auto shrink-0 text-ink-soft;
 }
 
-.vedute-select-item:focus-visible {
-  @apply outline-1 outline-solid -outline-offset-2 outline-ink-soft;
+.vedute-select-check {
+  @apply ml-auto flex shrink-0 items-center text-ink;
 }
 
+.vedute-select-hint + .vedute-select-check {
+  @apply ml-0;
+}
+
+/* 不能選：淡墨字、不反白，原因寫在 hint，不用透明度。 */
 .vedute-select-item[data-disabled] {
-  @apply pointer-events-auto cursor-not-allowed text-placeholder;
+  @apply cursor-not-allowed text-ink-soft;
+}
+
+.vedute-select-scroll {
+  @apply flex h-7 items-center justify-center bg-paper text-ink-soft;
+}
+
+@keyframes vedute-select-enter {
+  from { opacity: 0; translate: 0 calc(--spacing(1) * -1); }
+  to { opacity: 1; translate: 0 0; }
 }
 
 .vedute-tabs-list {
@@ -341,7 +382,7 @@ textarea.vedute-input {
 }
 
 .vedute-button.vedute-page:disabled {
-  @apply text-ink-faint;
+  @apply text-ink-soft;
 }
 
 .vedute-toast {
@@ -396,8 +437,14 @@ textarea.vedute-input {
   .vedute-switch [data-slot="switch-thumb"],
   .vedute-input,
   .vedute-tab,
-  .vedute-tab::after {
+  .vedute-tab::after,
+  .vedute-select-chevron,
+  .vedute-select-item::before {
     transition: none;
+  }
+
+  .vedute-select-content {
+    animation: none;
   }
 
   .vedute-toast {

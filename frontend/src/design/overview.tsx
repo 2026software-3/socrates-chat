@@ -23,7 +23,7 @@ const pageLabels = {
 const classrooms = [
   { value: 'a', label: '倫理學討論室' },
   { value: 'b', label: '知識論討論室' },
-  { value: 'c', label: '已封存的教室', disabled: true },
+  { value: 'c', label: '形上學討論室', disabled: true, hint: '已封存' },
 ]
 
 export function DesignOverview() {

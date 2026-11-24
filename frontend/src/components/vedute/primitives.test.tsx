@@ -136,6 +136,29 @@ it('selects an available option by keyboard and handles empty choices', async ()
   expect(screen.getByRole('combobox', { name: 'Empty' })).toBeDisabled()
 })
 
+it('marks the chosen option with a check and explains why an option is unavailable', async () => {
+  const user = userEvent.setup()
+  render(
+    <Select label="Classroom" defaultValue="ethics"
+      options={[
+        { value: 'ethics', label: 'Ethics' },
+        { value: 'logic', label: 'Logic' },
+        { value: 'old', label: 'Old room', disabled: true, hint: 'Archived' },
+      ]} />,
+  )
+
+  await user.tab()
+  await user.keyboard('{ArrowDown}')
+  const chosen = await screen.findByRole('option', { name: /Ethics/ })
+  expect(chosen).toHaveAttribute('aria-selected', 'true')
+  expect(chosen.querySelector('[data-vedute-check]')).not.toBeNull()
+  expect(screen.getByRole('option', { name: /Logic/ }).querySelector('[data-vedute-check]')).toBeNull()
+
+  const unavailable = screen.getByRole('option', { name: /Old room/ })
+  expect(unavailable).toHaveAttribute('aria-disabled', 'true')
+  expect(unavailable).toHaveTextContent('Archived')
+})
+
 it('moves among available tabs with the arrow keys and shows only the selected panel', async () => {
   const user = userEvent.setup()
   render(
