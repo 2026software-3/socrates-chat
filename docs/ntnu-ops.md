@@ -146,6 +146,24 @@ SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
 - 對外入口也要確認：`"/mnt/c/Program Files/Tailscale/tailscale.exe" serve status` 應該有 `https://ray-nb.tail5fc9fe.ts.net (Funnel on)`。Windows 或 Tailscale 重啟後設定通常會保留，沒有的話重跑 `funnel --bg 3000`。
 - WSL 重開機後，已開著的終端機不一定有 `docker` 群組；`docker` 出現 `permission denied ... docker.sock` 時，開新的終端機。
 
+## 語音節點與內部端點隔離（S-19）
+
+伺服器端語音可以有多個節點（cascade 整組所在的設備，硬體不限）。`CASCADE_REALTIME_URL`／`CASCADE_LLM_TOKEN` 是固定存在的「環境節點」（`CASCADE_MAX_SESSIONS` 選填，預設不限）；其他節點由管理者以 API 新增，**不必重啟後端**：
+
+- `GET/POST /api/admin/voice-nodes`、`PATCH/DELETE /api/admin/voice-nodes/{id}`、`POST /api/admin/voice-nodes/{id}/rotate-token`（詳見 `/api/docs`）。新增與輪換的回應**只此一次**含節點密鑰，之後看不到，請當場存進新節點的 `CASCADE_LLM_TOKEN`。
+- 新節點的 cascade 要滿足 S-19 第 2 節的契約：`/v1/realtime`、同主機同埠的 `/health`、`sglang-omni==0.2.0` 並套用 `patch_dialog.py`；`CASCADE_LLM_TOKEN` 用上面那把，`CASCADE_LLM_BASE_URL`（`docker/cascade/entrypoint.sh` 會代入 `launch.yaml`）指向後端的**內部端點位址**。
+- 下線用 `status: "draining"`（不接新場次、進行中的繼續到結束）；節點遭入侵或必須立刻切斷用 `"disabled"` 或刪除（密鑰立即失效，進行中的場次約 2.5 秒內結束）。
+- 學生的音訊走 `ws://` 是明文：遠端節點的 `realtime_url` 必須在私網（tailnet 之類的加密網路）內，否則用 `wss://`。後端不強制，由部署方負責。
+
+### 讓內部端點只在私網（`INTERNAL_LISTEN_ADDR`）
+
+現況下 `/internal/cascade/*` 與公開路由同埠，funnel 直接指向該埠，因此可從網際網路打到，只靠 Bearer。遠端節點要回呼它，所以要把它搬到獨立的埠。**下面兩件事必須在同一次部署一起做**，只做第一件會讓語音整個壞掉：
+
+1. 後端環境設 `INTERNAL_LISTEN_ADDR=0.0.0.0:3001`。公開埠的 `/internal/cascade/*` 之後回 404。
+2. 本機 cascade 的回呼改指向內部埠：`CASCADE_LLM_BASE_URL=http://app:3001/internal/cascade/v1`，並重建 `cascade` 容器。`docker-compose.ntnu.yml` 不進版控，**不要**把 3001 發佈到主機的公開介面；只在 compose 網路內讓 cascade 連，遠端節點要連時用 `tailscale serve`（不是 funnel）把它開在 tailnet。
+
+啟用後確認：公開網址 `curl -i https://<公開網址>/internal/cascade/v1/models` 回 404；`docker logs socrates-ntnu-cascade-1` 沒有重啟迴圈。這條路徑尚未在 NTNU 實測。
+
 ## 客訴通知信（SMTP）
 
 客訴表單（`/complaint`）與管理者的「客訴」頁（`/admin/complaints`）不需要設定就能用；沒設定 SMTP 時客訴照常存資料庫，寄信狀態顯示「未寄信（尚未設定 SMTP）」。要讓管理者收到通知信，在 `.env` 加上（變數說明見 `.env.example`）：

@@ -44,6 +44,7 @@ pub mod achievements;
 pub mod activity_store;
 pub mod admin_health;
 pub mod admin_teacher_keys;
+pub(crate) mod admin_voice_nodes;
 pub mod ai;
 pub mod ai_providers;
 mod ai_route;
@@ -105,6 +106,7 @@ mod topic_translations;
 pub mod usage_api;
 pub(crate) mod user_limit;
 pub mod voice;
+pub mod voice_nodes;
 
 /// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
 /// 約 40 bytes／行；1 MiB 可容納超過兩萬筆）；訊息上限 4000 字元，UTF-8 加上 JSON 跳脫也不到 30 KB。
@@ -158,6 +160,8 @@ pub struct AppState {
     pub(crate) speech_slots: Arc<voice::SpeechSlots>,
     /// 進行中的語音對話（實驗，見 `cascade`）。
     pub voice_sessions: Arc<cascade::VoiceSessions>,
+    /// 語音節點登錄的快取與健康狀態（S-19）。
+    pub voice_nodes: Arc<voice_nodes::VoiceNodes>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
     /// 教師按需翻譯總結的每人頻率限制。
@@ -223,6 +227,7 @@ impl AppState {
             voice,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
+            voice_nodes: Arc::default(),
             live: Arc::default(),
             translation_limit: Arc::default(),
             summary_translation_wake: Arc::default(),
@@ -342,6 +347,20 @@ const READY_DB_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Builds the application router.
 pub fn app(state: AppState) -> Router {
+    let mut router = public_routes(&state);
+    // 設了 INTERNAL_LISTEN_ADDR 時內部端點只在獨立的監聽器上（S-19 7.4），公開埠回 404
+    if state.config.internal_listen_addr.is_none() {
+        router = router.merge(cascade::internal_routes());
+    }
+    with_layers(router, state)
+}
+
+/// 內部端點專用的 router（`INTERNAL_LISTEN_ADDR` 的監聽器）：同樣的中介層，只有 `/internal/cascade/*`。
+pub fn internal_app(state: AppState) -> Router {
+    with_layers(cascade::internal_routes(), state)
+}
+
+fn public_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -365,6 +384,7 @@ pub fn app(state: AppState) -> Router {
         .merge(diagnostics::routes())
         .merge(service_monitor::routes())
         .merge(admin_health::routes())
+        .merge(admin_voice_nodes::routes())
         .merge(summary::routes())
         .merge(argument_tree::routes())
         .merge(voice::routes())
@@ -388,6 +408,10 @@ pub fn app(state: AppState) -> Router {
             Redoc::with_url("/api/docs", openapi::document())
                 .custom_html(include_str!("redoc.html")),
         )
+}
+
+fn with_layers(router: Router<AppState>, state: AppState) -> Router {
+    router
         .fallback(fallback)
         // 最內層：維護模式開啟時擋下非管理者（S-15.2）；其餘層（CSRF、逾時、request ID、安全標頭）照常包住它
         .layer(middleware::from_fn_with_state(

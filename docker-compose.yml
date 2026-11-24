@@ -136,6 +136,8 @@ services:
     logging: *cascade-logging
     environment:
       CASCADE_LLM_TOKEN: ${CASCADE_LLM_TOKEN:-}
+      # 回呼後端內部端點的位址；設了 INTERNAL_LISTEN_ADDR 後要改指向內部埠（S-19，見 docs/ntnu-ops.md）
+      CASCADE_LLM_BASE_URL: ${CASCADE_LLM_BASE_URL:-}
     volumes:
       - cascade_cache:/root/.cache
       - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
