@@ -143,6 +143,36 @@ function sourceLabel(t: ReturnType<typeof useT>, c: Conversation): string {
   return t(c.activity_id ? 'chat.list.source.activity' : 'chat.list.source.personal')
 }
 
+function StageScale({ stage }: { stage: 1 | 2 | 3 }) {
+  const t = useT()
+  const stages = [
+    { value: 1, label: t('chat.stage.1') },
+    { value: 2, label: t('chat.stage.2') },
+    { value: 3, label: t('chat.stage.3') },
+  ] as const
+  const label = stages.find((item) => item.value === stage)?.label ?? stages[0].label
+  return (
+    <div
+      role="meter"
+      aria-label={t('chat.stage.labelMeter', { stage: label })}
+      aria-valuemin={1}
+      aria-valuemax={3}
+      aria-valuenow={stage}
+      className="mt-2 flex min-w-28 flex-col gap-1"
+    >
+      <div className="flex gap-1" aria-hidden="true">
+        {stages.map((item) => (
+          <span
+            key={item.value}
+            className={`h-1 flex-1 ${item.value <= stage ? 'bg-caeruleum' : 'bg-caeruleum-wash'}`}
+          />
+        ))}
+      </div>
+      <span className="type-note text-caeruleum">{label}</span>
+    </div>
+  )
+}
+
 function ConversationRow({ conversation: c, onArchive, onDelete }: { conversation: Conversation; onArchive: () => void; onDelete: () => void }) {
   const t = useT()
   const { lang } = useI18n()
@@ -153,7 +183,12 @@ function ConversationRow({ conversation: c, onArchive, onDelete }: { conversatio
       <TableCell className="max-w-56 break-words whitespace-normal">{sourceLabel(t, c)}</TableCell>
       <TableCell className="tabular-nums">{c.turn_count}</TableCell>
       <TableCell>{formatDate(c.updated_at, lang)}</TableCell>
-      <TableCell>{t(`chat.status.${c.status}`)}</TableCell>
+      <TableCell>
+        <div className="flex flex-col">
+          <span>{t(`chat.status.${c.status}`)}</span>
+          <StageScale stage={c.stage} />
+        </div>
+      </TableCell>
       <TableCell>
         <div className="flex flex-wrap items-center justify-end gap-1">
           <Button asChild variant={ended ? 'outline' : 'default'}>

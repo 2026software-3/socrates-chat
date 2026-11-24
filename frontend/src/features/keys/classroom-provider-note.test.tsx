@@ -41,7 +41,7 @@ describe('classroom AI provider for students', () => {
     mockMe(makeMe({ student: true }))
     mockCatalog()
     renderApp(<AvailablePage />)
-    await screen.findByText('合成教室')
+    await screen.findAllByText('合成教室')
     expect(screen.queryByText(/本教室的 AI 由/)).not.toBeInTheDocument()
   })
 

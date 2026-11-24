@@ -140,7 +140,7 @@ describe('services page', () => {
       http.post('/api/admin/services/check', async ({ request }) => {
         calls += 1
         expect(await request.json()).toEqual({ name: 'tts' })
-        await delay(50)
+        await delay(250)
         return HttpResponse.json(
           row({ ...TTS, status: 'healthy', failure: null, response_time_ms: 7, availability: null, recent_events: [] }),
         )
@@ -151,7 +151,7 @@ describe('services page', () => {
     await screen.findByText('語音合成')
     const button = screen.getByRole('button', { name: '立即檢查 語音合成' })
     await user.click(button)
-    expect(await screen.findByRole('button', { name: '立即檢查 語音合成' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: '立即檢查 語音合成' })).toBeDisabled())
     expect(within(card('語音合成')).getAllByText('檢查中…').length).toBeGreaterThan(0)
     await waitFor(() => expect(within(card('語音合成')).getByText('7 毫秒')).toBeInTheDocument())
     expect(within(card('語音合成')).getByText('50%')).toBeInTheDocument()

@@ -113,6 +113,31 @@ export function AvailablePage() {
     body = (
       <div className="flex flex-col gap-6">
         {error ? <ErrorBlock error={error} onRetry={reload} /> : null}
+        <Block title={t('student.classrooms.title')}>
+          {classrooms.length === 0 ? (
+            <EmptyBlock>{t('student.classrooms.empty')}</EmptyBlock>
+          ) : (
+            <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {classrooms.map((c) => (
+                <li key={c.id}>
+                  <article className="flex h-full min-h-40 flex-col border border-ink bg-surface">
+                    <div className="h-24 border-b border-ink-faint bg-aerugo-wash">
+                      <div className="px-4 pt-3">
+                        <span className="font-latin type-latin-small text-aerugo">CLASSIS · {c.id.slice(0, 3).toUpperCase()}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-1 flex-col gap-3 p-4">
+                      <h3 className="type-h3">{c.name}</h3>
+                      <p className="type-note text-ink-soft">
+                        {t('student.classrooms.activityCount', { count: c.items.length })}
+                      </p>
+                    </div>
+                  </article>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Block>
         <Block title={t('student.available.activities')}>
           {classrooms.length === 0 ? (
             <EmptyBlock>{needle ? t('student.available.noMatch') : t('student.available.noActivities')}</EmptyBlock>
@@ -218,7 +243,7 @@ function Section({ title, level, emptyText, items, startingKey, onStart, layout 
               {item.kind === 'activity' ? (
                 <ActivityCard activity={item.activity} startingKey={startingKey} onStart={onStart} />
               ) : (
-                <article className="bg-background flex h-full flex-col justify-between gap-3 rounded-xl border p-5 break-words">
+                <article className="flex h-full flex-col justify-between gap-3 border border-ink-faint border-l-[3px] border-l-caeruleum bg-surface p-4 break-words md:p-5">
                   <div className="flex min-w-0 flex-col gap-1">
                     <span className="font-medium">{item.title}</span>
                     {item.titlePending && <small>{t('admin.dimensions.translationPending')}</small>}
