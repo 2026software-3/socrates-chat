@@ -164,6 +164,7 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
   await expect(archived).toHaveCSS('cursor', 'not-allowed')
   await expect(archived).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(archived).toHaveCSS('color', 'rgb(74, 64, 56)')
+  await expect(archived.locator('span').first()).toHaveCSS('text-decoration-line', 'line-through')
   await archived.click({ force: true })
   await expect(page.getByRole('listbox')).toBeVisible()
   await page.keyboard.press('Escape')
