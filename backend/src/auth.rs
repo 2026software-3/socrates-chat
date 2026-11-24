@@ -1023,7 +1023,6 @@ pub(crate) struct ResetResponse {
     temporary_password: String,
 }
 
-/// 檢查是否試圖由其他管理者重設 `ADMIN_EMAILS` 第一個管理者的密碼。
 fn ensure_can_reset_email(
     primary_admin: Option<&str>,
     actor_email: Option<&str>,
@@ -1162,14 +1161,12 @@ mod tests {
     fn ensure_can_reset_email_protects_only_first_env_admin_from_others() {
         let primary = Some("first@example.com");
 
-        // 本人可重設自己
         assert!(
             ensure_can_reset_email(primary, Some("first@example.com"), "first@example.com").is_ok()
         );
         assert!(
             ensure_can_reset_email(primary, Some("FIRST@example.com"), "first@example.com").is_ok()
         );
-        // 其他管理者不能重設第一個管理者
         let err = ensure_can_reset_email(primary, Some("second@example.com"), "first@example.com")
             .unwrap_err();
         assert_eq!(err.code, "protected_admin");
@@ -1178,12 +1175,10 @@ mod tests {
         assert_eq!(err.code, "protected_admin");
         let err = ensure_can_reset_email(primary, None, "first@example.com").unwrap_err();
         assert_eq!(err.code, "protected_admin");
-        // 其他管理者不受保護
         assert!(
             ensure_can_reset_email(primary, Some("third@example.com"), "second@example.com")
                 .is_ok()
         );
-        // ADMIN_EMAILS 為空時沒有受保護帳號
         assert!(
             ensure_can_reset_email(None, Some("second@example.com"), "first@example.com").is_ok()
         );

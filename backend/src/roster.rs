@@ -148,8 +148,6 @@ async fn delete_email(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---- 管理者（管理者操作）----
-
 const LIST_ADMINS: &str =
     "SELECT email FROM users WHERE is_admin AND email IS NOT NULL ORDER BY email";
 
@@ -217,7 +215,6 @@ pub(crate) async fn add_admin(
         Some((_, _, true)) => {
             return Err(ApiError::conflict("is_student", "學生帳號不能設為管理者"));
         }
-        // 已是管理者：沒有改變任何事，不記錄
         Some((_, true, _)) => None,
         Some((id, false, _)) => {
             sqlx::query("UPDATE users SET is_admin = true, updated_at = now() WHERE id = $1")

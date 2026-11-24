@@ -102,10 +102,6 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
   )
 }
 
-/**
- * 臨時密碼只出現這一次：不能點空白處或按 Esc 關閉，要按按鈕確認已記下。
- * `issued` 為 undefined 時不顯示；重設密碼與新增管理者共用。
- */
 export function TemporaryPasswordDialog({
   issued,
   title,
