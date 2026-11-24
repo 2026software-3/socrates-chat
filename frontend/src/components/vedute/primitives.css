@@ -234,7 +234,7 @@ textarea.vedute-input {
 }
 
 .vedute-select-item {
-  @apply type-body min-h-11 rounded-none border-l-2 border-transparent px-3 text-ink;
+  @apply type-body min-h-11 rounded-none border-l-2 border-transparent bg-transparent px-3 text-ink;
 }
 
 /* The leading span is shadcn's generated check indicator. */
@@ -247,11 +247,11 @@ textarea.vedute-input {
 }
 
 .vedute-select-item[data-state="checked"] {
-  @apply type-body-strong border-chalk bg-surface text-chalk-deep;
+  @apply type-body-strong border-chalk;
 }
 
-.vedute-select-item[data-highlighted]:not([data-disabled]) {
-  @apply bg-surface/60;
+.vedute-select-item[data-highlighted]:hover:not([data-disabled], :focus-visible) {
+  @apply underline decoration-ink-soft underline-offset-4;
 }
 
 .vedute-select-item:focus-visible {
@@ -259,7 +259,7 @@ textarea.vedute-input {
 }
 
 .vedute-select-item[data-disabled] {
-  @apply pointer-events-auto cursor-not-allowed bg-ink/2 text-placeholder;
+  @apply pointer-events-auto cursor-not-allowed text-placeholder;
 }
 
 .vedute-tabs-list {
