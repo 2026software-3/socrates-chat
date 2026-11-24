@@ -8,6 +8,8 @@ fn book_language_limits_and_legacy_labels() {
         ("zh-Hant-TW", "zh-Hant-TW"),
         ("eng", "en"),
         ("fr", "fr"),
+        ("EN", "en"),
+        ("ZH-Hant", "zh-Hant"),
     ] {
         let book = normalize_book(BookData {
             title: "Synthetic".into(),

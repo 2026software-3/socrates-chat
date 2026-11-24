@@ -44,7 +44,10 @@ pub(crate) fn canonical_book_language(raw: &str) -> String {
         "英文" | "英語" | "english" | "eng" => "en".into(),
         "西文" | "西班牙文" | "西班牙語" | "spanish" | "español" | "spa" => "es".into(),
         "其他" => "other".into(),
-        _ => value.to_owned(),
+        _ => match value.find(['-', '_']) {
+            Some(i) => format!("{}{}", value[..i].to_ascii_lowercase(), &value[i..]),
+            None => value.to_ascii_lowercase(),
+        },
     }
 }
 
