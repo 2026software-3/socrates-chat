@@ -397,18 +397,18 @@ Figma 頁面：[21:243](https://www.figma.com/design/zW14xVQcXF8S5rQuD6YzDM/socr
 | 畫面 | 路由 | 功能目錄 | 既有測試 | Issue | 狀態 |
 | --- | --- | --- | --- | --- | --- |
 | E01 教室列表 | `/teacher/classrooms`、`/admin/classrooms` | `classrooms/classrooms-page.tsx` | `classrooms/classrooms-page.test.tsx` | #687 | 已重畫 |
-| E02 新增教室 | `/teacher/classrooms`（對話框） | `classrooms/classrooms-page.tsx` | `classrooms/classrooms-page.test.tsx` | #687 | 已重畫 |
-| E03 教室詳細頁 | `/teacher/classrooms/:classroomId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687 | 已重畫 |
+| E02 新增教室 | `/teacher/classrooms`、`/admin/classrooms`（對話框） | `classrooms/classrooms-page.tsx` | `classrooms/classrooms-page.test.tsx` | #687 | 已重畫 |
+| E03 教室詳細頁 | `/teacher/classrooms/:classroomId`、`/admin/classrooms/:classroomId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687 | 已重畫 |
 | E04 匯入學生名單與結果 | `/teacher/roster`、`/admin/roster` | `teacher/roster-page.tsx` | `teacher/roster-page.test.tsx` | #687（待確認） | 已重畫 |
-| E05 封存教室 | `/teacher/classrooms`（對話框） | `classrooms/classrooms-page.tsx` | `classrooms/classrooms-page.test.tsx` | #687 | 已重畫 |
-| E06 已封存教室 | `/teacher/classrooms/:classroomId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687 | 尚未重畫（舊稿） |
-| E11–E13 班級論點分布、主張與理由、重新分組 | `/teacher/classrooms/:classroomId/activities/:activityId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687 | 已重畫 |
+| E05 封存教室 | `/teacher/classrooms`、`/admin/classrooms`（對話框） | `classrooms/classrooms-page.tsx` | `classrooms/classrooms-page.test.tsx` | #687 | 已重畫 |
+| E06 已封存教室 | `/teacher/classrooms/:classroomId`、`/admin/classrooms/:classroomId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687 | 尚未重畫（舊稿） |
+| E11–E13 班級論點分布、主張與理由、重新分組 | `/teacher/classrooms/:classroomId/activities/:activityId`、`/admin/classrooms/:classroomId/activities/:activityId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687 | 已重畫 |
 | E14 管理者班級參與概況 | `/admin/classrooms/:classroomId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #689 | 已重畫 |
 | E21 學生總結列表 | `/teacher/summaries` | `teacher/summaries-page.tsx` | `teacher/summaries-page.test.tsx` | #689 | 已重畫 |
-| E22 學生總結詳細內容 | `/teacher/classrooms/:classroomId/students/:studentId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #689 | 已重畫 |
-| E23 已結束對話原文（唯讀） | `/teacher/classrooms/:classroomId/conversations/:conversationId` | `classrooms/transcript-page.tsx` | `classrooms/transcript-page.test.tsx` | #689 | 已重畫 |
-| E31–E35 討論活動（列表、新增／編輯、發布、結束、重新開放） | `/teacher/classrooms/:classroomId`（教室頁的討論活動頁籤） | `teacher/activities-page.tsx` | `teacher/activities-page.test.tsx` | #687 | 已重畫 |
-| E36 已結束活動 · 學生參與名單 | `/teacher/classrooms/:classroomId/activities/:activityId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687（待確認） | 尚未重畫（舊稿） |
+| E22 學生總結詳細內容 | `/teacher/classrooms/:classroomId/students/:studentId`、`/admin/classrooms/:classroomId/students/:studentId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #689 | 已重畫 |
+| E23 已結束對話原文（唯讀） | `/teacher/classrooms/:classroomId/conversations/:conversationId`、`/admin/classrooms/:classroomId/conversations/:conversationId`（管理者版每則訊息以 `message` 顯示（S-02.1）） | `classrooms/transcript-page.tsx` | `classrooms/transcript-page.test.tsx` | #689 | 已重畫 |
+| E31–E35 討論活動（列表、新增／編輯、發布、結束、重新開放） | `/teacher/classrooms/:classroomId`、`/admin/classrooms/:classroomId`（教室頁的討論活動頁籤） | `teacher/activities-page.tsx` | `teacher/activities-page.test.tsx` | #687 | 已重畫 |
+| E36 已結束活動 · 學生參與名單 | `/teacher/classrooms/:classroomId/activities/:activityId`、`/admin/classrooms/:classroomId/activities/:activityId` | `classrooms/classroom-pages.tsx` | `classrooms/classroom-pages.test.tsx` | #687（待確認） | 尚未重畫（舊稿） |
 | E41–E44 題目庫、新增／編輯、停用、啟用 | `/teacher/topics`、`/admin/topics` | `admin/topics-page.tsx` | `admin/topics-page.test.tsx`<br>`teacher/topic-bank.test.tsx` | #688 | 已重畫 |
 | E51–E55 AI 題目建議 | 尚無路由 | — | — | #688（待確認） | 尚未重畫（舊稿） |
 | E61–E65 共用書庫與書目 | 尚無路由 | — | — | #688 | 已重畫 |

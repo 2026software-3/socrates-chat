@@ -380,7 +380,7 @@ export const pages = [
       {
         name: 'E02 新增教室',
         match: /^E02 /,
-        route: '/teacher/classrooms（對話框）',
+        route: '/teacher/classrooms、/admin/classrooms（對話框）',
         feature: 'features/classrooms/classrooms-page.tsx',
         tests: ['features/classrooms/classrooms-page.test.tsx'],
         issue: 687,
@@ -388,7 +388,7 @@ export const pages = [
       {
         name: 'E03 教室詳細頁',
         match: /^E03 /,
-        route: '/teacher/classrooms/:classroomId',
+        route: '/teacher/classrooms/:classroomId、/admin/classrooms/:classroomId',
         feature: 'features/classrooms/classroom-pages.tsx',
         tests: ['features/classrooms/classroom-pages.test.tsx'],
         issue: 687,
@@ -405,7 +405,7 @@ export const pages = [
       {
         name: 'E05 封存教室',
         match: /^E05 /,
-        route: '/teacher/classrooms（對話框）',
+        route: '/teacher/classrooms、/admin/classrooms（對話框）',
         feature: 'features/classrooms/classrooms-page.tsx',
         tests: ['features/classrooms/classrooms-page.test.tsx'],
         issue: 687,
@@ -413,7 +413,7 @@ export const pages = [
       {
         name: 'E06 已封存教室',
         match: /^E06 /,
-        route: '/teacher/classrooms/:classroomId',
+        route: '/teacher/classrooms/:classroomId、/admin/classrooms/:classroomId',
         feature: 'features/classrooms/classroom-pages.tsx',
         tests: ['features/classrooms/classroom-pages.test.tsx'],
         issue: 687,
@@ -422,7 +422,7 @@ export const pages = [
       {
         name: 'E11–E13 班級論點分布、主張與理由、重新分組',
         match: /^E1[123] /,
-        route: '/teacher/classrooms/:classroomId/activities/:activityId',
+        route: '/teacher/classrooms/:classroomId/activities/:activityId、/admin/classrooms/:classroomId/activities/:activityId',
         feature: 'features/classrooms/classroom-pages.tsx',
         tests: ['features/classrooms/classroom-pages.test.tsx'],
         issue: 687,
@@ -446,7 +446,7 @@ export const pages = [
       {
         name: 'E22 學生總結詳細內容',
         match: /^E22 /,
-        route: '/teacher/classrooms/:classroomId/students/:studentId',
+        route: '/teacher/classrooms/:classroomId/students/:studentId、/admin/classrooms/:classroomId/students/:studentId',
         feature: 'features/classrooms/classroom-pages.tsx',
         tests: ['features/classrooms/classroom-pages.test.tsx'],
         issue: 689,
@@ -454,7 +454,8 @@ export const pages = [
       {
         name: 'E23 已結束對話原文（唯讀）',
         match: /^E23 /,
-        route: '/teacher/classrooms/:classroomId/conversations/:conversationId',
+        route: '/teacher/classrooms/:classroomId/conversations/:conversationId、/admin/classrooms/:classroomId/conversations/:conversationId',
+        routeNote: '管理者版每則訊息以 `message` 顯示（S-02.1）',
         feature: 'features/classrooms/transcript-page.tsx',
         tests: ['features/classrooms/transcript-page.test.tsx'],
         issue: 689,
@@ -462,7 +463,7 @@ export const pages = [
       {
         name: 'E31–E35 討論活動（列表、新增／編輯、發布、結束、重新開放）',
         match: /^E3[1-5] /,
-        route: '/teacher/classrooms/:classroomId',
+        route: '/teacher/classrooms/:classroomId、/admin/classrooms/:classroomId',
         routeNote: '教室頁的討論活動頁籤',
         feature: 'features/teacher/activities-page.tsx',
         tests: ['features/teacher/activities-page.test.tsx'],
@@ -471,7 +472,7 @@ export const pages = [
       {
         name: 'E36 已結束活動 · 學生參與名單',
         match: /^E36 /,
-        route: '/teacher/classrooms/:classroomId/activities/:activityId',
+        route: '/teacher/classrooms/:classroomId/activities/:activityId、/admin/classrooms/:classroomId/activities/:activityId',
         feature: 'features/classrooms/classroom-pages.tsx',
         tests: ['features/classrooms/classroom-pages.test.tsx'],
         issue: 687,

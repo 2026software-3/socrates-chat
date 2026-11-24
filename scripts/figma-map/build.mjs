@@ -136,6 +136,9 @@ for (const page of pages) {
     const states = byScreen.get(s)
     if (states.size === 0) problems.push(`${page.title}：畫面「${s.name}」沒有任何 frame`)
     const statuses = [...states.keys()].map((st) => statusOf(s, st))
+    // 有「· 管理者」版本的畫面，已有路由時必須同時列出 /admin（尚無路由的不檢查）
+    if (s.route && [...states.keys()].some((st) => st.endsWith(' · 管理者')) && !s.route.includes('/admin'))
+      problems.push(`${page.title}：「${s.name}」有管理者版本的 frame，但路由沒有列出 /admin`)
     out(`| ${s.name} | ${routeCell(s)} | ${s.feature ? code(s.feature.replace(/^features\//, '')) : '—'} | ${testsCell(s)} | ${issueLink(s.issue)}${s.unclear ? '（待確認）' : ''} | ${summarize(statuses)} |`)
     for (const p of [s.feature, ...s.tests]) if (p && !existsSync(join(srcRoot, p))) problems.push(`${page.title}：「${s.name}」列出的 frontend/src/${p} 不存在`)
     if (s.unclear) unclear.push(`${page.title} ${s.name}：${s.unclear}`)
