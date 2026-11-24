@@ -35,6 +35,7 @@ const FIGMA_COLORS: Record<string, string> = {
   ochra: '#74561b',
   'ochra-wash': '#f0e4c4',
   'ochra-graphic': '#b0862f',
+  'ochra-graphic-deep': '#957024',
   caeruleum: '#34557a',
   'caeruleum-wash': '#dce3ec',
 }

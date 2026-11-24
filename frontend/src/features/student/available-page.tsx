@@ -234,7 +234,7 @@ function Section({ title, level, emptyText, items, startingKey, onStart, layout 
                       variant="outline"
                       onClick={() => onStart(item.key, item.source)}
                       disabled={startingKey !== undefined}
-                      aria-label={t('student.available.startNamed', { title: item.title })}
+                      aria-label={t('student.available.startPracticeNamed', { title: item.title })}
                     >
                       {startingKey === item.key ? t('student.available.starting') : t('student.available.startPractice')}
                     </Button>
