@@ -88,6 +88,29 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
     await expect(button).toHaveCSS('background-color', hovered)
   }
 
+  const pager = page.getByRole('navigation', { name: '教室頁碼' })
+  const pageTwo = pager.getByRole('button', { name: '第 2 頁' })
+  const nextPage = pager.getByRole('button', { name: '下一頁' })
+  const pressedPageColor = await pager.evaluate((el) => {
+    const probe = document.createElement('span')
+    probe.style.color = 'color-mix(in srgb, var(--color-chalk) 75%, var(--color-chalk-deep))'
+    el.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  })
+  for (const [control, selected] of [[pageTwo, pageTwo], [nextPage, pager.getByRole('button', { name: '第 3 頁' })]]) {
+    await control.hover()
+    await expect(control).toHaveCSS('color', 'rgb(169, 68, 43)')
+    await expect(control).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    await control.click()
+    await expect(control).toHaveAttribute('data-pressed', '')
+    await expect(control).toHaveCSS('color', pressedPageColor)
+    await expect(control).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    await expect(selected).toHaveAttribute('aria-current', 'page')
+    await expect(control).toHaveCSS('color', 'rgb(169, 68, 43)')
+  }
+
   const help = page.getByRole('link', { name: '操作通知說明' })
   await help.hover()
   await page.mouse.down()

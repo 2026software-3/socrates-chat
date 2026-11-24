@@ -17,7 +17,8 @@ export function Button({ variant = 'primary', asChild, className, type = 'button
   useEffect(() => () => window.clearTimeout(releaseTimer.current), [])
 
   const handleClick: ComponentProps<'button'>['onClick'] = (event) => {
-    if ((variant === 'quiet' || variant === 'ghost') && !event.currentTarget.classList.contains('vedute-page')) {
+    const isPageControl = event.currentTarget.classList.contains('vedute-page')
+    if (isPageControl ? Boolean(onClick) : variant === 'quiet' || variant === 'ghost') {
       window.clearTimeout(releaseTimer.current)
       setPressed(true)
       releaseTimer.current = window.setTimeout(() => setPressed(false), 150)

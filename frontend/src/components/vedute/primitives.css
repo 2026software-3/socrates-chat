@@ -26,7 +26,7 @@
 }
 
 .vedute-button[data-pressed] {
-  transition-duration: 0s;
+  transition-property: none;
 }
 
 .vedute-button:is([data-vedute-variant="icon"], [data-vedute-variant="link"]):not(:disabled):active {
@@ -37,7 +37,7 @@
   @apply decoration-chalk-deep decoration-2;
 }
 
-.vedute-button[data-vedute-variant="icon"]:not(:disabled):active svg {
+.vedute-button[data-vedute-variant="icon"]:not(.vedute-page, :disabled):active svg {
   @apply stroke-3;
 }
 
@@ -98,11 +98,11 @@
     @apply text-chalk-deep;
   }
 
-  .vedute-button[data-vedute-variant="icon"]:hover:not(:disabled, :active) svg {
+  .vedute-button[data-vedute-variant="icon"]:hover:not(.vedute-page, :disabled, :active) svg {
     stroke-width: var(--stroke-icon-hover);
   }
 
-  .vedute-button[data-vedute-variant="ghost"]:hover:not(:disabled, :active, [data-pressed]) {
+  .vedute-button[data-vedute-variant="ghost"]:hover:not(.vedute-page, :disabled, :active, [data-pressed]) {
     @apply bg-paper-deep;
   }
 }
@@ -309,6 +309,10 @@ textarea.vedute-input {
 
 .vedute-button.vedute-page[aria-current="page"] {
   @apply type-control-strong border-chalk;
+}
+
+.vedute-button.vedute-page:not(:disabled):is(:active:not([aria-current="page"]), [data-pressed]) {
+  color: color-mix(in srgb, var(--color-chalk) 75%, var(--color-chalk-deep));
 }
 
 .vedute-button.vedute-page:disabled {
