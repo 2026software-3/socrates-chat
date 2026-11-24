@@ -67,6 +67,20 @@ cargo run                          # 啟動於 127.0.0.1:3000
 4. **AI 行為測試。** 使用固定情境與行為評分準則，例如是否追問理由、是否避免代答、是否恰當收斂；不要求輸出逐字相同。需記錄提示或規則版本。
 5. **只提交完成該 Issue 所需的改動。** 不順手重構無關程式，也不新增不相關的抽象。
 
+## 前端與設計
+
+前端改動（`frontend/`）在上述流程之外，再遵守以下規則。工具安裝、Figma MCP 與指令範本見 [`docs/agent-setup.md`](docs/agent-setup.md)。
+
+- **設計依據分工**（[`DESIGN.md`](DESIGN.md)「設計依據分工」）：版面、文字樣式、元件與狀態、各頁內容、RWD 看 `DESIGN.md`＋Figma（文字規則以 DESIGN.md 為準，畫面以 Figma 為準）；動畫與材質看 HTML 原型（[入口](prototypes/b-roman-forum/vedute.html)、[內頁](prototypes/c-interior/index.html)），數值直接從原型取。載入狀態一律用 skeleton，AI 回覆用思考中閃光＋逐字產出。幾份之間不一致時回報 @whyhugo，不要自行決定。
+- **Figma**：檔案 `zW14xVQcXF8S5rQuD6YzDM`，用 Figma MCP 讀指定節點與變數，不要看截圖猜樣式。路由與節點的對照見 `docs/design/figma-map.md`（F-41.9）。
+- **只用 token 與 Vedute 元件**：顏色、字級、間距只用 `frontend/src/styles/tokens.css` 的 token 與 `type-*` 文字樣式；功能頁只用 `src/components/vedute/` 的元件。不寫原始色碼、任意值（如 `text-[13px]`、`bg-[#...]`），不手改 `src/components/ui/`（shadcn 產生的程式碼）。這些規則由設計 lint（F-41.6）檢查，lint 訊息會說明正確寫法。
+- **驗收清單**（PR 範本有對應勾選）：
+  - [ ] 375、768、1440 三種寬度截圖，與 Figma 節點對照
+  - [ ] Playwright 點擊測試涵蓋主要操作與錯誤、空資料狀態（F-41.7，`frontend/tests/e2e/`）
+  - [ ] axe 無違規
+  - [ ] 只用 token 與 Vedute 元件，`npm run lint`、`npm run typecheck`、`npm test`、`npm run build` 通過
+- **不能做的事**：新增或更換主要依賴（需先經規格討論）；把 `.claude/` 或個人 agent 設定加進版控（共用規則只寫在本檔與 `docs/`）；照抄原型或 Figma 的示意文字取代真實資料與 i18n。
+
 ## 架構邊界
 
 - 前端只呼叫 Rust 後端，**不直接存取 PostgreSQL 或 AI 服務**。唯一例外是瀏覽器內建的 Web Speech API（S-05.3 混合模式），辨識出的逐字稿仍要送回後端保存。

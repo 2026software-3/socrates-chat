@@ -19,6 +19,22 @@ Closes #
 
 ```
 
+## 前端與設計（沒有改 `frontend/` 畫面可刪除本段）
+
+- Figma 節點：<!-- 例：https://www.figma.com/design/zW14xVQcXF8S5rQuD6YzDM/?node-id=21-241 -->
+
+| 375 | 768 | 1440 |
+| --- | --- | --- |
+| <!-- 截圖 --> | <!-- 截圖 --> | <!-- 截圖 --> |
+
+- axe 結果：<!-- 例：0 violations（npm run verify:screen -- /classrooms） -->
+
+- [ ] 版面、文字、狀態與 Figma 節點一致；動畫與材質依 HTML 原型（`DESIGN.md`「設計依據分工」）
+- [ ] 只用 `tokens.css` 的 token、`type-*` 文字樣式與 `components/vedute` 元件；沒有原始色碼或任意值，沒有手改 `components/ui/`
+- [ ] 載入狀態用 skeleton；錯誤與空資料狀態都有畫面
+- [ ] Playwright 點擊測試涵蓋主要操作，axe 無違規
+- [ ] 三種語言的翻譯都已加上
+
 ## 規格
 
 - [ ] 這個 PR 沒有改變任何規則；**或**已同步更新 `docs/specs/`（`docs/specs/` 是規則的唯一來源）
