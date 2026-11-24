@@ -15,6 +15,18 @@ function setup(list: Conversation[] | 'error', language: 'zh-TW' | 'en' | 'es' =
 }
 
 describe('ConversationListPage', () => {
+  it('renders an accessible stage scale for each conversation', async () => {
+    setup([
+      makeConversation({ id: 'c1', stage: 2 }),
+      makeConversation({ id: 'c2', stage: 3, status: 'ended' }),
+    ])
+    renderApp(null, { route: '/conversations' })
+
+    const links = await screen.findAllByRole('link', { name: /開啟對話|查看總結/ })
+    expect(within(links[0].closest('tr') as HTMLElement).getByRole('meter', { name: '追問階段：論證' })).toBeInTheDocument()
+    expect(within(links[1].closest('tr') as HTMLElement).getByRole('meter', { name: '追問階段：挑戰' })).toBeInTheDocument()
+  })
+
   it('lists conversations with title, status, turns, date and a link', async () => {
     setup([
       makeConversation(),

@@ -2,6 +2,9 @@ import { defineMessages } from '@/i18n/define'
 
 export const studentMessages = defineMessages({
   'zh-TW': {
+    'student.classrooms.title': '我的教室',
+    'student.classrooms.empty': '目前沒有可顯示的教室。',
+    'student.classrooms.activityCount': '{count} 個活動',
     'student.available.noMatch': '沒有符合的題目。',
     'student.available.bank': '題庫',
     'student.available.startPractice': '開始練習',
@@ -34,6 +37,9 @@ export const studentMessages = defineMessages({
     'student.available.topicDone': '已完成',
   },
   en: {
+    'student.classrooms.title': 'My classrooms',
+    'student.classrooms.empty': 'No classrooms are available.',
+    'student.classrooms.activityCount': '{count} activities',
     'student.available.noMatch': 'No matching topics.',
     'student.available.bank': 'Topic bank',
     'student.available.startPractice': 'Start practice',
@@ -66,6 +72,9 @@ export const studentMessages = defineMessages({
     'student.available.topicDone': 'Done',
   },
   es: {
+    'student.classrooms.title': 'Mis aulas',
+    'student.classrooms.empty': 'No hay aulas disponibles.',
+    'student.classrooms.activityCount': '{count} actividades',
     'student.available.noMatch': 'Ningún tema coincide.',
     'student.available.bank': 'Banco de temas',
     'student.available.startPractice': 'Empezar práctica',

@@ -61,6 +61,21 @@ function renderPage() {
 }
 
 describe('student available page', () => {
+  it('shows a Vedute classroom card for each classroom represented by the catalog', async () => {
+    mockAvailable({
+      activities: [
+        makeActivity([progress('A')]),
+        makeActivity([progress('B')], { id: 'act-2', title: 'Activity Two', classroom_id: 'room-b', classroom_name: '合成 B 班' }),
+      ],
+      topics: AVAILABLE.topics,
+    })
+    renderPage()
+
+    const classrooms = await screen.findByRole('region', { name: '我的教室' })
+    expect(within(classrooms).getByRole('heading', { name: '合成 A 班' })).toBeInTheDocument()
+    expect(within(classrooms).getByRole('heading', { name: '合成 B 班' })).toBeInTheDocument()
+  })
+
   it('shows teacher activities and the topic bank as distinguishable sections', async () => {
     mockAvailable()
     renderPage()
