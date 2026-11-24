@@ -54,10 +54,20 @@ export type ServiceRow = {
   recent_events: StatusEvent[]
 }
 
+/** 即時語音節點（S-19）：即時狀態，沒有歷史與可用率。 */
+export type VoiceNodeRow = {
+  name: string
+  status: 'active' | 'draining' | 'disabled'
+  healthy: boolean
+  sessions: number
+  max_sessions: number | null
+}
+
 export type ServicesView = {
   services: ServiceRow[]
   history_available: boolean
   period_days: number
+  voice_nodes: VoiceNodeRow[]
 }
 
 /** 秒數 → `{ unit, n }`：只取最大的兩個單位以內的概略值。 */

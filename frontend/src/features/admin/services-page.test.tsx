@@ -50,6 +50,7 @@ const view = (services: ServiceRow[], extra: Partial<ServicesView> = {}): Servic
   services,
   history_available: true,
   period_days: 1,
+  voice_nodes: [],
   ...extra,
 })
 
@@ -67,6 +68,39 @@ function mockServices(build: (days: string) => ServicesView | Response) {
 }
 
 const card = (name: string) => screen.getByText(name).closest('[data-slot="card"]') as HTMLElement
+
+describe('voice nodes on the services page', () => {
+  it('shows each node with its status, health and sessions', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockServices(() =>
+      view([DATABASE], {
+        voice_nodes: [
+          { name: 'raynb', status: 'active', healthy: true, sessions: 1, max_sessions: 2 },
+          { name: 'env', status: 'active', healthy: false, sessions: 3, max_sessions: null },
+          { name: 'old', status: 'draining', healthy: true, sessions: 0, max_sessions: 1 },
+        ],
+      }),
+    )
+    renderApp(<ServicesPage />)
+    const section = (await screen.findByRole('heading', { name: '即時語音節點' })).closest('section') as HTMLElement
+    const raynb = within(within(section).getByText('raynb').closest('[data-slot="card"]') as HTMLElement)
+    expect(raynb.getByText('1 / 2')).toBeInTheDocument()
+    expect(raynb.getByRole('status', { name: 'raynb: 正常' })).toBeInTheDocument()
+    const env = within(within(section).getByText('env').closest('[data-slot="card"]') as HTMLElement)
+    expect(env.getByText('3（無上限）')).toBeInTheDocument()
+    expect(env.getByRole('status', { name: 'env: 異常' })).toBeInTheDocument()
+    const old = within(within(section).getByText('old').closest('[data-slot="card"]') as HTMLElement)
+    expect(old.getByText('排空中（不接新場次）')).toBeInTheDocument()
+  })
+
+  it('has no voice node section when there are none', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockServices(() => view([DATABASE]))
+    renderApp(<ServicesPage />)
+    await screen.findByText('PostgreSQL')
+    expect(screen.queryByRole('heading', { name: '即時語音節點' })).not.toBeInTheDocument()
+  })
+})
 
 describe('services page', () => {
   it('lists unhealthy services first with their details, in the viewer language order', async () => {

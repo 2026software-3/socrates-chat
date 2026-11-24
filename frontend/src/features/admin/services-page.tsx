@@ -12,6 +12,7 @@ import {
   type ServiceRow,
   type ServicesView,
   type ServiceStatus,
+  type VoiceNodeRow,
 } from '@/features/admin/service-health-model'
 import { errorText, useI18n, useT, type MessageKey } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
@@ -148,9 +149,65 @@ export function ServicesPage() {
               ))}
             </ul>
           )}
+          {view.data.voice_nodes.length > 0 ? <VoiceNodes nodes={view.data.voice_nodes} /> : null}
         </>
       ) : null}
     </div>
+  )
+}
+
+const NODE_STATUS_LABEL = {
+  active: 'admin.services.voiceNodes.status.active',
+  draining: 'admin.services.voiceNodes.status.draining',
+  disabled: 'admin.services.voiceNodes.status.disabled',
+} as const satisfies Record<VoiceNodeRow['status'], MessageKey>
+
+/** 即時語音節點（S-19）：每個節點一張卡，狀態、健康與目前場次數。 */
+function VoiceNodes({ nodes }: { nodes: VoiceNodeRow[] }) {
+  const t = useT()
+  return (
+    <section aria-labelledby="voice-nodes-title" className="space-y-3">
+      <div className="space-y-1">
+        <h2 id="voice-nodes-title" className="text-lg font-semibold">
+          {t('admin.services.voiceNodes.title')}
+        </h2>
+        <p className="text-muted-foreground text-sm">{t('admin.services.voiceNodes.intro')}</p>
+      </div>
+      <ul className="space-y-4">
+        {nodes.map((node) => {
+          const health = t(node.healthy ? 'admin.services.state.healthy' : 'admin.services.state.unhealthy')
+          return (
+            <li key={node.name}>
+              <Card>
+                <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2">
+                  <CardTitle className="text-base">{node.name}</CardTitle>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{t(NODE_STATUS_LABEL[node.status])}</Badge>
+                    <Badge
+                      variant={node.healthy ? 'secondary' : 'destructive'}
+                      role="status"
+                      aria-label={`${node.name}: ${health}`}
+                    >
+                      {health}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <dl className="text-sm">
+                    <dt className="text-muted-foreground">{t('admin.services.voiceNodes.sessions')}</dt>
+                    <dd>
+                      {node.max_sessions === null
+                        ? t('admin.services.voiceNodes.sessionsUnlimited', { n: node.sessions })
+                        : t('admin.services.voiceNodes.sessionsValue', { n: node.sessions, max: node.max_sessions })}
+                    </dd>
+                  </dl>
+                </CardContent>
+              </Card>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }
 
