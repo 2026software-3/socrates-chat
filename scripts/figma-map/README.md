@@ -27,7 +27,7 @@ node scripts/figma-map/build.mjs --check
 
 - 有 frame 沒對到任何畫面，或同一狀態同一寬度有兩個 frame。
 - `screens.mjs` 列出的檔案不存在。
-- 路由對不上前端：對照表寫的路由不在前端路由定義裡，或前端有路由沒出現在對照表。路由從 `app/routes.tsx`、`features/*/index.tsx` 與 `classroomRoutes()` 讀出；導向舊網址的 `Navigate` 不算。
+- 路由對不上前端：對照表寫的路由不在前端路由定義裡，或前端有路由沒出現在對照表。路由從 `app/routes.tsx`（含其 `features` 陣列註冊的功能模組）與 `classroomRoutes()` 讀出；導向舊網址的 `Navigate` 不算。
 - 有管理者版本的畫面，路由沒列 `/admin`。
 - 文件不是最新。
 
