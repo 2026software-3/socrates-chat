@@ -56,6 +56,30 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
   const switchThumb = page.getByRole('switch', { name: '活動通知' }).locator('[data-slot="switch-thumb"]')
   await expect(switchThumb).toHaveCSS('transition-duration', '0.32s, 0.25s')
 
+  for (const name of ['建立活動', '取消', '上一步']) {
+    const button = page.getByRole('button', { name, exact: true })
+    const resting = await button.evaluate((el) => getComputedStyle(el).backgroundColor)
+    await button.hover()
+    if (name !== '取消') await expect(button).not.toHaveCSS('background-color', resting)
+    await button.evaluate(async (el) => {
+      await Promise.all(el.getAnimations().map((animation) => animation.finished))
+    })
+    const hovered = await button.evaluate((el) => getComputedStyle(el).backgroundColor)
+    await page.mouse.down()
+    await expect(button).not.toHaveCSS('background-color', hovered)
+    await expect(button).toHaveCSS('translate', 'none')
+    await page.mouse.up()
+    await expect(button).toHaveCSS('background-color', hovered)
+  }
+
+  const help = page.getByRole('link', { name: '操作通知說明' })
+  await help.hover()
+  await page.mouse.down()
+  await expect(help).toHaveCSS('text-decoration-thickness', '2px')
+  await expect(help).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await page.mouse.move(0, 0)
+  await page.mouse.up()
+
   const icon = page.getByRole('button', { name: '編輯' })
   const normalIconColor = await icon.evaluate((el) => getComputedStyle(el).color)
   await icon.hover()

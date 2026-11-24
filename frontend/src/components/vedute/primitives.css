@@ -8,12 +8,9 @@
 .vedute-button {
   @apply type-body-strong relative h-auto min-h-11 min-w-11 gap-2 rounded-sm border-transparent bg-transparent px-4 py-2 text-ink shadow-none;
   translate: none;
-  transition: background-color var(--vedute-fade), border-color var(--vedute-fade), color var(--vedute-fade);
-}
-
-.vedute-button:not(:disabled):active {
-  @apply bg-paper-deep;
-  transition-duration: 0s;
+  transition-property: background-color, border-color, color, text-decoration-color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
 }
 
 .vedute-button[data-vedute-variant="primary"]:not(:disabled):active {
@@ -21,11 +18,19 @@
 }
 
 .vedute-button[data-vedute-variant="quiet"]:not(:disabled):active {
-  @apply border-ink bg-paper-deep;
+  @apply border-chalk-deep bg-chalk-wash text-chalk-deep;
+}
+
+.vedute-button[data-vedute-variant="ghost"]:not(.vedute-page):not(:disabled):active {
+  background-color: color-mix(in srgb, var(--color-paper-deep) 88%, var(--color-ink));
 }
 
 .vedute-button:is([data-vedute-variant="icon"], [data-vedute-variant="link"]):not(:disabled):active {
   @apply bg-transparent text-chalk-deep;
+}
+
+.vedute-button[data-vedute-variant="link"]:not(:disabled):active {
+  @apply decoration-chalk-deep decoration-2;
 }
 
 .vedute-button[data-vedute-variant="icon"]:not(:disabled):active svg {
@@ -93,7 +98,7 @@
     stroke-width: var(--stroke-icon-hover);
   }
 
-  .vedute-button[data-vedute-variant="ghost"]:hover:not(:disabled) {
+  .vedute-button[data-vedute-variant="ghost"]:hover:not(:disabled, :active) {
     @apply bg-paper-deep;
   }
 }
