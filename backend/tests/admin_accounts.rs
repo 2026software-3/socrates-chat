@@ -61,6 +61,29 @@ async fn admin_sees_admin_emails_only(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     // 教師、學生、名單外帳號都不在管理者清單內
     assert_eq!(body["emails"], json!(["admin@example.com"]));
+    assert_eq!(body["primary_email"], json!("admin@example.com"));
+}
+
+#[sqlx::test]
+async fn list_reports_first_env_admin_as_primary_or_null_when_unset(pool: PgPool) {
+    let mut cfg = test_config();
+    cfg.admin_emails = vec![
+        "first@example.com".to_string(),
+        "second@example.com".to_string(),
+    ];
+    let app = test_app_with_config(pool.clone(), FakeAi::with(vec![]), cfg);
+    let first = login_as(&app, "sub-first", "first@example.com").await;
+    let (status, body) = list(&app, Some(&first)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["primary_email"], json!("first@example.com"));
+
+    // ADMIN_EMAILS 為空時，primary_email 為 null（資料庫既有管理者仍照常操作）
+    let mut empty_cfg = test_config();
+    empty_cfg.admin_emails = vec![];
+    let app_empty = test_app_with_config(pool, FakeAi::with(vec![]), empty_cfg);
+    let (status, body) = list(&app_empty, Some(&first)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["primary_email"].is_null());
 }
 
 #[sqlx::test]
@@ -223,4 +246,160 @@ async fn admin_can_reset_another_admins_password(pool: PgPool) {
             .unwrap()
             .contains(&json!("new-admin@example.com"))
     );
+}
+
+#[sqlx::test]
+async fn another_admin_cannot_reset_primary_admins_password(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+    // 將 outsider 升為後續新增的管理者
+    let (status, _) = add(&app, Some(&a.admin), "outsider@example.com").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 不分大小寫都必須被拒絕
+    for target in ["admin@example.com", "ADMIN@Example.com"] {
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/admin/users/reset-password",
+                Some(&a.outsider),
+                Some(json!({"email": target})),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = json_body(res).await;
+        assert_eq!(body["error"]["code"], "protected_admin");
+    }
+
+    // 主要管理者的 session 未被撤銷，也沒有寫入 password_reset 稽核紀錄
+    assert_eq!(
+        send(&app, get("/api/me", Some(&a.admin))).await.status(),
+        StatusCode::OK
+    );
+    let reset_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs WHERE action = 'password_reset' AND target_email = 'admin@example.com'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reset_audits, 0);
+}
+
+#[sqlx::test]
+async fn primary_admin_can_reset_own_password(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let a = seed_actors(&app).await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/users/reset-password",
+            Some(&a.admin),
+            Some(json!({"email": "admin@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["email"], "admin@example.com");
+    assert!(body["temporary_password"].as_str().unwrap().len() >= 10);
+
+    let reset_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs WHERE action = 'password_reset' AND target_email = 'admin@example.com'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reset_audits, 1);
+}
+
+#[sqlx::test]
+async fn only_first_env_admin_is_protected_when_multiple_env_admins_exist(pool: PgPool) {
+    let mut cfg = test_config();
+    cfg.admin_emails = vec![
+        "first@example.com".to_string(),
+        "second@example.com".to_string(),
+    ];
+    let app = test_app_with_config(pool.clone(), FakeAi::with(vec![]), cfg);
+    let first = login_as(&app, "sub-first", "first@example.com").await;
+    let second = login_as(&app, "sub-second", "second@example.com").await;
+    let third = login_as(&app, "sub-third", "third@example.com").await;
+    let (status, _) = add(&app, Some(&first), "third@example.com").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // second 與 third 都不能重設第一個管理者（first）的密碼
+    for actor in [&second, &third] {
+        let res = send(
+            &app,
+            json_req(
+                "POST",
+                "/api/admin/users/reset-password",
+                Some(actor),
+                Some(json!({"email": "first@example.com"})),
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_body(res).await["error"]["code"], "protected_admin");
+    }
+
+    // 環境變數第二位（second）不受限：third 與 first 皆可重設
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/users/reset-password",
+            Some(&third),
+            Some(json!({"email": "second@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/users/reset-password",
+            Some(&first),
+            Some(json!({"email": "third@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn another_admin_cannot_precreate_primary_admin_via_reset_password(pool: PgPool) {
+    let mut cfg = test_config();
+    cfg.admin_emails = vec![
+        "first@example.com".to_string(),
+        "second@example.com".to_string(),
+    ];
+    let app = test_app_with_config(pool.clone(), FakeAi::with(vec![]), cfg);
+    // first 尚未登入（資料庫還沒有這筆帳號），second 先登入
+    let second = login_as(&app, "sub-second", "second@example.com").await;
+
+    let res = send(
+        &app,
+        json_req(
+            "POST",
+            "/api/admin/users/reset-password",
+            Some(&second),
+            Some(json!({"email": "first@example.com"})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_body(res).await["error"]["code"], "protected_admin");
+
+    let exists: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'first@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(exists, 0);
 }

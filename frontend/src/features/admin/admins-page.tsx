@@ -1,7 +1,9 @@
 import { KeyRound } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
+import { useAuth } from '@/auth/auth-context'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -9,13 +11,14 @@ import { ResetPasswordDialog, TemporaryPasswordDialog } from '@/features/admin/r
 import { errorText, useI18n, useT } from '@/i18n'
 import { api } from '@/lib/api'
 import { useFetch } from '@/lib/use-fetch'
-import type { EmailList } from '@/lib/types'
+import type { AdminList } from '@/lib/types'
 
 /** 管理者管理：列出管理者、新增管理者、重設管理者密碼（只有管理者進得來）。 */
 export function AdminsPage() {
   const t = useT()
   const { lang } = useI18n()
-  const { data, error, loading, reload } = useFetch<EmailList>('/api/admin/admins')
+  const auth = useAuth()
+  const { data, error, loading, reload } = useFetch<AdminList>('/api/admin/admins')
 
   const [email, setEmail] = useState('')
   const [adding, setAdding] = useState(false)
@@ -28,6 +31,8 @@ export function AdminsPage() {
     () => [...new Set(data?.emails ?? [])].sort((a, b) => a.localeCompare(b)),
     [data],
   )
+  const primaryEmail = data?.primary_email?.toLowerCase() ?? null
+  const myEmail = auth.status === 'authed' ? (auth.me.email?.toLowerCase() ?? null) : null
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
 
   async function onAdd(e: FormEvent) {
@@ -100,19 +105,28 @@ export function AdminsPage() {
             <EmptyBlock>{t('admin.admins.empty')}</EmptyBlock>
           ) : (
             <ul aria-label={t('admin.admins.list')} className="divide-y rounded-md border">
-              {emails.map((e) => (
-                <li key={e} className="flex items-center justify-between gap-2 px-3 py-2">
-                  <span className="min-w-0 break-all text-sm">{e}</span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={t('admin.reset.resetPassword', { email: e })}
-                    onClick={() => setToReset(e)}
-                  >
-                    <KeyRound aria-hidden />
-                  </Button>
-                </li>
-              ))}
+              {emails.map((e) => {
+                const isPrimary = primaryEmail !== null && e.toLowerCase() === primaryEmail
+                const canReset = !isPrimary || myEmail === primaryEmail
+                return (
+                  <li key={e} className="flex items-center justify-between gap-2 px-3 py-2">
+                    <span className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+                      <span className="break-all">{e}</span>
+                      {isPrimary ? <Badge variant="secondary">{t('admin.admins.primary')}</Badge> : null}
+                    </span>
+                    {canReset ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('admin.reset.resetPassword', { email: e })}
+                        onClick={() => setToReset(e)}
+                      >
+                        <KeyRound aria-hidden />
+                      </Button>
+                    ) : null}
+                  </li>
+                )
+              })}
             </ul>
           )}
         </div>
