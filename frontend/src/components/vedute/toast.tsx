@@ -29,36 +29,40 @@ type ToastProps = {
 }
 
 export function Toast({ notification, dismissLabel, onDismiss, placement = 'viewport' }: ToastProps) {
-  const [last, setLast] = useState(notification)
-  if (notification && last !== notification) setLast(notification)
+  const [displayed, setDisplayed] = useState(notification)
+  if (notification && (!displayed || displayed.id === notification.id) && notification !== displayed) {
+    setDisplayed(notification)
+  }
 
-  const displayed = notification ?? last
-  const exiting = notification === null
+  const exit = displayed && displayed.id !== notification?.id
+    ? (notification ? 'replace' : 'dismiss')
+    : undefined
+  const announced = exit ? null : displayed
 
   return (
     <>
       <span className="sr-only" role="status">
-        {notification?.kind !== 'error' && notification?.message}
+        {announced?.kind !== 'error' && announced?.message}
       </span>
       <span className="sr-only" role="alert">
-        {notification?.kind === 'error' && notification.message}
+        {announced?.kind === 'error' && announced.message}
       </span>
       {displayed && (
         <ToastCard key={displayed.id} notification={displayed} dismissLabel={dismissLabel}
-          placement={placement} exiting={exiting}
-          onExit={() => setLast(null)} onDismiss={() => onDismiss(displayed.id)} />
+          placement={placement} exit={exit}
+          onExit={() => setDisplayed(notification)} onDismiss={() => onDismiss(displayed.id)} />
       )}
     </>
   )
 }
 
 function ToastCard({
-  notification: { kind, message, action }, dismissLabel, placement, exiting, onExit, onDismiss,
+  notification: { kind, message, action }, dismissLabel, placement, exit, onExit, onDismiss,
 }: {
   notification: ToastNotification
   dismissLabel: string
   placement: NonNullable<ToastProps['placement']>
-  exiting: boolean
+  exit?: 'replace' | 'dismiss'
   onExit: () => void
   onDismiss: () => void
 }) {
@@ -68,11 +72,12 @@ function ToastCard({
   const dismiss = useEffectEvent(onDismiss)
   const Icon = icons[kind]
   const paused = hovered || focused
+  const exiting = exit !== undefined
 
   const finishExit = useEffectEvent(onExit)
 
   useEffect(() => {
-    if (exiting && window.matchMedia('(prefers-reduced-motion: reduce)').matches) finishExit()
+    if (exiting && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) finishExit()
   }, [exiting])
 
   useEffect(() => {
@@ -87,7 +92,7 @@ function ToastCard({
   }, [kind, paused, exiting])
 
   return (
-    <div className="vedute-toast" data-placement={placement} data-exiting={exiting || undefined} inert={exiting}
+    <div className="vedute-toast" data-placement={placement} data-exiting={exit} inert={exiting}
       onAnimationEnd={(event) => {
         if (exiting && event.target === event.currentTarget && event.animationName === 'vedute-toast-exit') onExit()
       }}

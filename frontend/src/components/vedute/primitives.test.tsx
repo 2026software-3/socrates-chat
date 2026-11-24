@@ -282,14 +282,26 @@ describe('Toast', () => {
     vi.useFakeTimers()
     const dismiss = vi.fn()
     const retry = vi.fn()
-    const { rerender } = render(
+    const { container, rerender } = render(
       <Toast notification={{ id: 1, kind: 'info', message: 'Copying' }} dismissLabel="Dismiss" onDismiss={dismiss} />,
+    )
+    rerender(
+      <Toast notification={{ id: 3, kind: 'info', message: 'Trying again' }} dismissLabel="Dismiss" onDismiss={dismiss} />,
     )
     rerender(
       <Toast notification={{ id: 2, kind: 'error', message: 'Copy failed', action: { label: 'Retry', onClick: retry } }}
         dismissLabel="Dismiss" onDismiss={dismiss} />,
     )
+    const leaving = container.querySelector('.vedute-toast')!
+    expect(leaving).toHaveAttribute('inert')
+    expect(leaving).toHaveTextContent('Copying')
+    expect(screen.getByRole('alert')).toBeEmptyDOMElement()
+    const animationEnd = 'AnimationEvent' in window ? 'animationend' : 'webkitAnimationEnd'
+    fireEvent(leaving, Object.assign(new Event(animationEnd, { bubbles: true }), {
+      animationName: 'vedute-toast-exit',
+    }))
     expect(screen.queryByText('Copying')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trying again')).not.toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('Copy failed')
     act(() => vi.advanceTimersByTime(8000))
     expect(dismiss).not.toHaveBeenCalled()
