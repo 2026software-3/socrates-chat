@@ -7,12 +7,12 @@
 
 .vedute-button {
   @apply type-body-strong relative h-auto min-h-11 min-w-11 gap-2 rounded-sm border-transparent bg-transparent px-4 py-2 text-ink shadow-none;
+  translate: none;
   transition: background-color var(--vedute-fade), border-color var(--vedute-fade), color var(--vedute-fade);
 }
 
 .vedute-button:not(:disabled):active {
   @apply bg-paper-deep;
-  translate: none;
   transition-duration: 0s;
 }
 
@@ -87,6 +87,10 @@
 
   .vedute-button[data-vedute-variant="icon"]:hover:not(:disabled) {
     @apply text-chalk-deep;
+  }
+
+  .vedute-button[data-vedute-variant="icon"]:hover:not(:disabled, :active) svg {
+    stroke-width: var(--stroke-icon-hover);
   }
 
   .vedute-button[data-vedute-variant="ghost"]:hover:not(:disabled) {
@@ -216,12 +220,12 @@ textarea.vedute-input {
   @apply type-body min-h-11 pl-3 text-ink;
 }
 
-.vedute-select-item:focus {
+.vedute-select-item:not([data-disabled]):is(:focus, :hover) {
   @apply bg-paper-deep text-ink;
 }
 
 .vedute-select-item[data-disabled] {
-  @apply pointer-events-auto cursor-not-allowed bg-paper-deep text-ink-soft line-through;
+  @apply pointer-events-auto cursor-not-allowed bg-transparent text-ink-soft line-through;
 }
 
 .vedute-tabs-list {

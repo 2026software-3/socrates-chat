@@ -60,6 +60,7 @@
 
 :root {
   --stroke-emphasis: 1.5px;
+  --stroke-icon-hover: 2.5;
   --size-bottom-nav: 63px;
 }
 
