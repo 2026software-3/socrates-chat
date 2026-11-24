@@ -331,6 +331,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
   const available = useFetch<Topic[]>('/api/topics')
   const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
   const topicById = useMemo(() => new Map(topics.map((tp) => [tp.id, tp])), [topics])
+  const [topicConfirmation, setTopicConfirmation] = useState<{ resolve: (confirmed: boolean) => void }>()
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const busyRef = useRef(new Set<string>())
@@ -365,6 +366,10 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
   }
 
   async function update(a: Activity, v: Values) {
+    if (a.topic_ids.some((id) => !v.topicIds.includes(id))) {
+      const accepted = await new Promise<boolean>((resolve) => setTopicConfirmation({ resolve }))
+      if (!accepted) return
+    }
     // 只在題目清單有變動時才送 topic_ids：已有學生開始的活動不能動既有題目（409 activity_topic_locked），沒改就不該碰到它
     const topicChanged = v.topicIds.length !== a.topic_ids.length || v.topicIds.some((id, i) => id !== a.topic_ids[i])
     await api.patch<Activity>(`/api/activities/${a.id}`, {
@@ -538,6 +543,14 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
         </DialogContent>
       </Dialog>
 
+      <ConfirmDialog
+        open={!!topicConfirmation}
+        title={t('books.replaceTopicTitle')}
+        description={t('books.replaceTopicWarning')}
+        confirmLabel={t('common.save')}
+        onOpenChange={(open) => { if (!open) { topicConfirmation?.resolve(false); setTopicConfirmation(undefined) } }}
+        onConfirm={() => { topicConfirmation?.resolve(true); setTopicConfirmation(undefined) }}
+      />
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
           <DialogHeader>
