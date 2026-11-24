@@ -91,7 +91,7 @@ async fn retry_persists_a_complete_translated_set_and_cannot_replace_it(pool: Pg
     assert_eq!(view["pending_languages"], json!([]));
     assert_eq!(
         view["prompt_version"],
-        socrates_chat_backend::topic_dimensions::PROMPT_VERSION
+        socrates_chat_backend::topic_dimensions::STANCE_VERSION
     );
     let persisted: Value = sqlx::query_scalar("SELECT dimensions FROM topics WHERE id = $1")
         .bind(Uuid::parse_str(&id).unwrap())

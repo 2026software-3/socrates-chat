@@ -16,6 +16,7 @@ type Language = (typeof languages)[number]
 type Localized = { zh_tw: string; en: string; es: string }
 type Dimension = { id: string; name: Localized; description: Localized; rubric: string[] }
 type Dimensions = {
+  scale?: "legacy" | "stance"
   dimensions: Dimension[] | null
   locked: boolean
   prompt_version: string | null
@@ -86,6 +87,7 @@ export function TopicDimensionsDialog({ topic, close }: { topic: Topic; close: (
             <DimensionsEditor
               key={`${language}:${view.locked}`}
               language={language}
+              scoreStart={view.scale === "stance" ? -2 : 1}
               dimensions={view.dimensions}
               rubricEditable={!view.locked && view.rubric_language === language}
               pending={pending}
@@ -119,9 +121,10 @@ export function TopicDimensionsDialog({ topic, close }: { topic: Topic; close: (
 
 type Edit = { id: string; name: string; description: string; rubric?: string[] }
 
-function DimensionsEditor({ language, dimensions, rubricEditable, pending, onSave }: {
+function DimensionsEditor({ language, dimensions, scoreStart, rubricEditable, pending, onSave }: {
   language: Language
   dimensions: Dimension[]
+  scoreStart: number
   rubricEditable: boolean
   pending: boolean
   onSave: (dimensions: Edit[]) => Promise<boolean>
@@ -169,7 +172,7 @@ function DimensionsEditor({ language, dimensions, rubricEditable, pending, onSav
               const id = `dimension-rubric-${draft.id}-${index}`
               return (
                 <div key={id} className="space-y-1">
-                  <Label htmlFor={id}>{t('admin.dimensions.score', { score: index + 1 })}</Label>
+                  <Label htmlFor={id}>{t('admin.dimensions.score', { score: index + scoreStart })}</Label>
                   <Textarea id={id} readOnly={!rubricEditable} maxLength={500} rows={2} value={text}
                     onChange={(event) => change(draft.id, { rubric: draft.rubric.map((value, i) =>
                       i === index ? event.target.value : value) })} />

@@ -149,3 +149,24 @@ describe('teacher topic bank', () => {
     expect(await within(dialog).findByText('維度尚未完成。題目仍可用於對話。')).toBeInTheDocument()
   })
 })
+
+it('labels new topic rubric entries from -2 to 2 instead of 1 to 5', async () => {
+  const dimension = {
+    id: 'd1', name: { zh_tw: '公開理由', en: 'Public reasons', es: 'Razones públicas' },
+    description: { zh_tw: '是否贊成公開理由', en: 'Whether reasons should be public', es: 'Si las razones deben ser públicas' },
+    rubric: ['強烈反對', '稍微反對', '無感', '稍微贊成', '強烈贊成'],
+  }
+  server.use(
+    http.get('/api/topics', () => HttpResponse.json([trolley])),
+    http.get('/api/topics/t1/dimensions', () => HttpResponse.json({
+      scale: 'stance', dimensions: Array.from({ length: 6 }, (_, i) => ({ ...dimension, id: `d${i + 1}` })),
+      locked: false, rubric_language: 'zh-TW', prompt_version: 'topic-stance-dimensions-v1', pending_languages: [],
+    })),
+  )
+  renderTeacherPage(<TopicsPage />)
+  await userEvent.click(await screen.findByRole('button', { name: '雷達維度' }))
+  const dialog = await screen.findByRole('dialog')
+  expect(await within(dialog).findAllByLabelText('-2 分')).toHaveLength(6)
+  expect(within(dialog).getAllByLabelText('0 分')).toHaveLength(6)
+  expect(within(dialog).queryByLabelText('5 分')).not.toBeInTheDocument()
+})

@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 /// 取出腳本裡第一段 `<<'SQL'` … `SQL`（建立教室、名單與題目）。
 fn classroom_block() -> String {
-    let script = include_str!("../../scripts/seed-demo.sh");
+    let script = include_str!("../../scripts/seed-demo.sh").replace("\r\n", "\n");
     let start = script.find("<<'SQL'\n").expect("first SQL block") + "<<'SQL'\n".len();
     let end = start + script[start..].find("\nSQL\n").expect("end of SQL block");
     script[start..end].to_owned()

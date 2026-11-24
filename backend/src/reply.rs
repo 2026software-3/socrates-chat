@@ -466,15 +466,28 @@ async fn generate(
     messages: Vec<Message>,
     reply: &LiveReply,
 ) -> Result<Done, Event> {
+    let dimension_context = if conv.dimension_rules {
+        Some(
+            dimension_context(&state.pool, conv.id)
+                .await
+                .map_err(|_| event("error", json!({"code":"internal"})))?,
+        )
+    } else {
+        None
+    };
     let mut req = AiRequest {
-        system: build_system_prompt(&PromptContext {
-            title: &conv.title,
-            guiding_questions: &conv.guiding_questions,
-            stage: conv.stage,
-            turn: conv.turn_count,
-            wrap_up_turn: state.config.wrap_up_turn,
-            language: &conv.language,
-        }),
+        system: if let Some((dimensions, covered, asked)) = &dimension_context {
+            crate::dimension_dialogue::prompt(conv, dimensions, covered, asked)
+        } else {
+            build_system_prompt(&PromptContext {
+                title: &conv.title,
+                guiding_questions: &conv.guiding_questions,
+                stage: conv.stage,
+                turn: conv.turn_count,
+                wrap_up_turn: state.config.wrap_up_turn,
+                language: &conv.language,
+            })
+        },
         messages: messages
             .into_iter()
             .map(|m| ChatTurn {
@@ -484,7 +497,8 @@ async fn generate(
             .collect(),
     };
     // 歷史裡一長串追問會蓋過系統提示，所以收尾指令也放在模型最後讀到的地方；只在請求裡，不寫進紀錄
-    if conv.turn_count >= state.config.wrap_up_turn as i32
+    if !conv.dimension_rules
+        && conv.turn_count >= state.config.wrap_up_turn as i32
         && let Some(last) = req.messages.last_mut()
     {
         last.content.push_str("\n\n");
@@ -636,6 +650,24 @@ struct Saved {
 /// `release` 時（且不是收尾），保存回覆的同一個語句一併釋放 claim。收尾的路徑不變：可寫入時先
 /// 釋放再結束對話，否則由呼叫端釋放。
 /// 資料庫往返（不收尾）：`BEGIN`、鎖對話列、保存（一個語句）、`COMMIT`。
+async fn dimension_context(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+) -> Result<(serde_json::Value, Vec<String>, Vec<String>), sqlx::Error> {
+    let (dimensions, covered, asked): (Option<serde_json::Value>, Vec<String>, Vec<String>) = sqlx::query_as(
+        "SELECT t.dimensions, c.covered_dimensions,
+            COALESCE((SELECT CASE WHEN heard_chars IS NULL OR heard_chars >= char_length(content)
+                          THEN question_dimensions ELSE '{}'::text[] END FROM messages WHERE conversation_id=c.id
+                      AND role='ai' AND heard_chars IS DISTINCT FROM 0 ORDER BY seq DESC LIMIT 1), '{}')
+         FROM conversations c LEFT JOIN topics t ON t.id=c.topic_id WHERE c.id=$1")
+        .bind(id).fetch_one(pool).await?;
+    Ok((
+        dimensions.unwrap_or(serde_json::Value::Null),
+        covered,
+        asked,
+    ))
+}
+
 async fn save_reply(
     state: &AppState,
     conv: &Conversation,
@@ -660,22 +692,43 @@ async fn save_reply(
         stage
     };
     let converge_ready = ready || (stage == 3 && meta.advance);
+    let (covered, coverage_ready) = if conv.dimension_rules {
+        // Same row lock as stage/closing, so a retry or concurrent request cannot overwrite progress.
+        let (dimensions, previous, asked): (Option<serde_json::Value>, Vec<String>, Vec<String>) = sqlx::query_as(
+            "SELECT t.dimensions, c.covered_dimensions,
+                COALESCE((SELECT CASE WHEN heard_chars IS NULL OR heard_chars >= char_length(content)
+                              THEN question_dimensions ELSE '{}'::text[] END FROM messages WHERE conversation_id=c.id
+                          AND role='ai' AND heard_chars IS DISTINCT FROM 0 ORDER BY seq DESC LIMIT 1), '{}')
+             FROM conversations c LEFT JOIN topics t ON t.id=c.topic_id WHERE c.id=$1")
+            .bind(conv.id).fetch_one(&mut *tx).await?;
+        let covered = meta.dimensions.covered(&previous, &asked);
+        let complete = dimensions.is_none()
+            || crate::dimension_dialogue::IDS
+                .iter()
+                .all(|id| covered.iter().any(|c| c == id));
+        (covered, complete)
+    } else {
+        (Vec::new(), true)
+    };
     let closing = meta.question_type.as_deref() == Some("wrap_up")
-        && (converge_ready || conv.turn_count >= state.config.wrap_up_turn as i32);
+        && coverage_ready
+        && (converge_ready
+            || (!conv.dimension_rules && conv.turn_count >= state.config.wrap_up_turn as i32));
     let release = release && !closing;
     // 保存回覆、更新階段（與釋放 claim）合成一個語句。最後一則（聽到的）訊息必須是學生的：
     // 對話列已在上面鎖住，這個語句的快照在拿到鎖之後，與另開語句檢查相同。沒有寫入時不更新對話
     let saved: Option<(Uuid,)> = sqlx::query_as(concat!(
         "WITH m AS (
              INSERT INTO messages (conversation_id, role, content, rules_version, question_type,
-                                   advance_reason)
-             SELECT $1, 'ai', $2, $3, $4, $5
+                                   advance_reason, question_dimensions)
+             SELECT $1, 'ai', $2, $3, $4, $5, $9
              WHERE (SELECT role FROM messages WHERE conversation_id = $1 AND ",
         heard_only!(),
         "       ORDER BY seq DESC LIMIT 1) = 'student'
              RETURNING id
          ), c AS (
              UPDATE conversations SET stage = $6, converge_ready = $7,
+                    covered_dimensions = CASE WHEN dimension_rules THEN $10 ELSE covered_dimensions END,
                     generating_since = CASE WHEN $8 THEN NULL ELSE generating_since END
              WHERE id = $1 AND EXISTS (SELECT 1 FROM m)
          )
@@ -683,12 +736,14 @@ async fn save_reply(
     ))
     .bind(conv.id)
     .bind(text)
-    .bind(rules_version(&conv.language))
+    .bind(if conv.dimension_rules { crate::dimension_dialogue::VERSION } else { rules_version(&conv.language) })
     .bind(&meta.question_type)
     .bind(&meta.reason)
     .bind(new_stage)
     .bind(converge_ready)
     .bind(release)
+    .bind(meta.dimensions.question())
+    .bind(covered)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((message_id,)) = saved else {

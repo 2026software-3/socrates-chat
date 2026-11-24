@@ -8,15 +8,16 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgExecutor, PgPool, types::Json};
 use uuid::Uuid;
 
-pub type Scores = BTreeMap<String, u8>;
+pub type Scores = BTreeMap<String, i16>;
 
-/// Which dimensions a result must score and the highest score. The database only guards the
-/// shape of `scores`; this is the one place that knows the scale, so a topic with other
-/// dimension ids (F-03.4) or another scale needs no schema change.
+/// Required dimension ids, signed range and completeness policy. Legacy scores remain
+/// complete and non-negative; stance may omit dimensions for which evidence is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rubric {
     dimension_ids: Vec<String>,
-    max_score: u8,
+    max_score: i16,
+    min_score: i16,
+    partial: bool,
 }
 
 /// Why a score set was refused. Carries dimension ids only, never conversation content.
@@ -24,7 +25,7 @@ pub struct Rubric {
 pub enum InvalidScores {
     Missing(String),
     Unknown(String),
-    OutOfRange(String, u8),
+    OutOfRange(String, i16),
 }
 
 #[derive(Debug)]
@@ -43,7 +44,9 @@ impl Rubric {
     pub fn new(dimension_ids: Vec<String>, max_score: u8) -> Self {
         Self {
             dimension_ids,
-            max_score,
+            max_score: i16::from(max_score),
+            min_score: 0,
+            partial: false,
         }
     }
 
@@ -52,17 +55,32 @@ impl Rubric {
         Self::new((1..=6).map(|n| format!("d{n}")).collect(), 5)
     }
 
-    /// Every dimension must be present and within the scale; no extra keys.
+    pub fn stance(dimension_ids: Vec<String>) -> Self {
+        Self {
+            dimension_ids,
+            min_score: -2,
+            max_score: 2,
+            partial: true,
+        }
+    }
+
+    pub fn allows_partial(&self) -> bool {
+        self.partial
+    }
+
+    /// Legacy requires all dimensions; stance permits unknown dimensions to be absent. No extra keys.
     pub fn validate(&self, scores: &Scores) -> Result<(), InvalidScores> {
         let expected: BTreeSet<&str> = self.dimension_ids.iter().map(String::as_str).collect();
-        if let Some(missing) = expected.iter().find(|id| !scores.contains_key(**id)) {
+        if !self.partial
+            && let Some(missing) = expected.iter().find(|id| !scores.contains_key(**id))
+        {
             return Err(InvalidScores::Missing((*missing).to_owned()));
         }
         for (id, score) in scores {
             if !expected.contains(id.as_str()) {
                 return Err(InvalidScores::Unknown(id.clone()));
             }
-            if *score > self.max_score {
+            if *score < self.min_score || *score > self.max_score {
                 return Err(InvalidScores::OutOfRange(id.clone(), *score));
             }
         }
