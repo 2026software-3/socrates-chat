@@ -1025,3 +1025,119 @@ async fn deleting_a_node_ends_its_running_sessions(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
     assert!(closed(&mut client, 4).await);
 }
+
+// ---------- 後台「服務」頁 ----------
+
+#[sqlx::test]
+async fn the_services_page_lists_every_node_with_health_and_sessions(pool: PgPool) {
+    let r = rig(pool, env_config(), vec![]);
+    let a = seed_actors(&r.app).await;
+    let ok = add_node(&r, &a.admin, "ok", "ws://10.0.0.5/v1/realtime", 2).await;
+    let down = add_node(&r, &a.admin, "down", "ws://10.0.0.6/v1/realtime", 1).await;
+    let down_id: Uuid = down["node"]["id"].as_str().unwrap().parse().unwrap();
+    r.state.voice_nodes.mark_unhealthy(NodeId::Db(down_id));
+    assert_eq!(
+        patch(
+            &r,
+            &a.admin,
+            ok["node"]["id"].as_str().unwrap(),
+            json!({"status": "draining"})
+        )
+        .await,
+        StatusCode::OK
+    );
+    let env_node = node("env", NodeId::Env, None);
+    let _held = r
+        .state
+        .voice_sessions
+        .open_balanced(Uuid::new_v4(), Uuid::new_v4(), &[env_node])
+        .unwrap();
+
+    let res = send(&r.app, get("/api/admin/services", Some(&a.admin))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_body(res).await;
+    let nodes = body["voice_nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 3);
+    let by = |name: &str| nodes.iter().find(|n| n["label"] == name).unwrap().clone();
+    let env = by("env");
+    assert_eq!(env["healthy"], true);
+    assert_eq!(env["sessions"], 1);
+    assert!(env["max_sessions"].is_null());
+    let (ok, down) = (by("ok"), by("down"));
+    assert_eq!(ok["node_status"], "draining");
+    assert_eq!(ok["max_sessions"], 2);
+    assert_eq!(down["healthy"], false);
+    // 與周邊服務同樣的監控欄位
+    for node in nodes {
+        for field in [
+            "impact",
+            "target",
+            "status",
+            "availability",
+            "recent_events",
+        ] {
+            assert!(node.get(field).is_some(), "missing {field}");
+        }
+    }
+    assert!(!body["voice_nodes"].to_string().contains("token"));
+
+    let res = send(&r.app, get("/api/admin/services", Some(&a.student))).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn the_services_page_has_no_voice_nodes_when_none_exist(pool: PgPool) {
+    let r = rig(pool, test_config(), vec![]);
+    let a = seed_actors(&r.app).await;
+    let res = send(&r.app, get("/api/admin/services", Some(&a.admin))).await;
+    assert_eq!(json_body(res).await["voice_nodes"], json!([]));
+}
+
+#[sqlx::test]
+async fn check_now_probes_a_voice_node_and_records_its_status(pool: PgPool) {
+    let r = rig(pool, test_config(), vec![]);
+    let a = seed_actors(&r.app).await;
+    let status = Arc::new(Mutex::new(Some(200)));
+    let url = health_server(status.clone()).await;
+    add_node(&r, &a.admin, "n", &url, 1).await;
+    let listed = json_body(send(&r.app, get("/api/admin/services", Some(&a.admin))).await).await;
+    let node = &listed["voice_nodes"][0];
+    assert_eq!(node["status"], "checking");
+    let name = node["name"].as_str().unwrap();
+
+    let res = send(
+        &r.app,
+        json_req(
+            "POST",
+            "/api/admin/services/check",
+            Some(&a.admin),
+            Some(json!({"name": name})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let checked = json_body(res).await;
+    assert_eq!(checked["status"], "healthy");
+    assert!(checked["response_time_ms"].is_u64());
+
+    let listed = json_body(send(&r.app, get("/api/admin/services", Some(&a.admin))).await).await;
+    let node = &listed["voice_nodes"][0];
+    assert_eq!(node["status"], "healthy");
+    assert_eq!(node["recent_events"][0]["status"], "healthy");
+    assert_eq!(node["availability"], 1.0);
+
+    // 節點刪除後，監控項目跟著消失
+    let id = node["name"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("voice-node:")
+        .to_string();
+    let res = send(
+        &r.app,
+        json_req("DELETE", &format!("{NODES}/{id}"), Some(&a.admin), None),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    let listed = json_body(send(&r.app, get("/api/admin/services", Some(&a.admin))).await).await;
+    assert_eq!(listed["voice_nodes"], json!([]));
+}
