@@ -63,6 +63,11 @@ pub struct Config {
     pub cascade_realtime_url: Option<String>,
     /// cascade 呼叫內部 LLM 端點用的共用密鑰。
     pub cascade_llm_token: Option<String>,
+    /// 環境節點的場次上限（`CASCADE_MAX_SESSIONS`）；沒設就不限（S-19）。
+    pub cascade_max_sessions: Option<usize>,
+    /// 內部端點（`/internal/cascade/*`）改由這個位址的獨立監聽器提供（`INTERNAL_LISTEN_ADDR`）；
+    /// 沒設時與公開端點同埠（S-19）。
+    pub internal_listen_addr: Option<std::net::SocketAddr>,
     /// 第幾回合起 AI 引導學生收尾（S-03.3）。
     pub wrap_up_turn: u32,
     /// 回合上限（S-03.3）：第幾回合時直接結束。
@@ -114,6 +119,21 @@ fn teacher_key_cipher_from_env()
             .map(|c| Some(Arc::new(c)))
             .map_err(|e| ConfigError(e.to_string())),
         _ => Ok(None),
+    }
+}
+
+/// 選填的環境變數：沒設或空字串是 `None`；設了但 `parse` 不認得就是設定錯誤。
+fn optional_env<T>(
+    name: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, ConfigError> {
+    match env::var(name) {
+        Ok(v) if v.trim().is_empty() => Ok(None),
+        Ok(v) => parse(&v)
+            .map(Some)
+            .ok_or_else(|| ConfigError(format!("invalid {name}"))),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError(format!("{name} must be UTF-8"))),
     }
 }
 
@@ -330,6 +350,10 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty()),
             cascade_llm_token: env::var("CASCADE_LLM_TOKEN").ok().filter(|v| !v.is_empty()),
+            cascade_max_sessions: optional_env("CASCADE_MAX_SESSIONS", |v| {
+                v.trim().parse::<usize>().ok().filter(|n| *n >= 1)
+            })?,
+            internal_listen_addr: optional_env("INTERNAL_LISTEN_ADDR", |v| v.trim().parse().ok())?,
             openai_stt_model: env::var("OPENAI_STT_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_model: env::var("OPENAI_TTS_MODEL").ok().filter(|v| !v.is_empty()),
             openai_tts_voice: env::var("OPENAI_TTS_VOICE")

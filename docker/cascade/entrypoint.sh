@@ -15,7 +15,10 @@ case "${1:-}" in
   cascade)
     : "${CASCADE_LLM_TOKEN:?CASCADE_LLM_TOKEN 未設定}"
     python3 /app/patch_dialog.py
-    exec sgl-omni serve --config /app/launch.yaml --host 0.0.0.0 --port 8110 --enable-realtime
+    # 回呼位址是這個節點自己的設定（S-19）；沒設時沿用 compose 內的 app:3000
+    base_url="${CASCADE_LLM_BASE_URL:-http://app:3000/internal/cascade/v1}"
+    sed "s|http://app:3000/internal/cascade/v1|${base_url}|" /app/launch.yaml > /tmp/launch.yaml
+    exec sgl-omni serve --config /tmp/launch.yaml --host 0.0.0.0 --port 8110 --enable-realtime
     ;;
   *)
     echo "用法：entrypoint.sh tts|adapter|cascade" >&2
