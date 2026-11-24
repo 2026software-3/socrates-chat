@@ -57,10 +57,14 @@
 
 /* 文字樣式：對應 Figma 的 Display、Title、Text、Latin。用 type- 前綴，避免和 text- 顏色 class 混在一起。 */
 @utility type-display {
-  font-size: clamp(28px, 3.6vw, 40px);
+  font-size: clamp(30px, 3.6vw, 40px);
   line-height: 1.3;
   font-weight: 900;
   letter-spacing: 0.02em;
+  /* 手機（< 768）：DESIGN.md Display 手機 28px */
+  @media (width < 48rem) {
+    font-size: 28px;
+  }
 }
 @utility type-h1 {
   font-size: 28px;

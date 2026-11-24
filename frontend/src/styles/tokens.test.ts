@@ -126,8 +126,10 @@ describe('文字樣式（Figma Title/Text/Latin）', () => {
     expect(utility(tokens, 'type-h1')).toMatch(/@media\s*\(width\s*<\s*48rem\)\s*\{\s*font-size:\s*24px;\s*line-height:\s*31px;/)
   })
 
-  it('type-display 在手機縮小，最大 40px', () => {
-    expect(utility(tokens, 'type-display')).toMatch(/font-size:\s*clamp\(28px,[^)]*,\s*40px\)/)
+  it('type-display 在平板與桌機是 clamp(30px, 3.6vw, 40px)，手機（< 768）固定 28px', () => {
+    const body = utility(tokens, 'type-display')
+    expect(body).toMatch(/font-size:\s*clamp\(30px,\s*3\.6vw,\s*40px\)/)
+    expect(body).toMatch(/@media\s*\(width\s*<\s*48rem\)\s*\{\s*font-size:\s*28px;/)
   })
 })
 
