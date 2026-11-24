@@ -177,16 +177,24 @@
   @apply type-switch-label;
 }
 
+/*
+ * 紙上橫線：兩層背景畫在欄位最下緣，不用 border。底層是 1.5px 淡墨線；焦點時上層 2px 紅粉筆線
+ * 從左畫到右「蓋住」底層，所以焦點的線只有 2px，不會跟原本的線疊成 3.5px。
+ */
 .vedute-input {
-  @apply type-control h-auto min-h-11 w-full rounded-none border-0 border-solid border-ink-soft bg-transparent px-0 py-2 text-ink;
+  @apply type-control h-auto min-h-11 w-full rounded-none border-0 bg-transparent px-0 pt-2 text-ink;
   --vedute-field-line: var(--color-chalk);
+  --vedute-field-base: var(--color-ink-soft);
+  --vedute-field-focus: --spacing(0.5);
+  padding-bottom: calc(--spacing(2) + var(--stroke-emphasis));
   box-shadow: none;
-  background-image: linear-gradient(var(--vedute-field-line), var(--vedute-field-line));
+  background-image:
+    linear-gradient(var(--vedute-field-line), var(--vedute-field-line)),
+    linear-gradient(var(--vedute-field-base), var(--vedute-field-base));
   background-repeat: no-repeat;
   background-position: left bottom;
-  background-size: 0 --spacing(0.5);
-  transition: background-size var(--vedute-motion), border-color var(--vedute-fade);
-  border-bottom-width: var(--stroke-emphasis);
+  background-size: 0 var(--vedute-field-focus), 100% var(--stroke-emphasis);
+  transition: background-size var(--vedute-motion);
 }
 
 .vedute-input::placeholder,
@@ -195,13 +203,13 @@
 }
 
 .vedute-input:focus {
-  @apply border-chalk inset-ring-0 ring-0 outline-none;
-  background-size: 100% --spacing(0.5);
+  @apply inset-ring-0 ring-0 outline-none;
+  background-size: 100% var(--vedute-field-focus), 100% var(--stroke-emphasis);
 }
 
 .vedute-input[aria-invalid]:not([aria-invalid="false"]) {
-  @apply border-error;
   --vedute-field-line: var(--color-error);
+  --vedute-field-base: var(--color-error);
 }
 
 .vedute-input:disabled {
@@ -231,8 +239,7 @@ textarea.vedute-input {
 }
 
 .vedute-select-trigger[data-state="open"] {
-  @apply border-chalk;
-  background-size: 100% --spacing(0.5);
+  background-size: 100% var(--vedute-field-focus), 100% var(--stroke-emphasis);
 }
 
 .vedute-select-trigger[data-state="open"] .vedute-select-chevron {
