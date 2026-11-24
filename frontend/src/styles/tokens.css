@@ -67,6 +67,11 @@
   line-height: 36px;
   font-weight: 900;
   letter-spacing: 0.02em;
+  /* 手機（< 768，與導覽的斷點相同）：DESIGN.md Headline 手機 24px */
+  @media (width < 48rem) {
+    font-size: 24px;
+    line-height: 31px;
+  }
 }
 @utility type-h2 {
   font-size: 22px;
