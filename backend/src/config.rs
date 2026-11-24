@@ -229,12 +229,6 @@ impl Config {
         self.admin_emails.first().map(String::as_str)
     }
 
-    /// 該信箱是否為 `ADMIN_EMAILS` 的第一個管理者（不分大小寫）。
-    pub fn is_primary_admin_email(&self, email: &str) -> bool {
-        self.primary_admin_email()
-            .is_some_and(|primary| primary.eq_ignore_ascii_case(email))
-    }
-
     /// 回覆產生的 claim 超過多久視為殘留（秒）：兩次嘗試的上限再加一點餘裕。
     pub fn generation_stale_secs(&self) -> f64 {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
