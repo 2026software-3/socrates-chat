@@ -268,7 +268,7 @@ textarea.vedute-input {
 
 /* 目前指到（滑鼠或鍵盤）：深紙底＋左側 3px 紅粉筆線，跟頁籤、目前位置同一種記號。 */
 .vedute-select-item::before {
-  @apply pointer-events-none absolute inset-y-1 left-1 w-[3px] bg-chalk content-[''];
+  @apply pointer-events-none absolute inset-y-1 left-1 w-0.75 bg-chalk content-[''];
   scale: 1 0;
   transition: scale 120ms ease-out;
 }
