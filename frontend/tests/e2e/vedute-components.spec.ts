@@ -72,6 +72,22 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
     await expect(button).toHaveCSS('background-color', hovered)
   }
 
+  for (const name of ['取消', '上一步']) {
+    const button = page.getByRole('button', { name, exact: true })
+    await button.hover()
+    await button.evaluate(async (el) => {
+      await Promise.all(el.getAnimations().map((animation) => animation.finished))
+    })
+    const hovered = await button.evaluate((el) => getComputedStyle(el).backgroundColor)
+    await button.click()
+    await expect(button).toHaveAttribute('data-pressed', '')
+    await expect(button).not.toHaveCSS('background-color', hovered)
+    await expect(button).toHaveCSS('translate', 'none')
+    await expect(button).toHaveCSS('scale', 'none')
+    await expect(button).not.toHaveAttribute('data-pressed')
+    await expect(button).toHaveCSS('background-color', hovered)
+  }
+
   const help = page.getByRole('link', { name: '操作通知說明' })
   await help.hover()
   await page.mouse.down()

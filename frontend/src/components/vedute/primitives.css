@@ -17,12 +17,16 @@
   @apply border-chalk-deep bg-chalk-deep;
 }
 
-.vedute-button[data-vedute-variant="quiet"]:not(:disabled):active {
+.vedute-button[data-vedute-variant="quiet"]:not(:disabled):is(:active, [data-pressed]) {
   @apply border-chalk-deep bg-chalk-wash text-chalk-deep;
 }
 
-.vedute-button[data-vedute-variant="ghost"]:not(.vedute-page):not(:disabled):active {
+.vedute-button[data-vedute-variant="ghost"]:not(.vedute-page, :disabled):is(:active, [data-pressed]) {
   background-color: color-mix(in srgb, var(--color-paper-deep) 88%, var(--color-ink));
+}
+
+.vedute-button[data-pressed] {
+  transition-duration: 0s;
 }
 
 .vedute-button:is([data-vedute-variant="icon"], [data-vedute-variant="link"]):not(:disabled):active {
@@ -82,7 +86,7 @@
     @apply border-chalk bg-chalk text-paper;
   }
 
-  .vedute-button[data-vedute-variant="quiet"]:hover:not(:disabled, :active) {
+  .vedute-button[data-vedute-variant="quiet"]:hover:not(:disabled, :active, [data-pressed]) {
     @apply border-chalk text-chalk-deep;
   }
 
@@ -98,7 +102,7 @@
     stroke-width: var(--stroke-icon-hover);
   }
 
-  .vedute-button[data-vedute-variant="ghost"]:hover:not(:disabled, :active) {
+  .vedute-button[data-vedute-variant="ghost"]:hover:not(:disabled, :active, [data-pressed]) {
     @apply bg-paper-deep;
   }
 }
