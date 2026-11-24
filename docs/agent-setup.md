@@ -41,33 +41,11 @@ npm run lint && npm run typecheck && npm test && npm run build && npm run test:e
 | Figma 官方 plugin（含 figma-use、figma-design-to-code、figma-implement-motion） | **安裝** | 透過 Figma MCP 直接讀節點、變數與動態，不看截圖猜樣式 |
 | run、code-review、simplify（內建） | 使用 | 本機把 app 跑起來驗證、開 PR 前自我 review |
 | gsap-scrolltrigger、gsap-plugins、gsap-utils、gsap-frameworks | 選用 | 目前沒有捲動驅動或 Vue／Svelte 需求 |
-| hallmark | **不要用** | 它的用途是從零設計新網站，會和既定的 Vedute 設計系統衝突 |
-| figma-code-connect | 先不用 | 需要 Figma 付費方案的 Dev Mode；先用節點對照表 [`docs/design/figma-map.md`](design/figma-map.md) 代替 |
-
-安裝方式：在 Claude Code 輸入 `/plugin` 搜尋上表的名稱安裝（GSAP 與 Figma 都是官方發布的 plugin）。裝好後輸入 `/skills` 確認列表裡有它們。
+| figma-code-connect | **安裝** | 把 Figma 元件對到 `components/vedute`，讀節點時直接拿到該用的元件；全組都是 Figma Education，有 Dev Mode |
 
 ## 3. Figma MCP
 
-用 Figma 官方的遠端 MCP server（`https://mcp.figma.com/mcp`），第一次使用時會開瀏覽器以 Figma 帳號授權；帳號需要能檢視設計檔。以下指令以各工具官方文件為準。
-
-- **Claude Code**：安裝 Figma 官方 plugin 即會帶入 MCP server；只想加 MCP 時：
-
-  ```bash
-  claude mcp add --transport http figma https://mcp.figma.com/mcp
-  ```
-
-  之後在 Claude Code 輸入 `/mcp` 完成授權。
-- **Codex**：
-
-  ```bash
-  codex mcp add figma --url https://mcp.figma.com/mcp
-  ```
-
-- **Cursor**：在使用者層級的 `~/.cursor/mcp.json` 加入下列設定（不要放在 repo 裡的 `.cursor/`）：
-
-  ```json
-  { "mcpServers": { "figma": { "url": "https://mcp.figma.com/mcp" } } }
-  ```
+用 Figma 官方的遠端 MCP server（`https://mcp.figma.com/mcp`），以自己的 Figma 帳號授權。設定方式依各 agent 的官方文件；個人設定不要放進 repo。
 
 常用頁面（檔案 `zW14xVQcXF8S5rQuD6YzDM`）：
 
