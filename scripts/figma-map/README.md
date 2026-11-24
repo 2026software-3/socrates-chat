@@ -23,7 +23,13 @@ node scripts/figma-map/build.mjs
 node scripts/figma-map/build.mjs --check
 ```
 
-`--check` 在以下情況失敗（exit 1）：有 frame 沒對到任何畫面、同一狀態同一寬度有兩個 frame、`screens.mjs` 列出的檔案不存在、有管理者版本的畫面路由沒列 `/admin`、文件不是最新。
+`--check` 在以下情況失敗（exit 1）：
+
+- 有 frame 沒對到任何畫面，或同一狀態同一寬度有兩個 frame。
+- `screens.mjs` 列出的檔案不存在。
+- 路由對不上前端：對照表寫的路由不在前端路由定義裡，或前端有路由沒出現在對照表。路由從 `app/routes.tsx`、`features/*/index.tsx` 與 `classroomRoutes()` 讀出；導向舊網址的 `Navigate` 不算。
+- 有管理者版本的畫面，路由沒列 `/admin`。
+- 文件不是最新。
 
 CI（`.github/workflows/figma-map.yml`）在 `frontend/src/**`、`scripts/figma-map/**` 或文件有改動時跑 `--check`。前端 PR 搬檔或改名而失敗時，照錯誤訊息改 `screens.mjs`，再重新產生文件。
 

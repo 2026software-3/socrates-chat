@@ -5,7 +5,7 @@
 //   node scripts/figma-map/build.mjs --check  # 只檢查：文件是否最新、每個 frame 都有歸屬、列出的檔案都存在
 //
 // 輸入：frames/*.txt（用 dump-frames.figma.js 從 Figma 唯讀匯出）與 screens.mjs（人工維護的對照）。
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { aliases, ignore, overlaySectionIssue, pages, routesWithoutFigma } from './screens.mjs'
@@ -181,6 +181,50 @@ for (const [route, file, what] of routesWithoutFigma) {
   if (!existsSync(join(srcRoot, file))) problems.push(`沒有 Figma 畫面的路由：frontend/src/${file} 不存在`)
 }
 out('')
+
+/**
+ * 從前端原始碼讀出實際註冊的路由：app/routes.tsx 的 <Route path>（導向舊網址的 Navigate 不算）與 index route、
+ * features/<name>/index.tsx 的 `path: '...'`，以及 classroomRoutes(prefix) 展開的教室路由。
+ */
+function frontendRoutes() {
+  const read = (p) => readFileSync(join(srcRoot, p), 'utf8')
+  const routes = new Set()
+  const app = read('app/routes.tsx')
+  if (/<Route index\b/.test(app)) routes.add('/')
+  for (const m of app.matchAll(/<Route path="([^"*]+)" element=\{<(\w+)/g)) if (m[2] !== 'Navigate') routes.add(m[1])
+  const classrooms = read('features/classrooms/routes.tsx')
+  const base = classrooms.match(/const base = `\$\{prefix\}([^`]*)`/)?.[1]
+  const suffixes = [...classrooms.matchAll(/path: (?:base\b|`\$\{base\}([^`]*)`)/g)].map((m) => m[1] ?? '')
+  if (!base || suffixes.length === 0) problems.push('讀不到 features/classrooms/routes.tsx 的教室路由，請更新 build.mjs 的 frontendRoutes()')
+  for (const dir of readdirSync(join(srcRoot, 'features'))) {
+    const file = join('features', dir, 'index.tsx')
+    if (!existsSync(join(srcRoot, file))) continue
+    const src = read(file)
+    for (const m of src.matchAll(/path: '([^']+)'/g)) routes.add(m[1])
+    for (const m of src.matchAll(/classroomRoutes\('([^']+)'/g)) for (const s of suffixes) routes.add(`${m[1]}${base}${s}`)
+  }
+  return routes
+}
+
+/** 從路由欄位文字取出路徑（例如「`/teacher/classrooms`、`/admin/classrooms`（對話框）」）。 */
+const pathsIn = (text) => (text ?? '').match(/\/[A-Za-z0-9_/:.-]*/g) ?? []
+
+const actualRoutes = frontendRoutes()
+if (actualRoutes.size < 10) problems.push(`只讀到 ${actualRoutes.size} 條前端路由，路由定義的寫法可能變了，請更新 build.mjs 的 frontendRoutes()`)
+const mapped = new Set()
+const mappedRoutes = [
+  ...pages.flatMap((p) => p.screens.map((s) => [`${p.title}「${s.name}」`, s.route])),
+  ...routesWithoutFigma.map(([route]) => ['沒有 Figma 畫面的路由', route]),
+]
+for (const [where, route] of mappedRoutes) {
+  for (const path of pathsIn(route)) {
+    mapped.add(path)
+    if (!actualRoutes.has(path)) problems.push(`${where}：路由 ${path} 不在前端路由定義裡（改名或移除了？）`)
+  }
+}
+for (const path of actualRoutes) {
+  if (!mapped.has(path)) problems.push(`前端路由 ${path} 沒有出現在對照表；請加到 screens.mjs 的畫面或 routesWithoutFigma`)
+}
 
 const doc = lines.join('\n')
 if (process.argv.includes('--check')) {

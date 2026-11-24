@@ -579,6 +579,7 @@ export const routesWithoutFigma = [
   ['/teacher/keys', 'features/keys/keys-page.tsx', '教師金鑰'],
   ['/teacher/classrooms/:classroomId/ai', 'features/keys/ai-settings-page.tsx', '教室 AI 設定'],
   ['/teacher/classrooms/:classroomId/students', 'features/classrooms/classroom-pages.tsx', '教室學生名單（Figma 併在 E03 頁籤）'],
+  ['/admin/classrooms/:classroomId/students', 'features/classrooms/classroom-pages.tsx', '教室學生名單（管理者）'],
   ['/dashboard', 'features/dashboard/index.tsx', '舊網址，導向 `/account`'],
   ['（任何路由）', 'features/announcements/maintenance-page.tsx', '維護模式'],
   ['（任何路由）', 'features/auth/disabled-page.tsx', '帳號停用'],
