@@ -693,6 +693,7 @@ Figma 頁面：[21:243](https://www.figma.com/design/zW14xVQcXF8S5rQuD6YzDM/socr
 | 路由 | 檔案 | 用途 |
 | --- | --- | --- |
 | `/complaint` | `complaints/complaint-page.tsx` | 客訴（S-17） |
+| `/admin/admins` | `admin/admins-page.tsx` | 管理者管理（S-08.2） |
 | `/admin/complaints` | `complaints/admin-complaints-page.tsx` | 管理者客訴列表 |
 | `/admin/services` | `admin/services-page.tsx` | 服務健康度（S-09.3） |
 | `/admin/diagnostics` | `admin/diagnostics-page.tsx` | 診斷 |
