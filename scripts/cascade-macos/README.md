@@ -47,6 +47,7 @@ CASCADE_LLM_TOKEN=<與 start.sh 相同>
 | --- | --- | --- |
 | `CASCADE_LLM_TOKEN` | 必填 | 與後端相同的共用密鑰，只傳給 cascade 行程，其他服務不繼承 |
 | `APP_URL` | `http://127.0.0.1:3000` | cascade 呼叫內部 LLM 端點的後端位址 |
+| `CASCADE_LLM_BASE_URL` | 不設 | 內部 LLM 端點的**完整**回呼位址（含路徑，例如 `http://100.64.0.1:3001/internal/cascade/v1`），設了就取代 `APP_URL`。後端設了 `INTERNAL_LISTEN_ADDR`（內部端點在獨立的埠，公開埠回 404）時必須設這個（S-19，見 `docs/ntnu-ops.md`）；與 `docker/cascade/entrypoint.sh` 同名同義，空字串視為沒設 |
 | `WHISPER_BACKEND` | `mlx` | `mlx`（mlx-whisper，GPU）／`faster-whisper`（CPU int8，與 NVIDIA 部署同一支 `scripts/whisper-server.py`） |
 | `KOKORO_BACKEND` | `mlx` | `mlx`（mlx-audio，GPU）／`torch`（PyTorch，裝置看 `KOKORO_DEVICE`） |
 | `KOKORO_DEVICE` | `mps` | 只在 `KOKORO_BACKEND=torch` 時有用：`mps`／`cpu`／`auto`；指定的裝置不可用時啟動失敗，不會默默退回 CPU |
