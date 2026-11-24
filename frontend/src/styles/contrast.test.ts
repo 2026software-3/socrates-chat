@@ -68,7 +68,8 @@ const TEXT: Pair[] = [
   ['paper', 'ochra'],
 ]
 
-// 元件邊界與圖形：Quiet 與輸入框的墨框、停用的淡墨框、紅粉筆焦點框、赭金裝飾色（只放在白底的內容區）
+// 元件邊界與圖形：Quiet 與輸入框的墨框、停用的淡墨框、紅粉筆焦點框、赭金裝飾色。
+// ochra-graphic 只放白底；資訊圖形要放在紙、深紙或赭金薄染上時改用 ochra-graphic-deep（或在圖形外加 1px 墨框）。
 const BOUNDARY: Pair[] = [
   ['ink', 'paper'],
   ['ink', 'paper-deep'],
@@ -79,6 +80,10 @@ const BOUNDARY: Pair[] = [
   ['chalk', 'paper-deep'],
   ['chalk', 'surface'],
   ['ochra-graphic', 'surface'],
+  ['ochra-graphic-deep', 'surface'],
+  ['ochra-graphic-deep', 'paper'],
+  ['ochra-graphic-deep', 'paper-deep'],
+  ['ochra-graphic-deep', 'ochra-wash'],
 ]
 
 describe('Vedute token 對比', () => {
