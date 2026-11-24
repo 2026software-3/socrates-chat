@@ -416,19 +416,21 @@ async fn every_node_change_is_audited_without_url_or_token(pool: PgPool) {
     assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, target_email FROM audit_logs WHERE action LIKE 'voice_node_%' ORDER BY id",
+        "SELECT action, target_email FROM audit_logs WHERE action LIKE 'voice_node_%'",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
-    let actions: Vec<_> = rows.iter().map(|r| r.0.as_str()).collect();
+    // audit_logs 的 id 不是遞增序，只比對有哪些動作
+    let mut actions: Vec<_> = rows.iter().map(|r| r.0.as_str()).collect();
+    actions.sort_unstable();
     assert_eq!(
         actions,
         [
             "voice_node_create",
-            "voice_node_update",
+            "voice_node_delete",
             "voice_node_rotate_token",
-            "voice_node_delete"
+            "voice_node_update"
         ]
     );
     for (_, target) in &rows {
