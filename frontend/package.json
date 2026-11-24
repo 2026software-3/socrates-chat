@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "lint": "oxlint && npm run lint:design",
+    "lint:design": "node scripts/design-lint.ts",
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "test": "vitest run",

@@ -25,7 +25,8 @@
   --color-aerugo-wash: #DCE6E0;
   --color-ochra: #74561B;
   --color-ochra-wash: #F0E4C4;
-  --color-ochra-graphic: #B0862F; /* 只用在圖形，不作字 */
+  --color-ochra-graphic: #B0862F; /* 只用在白底上的圖形，不作字 */
+  --color-ochra-graphic-deep: #957024; /* 資訊圖形放在紙、深紙、赭金薄染上時用（對比 ≥ 3:1） */
   --color-caeruleum: #34557A;
   --color-caeruleum-wash: #DCE3EC;
 

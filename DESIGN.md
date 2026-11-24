@@ -17,6 +17,7 @@ colors:
   ochra: "#74561B"
   ochra-wash: "#F0E4C4"
   ochra-graphic: "#B0862F"
+  ochra-graphic-deep: "#957024"
   caeruleum: "#34557A"
   caeruleum-wash: "#DCE3EC"
   error: "#8A1C12"
@@ -181,7 +182,11 @@ components:
 | 赭金 Ochra | `ochra` #74561B（對紙 5.2、對白 6.8、對深紙 4.6） | `ochra-wash` #F0E4C4 | 點數、成就、獎勵、教師推薦；狀態標籤裡的「草稿」 | Topbar 的點數、「+ 15 點數」、可領取的「領取獎勵」、已解鎖的成就卡、草稿標籤 |
 | 龐貝藍 Caeruleum | `caeruleum` #34557A（對紙 5.9、對白 7.7、對深紙 5.2） | `caeruleum-wash` #DCE3EC | 資訊、蘇格拉底（AI）的發言、資料 | AI 的發言與標記、資訊的 Toast 與 Alert、`Icon/info`、`Icon/sparkles`、圖表主色（雷達、傾向條、論點分布第一類） |
 
-- **Ochre Graphic 赭金裝飾色**（`ochra-graphic` #B0862F）：只用在圖形（長條、圖例點、成就卡的框、頁首淡彩），不作字。
+- **Ochre Graphic 赭金裝飾色**（`ochra-graphic` #B0862F）：只用在圖形（長條、圖例點、成就卡的框、頁首淡彩），不作字，而且只放在白底（`surface`）上（對白 3.33）。2026-11-24 決定：
+  - 傳達資訊的圖形必須放在紙、深紙或 `ochra-wash` 上時，二選一：
+    - **加 1px 墨框**：適合本來就有框的東西，例如卡片、圖片佔位。
+    - **改用深赭金裝飾色**（`ochra-graphic-deep` #957024；對白 4.54、對紙 3.49、對深紙 3.08、對 `ochra-wash` 3.59）：適合加框不自然的長條、圖例點。
+  - 頁首淡彩（`Page/Header`）只是裝飾，不受 3:1 限制。
 - 顏料是 2026-11-21 由 [90] 的提案採用。銅綠與赭金比提案的 #3F6B5B、#7A5A1C 各加深一點，讓小字放在深紙底也有 4.5。
 
 ### Neutral
