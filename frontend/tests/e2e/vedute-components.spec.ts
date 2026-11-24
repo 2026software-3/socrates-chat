@@ -63,7 +63,7 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
 
   const field = page.getByRole('textbox', { name: '活動名稱' })
   await field.focus()
-  await expect(field).toHaveCSS('background-size', '100% 2px, 100% 1.5px')
+  await expect(field).toHaveCSS('background-size', '100% 2px, 100% 1px')
 
   const tab = page.getByRole('tab', { name: '已封存' })
   await tab.click()

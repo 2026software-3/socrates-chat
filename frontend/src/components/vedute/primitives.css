@@ -178,22 +178,23 @@
 }
 
 /*
- * 紙上橫線：兩層背景畫在欄位最下緣，不用 border。底層是 1.5px 淡墨線；焦點時上層 2px 紅粉筆線
- * 從左畫到右「蓋住」底層，所以焦點的線只有 2px，不會跟原本的線疊成 3.5px。
+ * 紙上橫線：兩層背景畫在欄位最下緣，不用 border。底層是 1px 淡墨線；焦點時上層 2px 紅粉筆線
+ * 從左畫到右「蓋住」底層，所以焦點的線只有 2px，不會跟原本的線疊加。
  */
 .vedute-input {
   @apply type-control h-auto min-h-11 w-full rounded-none border-0 bg-transparent px-0 pt-2 text-ink;
   --vedute-field-line: var(--color-chalk);
   --vedute-field-base: var(--color-ink-soft);
   --vedute-field-focus: --spacing(0.5);
-  padding-bottom: calc(--spacing(2) + var(--stroke-emphasis));
+  --vedute-field-rule: 1px;
+  padding-bottom: calc(--spacing(2) + var(--vedute-field-rule));
   box-shadow: none;
   background-image:
     linear-gradient(var(--vedute-field-line), var(--vedute-field-line)),
     linear-gradient(var(--vedute-field-base), var(--vedute-field-base));
   background-repeat: no-repeat;
   background-position: left bottom;
-  background-size: 0 var(--vedute-field-focus), 100% var(--stroke-emphasis);
+  background-size: 0 var(--vedute-field-focus), 100% var(--vedute-field-rule);
   transition: background-size var(--vedute-motion);
 }
 
@@ -204,7 +205,7 @@
 
 .vedute-input:focus {
   @apply inset-ring-0 ring-0 outline-none;
-  background-size: 100% var(--vedute-field-focus), 100% var(--stroke-emphasis);
+  background-size: 100% var(--vedute-field-focus), 100% var(--vedute-field-rule);
 }
 
 .vedute-input[aria-invalid]:not([aria-invalid="false"]) {
@@ -239,7 +240,7 @@ textarea.vedute-input {
 }
 
 .vedute-select-trigger[data-state="open"] {
-  background-size: 100% var(--vedute-field-focus), 100% var(--stroke-emphasis);
+  background-size: 100% var(--vedute-field-focus), 100% var(--vedute-field-rule);
 }
 
 .vedute-select-trigger[data-state="open"] .vedute-select-chevron {
