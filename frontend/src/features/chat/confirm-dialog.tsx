@@ -49,7 +49,7 @@ export function ConfirmDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
-        {children ? <div className="bg-surface flex flex-col gap-1 rounded-xl p-3 text-xs">{children}</div> : null}
+        {children ? <div className="bg-paper flex flex-col gap-1 rounded-xl p-3 text-xs">{children}</div> : null}
         {error ? (
           <Alert variant="destructive" role="alert">
             <AlertTitle>{errorText(t, error)}</AlertTitle>

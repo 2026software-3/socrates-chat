@@ -1,0 +1,149 @@
+/*
+ * Vedute 設計 token（F-41.1）。
+ * 數值來自 Figma [00] Guideline 的 Vedute 變數與文字樣式；規則與用途見 DESIGN.md。
+ * 頁面與元件只用這裡產生的 utility（bg-paper、text-ink-soft、type-h3…），不寫任意色碼與字級。
+ */
+
+@theme {
+  /* 紙與墨 */
+  --color-paper: #E8E1CF;
+  --color-paper-deep: #DDD4BE;
+  --color-surface: #FFFFFF;
+  --color-ink: #1F1A16;
+  --color-ink-soft: #4A4038;
+  --color-ink-faint: rgb(31 26 22 / 0.28); /* 只作線，不作字 */
+  --color-placeholder: #665C4E;
+  --color-error: #8A1C12;
+
+  /* 紅粉筆／硃砂：目前位置與每個畫面最關鍵的一個行動 */
+  --color-chalk: #A9442B;
+  --color-chalk-deep: #8A3520;
+  --color-chalk-wash: #F1DED6;
+
+  /* 顏料：銅綠＝完成、赭金＝點數與獎勵、龐貝藍＝AI 與資訊 */
+  --color-aerugo: #3B6455;
+  --color-aerugo-wash: #DCE6E0;
+  --color-ochra: #74561B;
+  --color-ochra-wash: #F0E4C4;
+  --color-ochra-graphic: #B0862F; /* 只用在圖形，不作字 */
+  --color-caeruleum: #34557A;
+  --color-caeruleum-wash: #DCE3EC;
+
+  /* 字型 */
+  --font-sans: 'Noto Serif TC Variable', 'Songti TC', serif;
+  --font-serif: 'Noto Serif TC Variable', 'Songti TC', serif;
+  --font-latin: 'IM FELL English SC', 'Times New Roman', serif;
+  --font-chalk: 'IM FELL English', 'Times New Roman', serif;
+
+  /* 圓角只有 0、2px 與圓形（rounded-full） */
+  --radius-xs: 2px;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 2px;
+  --radius-2xl: 2px;
+  --radius-3xl: 2px;
+  --radius-4xl: 2px;
+
+  /* The Pressed Not Lifted Rule：不使用投影 */
+  --shadow-2xs: 0 0 #0000;
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 0 #0000;
+  --shadow-md: 0 0 #0000;
+  --shadow-lg: 0 0 #0000;
+  --shadow-xl: 0 0 #0000;
+  --shadow-2xl: 0 0 #0000;
+}
+
+/* 文字樣式：對應 Figma 的 Display、Title、Text、Latin。用 type- 前綴，避免和 text- 顏色 class 混在一起。 */
+@utility type-display {
+  font-size: clamp(28px, 3.6vw, 40px);
+  line-height: 1.3;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+@utility type-h1 {
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+@utility type-h2 {
+  font-size: 22px;
+  line-height: 31px;
+  font-weight: 700;
+}
+@utility type-h3 {
+  font-size: 18px;
+  line-height: 27px;
+  font-weight: 700;
+}
+@utility type-body {
+  font-size: 15px;
+  line-height: 26px;
+  font-weight: 400;
+}
+@utility type-body-strong {
+  font-size: 15px;
+  line-height: 26px;
+  font-weight: 700;
+}
+@utility type-note {
+  font-size: 13px;
+  line-height: 21px;
+  font-weight: 400;
+}
+
+/* 拉丁字只用在「版上刻的字」：版題、地名、編號、發言標記（DESIGN.md The Latin Is Engraved Rule） */
+@utility type-latin-plate-title {
+  font-family: var(--font-latin);
+  font-size: clamp(22px, 2.6vw, 34px);
+  line-height: 1;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+}
+@utility type-latin-label {
+  font-family: var(--font-latin);
+  font-size: 17px;
+  line-height: 22px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+}
+@utility type-latin-numeral {
+  font-family: var(--font-latin);
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+@utility type-latin-small {
+  font-family: var(--font-latin);
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+}
+@utility type-latin-inscription {
+  font-family: var(--font-latin);
+  font-size: 19px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.26em;
+}
+@utility type-chalk-note {
+  font-family: var(--font-chalk);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 400;
+}
+
+/* 紙張質感（DESIGN.md Elevation）：兩層極淡黃斑、每 47px 一條鏈紋、每 3px 一條簾紋 */
+@utility paper-texture {
+  background-color: var(--color-paper);
+  background-image:
+    radial-gradient(ellipse at 18% 22%, rgb(150 110 60 / 0.1), transparent 55%),
+    radial-gradient(ellipse at 82% 78%, rgb(150 110 60 / 0.08), transparent 50%),
+    repeating-linear-gradient(90deg, rgb(31 26 22 / 0.035) 0 1px, transparent 1px 47px),
+    repeating-linear-gradient(0deg, rgb(31 26 22 / 0.018) 0 1px, transparent 1px 3px);
+}
