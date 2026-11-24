@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { ErrorBlock, LoadingBlock, PageHeader } from '@/components/page'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -65,22 +65,14 @@ export function ServicesPage() {
   const fresh = checked.source === view.data ? checked.rows : {}
 
   const rows = useMemo(() => {
-    const merged = (view.data?.services ?? []).map((row) => {
+    // 語音節點與其他服務同列：節點多帶 node_status 與場次，卡片再顯示出來
+    const merged = [...(view.data?.services ?? []), ...(view.data?.voice_nodes ?? [])].map((row) => {
       const latest = fresh[row.name]
-      return latest ? { ...latest, availability: row.availability, recent_events: row.recent_events } : row
+      return latest ? { ...row, ...latest, availability: row.availability, recent_events: row.recent_events } : row
     })
     // 異常的排在前面；其餘維持後端的順序
     return [...merged].sort((a, b) => Number(b.status === 'unhealthy') - Number(a.status === 'unhealthy'))
   }, [view.data, fresh])
-
-  const voiceRows = useMemo(
-    () =>
-      (view.data?.voice_nodes ?? []).map((node) => {
-        const latest = fresh[node.name]
-        return latest ? { ...node, ...latest, availability: node.availability, recent_events: node.recent_events } : node
-      }),
-    [view.data, fresh],
-  )
 
   const failed = view.error !== undefined && view.data === undefined
   const onlyDatabase = view.data !== undefined && rows.every((row) => row.target === null)
@@ -158,19 +150,6 @@ export function ServicesPage() {
               ))}
             </ul>
           )}
-          {voiceRows.length > 0 ? (
-            <VoiceNodes
-              nodes={voiceRows}
-              period={period}
-              historyAvailable={view.data.history_available}
-              onChecked={(next) =>
-                setChecked((current) => ({
-                  source: view.data,
-                  rows: { ...(current.source === view.data ? current.rows : {}), [next.name]: next },
-                }))
-              }
-            />
-          ) : null}
         </>
       ) : null}
     </div>
@@ -183,56 +162,24 @@ const NODE_STATUS_LABEL = {
   disabled: 'admin.services.voiceNodes.status.disabled',
 } as const satisfies Record<VoiceNodeRow['node_status'], MessageKey>
 
-/** 即時語音節點（S-19）：與上方的服務同樣的卡片，另顯示節點狀態與目前場次。 */
-function VoiceNodes({
-  nodes,
-  period,
-  historyAvailable,
-  onChecked,
-}: {
-  nodes: VoiceNodeRow[]
-  period: Period
-  historyAvailable: boolean
-  onChecked: (row: ServiceRow) => void
-}) {
+/** 語音節點才有的欄位：節點狀態與目前場次。 */
+function VoiceNodeFacts({ row }: { row: VoiceNodeRow }) {
   const t = useT()
   return (
-    <section aria-labelledby="voice-nodes-title" className="space-y-3">
-      <div className="space-y-1">
-        <h2 id="voice-nodes-title" className="text-lg font-semibold">
-          {t('admin.services.voiceNodes.title')}
-        </h2>
-        <p className="text-muted-foreground text-sm">{t('admin.services.voiceNodes.intro')}</p>
+    <>
+      <div>
+        <dt className="text-muted-foreground">{t('admin.services.voiceNodes.nodeStatus')}</dt>
+        <dd>{t(NODE_STATUS_LABEL[row.node_status])}</dd>
       </div>
-      <ul className="space-y-4">
-        {nodes.map((node) => (
-          <li key={node.name}>
-            <ServiceCard
-              row={node}
-              period={period}
-              historyAvailable={historyAvailable}
-              onChecked={onChecked}
-              facts={
-                <>
-                  <div>
-                    <dt className="text-muted-foreground">{t('admin.services.voiceNodes.nodeStatus')}</dt>
-                    <dd>{t(NODE_STATUS_LABEL[node.node_status])}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-muted-foreground">{t('admin.services.voiceNodes.sessions')}</dt>
-                    <dd>
-                      {node.max_sessions === null
-                        ? t('admin.services.voiceNodes.sessionsUnlimited', { n: node.sessions })
-                        : t('admin.services.voiceNodes.sessionsValue', { n: node.sessions, max: node.max_sessions })}
-                    </dd>
-                  </div>
-                </>
-              }
-            />
-          </li>
-        ))}
-      </ul>
-    </section>
+      <div>
+        <dt className="text-muted-foreground">{t('admin.services.voiceNodes.sessions')}</dt>
+        <dd>
+          {row.max_sessions === null
+            ? t('admin.services.voiceNodes.sessionsUnlimited', { n: row.sessions })
+            : t('admin.services.voiceNodes.sessionsValue', { n: row.sessions, max: row.max_sessions })}
+        </dd>
+      </div>
+    </>
   )
 }
 
@@ -241,14 +188,11 @@ function ServiceCard({
   period,
   historyAvailable,
   onChecked,
-  facts,
 }: {
-  row: ServiceRow
+  row: ServiceRow | VoiceNodeRow
   period: Period
   historyAvailable: boolean
   onChecked: (row: ServiceRow) => void
-  /** 額外的欄位（`dl` 的子項），例如語音節點的場次 */
-  facts?: ReactNode
 }) {
   const t = useT()
   const { lang } = useI18n()
@@ -348,7 +292,7 @@ function ServiceCard({
             <dt className="text-muted-foreground">{t('admin.services.availability', { period: t(PERIOD_LABEL[period]) })}</dt>
             <dd>{row.availability === null ? '–' : percent.format(row.availability)}</dd>
           </div>
-          {facts}
+          {'node_status' in row ? <VoiceNodeFacts row={row} /> : null}
           {since ? (
             <div>
               <dt className="sr-only">{t(STATE_LABEL[row.status])}</dt>
