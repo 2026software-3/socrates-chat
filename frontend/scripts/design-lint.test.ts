@@ -84,6 +84,41 @@ describe('用透明度表示停用', () => {
     expect(rules(lint(source))).toEqual(['opacity-disabled', 'opacity-disabled'])
   })
 
+  it('只看停用那一側的分支，啟用時的 opacity 不擋', () => {
+    const source = `
+      const a = (disabled: boolean) => (disabled ? '' : 'opacity-100')
+      const b = (status: string) => (status !== 'disabled' ? 'opacity-100' : '')
+      const c = (disabled: boolean) => !disabled && 'opacity-100'
+    `
+    expect(lint(source)).toEqual([])
+  })
+
+  it('條件反過來寫時，仍擋下停用那一側', () => {
+    const source = `
+      const a = (disabled: boolean) => (!disabled ? 'opacity-100' : 'opacity-50')
+      const b = (status: string) => (status === 'disabled' ? 'opacity-50' : '')
+      const c = (status: string) => (status !== 'disabled' ? '' : 'opacity-40')
+    `
+    const found = lint(source)
+    expect(rules(found)).toEqual(['opacity-disabled', 'opacity-disabled', 'opacity-disabled'])
+    expect(found.map((v) => v.message.match(/opacity-\d+/)?.[0])).toEqual(['opacity-50', 'opacity-50', 'opacity-40'])
+  })
+
+  it('擋下 CVA 的 disabled variant（true 那一側），false 那一側不擋', () => {
+    const source = `
+      const button = cva('px-4', {
+        variants: {
+          size: { sm: 'h-8' },
+          disabled: { true: 'opacity-50', false: 'opacity-100' },
+        },
+      })
+      const legacy = { disabled: 'opacity-60' }
+    `
+    const found = lint(source)
+    expect(rules(found)).toEqual(['opacity-disabled', 'opacity-disabled'])
+    expect(found.map((v) => v.line)).toEqual([5, 8])
+  })
+
   it('和停用無關的 opacity 不擋', () => {
     expect(lint(`const a = (open: boolean) => (open ? 'opacity-100' : 'opacity-0')`)).toEqual([])
   })

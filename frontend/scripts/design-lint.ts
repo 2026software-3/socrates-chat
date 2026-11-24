@@ -131,19 +131,53 @@ function mentionsDisabled(node: ts.Node, sf: ts.SourceFile) {
   return /disabled/i.test(node.getText(sf))
 }
 
-/** 這個字串是否只在「停用」時才加上（`disabled ? 'opacity-50' : ''`、`isDisabled && 'opacity-40'`）。 */
+/**
+ * 條件成立時是不是「停用」：`disabled`、`status === 'disabled'` 是 true；
+ * `!disabled`、`status !== 'disabled'` 是 false；和停用無關回傳 undefined。
+ */
+function disabledWhenTrue(cond: ts.Expression, sf: ts.SourceFile): boolean | undefined {
+  if (ts.isParenthesizedExpression(cond)) return disabledWhenTrue(cond.expression, sf)
+  if (ts.isPrefixUnaryExpression(cond) && cond.operator === ts.SyntaxKind.ExclamationToken) {
+    const inner = disabledWhenTrue(cond.operand, sf)
+    return inner === undefined ? undefined : !inner
+  }
+  if (ts.isBinaryExpression(cond)) {
+    const op = cond.operatorToken.kind
+    if (op === ts.SyntaxKind.ExclamationEqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken)
+      return mentionsDisabled(cond, sf) ? false : undefined
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken)
+      return disabledWhenTrue(cond.left, sf) ?? disabledWhenTrue(cond.right, sf)
+  }
+  return mentionsDisabled(cond, sf) ? true : undefined
+}
+
+/**
+ * 這個字串是否只在「停用」時才加上：`disabled ? 'opacity-50' : ''`、`isDisabled && 'opacity-40'`、
+ * `{ disabled: 'opacity-50' }`、CVA 的 `variants: { disabled: { true: 'opacity-50' } }`。
+ * 只看停用那一側，`disabled ? '' : 'opacity-100'` 這類啟用時的透明度不算。
+ */
 function underDisabledCondition(node: ts.Node, sf: ts.SourceFile) {
   let child = node
+  let innerKey: string | undefined // 最靠近字串的屬性名稱，用來分辨 CVA 的 true／false
   for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
-    if (ts.isConditionalExpression(parent) && child !== parent.condition) return mentionsDisabled(parent.condition, sf)
-    if (
-      ts.isBinaryExpression(parent) &&
-      parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
-      child === parent.right
-    )
-      return mentionsDisabled(parent.left, sf)
-    if (ts.isPropertyAssignment(parent) && child === parent.initializer) return mentionsDisabled(parent.name, sf)
-    if (ts.isBlock(parent) || ts.isSourceFile(parent) || ts.isJsxAttribute(parent)) return false
+    if (ts.isConditionalExpression(parent)) {
+      if (child === parent.condition) return false
+      const polarity = disabledWhenTrue(parent.condition, sf)
+      if (polarity === undefined) return false
+      return child === parent.whenTrue ? polarity : !polarity
+    }
+    if (ts.isBinaryExpression(parent)) {
+      if (parent.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken || child !== parent.right) return false
+      return disabledWhenTrue(parent.left, sf) === true
+    }
+    if (ts.isPropertyAssignment(parent)) {
+      if (child !== parent.initializer) return false
+      if (mentionsDisabled(parent.name, sf)) return innerKey !== 'false'
+      innerKey ??= parent.name.getText(sf)
+      continue
+    }
+    if (ts.isParenthesizedExpression(parent) || ts.isObjectLiteralExpression(parent)) continue
+    return false
   }
   return false
 }
