@@ -153,19 +153,27 @@ async fn delete_email(
 const LIST_ADMINS: &str =
     "SELECT email FROM users WHERE is_admin AND email IS NOT NULL ORDER BY email";
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct AdminList {
+    emails: Vec<String>,
+    /// 環境變數 `ADMIN_EMAILS` 的第一個管理者信箱（小寫）；只有本人能重設其密碼。未設定時為 `null`。
+    primary_email: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/admins",
     tag = "admin",
     summary = "列出管理者",
-    responses((status = 200, description = "管理者信箱", body = EmailList), crate::error::CommonErrors)
+    responses((status = 200, description = "管理者信箱與主要管理者信箱", body = AdminList), crate::error::CommonErrors)
 )]
 pub(crate) async fn list_admins(
     _: RequireAdmin,
     State(state): State<AppState>,
-) -> Result<Json<EmailList>, ApiError> {
-    Ok(Json(EmailList {
+) -> Result<Json<AdminList>, ApiError> {
+    Ok(Json(AdminList {
         emails: list_emails(&state.pool, LIST_ADMINS).await?,
+        primary_email: state.config.primary_admin_email().map(str::to_lowercase),
     }))
 }
 

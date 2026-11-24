@@ -1023,16 +1023,35 @@ pub(crate) struct ResetResponse {
     temporary_password: String,
 }
 
+/// 檢查是否試圖由其他管理者重設 `ADMIN_EMAILS` 第一個管理者的密碼。
+fn ensure_can_reset_email(
+    config: &crate::config::Config,
+    actor_email: Option<&str>,
+    target_email: &str,
+) -> Result<(), ApiError> {
+    if config.is_primary_admin_email(target_email)
+        && !actor_email.is_some_and(|actor| actor.eq_ignore_ascii_case(target_email))
+    {
+        return Err(ApiError::forbidden(
+            "protected_admin",
+            "無法重設主要管理者的密碼，只能由本人重設",
+        ));
+    }
+    Ok(())
+}
+
 /// 管理者重設密碼（產生臨時密碼）。以 `email` 指定時信箱沒有帳號就建立；以 `student_number` 指定時只能是已有帳號的學生，找不到回 404。
+/// 環境變數 `ADMIN_EMAILS` 的第一個管理者帳號受保護，只有本人可重設自己的密碼，其他管理者呼叫回 403 `protected_admin`。
 #[utoipa::path(
     post,
     path = "/api/admin/users/reset-password",
     tag = "admin",
-    summary = "重設密碼（僅管理者；以信箱沒有帳號就建立，以學號只重設既有學生）",
+    summary = "重設密碼（僅管理者；以信箱沒有帳號就建立，以學號只重設既有學生；第一個管理者只能由本人重設）",
     request_body = ResetBody,
     responses(
         (status = 200, description = "臨時密碼只出現這一次", body = ResetResponse),
         (status = 400, description = "invalid_target（email 與 student_number 必須恰好一個）、invalid_email、invalid_student_number", body = crate::error::ErrorBody),
+        (status = 403, description = "角色不符、帳號停用、須先改密碼、CSRF 或試圖重設主要管理者密碼（`protected_admin`）", body = crate::error::ErrorBody),
         (status = 404, description = "學號不屬於任何已有帳號的學生", body = crate::error::ErrorBody)
     )
 )]
@@ -1042,6 +1061,9 @@ pub(crate) async fn reset_password(
     Json(body): Json<ResetBody>,
 ) -> Result<Json<ResetResponse>, ApiError> {
     let target = body.into_target()?;
+    if let ResetTarget::Email(ref email) = target {
+        ensure_can_reset_email(&state.config, cu.user.email.as_deref(), email)?;
+    }
     let temporary_password = password::generate_temporary();
     let hash = hash_blocking(temporary_password.clone()).await?;
     let mut tx = state.pool.begin().await?;
@@ -1056,6 +1078,9 @@ pub(crate) async fn reset_password(
                 auth_store::reset_password_by_student_number(&mut tx, &student_number, &hash)
                     .await?
                     .ok_or(ApiError::not_found())?;
+            if let Some(ref resolved_email) = email {
+                ensure_can_reset_email(&state.config, cu.user.email.as_deref(), resolved_email)?;
+            }
             let audit_target = email.clone().unwrap_or_else(|| user_id.to_string());
             (email, audit_target)
         }
@@ -1130,5 +1155,77 @@ mod tests {
         let second = cached_maintenance_user(&parts).unwrap();
         assert!(first.0.roles.admin);
         assert!(second.0.roles.admin);
+    }
+
+    #[test]
+    fn ensure_can_reset_email_protects_only_first_env_admin_from_others() {
+        let mut cfg = crate::config::Config {
+            database_url: String::new(),
+            app_base_url: "https://app.test".into(),
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
+            google_redirect_url: String::new(),
+            google_translation_api_key: None,
+            admin_emails: vec!["first@example.com".into(), "second@example.com".into()],
+            admin_initial_password: None,
+            cookie_secure: true,
+            listen_addr: String::new(),
+            trusted_proxies: vec![],
+            login_rate_burst: 60,
+            login_rate_replenish: std::time::Duration::from_secs(3),
+            ai_usage_max: 200,
+            ai_usage_window: std::time::Duration::from_secs(3600),
+            frontend_dir: None,
+            openai_keys: std::sync::Arc::new(crate::key_pool::KeyPool::empty()),
+            openai_model: String::new(),
+            openai_fallback_models: vec![],
+            openai_reasoning_effort: None,
+            openai_base_url: String::new(),
+            openai_stt_base_url: None,
+            openai_tts_base_url: None,
+            openai_stt_model: None,
+            openai_tts_model: None,
+            openai_tts_voice: String::new(),
+            cascade_realtime_url: None,
+            cascade_llm_token: None,
+            wrap_up_turn: 15,
+            max_turns: 20,
+            ai_first_token_timeout: std::time::Duration::from_secs(15),
+            ai_total_timeout: std::time::Duration::from_secs(60),
+            argument_tree_timeout: std::time::Duration::from_secs(300),
+            request_timeout: std::time::Duration::from_secs(10),
+            demo_mode: false,
+            smtp: None,
+            teacher_key_cipher: None,
+            classroom_ai_routing: false,
+            monitored_services: vec![],
+            service_probe_interval: std::time::Duration::from_secs(30),
+        };
+
+        // 本人可重設自己
+        assert!(
+            ensure_can_reset_email(&cfg, Some("first@example.com"), "first@example.com").is_ok()
+        );
+        assert!(
+            ensure_can_reset_email(&cfg, Some("FIRST@example.com"), "first@example.com").is_ok()
+        );
+        // 其他管理者不能重設第一個管理者
+        let err = ensure_can_reset_email(&cfg, Some("second@example.com"), "first@example.com")
+            .unwrap_err();
+        assert_eq!(err.code, "protected_admin");
+        let err = ensure_can_reset_email(&cfg, Some("third@example.com"), "FIRST@example.com")
+            .unwrap_err();
+        assert_eq!(err.code, "protected_admin");
+        let err = ensure_can_reset_email(&cfg, None, "first@example.com").unwrap_err();
+        assert_eq!(err.code, "protected_admin");
+        // 第二個環境變數管理者不受保護
+        assert!(
+            ensure_can_reset_email(&cfg, Some("third@example.com"), "second@example.com").is_ok()
+        );
+        // ADMIN_EMAILS 為空時沒有受保護帳號
+        cfg.admin_emails.clear();
+        assert!(
+            ensure_can_reset_email(&cfg, Some("second@example.com"), "first@example.com").is_ok()
+        );
     }
 }

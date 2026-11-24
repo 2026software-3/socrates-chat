@@ -268,6 +268,12 @@ export type ClassDashboard = {
 
 export type EmailList = { emails: string[] }
 
+export type AdminList = {
+  emails: string[]
+  /** 環境變數 ADMIN_EMAILS 的第一個管理者信箱；只有本人能重設其密碼。未設定時為 null。 */
+  primary_email: string | null
+}
+
 export type Classroom = {
   /** 只有 `GET /api/classrooms`（列表）會回：教室不是過渡中、沒封存、也還沒設定對話模型，學生目前無法使用 AI */
   ai_model_missing?: boolean

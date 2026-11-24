@@ -3,14 +3,28 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { AdminsPage } from '@/features/admin/admins-page'
-import { apiError, renderApp } from '@/test/render'
+import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
-function mockAdmins(initial: string[], issued: string | null = 'TEMP2345WXYZ') {
+function mockAdmins(
+  initial: string[],
+  {
+    issued = 'TEMP2345WXYZ',
+    primaryEmail = null,
+    meEmail = 'admin@example.com',
+    language = 'zh-TW',
+  }: {
+    issued?: string | null
+    primaryEmail?: string | null
+    meEmail?: string
+    language?: 'zh-TW' | 'en' | 'es'
+  } = {},
+) {
   const emails = [...initial]
   const bodies: unknown[] = []
+  mockMe(makeMe({ admin: true }, { email: meEmail, language }))
   server.use(
-    http.get('/api/admin/admins', () => HttpResponse.json({ emails })),
+    http.get('/api/admin/admins', () => HttpResponse.json({ emails, primary_email: primaryEmail })),
     http.post('/api/admin/admins', async ({ request }) => {
       const body = (await request.json()) as { email: string }
       bodies.push(body)
@@ -36,6 +50,7 @@ describe('AdminsPage', () => {
   })
 
   it('shows an error with retry', async () => {
+    mockMe(makeMe({ admin: true }, { email: 'admin@example.com' }))
     server.use(http.get('/api/admin/admins', () => apiError(500, 'internal', 'req-9')))
     render()
     expect(await screen.findByText('系統發生錯誤，請稍後再試。')).toBeInTheDocument()
@@ -57,7 +72,7 @@ describe('AdminsPage', () => {
   })
 
   it('promotes an existing account without a temporary password', async () => {
-    mockAdmins(['a@example.com'], null)
+    mockAdmins(['a@example.com'], { issued: null })
     render()
     await userEvent.type(await screen.findByLabelText('管理者電子郵件'), 'old@example.com')
     await userEvent.click(screen.getByRole('button', { name: '新增管理者' }))
@@ -90,10 +105,44 @@ describe('AdminsPage', () => {
     expect(bodies).toEqual([{ email: 'a@example.com' }])
   })
 
+  it('hides reset password button on primary admin for other admins', async () => {
+    mockAdmins(['primary@example.com', 'other@example.com'], {
+      primaryEmail: 'primary@example.com',
+      meEmail: 'other@example.com',
+    })
+    render()
+    const list = await screen.findByRole('list', { name: '管理者清單' })
+    expect(within(list).getByText('主要管理者')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重設 primary@example.com 的密碼' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重設 other@example.com 的密碼' })).toBeInTheDocument()
+  })
+
+  it('allows the primary admin to see and use their own reset password button', async () => {
+    mockAdmins(['primary@example.com', 'other@example.com'], {
+      primaryEmail: 'primary@example.com',
+      meEmail: 'primary@example.com',
+    })
+    render()
+    const list = await screen.findByRole('list', { name: '管理者清單' })
+    expect(within(list).getByText('主要管理者')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '重設 primary@example.com 的密碼' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重設 other@example.com 的密碼' })).toBeInTheDocument()
+  })
+
+  it('shows localized error when server rejects with protected_admin', async () => {
+    mockAdmins(['other@example.com'], { meEmail: 'other@example.com' })
+    server.use(http.post('/api/admin/users/reset-password', () => apiError(403, 'protected_admin')))
+    render()
+    await userEvent.click(await screen.findByRole('button', { name: '重設 other@example.com 的密碼' }))
+    await userEvent.click(screen.getByRole('button', { name: '重設密碼' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法重設主要管理者的密碼，只能由本人重設。')
+  })
+
   it('renders in English', async () => {
-    mockAdmins(['a@example.com'])
+    mockAdmins(['a@example.com'], { primaryEmail: 'a@example.com', meEmail: 'a@example.com', language: 'en' })
     renderApp(<AdminsPage />, { lang: 'en' })
     expect(await screen.findByText('Admins: 1')).toBeInTheDocument()
+    expect(screen.getByText('Primary admin')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add admin' })).toBeInTheDocument()
   })
 })
