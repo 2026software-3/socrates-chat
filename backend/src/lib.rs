@@ -108,7 +108,7 @@ pub mod teacher_key_store;
 pub mod teacher_key_usage;
 pub mod teacher_keys;
 pub mod topic_dimensions;
-mod topic_translations;
+pub mod topic_translations;
 pub mod usage_api;
 pub(crate) mod user_limit;
 pub mod voice;

@@ -593,28 +593,34 @@ struct TranscriptHead {
     path = "/api/summaries/{id}/messages",
     tag = "summaries",
     summary = "教室內學生已結束對話的完整訊息（唯讀；不含個人練習）",
-    params(("id" = Uuid, Path, description = "對話 ID")),
+    params(("id" = Uuid, Path, description = "對話 ID"), ("language" = Option<String>, Query, description = "題名顯示語言")),
     responses((status = 200, description = "對話與全部訊息；管理者的 content 一律是 message", body = ConversationTranscript), crate::error::CommonErrors)
 )]
 pub(crate) async fn transcript(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    Query(query): Query<crate::catalog::CatalogLanguage>,
 ) -> Result<Json<ConversationTranscript>, ApiError> {
+    let language = crate::catalog::display_language(query.language.as_deref(), &cu.user.language)?;
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let head: TranscriptHead = sqlx::query_as(concat!(
-        "SELECT c.classroom_id, c.title, c.language, c.ended_at,
+        "SELECT c.classroom_id,
+                COALESCE(topic.translations -> ($4::text) ->> 'title', c.title) AS title,
+                c.language, c.ended_at,
                 u.id AS student_user_id, ",
         display_name_sql!("u"),
         " AS student_name
          FROM conversations c
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($2 OR cl.created_by = $3)
          JOIN users u ON u.id = c.user_id
+         LEFT JOIN topics topic ON topic.id = c.topic_id
          WHERE c.id = $1 AND c.ended_at IS NOT NULL"
     ))
     .bind(id)
     .bind(cu.roles.admin)
     .bind(cu.user.id)
+    .bind(language)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(ApiError::not_found)?;
@@ -648,6 +654,8 @@ pub(crate) struct SummaryPage {
 /// 分頁參數加上選用篩選與搜尋。
 #[derive(Deserialize)]
 pub(crate) struct SummaryQuery {
+    /// 題名顯示語言。省略時保留既有呼叫端使用的快照題名。
+    language: Option<String>,
     #[serde(flatten)]
     page: Pagination,
     #[serde(flatten)]
@@ -759,7 +767,8 @@ impl SummaryQuery {
         ("student" = Option<Uuid>, Query, description = "只看這位學生（使用者 UUID，即列表項目的 student_user_id；不是學號）"),
         ("activity" = Option<Uuid>, Query, description = "只看這個討論活動的對話（活動 ID）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
-        ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+        ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題與譯名（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+        ("language" = Option<String>, Query, description = "題名顯示語言，省略時使用保存的題名"),
     ),
     responses((status = 200, description = "總結分頁，依總結完成時間新到舊（completed_at DESC, conversation_id ASC）", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
@@ -768,6 +777,7 @@ pub(crate) async fn list(
     State(state): State<AppState>,
     Query(query): Query<SummaryQuery>,
 ) -> Result<Json<Page<SummaryRow>>, ApiError> {
+    let language = crate::catalog::display_language(query.language.as_deref(), "zh-TW")?;
     let limit = query.page.limit()?;
     let classroom = filtered_classroom(&state, &cu, &query.classroom).await?;
     let Filters {
@@ -808,7 +818,7 @@ pub(crate) async fn list(
                           )
                     )
                 ) AS activity_completed,
-                c.title, c.ended_at, s.completed_at,
+                COALESCE(topic.translations -> ($12::text) ->> 'title', c.title) AS title, c.ended_at, s.completed_at,
                 u.id AS student_user_id, u.student_id AS student_number, ",
         display_name_sql!("u"),
         " AS student_name, u.email AS student_email,
@@ -822,6 +832,7 @@ pub(crate) async fn list(
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN users u ON u.id = c.user_id
+         LEFT JOIN topics topic ON topic.id = c.topic_id
          LEFT JOIN summary_translations t ON NOT $1 AND t.conversation_id = s.conversation_id
                                          AND t.language = $11
          WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
@@ -833,7 +844,11 @@ pub(crate) async fn list(
         display_name_sql!("u"),
         " ILIKE $6 ESCAPE '\\'
                 OR u.email ILIKE $6 ESCAPE '\\'
-                OR c.title ILIKE $6 ESCAPE '\\')
+                OR c.title ILIKE $6 ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_each(topic.translations) AS translation(lang, fields)
+                    WHERE fields ->> 'title' ILIKE $6 ESCAPE '\\'
+                ))
            AND ($7::timestamptz IS NULL
                 OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
            AND ($9::uuid IS NULL OR c.activity_id = $9)
@@ -851,6 +866,7 @@ pub(crate) async fn list(
     .bind(activity)
     .bind((limit + 1) as i64)
     .bind(&cu.user.language)
+    .bind(language)
     .fetch_all(&state.pool)
     .await?;
     // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），

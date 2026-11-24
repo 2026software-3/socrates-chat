@@ -123,6 +123,7 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
 export function SummariesPage() {
   const t = useT()
   const accountLanguage = useAccountLanguage()
+  const { lang } = useI18n()
   const [draft, setDraft] = useState('')
   const [search, setSearch] = useState('')
   const [cursors, setCursors] = useState<(string | null)[]>([null])
@@ -151,9 +152,10 @@ export function SummariesPage() {
       </form>
       {accountLanguage ? (
         <SummaryList
-          key={`${search}\n${cursor ?? ''}\n${accountLanguage}`}
+          key={`${search}\n${cursor ?? ''}\n${accountLanguage}\n${lang}`}
           search={search}
           cursor={cursor}
+          language={lang}
           onNext={(next) => setCursors((previous) => [...previous, next])}
           onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
           onRestart={() => setCursors([null])}
@@ -163,8 +165,8 @@ export function SummariesPage() {
   )
 }
 
-function summariesPath(search: string, cursor: string | null): string {
-  const params = new URLSearchParams()
+function summariesPath(search: string, cursor: string | null, language: string): string {
+  const params = new URLSearchParams({ language })
   if (search) params.set('q', search)
   if (cursor) params.set('cursor', cursor)
   const query = params.toString()
@@ -174,18 +176,20 @@ function summariesPath(search: string, cursor: string | null): string {
 function SummaryList({
   search,
   cursor,
+  language,
   onNext,
   onPrevious,
   onRestart,
 }: {
   search: string
   cursor: string | null
+  language: string
   onNext: (cursor: string) => void
   onPrevious?: () => void
   onRestart: () => void
 }) {
   const t = useT()
-  const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor))
+  const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor, language))
   const data = summaries.data?.items
   const nextCursor = summaries.data?.next_cursor
 

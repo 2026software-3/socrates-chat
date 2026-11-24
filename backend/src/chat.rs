@@ -83,10 +83,15 @@ macro_rules! classroom_join {
 
 macro_rules! conversation_columns {
     ($title:literal) => {
+        conversation_columns!(
+            $title,
+            "(SELECT a.title FROM activities a WHERE a.id = conversations.activity_id)"
+        )
+    };
+    ($title:literal, $activity_title:literal) => {
         concat!(
-        "SELECT id, activity_id, topic_id, classroom_id,
-                (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
-                ", $title, ", description, language, status, stage,
+        "SELECT id, activity_id, topic_id, classroom_id, ", $activity_title, " AS activity_title, ",
+                $title, ", description, language, status, stage,
                 turn_count, converge_ready, created_at,
                 COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
                 ended_at,
@@ -288,7 +293,11 @@ pub(crate) async fn list(
             None => None,
         };
     let rows = sqlx::query_as(concat!(
-        conversation_columns!("COALESCE(topic.translated, conversations.title) AS title"),
+        conversation_columns!(
+            "COALESCE(topic.translated, conversations.title) AS title",
+            "(SELECT COALESCE(a.translations -> ($7::text) ->> 'title', a.title)
+              FROM activities a WHERE a.id = conversations.activity_id)"
+        ),
         ", ($7 <> 'zh-TW' AND topic.original IS NOT NULL AND topic.translated IS NULL) AS title_pending FROM conversations ",
         "LEFT JOIN LATERAL (SELECT t.title AS original, t.translations -> ($7::text) ->> 'title' AS translated FROM topics t WHERE t.id = conversations.topic_id) topic ON true ",
         classroom_join!(),
@@ -380,15 +389,32 @@ pub async fn load_messages(
     path = "/api/conversations/{id}",
     tag = "conversations",
     summary = "對話與全部訊息",
-    params(("id" = Uuid, Path, description = "對話 ID")),
+    params(("id" = Uuid, Path, description = "對話 ID"), ("language" = Option<String>, Query, description = "題名顯示語言")),
     responses((status = 200, description = "對話與訊息", body = Detail))
 )]
 pub(crate) async fn detail(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    Query(query): Query<crate::catalog::CatalogLanguage>,
 ) -> Result<Json<Detail>, ApiError> {
+    let language = crate::catalog::display_language(query.language.as_deref(), &cu.user.language)?;
     let mut conversation = owned_conversation(&state, cu.user.id, id).await?;
+    if let Some(topic_id) = conversation.topic_id
+        && language != "zh-TW"
+        && let Some((title,)) = sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT translations -> ($2::text) ->> 'title' FROM topics WHERE id = $1",
+        )
+        .bind(topic_id)
+        .bind(language)
+        .fetch_optional(&state.pool)
+        .await?
+    {
+        conversation.title_pending = title.is_none();
+        if let Some(title) = title {
+            conversation.title = title;
+        }
+    }
     // 先看是否正在產生再載入訊息：回覆若在兩者之間完成，訊息裡已有它，前端就不會誤判成還沒回覆
     let generating = state.live.is_live(id);
     let messages = load_messages(&state, id).await?;

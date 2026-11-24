@@ -145,6 +145,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl leading-8 font-medium break-words">{detail.title}</h1>
+              {detail.title_pending && <small>{t('admin.dimensions.translationPending')}</small>}
               <Badge variant={ended ? 'secondary' : 'default'}>{t(`chat.status.${status}`)}</Badge>
             </div>
             {guidingQuestion ? (
@@ -184,7 +185,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
             <p className="text-muted-foreground text-sm">{t('chat.ended.readonly')}</p>
             <SummaryPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} onReadyChange={setSummaryReady} />
             {summaryReady ? <RadarPanel conversationId={detail.id} pollMs={pollMs} maxPollMs={maxPollMs} /> : null}
-            <ArgumentTreePanel conversationId={detail.id} />
+            <ArgumentTreePanel conversationId={detail.id} topicTitle={detail.title} />
           </div>
         ) : null}
       </div>

@@ -13,6 +13,9 @@ pub struct Activity {
     pub id: Uuid,
     pub title: String,
     pub description: String,
+    #[serde(skip_serializing_if = "crate::topic_translations::Translations::is_empty")]
+    #[sqlx(json, default)]
+    pub(crate) translations: crate::topic_translations::Translations,
     /// 活動題目清單（S-04.7、F-29.1）
     pub topic_ids: Vec<Uuid>,
     /// 相容舊欄位（第一個題目；沒有題目時為 null）
@@ -48,8 +51,12 @@ macro_rules! topic_join {
 
 macro_rules! activity_select {
     ($tail:literal) => {
+        activity_select!("", $tail)
+    };
+    ($extra:literal, $tail:literal) => {
         concat!(
             "SELECT a.id, a.title, a.description, ",
+            $extra,
             topic_columns!(),
             ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
@@ -72,6 +79,7 @@ pub async fn list(
 ) -> Result<Vec<Activity>, sqlx::Error> {
     let (after_time, after_id) = after.unzip();
     sqlx::query_as(activity_select!(
+        "a.translations, ",
         "JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE ($1 OR cl.created_by = $2) AND ($3::uuid IS NULL OR a.classroom_id = $3)
            AND a.is_archived = $4
@@ -193,7 +201,7 @@ pub async fn list_published_for_student(
 ) -> Result<Vec<PublishedActivity>, sqlx::Error> {
     // 同一個查詢帶出教室名稱：活動都在學生名單內的教室，所以只會有學生自己所在教室的名稱（S-14）
     sqlx::query_as(concat!(
-        "SELECT a.id, a.title, a.description, ",
+        "SELECT a.id, a.title, a.description, a.translations, ",
         topic_columns!(),
         ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at,
            cl.name AS classroom_name
@@ -238,6 +246,8 @@ pub struct TopicProgress {
 /// 學生看到的活動：活動本身加上所屬教室名稱（供前端依教室分組，S-14）、每題進度與整體完成度。
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StudentActivity {
+    pub title_pending: bool,
+    pub description_pending: bool,
     #[serde(flatten)]
     pub activity: Activity,
     /// 所屬教室名稱；學生看得到的教室資訊只有名稱
@@ -288,6 +298,8 @@ pub async fn list_published_with_progress(
                 .unwrap_or_default();
             let completed = !topics.is_empty() && topics.iter().all(|t| t.summary_ready);
             StudentActivity {
+                title_pending: false,
+                description_pending: false,
                 activity: published.activity,
                 classroom_name: published.classroom_name,
                 topics,

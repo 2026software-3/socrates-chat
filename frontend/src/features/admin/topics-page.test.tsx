@@ -451,6 +451,14 @@ describe('TopicsPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
+  it('uses the same translated title in the list and actions and edits the original', async () => {
+    mockTopics([topic('1', { title: '中文原題', translations: { es: { title: 'Título traducido' } } })])
+    renderApp(<TopicsPage />, { lang: 'es' })
+    expect(await screen.findByRole('cell', { name: 'Título traducido' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Editar.*Título traducido/ }))
+    expect(within(await screen.findByRole('dialog')).getByDisplayValue('中文原題')).toBeInTheDocument()
+  })
+
   it('renders in Spanish', async () => {
     mockTopics([topic('1')])
     renderApp(<TopicsPage />, { lang: 'es' })

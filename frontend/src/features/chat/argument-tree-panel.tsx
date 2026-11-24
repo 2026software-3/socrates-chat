@@ -36,7 +36,7 @@ const POLL_MS = 1000
 const MAX_POLL_MS = 15 * 60 * 1000
 
 /** Only explicit opening starts requests. POST is idempotent for pending/ready results. */
-export function ArgumentTreePanel({ conversationId }: { conversationId: string }) {
+export function ArgumentTreePanel({ conversationId, topicTitle }: { conversationId: string; topicTitle: string }) {
   const t = useT()
   const [open, setOpen] = useState(false)
   const [state, setState] = useState<ViewState>({ kind: 'loading' })
@@ -120,7 +120,7 @@ export function ArgumentTreePanel({ conversationId }: { conversationId: string }
         ) : null}
         {state.kind === 'ready' ? (
           <div className="min-w-0 space-y-4">
-            <p className="text-sm font-medium">{state.tree.title} · {t('chat.tree.count', { count: state.tree.node_count })}</p>
+            <p className="text-sm font-medium">{topicTitle} · {t('chat.tree.count', { count: state.tree.node_count })}</p>
             <ul className="min-w-0" aria-label={t('chat.tree.title')}><TreeNode node={state.tree.root} root /></ul>
             <details className="rounded-lg border p-3">
               <summary className="cursor-pointer text-sm font-medium">{t('chat.tree.json')}</summary>

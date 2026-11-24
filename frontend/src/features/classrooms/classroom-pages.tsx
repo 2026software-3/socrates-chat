@@ -12,8 +12,8 @@ import { Stat } from '@/features/dashboard/distribution'
 import { ActivitiesPanel } from '@/features/teacher/activities-page'
 import { ClassroomRoster } from '@/features/teacher/roster-page'
 import { SummaryCard } from '@/features/teacher/summaries-page'
-import { useT } from '@/i18n'
-import type { Activity, Classroom, ClassDashboard, Page as PageResult, TeacherSummary } from '@/lib/types'
+import { useI18n, useT } from '@/i18n'
+import type { Activity, Classroom, ClassDashboard, Page as PageResult, TeacherSummary, Topic } from '@/lib/types'
 import { useFetch, usePagedFetch } from '@/lib/use-fetch'
 
 /** 依網址的教室 id 找教室；載入中、失敗與找不到都在這裡處理，找到才渲染 `children`。 */
@@ -123,18 +123,21 @@ export function ClassroomActivityPage() {
 function ActivityBody({ classroom, activityId }: { classroom: Classroom; activityId: string }) {
   const t = useT()
   const base = useClassroomsBase()
+  const { lang } = useI18n()
   const room = encodeURIComponent(classroom.id)
   // 活動可能已封存，所以兩種都查；一個教室的活動數不多，一次取 200 筆
   const active = useFetch<PageResult<Activity>>(`/api/activities?classroom_id=${room}&limit=200`)
   const archived = useFetch<PageResult<Activity>>(`/api/activities?classroom_id=${room}&limit=200&archived=true`)
+  const topics = useFetch<Topic[]>('/api/topics')
   const dashboard = useFetch<ClassDashboard>(`/api/dashboard/class?classroom_id=${room}`)
   const summaries = usePagedFetch<TeacherSummary>(
-    `/api/summaries?classroom_id=${room}&activity=${encodeURIComponent(activityId)}`,
+    `/api/summaries?classroom_id=${room}&activity=${encodeURIComponent(activityId)}&language=${lang}`,
   )
   const activity = [...(active.data?.items ?? []), ...(archived.data?.items ?? [])].find((a) => a.id === activityId)
   const distribution = dashboard.data?.activities.find((a) => a.activity_id === activityId)
   const loadingMeta = (active.loading || archived.loading) && !activity
-  const title = activity?.title ?? t('classrooms.activity')
+  const title = activity?.translations?.[lang]?.title ?? activity?.title ?? t('classrooms.activity')
+  const description = activity?.translations?.[lang]?.description ?? activity?.description
 
   return (
     <Page
@@ -144,7 +147,7 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
         { label: classroom.name, to: `${base}/${classroom.id}` },
         { label: title },
       ]}
-      description={activity?.description || undefined}
+      description={description || undefined}
     >
       {loadingMeta ? <LoadingBlock /> : null}
       {!loadingMeta && !activity && !active.error && !archived.error ? <EmptyBlock>{t('error.not_found')}</EmptyBlock> : null}
@@ -165,7 +168,7 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
               {distribution.topics.map((topic) => (
                 <Card key={topic.topic_id}>
                   <CardContent className="space-y-4">
-                    <h3 className="font-medium">{topic.title}</h3>
+                    <h3 className="font-medium">{topics.data?.find((item) => item.id === topic.topic_id)?.translations?.[lang]?.title ?? topic.title}</h3>
                     <p className="text-muted-foreground text-sm">
                       {t('dashboard.class.activityCompleted', { count: topic.completed })}
                     </p>
@@ -213,8 +216,9 @@ function StudentBody({ classroom, studentId }: { classroom: Classroom; studentId
   const t = useT()
   const base = useClassroomsBase()
   const isAdmin = base.startsWith('/admin')
+  const { lang } = useI18n()
   const summaries = usePagedFetch<TeacherSummary>(
-    `/api/summaries?classroom_id=${encodeURIComponent(classroom.id)}&student=${encodeURIComponent(studentId)}`,
+    `/api/summaries?classroom_id=${encodeURIComponent(classroom.id)}&student=${encodeURIComponent(studentId)}&language=${lang}`,
   )
   const first = summaries.items?.[0]
   const name = first ? (first.student_name ?? first.student_email) : t('classrooms.student')

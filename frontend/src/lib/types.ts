@@ -34,6 +34,7 @@ export type Activity = {
   id: string
   title: string
   description: string
+  translations?: Topic['translations']
   /** 活動的題目清單（1 到 5 個，依教師排定的順序；S-04.7）。 */
   topic_ids: string[]
   opens_at: string | null
@@ -58,7 +59,7 @@ export type TopicProgress = {
 }
 
 /** 學生看到的活動：所屬教室名稱（供依教室分組，S-14；學生只看得到教室名稱）、每題進度與整體完成度（每題都有總結才算完成）。 */
-export type StudentActivity = Activity & { classroom_name: string; topics: TopicProgress[]; completed: boolean }
+export type StudentActivity = Activity & { title_pending?: boolean; description_pending?: boolean; classroom_name: string; topics: TopicProgress[]; completed: boolean }
 
 export type Available = { activities: StudentActivity[]; topics: Topic[] }
 
@@ -248,6 +249,7 @@ export type PersonalDashboard = {
   recent: {
     conversation_id: string
     title: string
+    title_pending?: boolean
     ended_at: string | null
     stage: 1 | 2 | 3
     turn_count: number
