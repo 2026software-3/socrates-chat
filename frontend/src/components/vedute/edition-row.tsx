@@ -33,7 +33,7 @@ export function EditionRow({
       data-vedute-edition-row=""
       data-tone={tone}
       className={cn(
-        'flex items-center gap-3 py-2.5',
+        'flex items-center gap-3 py-3',
         tone === 'pending'
           ? 'rounded-sm border border-ochra-graphic bg-ochra-wash px-3'
           : 'border-b border-ink-faint last:border-b-0',
@@ -41,10 +41,10 @@ export function EditionRow({
       )}
     >
       {cover ?? <BookCover size="sm" src={coverSrc} alt={coverAlt} />}
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
           {language && (
-            <span className="type-note shrink-0 rounded-sm border border-ink-faint bg-paper px-1.5 py-px text-ink">
+            <span className="type-note inline-flex shrink-0 items-center rounded-sm border border-ink-faint bg-paper px-2 py-0 text-ink">
               {language}
             </span>
           )}
@@ -76,7 +76,7 @@ export function EditionRowSkeleton({
   return (
     <div
       className={cn(
-        'flex items-center gap-3 border-b border-ink-faint py-2.5 last:border-b-0',
+        'flex items-center gap-3 border-b border-ink-faint py-3 last:border-b-0',
         className,
       )}
     >

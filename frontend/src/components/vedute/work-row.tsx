@@ -64,26 +64,26 @@ export function WorkRow({
     >
       <div className="flex items-center gap-3 md:gap-4">
         {cover ?? <BookCover size="md" src={coverSrc} alt={coverAlt} />}
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <div className="type-h3 min-w-0 flex-1 text-ink">{title}</div>
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <div className="type-h3 min-w-0 text-ink">{title}</div>
             {status && <div className="shrink-0">{status}</div>}
           </div>
           {meta && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">{meta}</div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">{meta}</div>
           )}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
       </div>
 
       {hasEditions && (
-        <div className="pt-1 md:pl-18">
+        <div className="pt-0.5 md:pl-18">
           <button
             type="button"
             aria-expanded={isExpanded}
             aria-controls={panelId}
             onClick={toggle}
-            className="vedute-work-toggle type-note inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-sm bg-transparent px-1 text-ink-soft hover:text-chalk-deep"
+            className="vedute-work-toggle type-note -ml-1 inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-sm bg-transparent px-1 text-ink-soft hover:text-chalk-deep active:text-chalk-deep"
           >
             {isExpanded ? (
               <ChevronDown size={16} strokeWidth={1.5} aria-hidden="true" />
@@ -93,7 +93,7 @@ export function WorkRow({
             <span>{isExpanded ? collapseLabel : expandLabel}</span>
           </button>
           {isExpanded && (
-            <div id={panelId} className="flex flex-col">
+            <div id={panelId} className="flex flex-col border-t border-ink-faint">
               {children}
             </div>
           )}
@@ -120,11 +120,11 @@ export function WorkRowSkeleton({
       <div className="flex items-center gap-3 md:gap-4">
         <BookCoverSkeleton size="md" />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <Skeleton className="h-6 w-2/5 min-w-28" />
             <Skeleton className="h-5 w-12" />
           </div>
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-4">
             <Skeleton className="h-4 w-16" />
             <Skeleton className="h-4 w-24" />
             <Skeleton className="h-4 w-16" />
@@ -132,11 +132,15 @@ export function WorkRowSkeleton({
         </div>
         <Skeleton className="size-11 shrink-0" />
       </div>
-      <div className="pt-2 md:pl-18">
-        <Skeleton className="my-2 h-4 w-28" />
-        {Array.from({ length: editionsCount }, (_, i) => (
-          <EditionRowSkeleton key={i} />
-        ))}
+      <div className="pt-1 md:pl-18">
+        <Skeleton className="my-2.5 h-4 w-28" />
+        {editionsCount > 0 && (
+          <div className="flex flex-col border-t border-ink-faint">
+            {Array.from({ length: editionsCount }, (_, i) => (
+              <EditionRowSkeleton key={i} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

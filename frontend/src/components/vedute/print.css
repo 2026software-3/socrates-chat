@@ -24,6 +24,18 @@
   );
 }
 
+.vedute-work-toggle {
+  transition-property: color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
 .vedute-work-toggle:focus-visible {
   @apply outline-2 outline-offset-2 outline-chalk;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vedute-work-toggle {
+    transition: none;
+  }
 }
