@@ -1,0 +1,237 @@
+/*
+ * Vedute 殼層樣式與動畫（F-41.4）。
+ * 動態時長、緩動與漸層數值來自 prototypes/c-interior/index.html；
+ * 顏色一律使用 src/styles/tokens.css 的 token，不使用投影。
+ */
+
+:root {
+  --vedute-ease: cubic-bezier(.2, .7, .2, 1);
+  --vedute-topbar-h: 52px;
+  --vedute-side-w: 216px;
+}
+
+/* 雙墨線：上下 1px 墨線、中隔 1px，不用 box-shadow（呼叫端已設 sticky／fixed／relative 定位） */
+.vedute-double-rule-b {
+  border-bottom: 1px solid var(--color-ink);
+}
+.vedute-double-rule-b::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 1px;
+  background-color: var(--color-ink);
+  pointer-events: none;
+}
+
+.vedute-double-rule-t {
+  border-top: 1px solid var(--color-ink);
+}
+.vedute-double-rule-t::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 1px;
+  height: 1px;
+  background-color: var(--color-ink);
+  pointer-events: none;
+}
+
+/* 拉丁銘文逐字刻出：每字 0.5s、間隔 40ms（prototypes/c-interior/index.html .insc.cut） */
+@keyframes vedute-chisel {
+  from {
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-2px);
+    opacity: 0.2;
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.vedute-inscription {
+  font-family: var(--font-latin);
+  white-space: nowrap;
+}
+
+.vedute-inscription-topbar {
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: 0.26em;
+  color: var(--color-ink);
+}
+
+.vedute-inscription-header {
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  color: var(--color-ink-soft);
+}
+
+.vedute-inscription-back {
+  font-size: 15px;
+  line-height: 1.2;
+  letter-spacing: 0.2em;
+  color: var(--color-chalk-deep);
+}
+
+@media (width < 64rem) {
+  .vedute-inscription-topbar {
+    font-size: 17px;
+    letter-spacing: 0.2em;
+  }
+}
+
+@media (width < 48rem) {
+  .vedute-inscription-topbar {
+    font-size: 15px;
+    letter-spacing: 0.16em;
+  }
+}
+
+.vedute-inscription [data-glyph] {
+  display: inline-block;
+  animation: vedute-chisel 0.5s var(--vedute-ease) both;
+  animation-delay: calc(var(--chisel-delay, 0ms) + var(--i, 0) * 40ms);
+}
+
+.vedute-inscription [data-dot] {
+  color: var(--color-chalk);
+  margin-inline: 0.08em;
+}
+
+/* Nolli 廣場平面圖：建築由墨色打開成白底、柱子顯現、紅粉筆描邊 0.7s */
+.vedute-plan-bld {
+  cursor: pointer;
+}
+.vedute-plan-bld .vedute-plan-poche {
+  fill: var(--color-ink);
+  transition: fill 0.35s ease;
+}
+.vedute-plan-bld .vedute-plan-open {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.vedute-plan-bld .vedute-plan-rim {
+  fill: none;
+  stroke: var(--color-chalk);
+  stroke-width: 1.4;
+  stroke-dasharray: 400;
+  stroke-dashoffset: 400;
+  transition: stroke-dashoffset 0.7s var(--vedute-ease);
+}
+.vedute-plan-bld.is-here .vedute-plan-poche {
+  fill: var(--color-surface);
+}
+.vedute-plan-bld.is-here .vedute-plan-open {
+  opacity: 1;
+}
+.vedute-plan-bld.is-here .vedute-plan-rim {
+  stroke-dashoffset: 0;
+}
+.vedute-plan-bld.is-hover:not(.is-here) .vedute-plan-poche {
+  fill: var(--color-chalk-deep);
+}
+.vedute-plan-bld.is-inert {
+  cursor: default;
+}
+.vedute-plan-bld.is-inert .vedute-plan-poche {
+  fill: var(--color-ink-soft);
+}
+
+/* PageHeader 白色漸層（prototypes/c-interior/index.html .veduta::after + 手機版覆寫） */
+.vedute-page-header-fade {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-surface) 96%, transparent) 0%,
+    color-mix(in srgb, var(--color-surface) 72%, transparent) 34%,
+    transparent 64%
+  );
+}
+
+@media (width < 48rem) {
+  .vedute-page-header-fade {
+    background-image: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-surface) 95%, transparent) 0%,
+      color-mix(in srgb, var(--color-surface) 80%, transparent) 60%,
+      color-mix(in srgb, var(--color-surface) 30%, transparent) 100%
+    );
+  }
+}
+
+/* 抽屜（0.24s）、手機面板（0.32s）與遮罩（0.25s） */
+.vedute-scrim {
+  background-color: color-mix(in srgb, var(--color-ink) 36%, transparent);
+  transition: opacity 0.25s ease;
+}
+
+.vedute-drawer {
+  width: var(--vedute-side-w);
+  transition: transform 0.24s var(--vedute-ease);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.vedute-sheet {
+  transition: transform 0.32s var(--vedute-ease);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+.vedute-sheet.is-dragging {
+  transition: none;
+}
+
+/* 手機底部分頁列：60px 分頁＋3px 雙線＋手勢列安全區；安全區內不放可點擊元素 */
+.vedute-tabbar {
+  padding-top: 3px;
+  padding-left: max(4px, env(safe-area-inset-left, 0px));
+  padding-right: max(4px, env(safe-area-inset-right, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (width < 48rem) {
+  .vedute-work-main {
+    padding-bottom: calc(var(--size-bottom-nav) + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* 側欄固定寬度 */
+.vedute-sidebar-fixed {
+  width: var(--vedute-side-w);
+}
+
+/* 區域子頁籤列（Nav/Tab Item 樣式，間距 28px，手機可橫向捲動） */
+.vedute-area-tab {
+  position: relative;
+}
+.vedute-area-tab[aria-current="page"]::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background-color: var(--color-chalk);
+}
+
+/* 減少動態：所有殼層動畫與轉場直接呈現最終狀態 */
+@media (prefers-reduced-motion: reduce) {
+  .vedute-inscription [data-glyph] {
+    animation: none;
+  }
+  .vedute-plan-bld .vedute-plan-poche,
+  .vedute-plan-bld .vedute-plan-open,
+  .vedute-plan-bld .vedute-plan-rim,
+  .vedute-scrim,
+  .vedute-drawer,
+  .vedute-sheet {
+    transition: none;
+  }
+}

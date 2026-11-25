@@ -500,8 +500,10 @@ components:
 
 - **每個區域是廣場上的一棟建築**，同一個區域在不同角色用同一棟：
   - 學生：I 我的教室 Basilica Ivlia、II 個人練習 Aedes Vestae、III 我的對話 Rostra、IV 點數與任務 Aedes Satvrni、V 我的蘇格拉底 Aedes Castoris、VI 個人檔案 Tabvlarivm。
-  - 教師：I 教室管理 Basilica Ivlia、II 題目庫 Tabvlarivm、III 共用書庫 Aedes Satvrni、IV 學生帳號 Cvria、V 學生總結 Rostra；活動與論點分布在教室詳細頁的頁籤（S-04.7、S-14）：「討論活動／論點分布／學生名單」是頁首下方的 `Nav/Tab Item` 一列，桌機、平板、手機都放在內容最上面。
-  - 管理者：I 總覽 Cvria、II 教室管理 Basilica Ivlia、III 教師管理 Aedes Castoris、IV 共用書庫 Aedes Satvrni（2026-11-21 起；修課名單改為教室管理裡的頁籤）、V 題目庫 Tabvlarivm、VI 系統設定 Aedes Vestae、VII 執行日誌 Rostra。
+  - 教師：I 教室管理 Basilica Ivlia、II 題目庫 Tabvlarivm、III 共用書庫 Aedes Satvrni、IV 學生帳號 Cvria、V 學生總結 Rostra；活動與論點分布在教室詳細頁的頁籤（S-04.7、S-14）：「討論活動／論點分布／學生名單」是頁首下方的 `Nav/Tab Item` 一列，桌機、平板、手機都放在內容最上面。既有教師金鑰頁（`/teacher/keys`）暫歸於 I 教室管理的頁首下方頁籤列（待確認）。
+  - 管理者：I 總覽 Cvria、II 教室管理 Basilica Ivlia、III 教師管理 Aedes Castoris、IV 共用書庫 Aedes Satvrni（2026-11-21 起；修課名單改為教室管理裡的頁籤）、V 題目庫 Tabvlarivm、VI 系統設定 Aedes Vestae、VII 執行日誌 Rostra。既有細項維運頁以頁首下方的 `Nav/Tab Item` 一列收在對應區域底下（待確認）：III 教師管理＝教師管理／管理者管理／教師金鑰；VI 系統設定＝系統 AI／公告與維護／任務設定／部件設定；VII 執行日誌＝診斷／服務／客訴。
+  - 多角色帳號依目前路徑決定側欄圖例（`/admin/*` 顯示管理者、`/teacher/*` 顯示教師、其餘依學生優先），並在 `Nav/Account Menu` 提供工作區切換連結。
+  - 學生與教師的「回報問題」（`/complaint`，S-17）放在頁尾 Colophon 連結列（待確認）。
 - **側欄**：上方是廣場平面圖（仿 Nolli 1748 年羅馬地圖），建築平常塗黑，所在那棟打開成白色內部與柱子並標上編號圖釘；下方是圖例（羅馬數字＋中文區名＋拉丁建築名），只有一層。同區子頁用頁內頁籤（`Nav/Tab Item` 一列，項目間距一律 28，列寬依內容；手機放不下時整列可以橫向捲動，不縮小間距），清單進詳細用麵包屑。
 - **手機導覽（2026-11-18 定案，提案 C）**：< 768 不用左側抽屜。
   - 底部固定一列 `Nav/Tab Bar`（63 高，上緣雙墨線），放依編號排序的 3 個常用區域＋「廣場」：學生 I 我的教室、II 個人練習、III 我的對話；教師 I 教室管理、II 題目庫、V 學生總結；管理者 I 總覽、II 教室管理、III 教師管理。目前所在那格紅粉筆字＋上緣 2px 記號；目前區域不在前 3 格時，「廣場」那格標成目前並顯示編號與區名（例如「IV・點數」）。

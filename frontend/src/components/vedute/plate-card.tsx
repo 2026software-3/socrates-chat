@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { cn } from 'cn'
-import defaultPlate from '@/assets/plate-1.jpg'
+import { DEFAULT_CARD_PLATE } from './shell/plates'
 import { toRoman } from './scales'
 import { Skeleton } from './skeleton'
 
@@ -24,10 +24,14 @@ export function PlateCard({
   meta,
   action,
   archived = false,
-  plateSrc = defaultPlate,
+  plateSrc,
   className,
 }: PlateCardProps) {
   const formatted = typeof numeral === 'number' ? toRoman(numeral) : numeral
+  const imgClassName = cn(
+    'vedute-plate-image pointer-events-none size-full object-cover',
+    archived && 'grayscale',
+  )
 
   return (
     <article
@@ -39,15 +43,15 @@ export function PlateCard({
       )}
     >
       <div className="relative h-24 w-full shrink-0 overflow-hidden bg-paper">
-        <img
-          src={plateSrc}
-          alt=""
-          aria-hidden="true"
-          className={cn(
-            'vedute-plate-image pointer-events-none size-full object-cover',
-            archived && 'grayscale',
-          )}
-        />
+        {plateSrc ? (
+          <img src={plateSrc} alt="" aria-hidden="true" className={imgClassName} />
+        ) : (
+          <picture className="block size-full">
+            <source type="image/avif" srcSet={DEFAULT_CARD_PLATE.avifSrcSet} sizes="(max-width: 767px) 100vw, 400px" />
+            <source type="image/webp" srcSet={DEFAULT_CARD_PLATE.webpSrcSet} sizes="(max-width: 767px) 100vw, 400px" />
+            <img src={DEFAULT_CARD_PLATE.smWebp} alt="" aria-hidden="true" className={imgClassName} />
+          </picture>
+        )}
         {!archived && (
           <div
             aria-hidden="true"

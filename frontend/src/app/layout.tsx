@@ -1,151 +1,264 @@
-import { NavLink, Link, useMatch } from 'react-router'
-import type { ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useLocation } from 'react-router'
+import { toast } from 'sonner'
 import { useAuth } from '@/auth/auth-context'
-import { canAccess, type NavItem } from '@/app/feature'
-import { LangSwitcher } from '@/components/lang-switcher'
+import type { NavItem } from '@/app/feature'
+import {
+  AREAS_BY_ROLE,
+  AreaSubTabs,
+  BUILDINGS,
+  BackHeader,
+  Colophon,
+  PageHeader as VedutePageHeader,
+  PlanSheet,
+  ShellHeaderContext,
+  Sidebar,
+  SidebarDrawer,
+  TabBar,
+  Topbar,
+  resolveAreaSubTabs,
+  resolveCurrentArea,
+  resolveFocusConfig,
+  resolveShellRole,
+  type ShellHeaderContextValue,
+} from '@/components/vedute/shell'
+import { WorkspaceContext } from '@/components/page'
 import { AnnouncementBar } from '@/features/announcements/announcement-banner'
 import { NotificationBanner } from '@/features/notifications/notification-banner'
 import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
-import { WorkspaceContext } from '@/components/page'
-import { Button } from '@/components/ui/button'
-import { useT } from '@/i18n'
-import { cn } from '@/lib/utils'
+import { errorText, useI18n } from '@/i18n'
+import type { Lang } from '@/i18n/define'
+import { api } from '@/lib/api'
 import type { Me } from '@/lib/types'
+import { useFetch } from '@/lib/use-fetch'
 
-/** 學生外框用左側欄（272px）；教師與管理者用頂欄（52px）加工作區側欄（216px）。 */
-const STUDENT_SIDEBAR = 'md:w-[272px]'
-const WORKSPACE_SIDEBAR = 'md:w-[216px]'
-/** 桌面寬度時側欄固定在視窗內，名稱、語言與登出在每一頁都貼著左下角，不會隨長頁面落到頁尾。 */
-const STUDENT_STICKY = 'md:sticky md:top-0 md:h-svh md:overflow-y-auto'
-const WORKSPACE_STICKY = 'md:sticky md:top-[52px] md:h-[calc(100svh-52px)] md:overflow-y-auto'
-
-function MainNav({ items, label }: { items: NavItem[]; label: string }) {
-  const t = useT()
-  if (items.length === 0) return null
-  return (
-    <nav aria-label={label} className="flex gap-1 overflow-x-auto md:flex-col md:overflow-visible">
-      {items.map((n) => (
-        <NavLink
-          key={n.to}
-          to={n.to}
-          end={n.to === '/'}
-          className={({ isActive }) =>
-            cn(
-              'flex h-10 shrink-0 items-center rounded-lg border border-transparent px-2.5 text-sm whitespace-nowrap',
-              isActive ? 'bg-background border-border text-foreground font-medium' : 'text-muted-foreground hover:bg-subtle hover:text-foreground',
-            )
-          }
-        >
-          {t(n.labelKey)}
-        </NavLink>
-      ))}
-    </nav>
-  )
+function useStudentPoints(enabled: boolean): number | null {
+  const { data, error } = useFetch<{ balance: number }>(enabled ? '/api/points' : null)
+  if (!enabled || error || !data) return null
+  return data.balance
 }
 
 /**
- * 右上角的頭像（取名稱第一個字）：點擊進入帳號頁 `/account`（S-18）。
- * 沒有內建密碼的教師與管理者在帳號頁沒有可做的事，頭像維持純顯示。
+ * Vedute 工作情境與專注情境殼層（F-41.4，取代舊 AppShell）。
+ * - 工作情境：Topbar + 側欄（≥1024 常駐 / 768–1023 抽屜 / <768 底部分頁列＋平面圖面板）+ PageHeader + 白色內容區 + Colophon。
+ * - 專注情境（對話、對話原文、學生總結）：BackHeader + 置中內容區，無側欄、分頁列與頁尾。
  */
-function AccountAvatar({ me }: { me: Me }) {
-  const name = me.display_name ?? me.email ?? ''
-  const className = 'bg-outline-border flex size-8 items-center justify-center rounded-full border text-sm font-medium'
-  const initial = [...name][0]?.toUpperCase()
-  if (me.roles.student || me.can_change_password) {
+export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: ReactNode }) {
+  const { lang, setLang, t } = useI18n()
+  const auth = useAuth()
+  const { pathname, hash } = useLocation()
+
+  const role = resolveShellRole(pathname, me.roles)
+  const areas = AREAS_BY_ROLE[role]
+  const currentArea = resolveCurrentArea(role, pathname, hash)
+  const subTabs = resolveAreaSubTabs(currentArea, pathname)
+  const focusConfig = resolveFocusConfig(pathname, role)
+
+  const locationKey = `${pathname}${hash}`
+  const [drawerAt, setDrawerAt] = useState<string | null>(null)
+  const [sheetAt, setSheetAt] = useState<string | null>(null)
+  const drawerOpen = drawerAt === locationKey
+  const sheetOpen = sheetAt === locationKey
+  const [savingLang, setSavingLang] = useState(false)
+  const [headerSlot, setHeaderSlot] = useState<HTMLDivElement | null>(null)
+  const [pageHeaderCount, setPageHeaderCount] = useState(0)
+  const [focusTitle, setFocusTitle] = useState<string | null>(null)
+
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const sheetTriggerRef = useRef<HTMLElement | null>(null)
+
+  const points = useStudentPoints(role === 'student' && focusConfig === null)
+
+  const handleOpenDrawer = useCallback(() => {
+    setDrawerAt(locationKey)
+  }, [locationKey])
+
+  const handleCloseDrawer = useCallback(() => {
+    setDrawerAt(null)
+  }, [])
+
+  const handleOpenSheet = useCallback(
+    (trigger: HTMLElement | null) => {
+      sheetTriggerRef.current = trigger
+      setSheetAt(locationKey)
+    },
+    [locationKey],
+  )
+
+  const handleCloseSheet = useCallback(() => {
+    setSheetAt(null)
+  }, [])
+
+  const registerPageHeader = useCallback(() => {
+    setPageHeaderCount((c) => c + 1)
+    return () => setPageHeaderCount((c) => Math.max(0, c - 1))
+  }, [])
+
+  const handleSelectLanguage = useCallback(
+    async (next: Lang) => {
+      const previous = lang
+      setLang(next)
+      setSavingLang(true)
+      try {
+        const updated = await api.patch<Me>('/api/me', { language: next })
+        auth.update(updated)
+      } catch (error) {
+        setLang(previous)
+        toast.error(errorText(t, error))
+      } finally {
+        setSavingLang(false)
+      }
+    },
+    [auth, lang, setLang, t],
+  )
+
+  const workspace =
+    role === 'student' ? null : t(role === 'admin' ? 'nav.workspace.admin' : 'nav.workspace.teacher')
+
+  const shellHeaderValue = useMemo<ShellHeaderContextValue>(
+    () => ({
+      mode: focusConfig ? 'focus' : 'work',
+      area: currentArea,
+      headerSlot,
+      registerPageHeader,
+      setFocusTitle,
+    }),
+    [focusConfig, currentArea, headerSlot, registerPageHeader],
+  )
+
+  const showNotifications = me.roles.student || me.roles.teacher
+  const showReportLink = me.roles.student || me.roles.teacher
+
+  if (focusConfig) {
+    const focusBuilding = BUILDINGS[focusConfig.building]
+    const isConversation = pathname.startsWith('/conversations/')
     return (
-      <Link to="/account" aria-label={name} className={cn(className, 'hover:bg-subtle focus-visible:ring-ring outline-none focus-visible:ring-2')}>
-        {initial}
-      </Link>
+      <WorkspaceContext.Provider value={workspace}>
+        <ShellHeaderContext.Provider value={shellHeaderValue}>
+          <div className="flex min-h-svh flex-col bg-surface">
+            <BackHeader
+              backTo={focusConfig.backTo}
+              backLabel={t(focusConfig.backLabelKey)}
+              title={focusTitle ?? t(focusConfig.titleKey)}
+              numeral={focusConfig.numeral}
+              latin={focusBuilding.latin}
+              detail={t('shell.focus.rostraDetail')}
+            />
+            <div className="mx-auto flex w-full max-w-[760px] flex-col gap-2 px-4 pt-3 empty:hidden">
+              <AnnouncementBar />
+              {showNotifications ? <NotificationBanner key={me.id} /> : null}
+            </div>
+            <main
+              className={
+                isConversation
+                  ? 'mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col'
+                  : 'mx-auto w-full max-w-[760px] flex-1 px-4 py-6 md:px-6 md:py-8'
+              }
+            >
+              {children}
+            </main>
+          </div>
+        </ShellHeaderContext.Provider>
+      </WorkspaceContext.Provider>
     )
   }
-  return (
-    <span role="img" aria-label={name} className={className}>
-      {initial}
-    </span>
-  )
-}
 
-/** 側欄底部：顯示名稱、角色、語言與登出。 */
-function Account({ me }: { me: Me }) {
-  const t = useT()
-  const { logout } = useAuth()
-  const roles = (['admin', 'teacher', 'student'] as const).filter((r) => me.roles[r])
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2.5 md:mt-auto md:flex-col md:items-start">
-      <span className="text-sm font-medium">{me.display_name ?? me.email}</span>
-      <span className="text-muted-foreground hidden text-xs md:inline">{roles.map((r) => t(`role.${r}`)).join(' / ')}</span>
-      <div className="w-full max-w-48 md:mt-2">
-        <AiUsageMeter />
-      </div>
-      <div className="flex flex-wrap items-center gap-2 md:mt-2">
-        <LangSwitcher />
-        <Button variant="outline" size="sm" onClick={() => void logout()}>
-          {t('nav.logout')}
-        </Button>
-      </div>
+  const sidebarExtra = (
+    <div className="w-full">
+      <AiUsageMeter />
     </div>
   )
-}
 
-/** 已登入後的外框。手機寬度時側欄移到上方，導覽可橫向捲動。 */
-export function Layout({ me, nav, children }: { me: Me; nav: NavItem[]; children: ReactNode }) {
-  const t = useT()
-  const items = nav.filter((n) => canAccess(n.access, me.roles))
-  // 對話頁撐滿內容區（標題列、對話串、輸入列各自帶邊線與內距）
-  const fullBleed = useMatch('/conversations/:id') !== null
-  const student = me.roles.student
-  const adminOnly = me.roles.admin && !me.roles.teacher && !me.roles.student
-  const workspace = student ? null : t(adminOnly ? 'nav.workspace.admin' : 'nav.workspace.teacher')
-
-  const content = (
+  return (
     <WorkspaceContext.Provider value={workspace}>
-      <div className={cn('flex min-w-0 flex-1 flex-col', fullBleed && 'min-h-0 overflow-y-auto')}>
-        {/* 公告橫幅（S-15）：每一頁最上方；沒有公告時不佔位 */}
-        <div className={cn('flex w-full flex-col gap-2 empty:hidden', fullBleed ? 'shrink-0 px-4 pt-3' : 'mx-auto max-w-5xl px-4 pt-4 md:px-8 md:pt-8')}>
-          <AnnouncementBar />
-          {student || me.roles.teacher ? <NotificationBanner key={me.id} /> : null}
+      <ShellHeaderContext.Provider value={shellHeaderValue}>
+        <div className="flex min-h-svh flex-col bg-paper">
+          <Topbar
+            me={me}
+            role={role}
+            area={currentArea}
+            points={points}
+            drawerOpen={drawerOpen}
+            sheetOpen={sheetOpen}
+            onOpenDrawer={handleOpenDrawer}
+            onOpenSheet={handleOpenSheet}
+            menuButtonRef={menuButtonRef}
+            onSelectLanguage={(next) => void handleSelectLanguage(next)}
+            languageDisabled={savingLang}
+            onLogout={() => void auth.logout()}
+          />
+
+          <div className="flex min-h-0 flex-1">
+            {/* Desktop (≥1024): persistent 216px sidebar */}
+            <div className="vedute-sidebar-fixed paper-texture hidden shrink-0 border-r border-ink-faint lg:block">
+              <aside className="sticky top-13 h-[calc(100svh-52px)] overflow-y-auto">
+                <Sidebar
+                  role={role}
+                  areas={areas}
+                  currentArea={currentArea}
+                  footerExtra={sidebarExtra}
+                  className="border-r-0"
+                />
+              </aside>
+            </div>
+
+            {/* Tablet (768–1023): slide-in drawer */}
+            <SidebarDrawer
+              open={drawerOpen}
+              onClose={handleCloseDrawer}
+              returnFocusTo={menuButtonRef}
+              role={role}
+              areas={areas}
+              currentArea={currentArea}
+              footerExtra={sidebarExtra}
+            />
+
+            {/* Work area (white surface + full-bleed PageHeader + optional area sub-tabs + content + Colophon) */}
+            <div className="vedute-work-main flex min-w-0 flex-1 flex-col bg-surface">
+              <main className="flex min-w-0 flex-1 flex-col">
+                <div ref={setHeaderSlot} data-vedute-header-slot="" className="empty:hidden" />
+                {pageHeaderCount === 0 && currentArea && (
+                  <VedutePageHeader
+                    title={t(currentArea.labelKey)}
+                    area={currentArea}
+                    asHeading={false}
+                  />
+                )}
+
+                {subTabs && <AreaSubTabs tabs={subTabs} pathname={pathname} />}
+
+                <div className="mx-auto flex w-full max-w-5xl flex-col gap-2 px-4 pt-4 empty:hidden md:px-7 lg:px-10">
+                  <AnnouncementBar />
+                  {showNotifications ? <NotificationBanner key={me.id} /> : null}
+                </div>
+
+                <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 md:px-7 md:py-8 lg:px-10">
+                  {children}
+                </div>
+              </main>
+
+              <Colophon showReportLink={showReportLink} />
+            </div>
+          </div>
+
+          {/* Mobile (<768): bottom TabBar + PlanSheet */}
+          <TabBar
+            role={role}
+            areas={areas}
+            currentArea={currentArea}
+            sheetOpen={sheetOpen}
+            onOpenSheet={handleOpenSheet}
+          />
+          <PlanSheet
+            open={sheetOpen}
+            role={role}
+            areas={areas}
+            currentArea={currentArea}
+            onClose={handleCloseSheet}
+            returnFocusTo={sheetTriggerRef}
+          />
         </div>
-        {fullBleed ? <main className="flex min-h-0 flex-1 flex-col">{children}</main> : <main className="mx-auto w-full max-w-5xl p-4 md:p-8">{children}</main>}
-      </div>
+      </ShellHeaderContext.Provider>
     </WorkspaceContext.Provider>
-  )
-
-  if (student) {
-    return (
-      <div className={cn('flex flex-col md:flex-row', fullBleed ? 'h-svh' : 'min-h-svh')}>
-        <aside className={cn('bg-paper flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:px-3 md:py-4', STUDENT_SIDEBAR, STUDENT_STICKY)}>
-          <Link to="/" className="px-2.5 pt-2 pb-2 text-lg leading-7 font-medium md:pb-4">
-            {t('app.name')}
-          </Link>
-          <MainNav items={items} label="main" />
-          <Account me={me} />
-        </aside>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="bg-background sticky top-0 z-10 flex h-[52px] shrink-0 items-center justify-end border-b px-4 md:px-6">
-            <AccountAvatar me={me} />
-          </header>
-          {content}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex min-h-svh flex-col">
-      <header className="bg-background sticky top-0 z-10 flex h-[52px] shrink-0 items-center justify-between border-b px-6">
-        <Link to="/" className="flex items-baseline gap-3">
-          <span className="text-lg leading-7 font-medium">{t('app.brand')}</span>
-          <span className="text-muted-foreground text-xs">{workspace}</span>
-        </Link>
-        <AccountAvatar me={me} />
-      </header>
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <aside className={cn('bg-paper flex shrink-0 flex-col gap-2 border-b p-3 md:border-r md:border-b-0 md:py-4', WORKSPACE_SIDEBAR, WORKSPACE_STICKY)}>
-          <MainNav items={items} label="main" />
-          <Account me={me} />
-        </aside>
-        {content}
-      </div>
-    </div>
   )
 }
