@@ -32,7 +32,7 @@ describe('language picked before logging in', () => {
     await userEvent.type(await screen.findByLabelText('Número de estudiante o correo electrónico'), 'a@example.com')
     await userEvent.type(screen.getByLabelText('Contraseña'), 'password-123')
     await userEvent.click(screen.getByRole('button', { name: 'Iniciar sesión' }))
-    await screen.findByRole('navigation', { name: 'main' })
+    await screen.findByRole('navigation', { name: /主導覽|Main navigation|Navegación principal/ })
     return patches
   }
 
@@ -69,7 +69,7 @@ describe('a leftover pre-login pick must not reach the next account', () => {
     sessionStorage.setItem(KEY, stored('es', 11 * 60_000))
     const patches = trackPatches(makeMe({ student: true }, { language: 'en' }))
     renderApp(null, { route: '/' })
-    await screen.findByRole('navigation', { name: 'main' })
+    await screen.findByRole('navigation', { name: /主導覽|Main navigation|Navegación principal/ })
     expect(patches).toEqual([])
     expect(sessionStorage.getItem(KEY)).toBeNull()
   })

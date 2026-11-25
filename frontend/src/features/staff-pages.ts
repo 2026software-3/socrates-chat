@@ -24,3 +24,5 @@ export { ClassroomAiSettingsPage } from '@/features/keys/ai-settings-page'
 export { KeysPage } from '@/features/keys/keys-page'
 export { RosterPage } from '@/features/teacher/roster-page'
 export { SummariesPage } from '@/features/teacher/summaries-page'
+
+export { BooksPage } from '@/features/books/books-page'

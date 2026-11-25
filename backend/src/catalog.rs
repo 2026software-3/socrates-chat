@@ -573,6 +573,7 @@ pub(crate) async fn create_activity(
     validate_not_past((b.opens_at, b.closes_at), (None, None))?;
     validate_schedule(b.opens_at, b.closes_at)?;
     let mut tx = state.pool.begin().await?;
+    crate::book_store::lock_catalog(&mut tx).await?;
     crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     let a = activity_store::create_with_schedule(
         &mut *tx,
@@ -622,6 +623,7 @@ pub(crate) async fn update_activity(
     // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
     // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
     let mut tx = state.pool.begin().await?;
+    crate::book_store::lock_catalog(&mut tx).await?;
     type CurrentSchedule = (Uuid, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
     let current: Option<CurrentSchedule> = sqlx::query_as(
         "SELECT a.classroom_id, a.opens_at, a.closes_at FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
@@ -684,20 +686,8 @@ pub(crate) async fn update_activity(
                 ));
             }
 
-            // 更新題目關聯
-            sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query(
-                "INSERT INTO activity_topics (activity_id, topic_id, position)
-                 SELECT $1, t.topic_id, (t.ord - 1)::integer
-                 FROM unnest($2::uuid[]) WITH ORDINALITY AS t(topic_id, ord)",
-            )
-            .bind(id)
-            .bind(&new_ids)
-            .execute(&mut *tx)
-            .await?;
+            // 保留未移除的題目列及其獨立書單；新增題目由資料庫 trigger 複製預設書單。
+            crate::book_store::sync_activity_topics(&mut tx, id, &new_ids).await?;
         }
     }
 

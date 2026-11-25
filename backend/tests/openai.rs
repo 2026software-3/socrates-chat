@@ -315,10 +315,11 @@ async fn waits_for_the_soonest_key_when_all_are_cooling() {
     let p = OpenAiProvider::new(&base, pool, "m");
     let start = std::time::Instant::now();
     assert_eq!(text_of(&p).await.unwrap(), "ok");
+    // flaky-ok: 只檢查下限（冷卻 250 毫秒要真的等過），機器變慢只會更久，不會讓它失敗
+    let waited = start.elapsed();
     assert!(
-        start.elapsed() >= std::time::Duration::from_millis(200),
-        "{:?}",
-        start.elapsed()
+        waited >= std::time::Duration::from_millis(200),
+        "{waited:?}"
     );
     assert_eq!(*seen.lock().unwrap(), ["a"]);
 }
@@ -331,7 +332,9 @@ async fn does_not_wait_when_recovery_is_too_far_away() {
     let p = OpenAiProvider::new(&base, pool, "m");
     let start = std::time::Instant::now();
     assert!(text_of(&p).await.is_err());
-    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    // flaky-ok: 冷卻 3600 秒，若誤去等會卡一小時；2 秒上限只是擋住「去等了」，餘裕以數量級計
+    let took = start.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
     assert!(seen.lock().unwrap().is_empty());
 }
 
@@ -441,7 +444,9 @@ async fn later_requests_skip_a_cooling_model_without_waiting() {
     assert_eq!(text_of(&p).await.unwrap(), "ok");
     let started = std::time::Instant::now();
     assert_eq!(text_of(&p).await.unwrap(), "ok");
-    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    // flaky-ok: 冷卻 5 秒，若誤去等主模型會超過；上限 2 秒與 5 秒之間留有 3 秒餘裕
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
     // 第二次請求沒有再打主模型
     let primary_calls = seen_of(&seen)
         .iter()
@@ -752,6 +757,7 @@ async fn stops_trying_fallbacks_once_the_caller_has_dropped_the_stream() {
                 s.lock().unwrap().push((model.clone(), key));
                 if model == "primary" {
                     let body = futures_util::stream::once(async {
+                        // flaky-ok: 假伺服器故意晚送容量錯誤，讓呼叫端先放棄；不是測試在等時間
                         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                         Ok::<_, std::convert::Infallible>(CAPACITY_ERROR)
                     });
@@ -767,6 +773,7 @@ async fn stops_trying_fallbacks_once_the_caller_has_dropped_the_stream() {
         OpenAiProvider::new(&base, single("k"), "primary").with_fallbacks(vec!["backup".into()]);
     let stream = p.stream_chat(request()).await.unwrap();
     drop(stream);
+    // flaky-ok: 負向檢查（不該再打備援）；等 800ms 比假伺服器的 300ms 多 2.6 倍，機器變慢只會讓檢查變弱、不會誤報失敗
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     assert_eq!(models_seen(&seen), ["primary"]);
 }

@@ -188,6 +188,58 @@ async fn malformed_model_output_is_not_saved_and_failure_can_be_retried(pool: Pg
     assert_eq!(usage["used"], 1);
 }
 
+// Hold the failure UPDATE at a database gate so refund ordering is deterministic.
+#[sqlx::test]
+async fn failed_generation_refunds_before_publishing_failure(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![r#"{"private":"invalid tree"}"#])]);
+    let (app, a, conv) = fixture(&pool, ai).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION hold_tree_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.status = 'failed' THEN
+                 PERFORM pg_advisory_xact_lock(652);
+             END IF;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER hold_tree_failure BEFORE UPDATE ON conversation_argument_trees
+         FOR EACH ROW EXECUTE FUNCTION hold_tree_failure();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut gate = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(652)")
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "POST", Some(&a.student), &conv).await.0,
+        StatusCode::ACCEPTED
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                 AND classid = 0 AND objid = 652 AND NOT granted)",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("failure update should reach the database gate");
+    let usage = json_body(send(&app, get("/api/me/usage", Some(&a.student))).await).await;
+    gate.rollback().await.unwrap();
+    assert_eq!(settled(&app, &a.student, &conv).await["status"], "failed");
+    assert_eq!(usage["used"], 0, "refund must precede the failure update");
+}
+
 #[sqlx::test]
 async fn concurrent_clicks_start_only_one_generation(pool: PgPool) {
     let ai = FakeAi::with(vec![Paced(vec![GOOD], Duration::from_millis(400))]);
@@ -438,7 +490,8 @@ async fn a_superseded_job_cannot_overwrite_the_new_attempt(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // 等被取代的那一輪跑完並被丟棄（等背景工作真的結束，不賭睡眠時間）
+    wait_until_background_idle().await;
     let current = request(&app, "GET", Some(&a.student), &conv).await.1;
     assert_eq!(current["status"], "pending");
     assert!(current["tree"].is_null());

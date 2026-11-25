@@ -768,7 +768,8 @@ async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
         ),
     );
     let fast = async {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // 等慢的那次已讀完快照並開始翻譯（AI 收到請求）再送，不靠固定睡眠決定誰先誰後
+        wait_until_ai_called(&ai, 1).await;
         send(
             &app,
             json_req(

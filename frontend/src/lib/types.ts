@@ -270,7 +270,6 @@ export type EmailList = { emails: string[] }
 
 export type AdminList = {
   emails: string[]
-  /** 環境變數 ADMIN_EMAILS 的第一個管理者信箱；只有本人能重設其密碼。未設定時為 null。 */
   primary_email: string | null
 }
 

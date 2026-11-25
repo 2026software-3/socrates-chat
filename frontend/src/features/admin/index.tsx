@@ -1,6 +1,7 @@
 import type { Feature, NavItem } from '@/app/feature'
 import { classroomRoutes } from '@/features/classrooms/routes'
 import {
+  BooksPage,
   AdminAnnouncementsPage,
   AdminKeysPage,
   AdminsPage,
@@ -17,6 +18,7 @@ import {
 
 export const adminFeature: Feature = {
   routes: [
+    { path: '/admin/books', element: <BooksPage />, access: 'admin' },
     { path: '/admin', element: <AdminHome />, access: 'admin' },
     ...classroomRoutes('/admin', 'admin'),
     { path: '/admin/teachers', element: <TeachersPage />, access: 'admin' },
@@ -52,6 +54,7 @@ export const opsNav: NavItem[] = [
   { to: '/admin/admins', labelKey: 'admin.nav.admins', access: 'admin' },
   { to: '/admin/system-ai', labelKey: 'systemAi.nav', access: 'admin' },
   { to: '/admin/topics', labelKey: 'admin.nav.topics', access: 'admin' },
+  { to: '/admin/books', labelKey: 'books.nav', access: 'admin' },
   { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics', access: 'admin' },
   { to: '/admin/tasks', labelKey: 'tasks.admin', access: 'admin' },
   { to: '/admin/parts', labelKey: 'parts.admin', access: 'admin' },

@@ -74,6 +74,7 @@ pub fn test_config() -> Config {
         google_client_secret: "test-secret".to_string(),
         google_redirect_url: format!("{APP_URL}/api/auth/google/callback"),
         google_translation_api_key: None,
+        google_books_api_key: None,
         admin_emails: vec!["admin@example.com".to_string()],
         admin_initial_password: None,
         cookie_secure: true,
@@ -235,7 +236,63 @@ pub fn register_fixture_pool(pool: &PgPool) {
 
 pub fn test_app_with_config(pool: PgPool, ai: Arc<FakeAi>, config: Config) -> Router {
     register_fixture_pool(&pool);
-    app(AppState::new(pool, config, Arc::new(FakeIdentity), ai))
+    let router = app(AppState::new(pool, config, Arc::new(FakeIdentity), ai));
+    TASKS_AT_START.with(|c| c.set(alive_tasks()));
+    router
+}
+
+thread_local! {
+    /// 建好 app 之後（常駐的背景迴圈都已啟動）存活的 task 數。
+    /// 之後多出來的 task 就是請求觸發的背景工作；回到這個數字代表它們都跑完了。
+    static TASKS_AT_START: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn alive_tasks() -> usize {
+    tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks()
+}
+
+/// 等到有一個資料庫連線正卡在鎖上（`pg_stat_activity` 的 `wait_event_type = 'Lock'`），最多 10 秒。
+/// 測「請求被另一個尚未提交的交易擋住」時用它確認請求真的卡住了，再提交；
+/// 比「睡一段時間假設它已經卡住」可靠：睡不夠時請求還沒到鎖，測試就沒測到競態。
+pub async fn wait_until_blocked_on_lock(pool: &PgPool) {
+    for _ in 0..1000 {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if blocked > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("沒有任何連線卡在鎖上");
+}
+
+/// 等請求觸發的背景工作全部結束（最多 10 秒，逾時就失敗）。比「固定睡一段時間等它寫完」可靠：
+/// 看的是工作有沒有結束，不是時間夠不夠。要用 `test_app*` 建立的 app。
+pub async fn wait_until_background_idle() {
+    wait_until_background_tasks_at_most(0).await;
+}
+
+/// 等請求觸發的背景工作剩下不超過 `remaining` 個（最多 10 秒，逾時就失敗）。
+/// 用在「一個背景工作已經結束、另一個故意卡住（例如 `Hang`）」的測試：`remaining` 就是還卡著的個數。
+pub async fn wait_until_background_tasks_at_most(remaining: usize) {
+    let baseline = TASKS_AT_START.with(|c| c.get());
+    for _ in 0..1000 {
+        if alive_tasks() <= baseline + remaining {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "背景工作沒有在時限內降到 {remaining} 個以內：存活 {}，基準 {baseline}",
+        alive_tasks()
+    );
 }
 
 /// 解析 SSE 回應內容為 (event 名稱, data) 清單。
