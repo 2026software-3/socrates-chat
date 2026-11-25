@@ -230,6 +230,8 @@ pub(crate) struct AiJobDetail {
     job: AiJob,
     /// 失敗時的固定錯誤代碼（例如 `ai_unavailable`、`interrupted`），不含任何診斷內容。
     error_code: Option<String>,
+    /// 與錯誤有關的欄位（例如教室 AI 設定的 `primary`、`fallback_2`），沒有就是 null。
+    error_target: Option<String>,
 }
 
 /// 查詢自己的一個背景工作。
@@ -256,6 +258,15 @@ pub(crate) async fn get_job(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(ApiError::not_found)?;
+    let error_target: Option<String> =
+        sqlx::query_scalar("SELECT result ->> 'target' FROM ai_jobs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?;
     let (job, error_code) = background_job(row);
-    Ok(Json(AiJobDetail { job, error_code }))
+    Ok(Json(AiJobDetail {
+        job,
+        error_code,
+        error_target,
+    }))
 }

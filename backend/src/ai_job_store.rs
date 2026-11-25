@@ -76,6 +76,22 @@ pub async fn register(
     Err(sqlx::Error::RowNotFound)
 }
 
+/// 同範圍目前進行中的工作（沒有、或已卡死超過 `stale_secs` 就是 `None`）。
+pub async fn active_for(
+    pool: &PgPool,
+    scope_key: &str,
+    stale_secs: f64,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM ai_jobs WHERE scope_key = $1 AND status IN ('pending', 'running')
+           AND updated_at >= now() - make_interval(secs => $2)",
+    )
+    .bind(scope_key)
+    .bind(stale_secs)
+    .fetch_optional(pool)
+    .await
+}
+
 /// 工作開始執行。
 pub async fn mark_running(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -102,12 +118,24 @@ pub async fn finish_ready(pool: &PgPool, id: Uuid, result: &Value) -> Result<(),
 
 /// 工作失敗；`code` 是固定的錯誤代碼，不含堆疊、金鑰或供應商診斷。
 pub async fn finish_failed(pool: &PgPool, id: Uuid, code: &str) -> Result<(), sqlx::Error> {
+    finish_failed_with(pool, id, code, &Value::Null).await
+}
+
+/// 失敗並附上與錯誤有關的欄位（例如教室 AI 設定的 `{"target": "fallback_2"}`）；只放固定值，不放診斷內容。
+pub async fn finish_failed_with(
+    pool: &PgPool,
+    id: Uuid,
+    code: &str,
+    result: &Value,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE ai_jobs SET status = 'failed', error_code = $2, updated_at = now(), finished_at = now()
+        "UPDATE ai_jobs SET status = 'failed', error_code = $2, result = $3,
+                updated_at = now(), finished_at = now()
          WHERE id = $1 AND status IN ('pending', 'running')",
     )
     .bind(id)
     .bind(code)
+    .bind(result)
     .execute(pool)
     .await?;
     Ok(())
