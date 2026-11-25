@@ -84,7 +84,7 @@ describe('maintenance mode', () => {
     await screen.findByRole('heading', { name: '系統維護中' })
     maintenance = false
     await userEvent.click(screen.getByRole('button', { name: '重新檢查' }))
-    expect(await screen.findByRole('navigation', { name: 'main' })).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: '主導覽' })).toBeInTheDocument()
   })
 
   it('tells users on the login page that only admins can sign in', async () => {

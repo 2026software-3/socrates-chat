@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -24,18 +24,21 @@ function mockProfileApi(initial: string | null, language: Lang = 'zh-TW') {
 }
 
 describe('profile form on the personal dashboard', () => {
-  it('is reached from the header name and starts with the current name', async () => {
+  it('is reached from the sidebar profile area and starts with the current name', async () => {
     mockProfileApi('小明')
     renderApp(null, { route: '/' })
-    await userEvent.click(await screen.findByRole('link', { name: '小明' }))
+    const banner = await screen.findByRole('banner')
+    expect(within(banner).getByRole('button', { name: '小明' })).toBeInTheDocument()
+    await userEvent.click(within(screen.getByRole('navigation', { name: '主導覽' })).getByRole('link', { name: /個人檔案/ }))
     expect(await screen.findByRole('heading', { name: '個人設定' })).toBeInTheDocument()
     expect(screen.getByLabelText('顯示名稱')).toHaveValue('小明')
   })
 
-  it('links the email when there is no name yet', async () => {
+  it('shows the email in the topbar account button when there is no name yet', async () => {
     mockProfileApi(null)
     renderApp(null, { route: '/' })
-    expect(await screen.findByRole('link', { name: 'user@example.com' })).toHaveAttribute('href', '/account')
+    const banner = await screen.findByRole('banner')
+    expect(within(banner).getByRole('button', { name: 'user@example.com' })).toBeInTheDocument()
   })
 
   it('counts Unicode characters (an emoji is one) and never rewrites what the user typed', async () => {
@@ -88,7 +91,7 @@ describe('profile form on the personal dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
     expect(patches).toEqual([{ display_name: '阿華' }])
-    expect(screen.getByRole('link', { name: '阿華' })).toBeInTheDocument()
+    expect(within(screen.getByRole('banner')).getByRole('button', { name: '阿華' })).toBeInTheDocument()
   })
 
   it.each([
@@ -108,7 +111,7 @@ describe('profile form on the personal dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
     expect(patches).toEqual([{ display_name: null }])
-    expect(screen.getByRole('link', { name: '匯入姓名' })).toBeInTheDocument()
+    expect(within(screen.getByRole('banner')).getByRole('button', { name: '匯入姓名' })).toBeInTheDocument()
     expect(screen.getByLabelText('顯示名稱')).toHaveValue('匯入姓名')
   })
 
@@ -121,12 +124,13 @@ describe('profile form on the personal dashboard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('顯示名稱太長或含有不允許的字元')
   })
 
-  it('does not link the name of teachers to the personal settings, which they cannot rename in', async () => {
+  it('links teachers with a built-in password to /account from the account menu', async () => {
     mockMe(makeMe({ teacher: true }))
     renderApp(null, { route: '/' })
-    expect(await screen.findByText('Test User')).toBeInTheDocument()
+    const trigger = await within(await screen.findByRole('banner')).findByRole('button', { name: 'Test User' })
+    await userEvent.click(trigger)
     // 教師只有帳號頁（更改密碼，S-18），沒有個人設定；沒有內建密碼的教師則完全不連結（見 features/account）
-    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+    expect(screen.getByRole('link', { name: '個人設定' })).toHaveAttribute('href', '/account')
   })
 })
 

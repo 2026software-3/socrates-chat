@@ -7,6 +7,7 @@
 @import "./styles/tokens.css";
 @import "./components/vedute/primitives.css";
 @import "./components/vedute/print.css";
+@import "./components/vedute/shell/shell.css";
 
 @custom-variant dark (&:is(.dark *));
 

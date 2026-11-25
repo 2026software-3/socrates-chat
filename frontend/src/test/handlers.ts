@@ -9,6 +9,8 @@ export const defaultHandlers = [
   http.get('/api/books/:id/editions', () => HttpResponse.json([])),
   // 外框會顯示 AI 用量；沒有特別要測的測試一律回用量很低的合成值
   http.get('/api/me/usage', () => HttpResponse.json({ used: 0, limit: 200, window_secs: 86400, resets_in_secs: null })),
+  // 學生頂列會讀取點數餘額；沒有特別要測的測試回 0
+  http.get('/api/points', () => HttpResponse.json({ balance: 0 })),
   // 沒有特別要測的測試：沒有公告、沒有維護
   http.get('/api/announcements', () => HttpResponse.json({ maintenance: false, announcements: [] })),
   http.get('/api/notifications', () => HttpResponse.json([])),
