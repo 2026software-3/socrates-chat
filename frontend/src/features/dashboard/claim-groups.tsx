@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/features/chat/confirm-dialog'
 import { useI18n, useT } from '@/i18n'
+import type { ActiveJob } from '@/features/jobs/active-jobs'
 import { api } from '@/lib/api'
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
+import { usePollState } from '@/lib/ai-jobs'
 import type { TopicDistribution } from '@/lib/types'
 
 /**
@@ -19,12 +22,26 @@ export function ClaimGroups({ topic, onChanged, canRegroup, activityId }: { topi
   const [error, setError] = useState<unknown>()
   const total = topic.claims.reduce((n, g) => n + g.count, 0)
 
+  // 重新分組是背景工作（S-20）：切頁也照跑，進度由全域追蹤器顯示。這裡只看這個題目有沒有進行中的重新分組，
+  // 它結束（成功或失敗）時重新載入儀表板；失敗另由全域通知說明。
+  const active = usePollState<{ jobs: ActiveJob[] }>('active-jobs')
+  const running = (active.data?.jobs ?? []).some(
+    (j: ActiveJob) => j.kind === 'regroup' && j.status === 'pending' && j.scope.activity_id === activityId && j.scope.topic_id === topic.topic_id,
+  )
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    if (wasRunning.current && !running) onChanged()
+    wasRunning.current = running
+  }, [running, onChanged])
+
   async function regroup() {
     setPending(true)
     setError(undefined)
     try {
       await api.post('/api/dashboard/class/regroup', { activity_id: activityId, topic_id: topic.topic_id })
       setConfirming(false)
+      // 202：背景工作已登記，叫全域追蹤器馬上查；舊版 204 代表已經同步完成
+      wakeAiJobs()
       onChanged()
     } catch (e) {
       setError(e)
@@ -84,8 +101,8 @@ export function ClaimGroups({ topic, onChanged, canRegroup, activityId }: { topi
       {canRegroup && (topic.claims.length > 0 || topic.ungrouped > 0) ? (
         <div className="space-y-2">
           <p className="text-muted-foreground text-xs">{t('dashboard.claims.regroupHelp')}</p>
-          <Button variant="outline" size="sm" disabled={pending} onClick={() => { setError(undefined); setConfirming(true) }}>
-            {pending ? t('dashboard.claims.regrouping') : t('dashboard.claims.regroup')}
+          <Button variant="outline" size="sm" disabled={pending || running} onClick={() => { setError(undefined); setConfirming(true) }}>
+            {pending || running ? t('dashboard.claims.regrouping') : t('dashboard.claims.regroup')}
           </Button>
           <ConfirmDialog
             open={confirming}
