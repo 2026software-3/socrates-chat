@@ -174,16 +174,6 @@
 }
 
 /* 版號印章與教室小牌（DESIGN.md 版號目錄列統一規格：64 用 11／9／22，48 用 10／8／18） */
-@utility type-stamp-label {
-  font-family: var(--font-latin);
-  font-size: 11px;
-  line-height: 1.2;
-  font-weight: 400;
-  letter-spacing: 0.06em;
-  @media (width < 48rem) {
-    font-size: 10px;
-  }
-}
 @utility type-stamp-label-md {
   font-family: var(--font-latin);
   font-size: 11px;
@@ -198,16 +188,6 @@
   font-weight: 400;
   letter-spacing: 0.06em;
 }
-@utility type-stamp-label-compact {
-  font-family: var(--font-latin);
-  font-size: 9px;
-  line-height: 1.2;
-  font-weight: 400;
-  letter-spacing: 0.06em;
-  @media (width < 48rem) {
-    font-size: 8px;
-  }
-}
 @utility type-stamp-label-compact-md {
   font-family: var(--font-latin);
   font-size: 9px;
@@ -221,16 +201,6 @@
   line-height: 1.2;
   font-weight: 400;
   letter-spacing: 0.06em;
-}
-@utility type-stamp-numeral {
-  font-family: var(--font-latin);
-  font-size: 22px;
-  line-height: 1.1;
-  font-weight: 400;
-  letter-spacing: 0.06em;
-  @media (width < 48rem) {
-    font-size: 18px;
-  }
 }
 @utility type-stamp-numeral-md {
   font-family: var(--font-latin);

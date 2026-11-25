@@ -34,9 +34,9 @@ const sizeStyles: Record<
 > = {
   responsive: {
     box: 'size-12 md:size-16',
-    prefix: 'type-stamp-label',
-    prefixCompact: 'type-stamp-label-compact',
-    numeral: 'type-stamp-numeral',
+    prefix: 'type-stamp-label-sm md:type-stamp-label-md',
+    prefixCompact: 'type-stamp-label-compact-sm md:type-stamp-label-compact-md',
+    numeral: 'type-stamp-numeral-sm md:type-stamp-numeral-md',
   },
   md: {
     box: 'size-16',
