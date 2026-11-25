@@ -848,8 +848,8 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
         "ready"
     );
 
-    // 等第一代的逾時與自動重試都結束
-    tokio::time::sleep(Duration::from_millis(1700)).await;
+    // 等第一代的逾時與自動重試都結束（等背景工作真的結束，不賭睡眠時間）
+    wait_until_background_idle().await;
     let s = settled_summary(&app, &a.student, &conv).await;
     assert_eq!(s["status"], "ready");
     assert_eq!(s["stance"], "會拉桿");

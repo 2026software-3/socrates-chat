@@ -858,6 +858,7 @@ async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
     let counter = acquires.clone();
     let counting = sqlx::postgres::PgPoolOptions::new()
         .min_connections(8)
+        // flaky-ok: 計數會被背景任務污染，所以下面每組重複量測取最小值（見 acquires_of_one_request）
         .before_acquire(move |_, _| {
             let counter = counter.clone();
             Box::pin(async move {

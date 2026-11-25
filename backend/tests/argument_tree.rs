@@ -490,7 +490,8 @@ async fn a_superseded_job_cannot_overwrite_the_new_attempt(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // 等被取代的那一輪跑完並被丟棄（等背景工作真的結束，不賭睡眠時間）
+    wait_until_background_idle().await;
     let current = request(&app, "GET", Some(&a.student), &conv).await.1;
     assert_eq!(current["status"], "pending");
     assert!(current["tree"].is_null());

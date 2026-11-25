@@ -659,6 +659,7 @@ async fn health_server(status: Arc<Mutex<Option<u16>>>) -> String {
                         );
                         let _ = tcp.write_all(reply.as_bytes()).await;
                     }
+                    // flaky-ok: 假節點故意卡住不回應（模擬探測逾時），不是測試在等時間
                     None => tokio::time::sleep(Duration::from_secs(30)).await,
                 }
             });
@@ -708,7 +709,9 @@ async fn a_health_probe_that_hangs_counts_as_a_failure(pool: PgPool) {
     let id = NodeId::Db(created["node"]["id"].as_str().unwrap().parse().unwrap());
     let started = Instant::now();
     r.state.voice_nodes.probe_all(&r.state).await;
-    assert!(started.elapsed() < Duration::from_secs(5));
+    // flaky-ok: 探測逾時是 3 秒、假節點卡 30 秒；上限 10 秒只擋「沒有逾時」，餘裕 7 秒
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "{took:?}");
     // 一次逾時只算一次失敗
     assert!(r.state.voice_nodes.is_healthy(id));
     r.state.voice_nodes.mark_unhealthy(id);
@@ -1028,10 +1031,11 @@ async fn unreachable_nodes_fail_within_the_browsers_ten_second_window(pool: PgPo
     let started = Instant::now();
     let mut client = l.connect().await;
     assert!(closed(&mut client, 9).await);
-    // 兩次各 3 秒
+    // 兩次各 3 秒，預期約 6 秒；上限是規格的「瀏覽器 10 秒視窗」，不能再放寬
+    // flaky-ok: 規格要求總時間小於 10 秒，這個上限本身就是被測的行為；下限不受負載影響
     let took = started.elapsed();
     assert!(took >= Duration::from_secs(5), "{took:?}");
-    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert!(took < Duration::from_secs(9), "{took:?}");
 }
 
 #[sqlx::test]

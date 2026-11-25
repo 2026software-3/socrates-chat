@@ -753,8 +753,8 @@ async fn two_concurrent_resends_send_exactly_one_mail(pool: PgPool) {
     assert_eq!(first.0, StatusCode::NO_CONTENT);
     assert_eq!(second.0, StatusCode::NO_CONTENT);
     assert_eq!(settled(&fixed, &admin, &id).await["mail_status"], "sent");
-    // 再等一下，確認沒有第二封晚到
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // 等背景工作都結束，確認沒有第二封晚到
+    wait_until_background_idle().await;
     assert_eq!(smtp.mails().len(), 1);
 }
 

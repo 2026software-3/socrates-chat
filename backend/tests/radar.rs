@@ -126,7 +126,7 @@ async fn retry(app: &Router, cookie: Option<&str>, conversation: &str) -> axum::
 
 /// 讓「總結之後不該再有 AI 呼叫」的背景任務有時間跑完。
 async fn let_background_settle() {
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_until_background_idle().await;
 }
 
 #[sqlx::test]
