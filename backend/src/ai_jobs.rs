@@ -46,7 +46,7 @@ pub(crate) struct AiJob {
     /// 對話相關的工作是 `{kind}:{conversation_id}`（同一個對話同一種工作只會有一筆）；
     /// 背景工作（`ai_jobs`）是工作的 UUID，可用 `GET /api/ai-jobs/{id}` 查詢。
     id: String,
-    /// `reply`、`summary`、`radar`、`argument_tree`、`summary_translation`、`regroup`。
+    /// `reply`、`summary`、`radar`、`argument_tree`、`summary_translation`、`regroup`、`summary_translation_view`（教師按需翻譯）。
     kind: String,
     /// `pending`、`ready`、`failed`。
     status: String,
