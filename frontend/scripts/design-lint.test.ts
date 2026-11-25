@@ -122,6 +122,33 @@ describe('用透明度表示停用', () => {
   it('和停用無關的 opacity 不擋', () => {
     expect(lint(`const a = (open: boolean) => (open ? 'opacity-100' : 'opacity-0')`)).toEqual([])
   })
+
+  it('擋下 Tailwind 任意值 disabled:opacity-[...]（以及 aria-disabled、data-[disabled] 與停用分支）', () => {
+    const source = `
+      const a = 'disabled:opacity-[0.5]'
+      const b = 'disabled:opacity-[.4]'
+      const c = 'disabled:opacity-[50%]'
+      const d = 'aria-disabled:opacity-[0.6]'
+      const e = 'data-[disabled]:opacity-[0.4]'
+      const f = (disabled: boolean) => (disabled ? 'opacity-[0.5]' : '')
+    `
+    const found = lint(source)
+    expect(rules(found)).toEqual([
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+    ])
+  })
+
+  it('完全不透明的 disabled:opacity-[1]／disabled:opacity-100 不擋', () => {
+    const source = `
+      const a = 'disabled:opacity-100 disabled:opacity-[1] disabled:opacity-[100%]'
+    `
+    expect(lint(source)).toEqual([])
+  })
 })
 
 describe('旋轉載入圈', () => {
@@ -144,6 +171,41 @@ describe('CSS 檔', () => {
   it('擋下 CSS 裡的色碼，但略過註解', () => {
     const source = `/* #fff 只是說明 */\n.a { color: #fff; }\n.b { background: rgb(0 0 0); }\n`
     expect(rules(lintSource('src/features/demo/demo.css', source))).toEqual(['raw-color', 'raw-color'])
+  })
+
+  it('擋下 CSS :disabled（含屬性選取器與巢狀）裡的 opacity 與 @apply opacity-*', () => {
+    const source = `
+      .a:disabled { opacity: 0.5; }
+      .b:disabled { opacity: .4 }
+      .c[disabled] { opacity: 50%; }
+      .d[aria-disabled="true"] { opacity: 0.6; }
+      .e[data-disabled] { @apply opacity-50; }
+      .f { &:disabled { opacity: 0.4; } }
+      .g:disabled { @apply opacity-[0.5]; }
+    `
+    const found = lintSource('src/components/vedute/demo.css', source)
+    expect(rules(found)).toEqual([
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
+    ])
+    expect(found[0]?.line).toBe(2)
+  })
+
+  it('CSS :not(:disabled)、opacity: 1／opacity-100 與 transition: opacity 不誤判', () => {
+    const source = `
+      .a:not(:disabled) { opacity: 0.8; }
+      .b:disabled, .c { @apply opacity-100; }
+      .d:disabled { opacity: 1; transition: opacity 150ms; }
+      .e:disabled { opacity: 100%; }
+      .f[aria-disabled="false"] { opacity: 0.5; }
+      @keyframes pulse { 50% { opacity: 0.55; } }
+    `
+    expect(lintSource('src/components/vedute/demo.css', source)).toEqual([])
   })
 })
 
