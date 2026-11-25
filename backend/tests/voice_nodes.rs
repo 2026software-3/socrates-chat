@@ -320,6 +320,73 @@ async fn the_token_appears_once_and_never_again(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn node_urls_must_point_at_internal_hosts(pool: PgPool) {
+    let r = rig(pool, test_config(), vec![]);
+    let a = seed_actors(&r.app).await;
+    let create = |name: &str, url: &str| {
+        let body = json!({"name": name, "realtime_url": url, "max_sessions": 1});
+        send(&r.app, json_req("POST", NODES, Some(&a.admin), Some(body)))
+    };
+    for (i, url) in [
+        "ws://127.0.0.1:8110/v1/realtime",
+        "ws://10.1.2.3/v1/realtime",
+        "ws://172.16.0.1/v1/realtime",
+        "ws://172.31.255.254/v1/realtime",
+        "ws://192.168.1.2/v1/realtime",
+        "ws://169.254.1.1/v1/realtime",
+        "ws://100.64.0.1/v1/realtime",
+        "ws://[::1]/v1/realtime",
+        "ws://[fd00::1]/v1/realtime",
+        "ws://[fe80::1]/v1/realtime",
+        "ws://cascade:8110/v1/realtime",
+        "wss://voice.internal/v1/realtime",
+        "wss://nb.local/v1/realtime",
+        "wss://ray-nb.tail5fc9fe.ts.net/v1/realtime",
+        "wss://Cascade.LAN./v1/realtime",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let res = create(&format!("ok{i}"), url).await;
+        assert_eq!(res.status(), StatusCode::CREATED, "{url}");
+    }
+    for url in [
+        "ws://8.8.8.8/v1/realtime",
+        "ws://172.32.0.1/v1/realtime",
+        "ws://100.128.0.1/v1/realtime",
+        "ws://0.0.0.0/v1/realtime",
+        "ws://224.0.0.1/v1/realtime",
+        "ws://[2001:4860:4860::8888]/v1/realtime",
+        "wss://example.com/v1/realtime",
+        "wss://voice.example.internal.evil.com/v1/realtime",
+        "wss://evil.com/v1/realtime",
+        // 十進位／縮寫的 IPv4 寫法會被解析成公開位址
+        "ws://134744072/v1/realtime",
+    ] {
+        assert_json_error(
+            create("bad", url).await,
+            StatusCode::BAD_REQUEST,
+            "realtime_url_not_internal",
+        )
+        .await;
+    }
+    // 更新網址走同一道檢查
+    let added = add_node(&r, &a.admin, "patched", "ws://10.0.0.5/v1/realtime", 1).await;
+    let id = added["node"]["id"].as_str().unwrap();
+    let res = send(
+        &r.app,
+        json_req(
+            "PATCH",
+            &format!("{NODES}/{id}"),
+            Some(&a.admin),
+            Some(json!({"realtime_url": "wss://example.com/v1/realtime"})),
+        ),
+    )
+    .await;
+    assert_json_error(res, StatusCode::BAD_REQUEST, "realtime_url_not_internal").await;
+}
+
+#[sqlx::test]
 async fn bad_node_input_is_rejected(pool: PgPool) {
     let r = rig(pool, test_config(), vec![]);
     let a = seed_actors(&r.app).await;
@@ -387,7 +454,7 @@ async fn every_node_change_is_audited_without_url_or_token(pool: PgPool) {
         &r,
         &a.admin,
         "alpha",
-        "ws://secret-host.example/v1/realtime",
+        "ws://secret-host.internal/v1/realtime",
         1,
     )
     .await;
