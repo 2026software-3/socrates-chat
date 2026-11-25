@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router'
 import { toast } from 'sonner'
 import { useAuth } from '@/auth/auth-context'
@@ -26,6 +26,7 @@ import { WorkspaceContext } from '@/components/page'
 import { AnnouncementBar } from '@/features/announcements/announcement-banner'
 import { NotificationBanner } from '@/features/notifications/notification-banner'
 import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { errorText, useI18n } from '@/i18n'
 import type { Lang } from '@/i18n/define'
 import { api } from '@/lib/api'
@@ -55,14 +56,36 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
   const focusConfig = resolveFocusConfig(pathname, role)
 
   const locationKey = `${pathname}${hash}`
+  const isMobile = useMediaQuery('(max-width: 767px)', true)
+  const isTablet = useMediaQuery('(min-width: 768px) and (max-width: 1023px)', true)
   const [drawerAt, setDrawerAt] = useState<string | null>(null)
   const [sheetAt, setSheetAt] = useState<string | null>(null)
-  const drawerOpen = drawerAt === locationKey
-  const sheetOpen = sheetAt === locationKey
+  const drawerOpen = drawerAt === locationKey && isTablet
+  const sheetOpen = sheetAt === locationKey && isMobile
   const [savingLang, setSavingLang] = useState(false)
   const [headerSlot, setHeaderSlot] = useState<HTMLDivElement | null>(null)
   const [pageHeaderCount, setPageHeaderCount] = useState(0)
   const [focusTitle, setFocusTitle] = useState<string | null>(null)
+  const [focusDetail, setFocusDetail] = useState<string | null>(null)
+
+  // 跨斷點（如手機旋轉成平板、平板拉寬成桌機）時清除對應面板狀態，避免隱藏後的 focus trap 繼續攔截鍵盤
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mqMobile = window.matchMedia('(max-width: 767px)')
+    const mqTablet = window.matchMedia('(min-width: 768px) and (max-width: 1023px)')
+    const onMobileChange = () => {
+      if (!mqMobile.matches) setSheetAt(null)
+    }
+    const onTabletChange = () => {
+      if (!mqTablet.matches) setDrawerAt(null)
+    }
+    mqMobile.addEventListener('change', onMobileChange)
+    mqTablet.addEventListener('change', onTabletChange)
+    return () => {
+      mqMobile.removeEventListener('change', onMobileChange)
+      mqTablet.removeEventListener('change', onTabletChange)
+    }
+  }, [])
 
   const menuButtonRef = useRef<HTMLButtonElement>(null)
   const sheetTriggerRef = useRef<HTMLElement | null>(null)
@@ -122,6 +145,7 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
       headerSlot,
       registerPageHeader,
       setFocusTitle,
+      setFocusDetail,
     }),
     [focusConfig, currentArea, headerSlot, registerPageHeader],
   )
@@ -142,7 +166,7 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
               title={focusTitle ?? t(focusConfig.titleKey)}
               numeral={focusConfig.numeral}
               latin={focusBuilding.latin}
-              detail={t('shell.focus.rostraDetail')}
+              detail={focusDetail ?? t('shell.focus.rostraDetail')}
             />
             <div className="mx-auto flex w-full max-w-[760px] flex-col gap-2 px-4 pt-3 empty:hidden">
               <AnnouncementBar />

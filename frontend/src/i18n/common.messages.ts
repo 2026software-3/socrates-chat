@@ -199,6 +199,7 @@ export const common = defineMessages({
     'shell.focus.transcript': '對話原文',
     'shell.focus.summary': '學生總結',
     'shell.focus.rostraDetail': '講壇',
+    'shell.focus.rostraRound': '講壇・第 {count} 輪',
   },
   en: {
     'app.name': 'Socratic Dialogue Learning',
@@ -397,6 +398,7 @@ export const common = defineMessages({
     'shell.focus.transcript': 'Transcript',
     'shell.focus.summary': 'Student summary',
     'shell.focus.rostraDetail': 'Rostra',
+    'shell.focus.rostraRound': 'Rostra · Turn {count}',
   },
   es: {
     'app.name': 'Aprendizaje por diálogo socrático',
@@ -595,5 +597,6 @@ export const common = defineMessages({
     'shell.focus.transcript': 'Transcripción',
     'shell.focus.summary': 'Resumen del estudiante',
     'shell.focus.rostraDetail': 'Rostra',
+    'shell.focus.rostraRound': 'Rostra · Turno {count}',
   },
 })

@@ -124,13 +124,16 @@ test.describe('Vedute work shell across roles and viewports', () => {
     await expectScreenshot(page, 'shell-admin.png')
   })
 
-  test('focus shell on conversation page shows BackHeader without sidebar, tab bar, or colophon', async ({
+  test('focus shell on conversation page shows BackHeader with title and round count without sidebar, tab bar, or colophon', async ({
     page,
     loginAs,
   }) => {
     await loginAs('student')
     await page.goto('/conversations/e2e-conv-1')
-    await expect(page.getByRole('link', { name: /返回我的對話/ })).toBeVisible()
+    const header = page.getByRole('banner')
+    await expect(header.getByRole('link', { name: /返回我的對話/ })).toBeVisible()
+    await expect(header.getByText('正義是強者的利益嗎？')).toBeVisible()
+    await expect(header.getByText('講壇・第 1 輪')).toBeVisible()
     await expect(page.getByRole('heading', { level: 1, name: '正義是強者的利益嗎？' })).toBeVisible()
     await expect(page.getByRole('navigation', { name: '主導覽' })).toBeHidden()
     await expect(page.getByRole('navigation', { name: '主要區域' })).toBeHidden()
@@ -138,5 +141,47 @@ test.describe('Vedute work shell across roles and viewports', () => {
     // Exclude pre-existing legacy voice button (aria-label="語音對話" / visible "即時") in voice-controls.tsx; rebuilt in #683.
     await expectNoA11yViolations(page, { exclude: ['button[aria-label="語音對話"]'] })
     await expectScreenshot(page, 'shell-focus.png')
+  })
+
+  test('drawer and sheet play CSS slide transitions and close when crossing breakpoints', async ({
+    page,
+    loginAs,
+  }, testInfo) => {
+    const project = testInfo.project.name
+    if (project === 'desktop') return
+
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    await loginAs('student')
+    await expect(page.getByRole('heading', { level: 1, name: '選擇題目' })).toBeVisible()
+
+    if (project === 'tablet') {
+      const menuBtn = page.getByRole('button', { name: '開啟導覽' })
+      await menuBtn.click()
+      const drawer = page.getByRole('dialog', { name: '主導覽' })
+      await expect(drawer).toHaveClass(/is-open/)
+      const duration = await drawer.evaluate((el) => getComputedStyle(el).transitionDuration)
+      expect(duration).toBe('0.24s')
+
+      // Crossing 768 -> 1024 closes the drawer so it never overlays the persistent desktop sidebar
+      await page.setViewportSize({ width: 1024, height: 900 })
+      await expect(drawer).toBeHidden()
+      await expect(page.getByRole('navigation', { name: '主導覽' })).toBeVisible()
+    } else {
+      const tabBar = page.getByRole('navigation', { name: '主要區域' })
+      await tabBar.getByRole('button', { name: /廣場/ }).click()
+      const sheet = page.getByRole('dialog', { name: /Pianta del Foro/i })
+      await expect(sheet).toHaveClass(/is-open/)
+      const duration = await sheet.evaluate((el) => getComputedStyle(el).transitionDuration)
+      expect(duration).toBe('0.32s')
+
+      // Crossing 375 -> 768 closes the sheet and releases focus trap so Tab reaches visible controls
+      await page.setViewportSize({ width: 768, height: 1024 })
+      await expect(sheet).toBeHidden()
+      await page.keyboard.press('Tab')
+      const focusedInsideSheet = await page.evaluate(
+        () => document.activeElement?.closest('#vedute-plan-sheet') !== null,
+      )
+      expect(focusedInsideSheet).toBe(false)
+    }
   })
 })

@@ -25,7 +25,12 @@ export { ForumPlan, type ForumPlanProps } from './forum-plan'
 export { AreaSubTabs, PageHeader, PageTitle, type AreaSubTabsProps, type HeaderCrumb, type PageHeaderProps, type PageTitleProps } from './page-header'
 export { DEFAULT_CARD_PLATE, PLATES, type PlateAsset, type PlateId } from './plates'
 export { PlanSheet, type PlanSheetProps } from './plan-sheet'
-export { ShellHeaderContext, useShellHeaderBridge, type ShellHeaderContextValue } from './shell-context'
+export {
+  ShellHeaderContext,
+  useFocusHeader,
+  useShellHeaderBridge,
+  type ShellHeaderContextValue,
+} from './shell-context'
 export { LegendList, Sidebar, SidebarDrawer, type LegendListProps, type SidebarDrawerProps, type SidebarProps } from './sidebar'
 export { TabBar, type TabBarProps } from './tab-bar'
 export { Topbar, type TopbarProps } from './topbar'

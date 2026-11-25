@@ -7,6 +7,7 @@ export type ShellHeaderContextValue = {
   headerSlot: HTMLDivElement | null
   registerPageHeader: () => () => void
   setFocusTitle: (title: string | null) => void
+  setFocusDetail: (detail: string | null) => void
 }
 
 export const ShellHeaderContext = createContext<ShellHeaderContextValue | null>(null)
@@ -34,4 +35,24 @@ export function useShellHeaderBridge(title: string) {
   }, [mode, setFocusTitle, title])
 
   return ctx
+}
+
+/** Syncs a focus page's title and right-side detail (e.g. live conversation round) into `BackHeader`. */
+export function useFocusHeader(title: string | null, detail?: string | null) {
+  const ctx = useContext(ShellHeaderContext)
+  const mode = ctx?.mode
+  const setFocusTitle = ctx?.setFocusTitle
+  const setFocusDetail = ctx?.setFocusDetail
+
+  useEffect(() => {
+    if (mode !== 'focus' || !setFocusTitle) return
+    setFocusTitle(title)
+    return () => setFocusTitle(null)
+  }, [mode, setFocusTitle, title])
+
+  useEffect(() => {
+    if (mode !== 'focus' || !setFocusDetail) return
+    setFocusDetail(detail ?? null)
+    return () => setFocusDetail(null)
+  }, [mode, setFocusDetail, detail])
 }

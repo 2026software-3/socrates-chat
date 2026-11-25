@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router'
@@ -25,19 +25,25 @@ import {
   resolveShellRole,
 } from './index'
 
-function mockViewport(width: number, reducedMotion = false) {
-  const listeners = new Set<() => void>()
+function mockViewport(initialWidth: number, reducedMotion = false) {
+  let width = initialWidth
+  const entries = new Map<string, { mql: MediaQueryList; listeners: Set<() => void> }>()
+  const evaluate = (query: string) => {
+    if (query.includes('prefers-reduced-motion')) return reducedMotion
+    const min = query.match(/min-width:\s*(\d+)px/)
+    const max = query.match(/max-width:\s*(\d+)px/)
+    if (min && width < Number(min[1])) return false
+    if (max && width > Number(max[1])) return false
+    return true
+  }
   const matchMedia = vi.fn((query: string): MediaQueryList => {
-    const matches = (() => {
-      if (query.includes('prefers-reduced-motion')) return reducedMotion
-      const min = query.match(/min-width:\s*(\d+)px/)
-      const max = query.match(/max-width:\s*(\d+)px/)
-      if (min && width < Number(min[1])) return false
-      if (max && width > Number(max[1])) return false
-      return true
-    })()
-    return {
-      matches,
+    const existing = entries.get(query)
+    if (existing) return existing.mql
+    const listeners = new Set<() => void>()
+    const mql: MediaQueryList = {
+      get matches() {
+        return evaluate(query)
+      },
       media: query,
       onchange: null,
       addEventListener: (_: string, cb: EventListenerOrEventListenerObject) => {
@@ -50,8 +56,20 @@ function mockViewport(width: number, reducedMotion = false) {
       removeListener: () => {},
       dispatchEvent: () => false,
     }
+    entries.set(query, { mql, listeners })
+    return mql
   })
   vi.stubGlobal('matchMedia', matchMedia)
+  return {
+    resize(nextWidth: number) {
+      width = nextWidth
+      act(() => {
+        for (const { listeners } of entries.values()) {
+          for (const cb of listeners) cb()
+        }
+      })
+    },
+  }
 }
 
 afterEach(() => {
@@ -309,11 +327,74 @@ describe('drawer, plan sheet, focus management, and reduced motion', () => {
     expect(plazaBtn).toHaveFocus()
   })
 
-  it('disables animations in shell.css under prefers-reduced-motion: reduce', () => {
+  it('disables animations in shell.css under prefers-reduced-motion: reduce and enables viewport-fit=cover', () => {
     const css = readFileSync(path.resolve(import.meta.dirname, 'shell.css'), 'utf8')
     expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/)
     expect(css).toMatch(/animation:\s*none/)
     expect(css).toMatch(/transition:\s*none/)
+    const html = readFileSync(path.resolve(import.meta.dirname, '../../../../index.html'), 'utf8')
+    expect(html).toContain('viewport-fit=cover')
+  })
+
+  it('closes tablet drawer and mobile sheet when crossing breakpoints and does not resurrect them', async () => {
+    const vp = mockViewport(768)
+    mockMe(makeMe({ student: true }))
+    server.use(
+      http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })),
+      http.get('/api/points', () => HttpResponse.json({ balance: 128 })),
+    )
+    renderApp(null, { route: '/' })
+
+    await userEvent.click(await screen.findByRole('button', { name: '開啟導覽' }))
+    expect(await screen.findByRole('dialog', { name: '主導覽' })).toBeInTheDocument()
+
+    // Crossing 768 -> 1024 closes the drawer; resizing back to 768 keeps it closed
+    vp.resize(1024)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '主導覽' })).not.toBeInTheDocument())
+    vp.resize(768)
+    expect(screen.queryByRole('dialog', { name: '主導覽' })).not.toBeInTheDocument()
+
+    // Crossing to 375 -> open PlanSheet -> resize to 768 closes sheet and releases trap
+    vp.resize(375)
+    const tabBar = screen.getByRole('navigation', { name: '主要區域' })
+    await userEvent.click(within(tabBar).getByRole('button', { name: '廣場' }))
+    expect(await screen.findByRole('dialog', { name: /Pianta del Foro/i })).toBeInTheDocument()
+
+    vp.resize(768)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Pianta del Foro/i })).not.toBeInTheDocument())
+    vp.resize(375)
+    expect(screen.queryByRole('dialog', { name: /Pianta del Foro/i })).not.toBeInTheDocument()
+  })
+
+  it('scrolls to #practice and scrolls back to top when returning to classrooms (/)', async () => {
+    mockViewport(1440)
+    mockMe(makeMe({ student: true }))
+    server.use(
+      http.get('/api/catalog', () =>
+        HttpResponse.json({
+          activities: [],
+          topics: [{ id: 't1', title: '自由意志', description: 'desc' }],
+        }),
+      ),
+      http.get('/api/points', () => HttpResponse.json({ balance: 128 })),
+    )
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    renderApp(null, { route: '/' })
+    const nav = await screen.findByRole('navigation', { name: '主導覽' })
+    await screen.findByText('自由意志')
+    scrollSpy.mockClear()
+
+    await userEvent.click(within(nav).getByRole('link', { name: /個人練習/ }))
+    await waitFor(() =>
+      expect(scrollSpy.mock.instances.some((el) => (el as HTMLElement).id === 'practice')).toBe(true),
+    )
+
+    scrollSpy.mockClear()
+    await userEvent.click(within(nav).getByRole('link', { name: /我的教室/ }))
+    await waitFor(() =>
+      expect(scrollSpy.mock.instances.includes(document.documentElement)).toBe(true),
+    )
+    scrollSpy.mockRestore()
   })
 
   it('shows all landmarks in WorkShell and omits sidebar/footer in FocusShell', async () => {
@@ -350,7 +431,9 @@ describe('drawer, plan sheet, focus management, and reduced motion', () => {
           is_archived: false,
           classroom_name: null,
           classroom_archived: false,
-          messages: [],
+          messages: [
+            { id: 'm1', role: 'student', content: '我認為正義是公平。', created_at: '2026-11-01T00:00:00Z' },
+          ],
           generating: false,
           voice_realtime: false,
           guiding_questions: [],
@@ -358,7 +441,10 @@ describe('drawer, plan sheet, focus management, and reduced motion', () => {
       ),
     )
     renderApp(null, { route: '/conversations/c1' })
-    expect(await screen.findByRole('link', { name: /返回我的對話/ })).toBeInTheDocument()
+    const header = await screen.findByRole('banner')
+    expect(within(header).getByRole('link', { name: /返回我的對話/ })).toBeInTheDocument()
+    expect(await within(header).findByText('正義是什麼？')).toBeInTheDocument()
+    expect(await within(header).findByText('講壇・第 1 輪')).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: '主導覽' })).not.toBeInTheDocument()
     expect(screen.queryByRole('contentinfo')).not.toBeInTheDocument()
   })

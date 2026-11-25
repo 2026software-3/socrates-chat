@@ -53,10 +53,16 @@ export function AvailablePage() {
     if (startError) errorRef.current?.scrollIntoView?.({ block: 'nearest' })
   }, [startError])
 
-  // 側欄「II 個人練習」連到 `/#practice` 時捲到個人練習區
+  // 側欄「II 個人練習」連到 `/#practice` 時捲到個人練習區；清掉 hash 回到「I 我的教室」時捲回頂端
+  const wasPracticeRef = useRef(false)
   useEffect(() => {
-    if (hash === '#practice' && data) {
+    if (!data) return
+    if (hash === '#practice') {
+      wasPracticeRef.current = true
       document.getElementById('practice')?.scrollIntoView?.({ block: 'start' })
+    } else if (wasPracticeRef.current) {
+      wasPracticeRef.current = false
+      document.documentElement.scrollIntoView?.({ block: 'start' })
     }
   }, [hash, data])
 
@@ -133,7 +139,7 @@ export function AvailablePage() {
             ))
           )}
         </Block>
-        <div id="practice">
+        <div id="practice" className="scroll-mt-16">
           <Section
             title={t('student.available.topics')}
             emptyText={needle ? t('student.available.noMatch') : t('student.available.noTopics')}

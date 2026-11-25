@@ -7,6 +7,7 @@ import { useT } from '@/i18n'
 import type { BuildingId, ShellArea, ShellRole } from './areas'
 import { useFocusTrap } from './focus-trap'
 import { ForumPlan } from './forum-plan'
+import { useAnimatedPresence } from './presence'
 import { LegendList } from './sidebar'
 
 export type PlanSheetProps = {
@@ -19,6 +20,7 @@ export type PlanSheetProps = {
 }
 
 const DRAG_DISMISS_PX = 90
+const SHEET_TRANSITION_MS = 340
 
 /**
  * Mobile (<768) bottom sheet with enlarged Nolli Forum Plan and 2-column legend
@@ -33,9 +35,10 @@ export function PlanSheet({ open, areas, currentArea, onClose, returnFocusTo }: 
   const [dragY, setDragY] = useState<number | null>(null)
   const dragStartRef = useRef<number | null>(null)
 
+  const { mounted, shown } = useAnimatedPresence(open, SHEET_TRANSITION_MS)
   useFocusTrap(sheetRef, open, onClose, returnFocusTo)
 
-  if (!open) return null
+  if (!mounted) return null
 
   function handleSelectArea(area: ShellArea) {
     navigate(area.to)
@@ -70,20 +73,27 @@ export function PlanSheet({ open, areas, currentArea, onClose, returnFocusTo }: 
     <>
       <div
         aria-hidden="true"
-        onClick={onClose}
-        className="vedute-scrim fixed inset-0 z-40 opacity-100 md:hidden"
+        onClick={open ? onClose : undefined}
+        className={cn(
+          'vedute-scrim fixed inset-0 z-40 md:hidden',
+          shown && 'is-open',
+        )}
       />
       <section
         ref={sheetRef}
         id="vedute-plan-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
+        role={open ? 'dialog' : undefined}
+        aria-modal={open || undefined}
+        aria-hidden={!open || undefined}
+        aria-labelledby={open ? headingId : undefined}
+        inert={!open}
         tabIndex={-1}
-        style={dragY !== null ? { transform: `translateY(${dragY}px)` } : undefined}
+        style={open && dragY !== null ? { transform: `translateY(${dragY}px)` } : undefined}
         className={cn(
           'vedute-double-rule-t vedute-sheet fixed inset-x-0 bottom-0 z-41 flex max-h-[88dvh] flex-col bg-paper outline-none md:hidden',
-          dragY !== null && 'is-dragging',
+          shown && 'is-open',
+          open && dragY !== null && 'is-dragging',
+          !open && 'pointer-events-none',
         )}
       >
         <div

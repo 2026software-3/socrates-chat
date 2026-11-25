@@ -168,20 +168,34 @@
 /* 抽屜（0.24s）、手機面板（0.32s）與遮罩（0.25s） */
 .vedute-scrim {
   background-color: color-mix(in srgb, var(--color-ink) 36%, transparent);
+  opacity: 0;
+  pointer-events: none;
   transition: opacity 0.25s ease;
+}
+.vedute-scrim.is-open {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .vedute-drawer {
   width: var(--vedute-side-w);
+  transform: translateX(-102%);
   transition: transform 0.24s var(--vedute-ease);
   padding-top: env(safe-area-inset-top, 0px);
 }
+.vedute-drawer.is-open {
+  transform: translateX(0);
+}
 
 .vedute-sheet {
+  transform: translateY(102%);
   transition: transform 0.32s var(--vedute-ease);
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+.vedute-sheet.is-open {
+  transform: translateY(0);
 }
 
 .vedute-sheet.is-dragging {

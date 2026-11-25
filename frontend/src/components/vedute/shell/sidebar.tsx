@@ -7,6 +7,7 @@ import { useT } from '@/i18n'
 import { BUILDINGS, ROLE_FOOTNOTE_KEY, type BuildingId, type ShellArea, type ShellRole } from './areas'
 import { useFocusTrap } from './focus-trap'
 import { ForumPlan } from './forum-plan'
+import { useAnimatedPresence } from './presence'
 
 export type LegendListProps = {
   areas: ShellArea[]
@@ -172,6 +173,8 @@ export type SidebarDrawerProps = {
   footerExtra?: ReactNode
 }
 
+const DRAWER_TRANSITION_MS = 260
+
 /** Tablet (768–1023) slide-in drawer hosting the same 216px Sidebar panel with focus trap. */
 export function SidebarDrawer({
   open,
@@ -184,25 +187,35 @@ export function SidebarDrawer({
 }: SidebarDrawerProps) {
   const t = useT()
   const drawerRef = useRef<HTMLDivElement>(null)
+  const { mounted, shown } = useAnimatedPresence(open, DRAWER_TRANSITION_MS)
   useFocusTrap(drawerRef, open, onClose, returnFocusTo)
 
-  if (!open) return null
+  if (!mounted) return null
 
   return (
     <>
       <div
         aria-hidden="true"
-        onClick={onClose}
-        className="vedute-scrim fixed inset-0 z-30 opacity-100"
+        onClick={open ? onClose : undefined}
+        className={cn(
+          'vedute-scrim fixed inset-0 z-30 hidden md:block lg:hidden',
+          shown && 'is-open',
+        )}
       />
       <div
         ref={drawerRef}
         id="vedute-sidebar-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('shell.nav.main')}
+        role={open ? 'dialog' : undefined}
+        aria-modal={open || undefined}
+        aria-hidden={!open || undefined}
+        aria-label={open ? t('shell.nav.main') : undefined}
+        inert={!open}
         tabIndex={-1}
-        className="vedute-drawer paper-texture fixed inset-y-0 left-0 z-35 flex translate-x-0 flex-col overflow-y-auto border-r border-ink-faint outline-none"
+        className={cn(
+          'vedute-drawer paper-texture fixed inset-y-0 left-0 z-35 hidden flex-col overflow-y-auto border-r border-ink-faint outline-none md:flex lg:hidden',
+          shown && 'is-open',
+          !open && 'pointer-events-none',
+        )}
       >
         <div className="flex items-center justify-end px-2 pt-2">
           <Button variant="icon" aria-label={t('shell.nav.close')} onClick={onClose}>
