@@ -7,13 +7,14 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
+    http::StatusCode,
     routing::get,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, ai_job_store,
     ai_providers::{self, ModelCheckError, Provider},
     auth::{RequireStudent, RequireTeacher},
     classroom_ai_store::{self as store, MAX_FALLBACKS, ModelRef, SetError},
@@ -32,6 +33,10 @@ pub fn routes() -> Router<AppState> {
             get(get_settings).put(put_settings),
         )
         .route("/api/classrooms/{id}/ai-provider", get(get_provider))
+}
+
+fn verify_scope_key(classroom: Uuid) -> String {
+    format!("classroom_ai_verify:{classroom}")
 }
 
 fn parse_id(raw: &str) -> Result<Uuid, ApiError> {
@@ -56,6 +61,8 @@ pub(crate) struct AiSettings {
     fallbacks: Vec<ModelChoice>,
     /// 已確認過資料流的供應商
     confirmed_providers: Vec<String>,
+    /// 正在背景驗證的設定（`GET /api/ai-jobs/{id}`）；驗證通過才會套用，目前生效的仍是上面的設定（S-20）
+    pending_job: Option<Uuid>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -86,6 +93,12 @@ async fn view(state: &AppState, classroom: Uuid) -> Result<AiSettings, ApiError>
             .map(|s| s.fallbacks.into_iter().map(choice).collect())
             .unwrap_or_default(),
         confirmed_providers: store::confirmed_providers(&state.pool, classroom).await?,
+        pending_job: ai_job_store::active_for(
+            &state.pool,
+            &verify_scope_key(classroom),
+            state.config.generation_stale_secs(),
+        )
+        .await?,
     })
 }
 
@@ -121,6 +134,17 @@ pub(crate) async fn get_settings(
 ) -> Result<Json<AiSettings>, ApiError> {
     let classroom = owned_classroom(&state, &cu, &raw_id).await?;
     Ok(Json(view(&state, classroom.id).await?))
+}
+
+/// 驗證失敗的固定代碼（背景工作也用它當 `error_code`）。
+fn check_code(reason: ModelCheckError) -> &'static str {
+    match reason {
+        ModelCheckError::AuthFailed => "model_auth_failed",
+        ModelCheckError::ModelNotFound => "model_not_found",
+        ModelCheckError::StreamingUnsupported => "model_streaming_unsupported",
+        ModelCheckError::StructuredOutputUnsupported => "model_structured_output_unsupported",
+        ModelCheckError::Other => "model_check_failed",
+    }
 }
 
 pub(crate) fn check_error(reason: ModelCheckError, target: &'static str) -> ApiError {
@@ -164,6 +188,10 @@ fn entry(target: &'static str, provider: &str, model: &str) -> Result<Entry, Api
 
 /// 儲存教室的主模型與備援。會對供應商送出少量請求驗證每個模型（可能產生少量費用），
 /// 與「測試 key」共用每人頻率限制。
+///
+/// 格式、key、資料流確認與頻率限制在請求內檢查；模型驗證在背景進行（S-20）：回 `202` 與工作，
+/// 驗證全部通過才套用設定，失敗則不套用（工作的 `error_code`／`error_target` 說明原因）。
+/// 這間教室已有進行中的驗證時回 `200` 與那一筆。
 #[utoipa::path(
     put,
     path = "/api/classrooms/{id}/ai-settings",
@@ -172,7 +200,8 @@ fn entry(target: &'static str, provider: &str, model: &str) -> Result<Entry, Api
     params(("id" = Uuid, Path, description = "教室 ID")),
     request_body = PutSettings,
     responses(
-        (status = 200, description = "已儲存", body = AiSettings),
+        (status = 202, description = "已開始背景驗證；通過才套用。用 `GET /api/ai-jobs/{id}` 查詢", body = crate::ai_jobs::JobAccepted),
+        (status = 200, description = "這間教室已有進行中的驗證", body = crate::ai_jobs::JobAccepted),
         (status = 400, description = "invalid_provider、invalid_model、too_many_fallbacks、no_key_for_provider、data_flow_confirmation_required、model_auth_failed、model_not_found、model_streaming_unsupported、model_structured_output_unsupported、model_check_failed；錯誤可帶 target（primary、fallback_1…3）", body = crate::error::ErrorBody),
         (status = 409, description = "classroom_archived", body = crate::error::ErrorBody),
         (status = 429, description = "key_test_rate_limited", body = crate::error::ErrorBody),
@@ -185,7 +214,7 @@ pub(crate) async fn put_settings(
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
     Json(body): Json<PutSettings>,
-) -> Result<Json<AiSettings>, ApiError> {
+) -> Result<(StatusCode, Json<crate::ai_jobs::JobAccepted>), ApiError> {
     let classroom = owned_classroom(&state, &cu, &raw_id).await?;
     if classroom.is_archived {
         return Err(ApiError::classroom_archived());
@@ -236,6 +265,15 @@ pub(crate) async fn put_settings(
         ));
     }
 
+    // 已有進行中的驗證：回同一筆，不再送驗證請求、不吃頻率額度
+    let scope_key = verify_scope_key(classroom.id);
+    let stale = state.config.generation_stale_secs();
+    if let Some(existing) = ai_job_store::active_for(&state.pool, &scope_key, stale).await? {
+        return Ok((
+            StatusCode::OK,
+            Json(crate::ai_jobs::JobAccepted::pending(existing)),
+        ));
+    }
     if state.key_test_limit.try_acquire(cu.user.id).is_none() {
         return Err(ApiError::new(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -243,17 +281,75 @@ pub(crate) async fn put_settings(
             "驗證太頻繁，請稍後再試",
         ));
     }
-    // 各模型同時驗證（最多四個，各自有逾時）；失敗時回報清單中第一個不通過的
-    let checks = futures_util::future::join_all(entries.iter().zip(&secrets).map(|(e, key)| {
-        state
-            .model_verifier
-            .verify_model(e.provider, &e.model, key.secret())
-    }))
-    .await;
-    for (e, check) in entries.iter().zip(checks) {
-        check.map_err(|reason| check_error(reason, e.target))?;
-    }
+    let scope = serde_json::json!({ "classroom_id": classroom.id });
+    let job = match ai_job_store::register(
+        &state.pool,
+        cu.user.id,
+        "classroom_ai_verify",
+        &scope_key,
+        &scope,
+        stale,
+    )
+    .await?
+    {
+        ai_job_store::Registered::New(job) => job,
+        ai_job_store::Registered::Existing(job) => {
+            return Ok((
+                StatusCode::OK,
+                Json(crate::ai_jobs::JobAccepted::pending(job)),
+            ));
+        }
+    };
+    let task_state = state.clone();
+    let classroom_id = classroom.id;
+    let user = cu.user.id;
+    tokio::spawn(crate::diagnostics::inherit_request(async move {
+        let state = task_state;
+        let _ = ai_job_store::mark_running(&state.pool, job).await;
+        // 各模型同時驗證（最多四個，各自有逾時）；失敗時回報清單中第一個不通過的
+        let checks =
+            futures_util::future::join_all(entries.iter().zip(&secrets).map(|(e, key)| {
+                state
+                    .model_verifier
+                    .verify_model(e.provider, &e.model, key.secret())
+            }))
+            .await;
+        for (e, check) in entries.iter().zip(checks) {
+            if let Err(reason) = check {
+                let target = serde_json::json!({ "target": e.target });
+                let _ =
+                    ai_job_store::finish_failed_with(&state.pool, job, check_code(reason), &target)
+                        .await;
+                return;
+            }
+        }
+        let outcome = apply_verified(&state, classroom_id, user, &entries).await;
+        let _ = match outcome {
+            Ok(()) => ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await,
+            Err(code) => ai_job_store::finish_failed(&state.pool, job, code).await,
+        };
+    }));
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(crate::ai_jobs::JobAccepted::pending(job)),
+    ))
+}
 
+/// 驗證通過後才套用：主模型與備援、資料流確認、結束過渡狀態。驗證期間教室被封存就不套用。
+async fn apply_verified(
+    state: &AppState,
+    classroom: Uuid,
+    user: Uuid,
+    entries: &[Entry],
+) -> Result<(), &'static str> {
+    let still_open = classroom_store::get_visible(&state.pool, classroom, user, false)
+        .await
+        .map_err(|_| "internal")?;
+    match still_open {
+        Some(c) if !c.is_archived => {}
+        Some(_) => return Err("classroom_archived"),
+        None => return Err("internal"),
+    }
     let mut it = entries.iter();
     let primary = it.next().expect("primary entry");
     let fallbacks: Vec<ModelRef> = it
@@ -264,7 +360,7 @@ pub(crate) async fn put_settings(
         .collect();
     store::set(
         &state.pool,
-        classroom.id,
+        classroom,
         ModelRef {
             provider: primary.provider.id.to_owned(),
             model: primary.model.clone(),
@@ -273,18 +369,20 @@ pub(crate) async fn put_settings(
     )
     .await
     .map_err(|e| match e {
-        SetError::TooManyFallbacks => {
-            ApiError::bad_request("too_many_fallbacks", "備援模型最多三個")
-        }
-        SetError::Invalid => ApiError::bad_request("invalid_model", "模型設定格式不正確"),
-        SetError::Db(e) => e.into(),
+        SetError::TooManyFallbacks => "too_many_fallbacks",
+        SetError::Invalid => "invalid_model",
+        SetError::Db(_) => "internal",
     })?;
-    for e in &entries {
-        store::confirm(&state.pool, classroom.id, e.provider.id, cu.user.id).await?;
+    for e in entries {
+        store::confirm(&state.pool, classroom, e.provider.id, user)
+            .await
+            .map_err(|_| "internal")?;
     }
     // 教師已有 key 且儲存了有效設定：之後不再退回系統 key
-    store::clear_transitional(&state.pool, classroom.id).await?;
-    Ok(Json(view(&state, classroom.id).await?))
+    store::clear_transitional(&state.pool, classroom)
+        .await
+        .map_err(|_| "internal")?;
+    Ok(())
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

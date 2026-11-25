@@ -123,7 +123,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 14] = [
+pub const LONG_RUNNING_ROUTES: [&str; 13] = [
     // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
     "/api/books/search",
     "/api/books/{id}/editions",
@@ -140,8 +140,6 @@ pub const LONG_RUNNING_ROUTES: [&str; 14] = [
     "/api/classrooms/{id}/roster/import",
     // 同步等供應商回應 key 測試
     "/api/teacher/keys/{id}/test",
-    // 儲存教室 AI 設定前，對主模型與每個備援各送一次最小串流與 JSON 請求
-    "/api/classrooms/{id}/ai-settings",
     // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
     "/api/teacher/keys/models",
     // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
