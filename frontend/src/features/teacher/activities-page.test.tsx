@@ -333,6 +333,7 @@ describe('ActivitiesPanel', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '移除「電車難題」' }))
     await addTopic('t2', dialog)
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '儲存' }))
     expect(await screen.findByText('活動已更新。')).toBeInTheDocument()
     expect(body).toEqual({
       title: '改名',
@@ -471,6 +472,26 @@ describe('ActivitiesPanel', () => {
     expect(screen.getByLabelText('新增題目')).toBeEnabled()
   })
 
+  it('confirms replacing a topic and cancels without saving its independent list removal', async () => {
+    let patches = 0
+    mockList([act()])
+    server.use(http.patch('/api/activities/a1', () => { patches++; return HttpResponse.json(act({ topic_ids: ['t2'] })) }))
+    setup()
+    await userEvent.click(await screen.findByRole('button', { name: '編輯' }))
+    const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
+    await userEvent.click(within(dialog).getByRole('button', { name: '移除「電車難題」' }))
+    await addTopic('t2', dialog)
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    const confirmation = await screen.findByRole('alertdialog')
+    expect(confirmation).toHaveTextContent('獨立書單')
+    expect(patches).toBe(0)
+    await userEvent.click(within(confirmation).getByRole('button', { name: '取消' }))
+    expect(patches).toBe(0)
+    await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '儲存' }))
+    await waitFor(() => expect(patches).toBe(1))
+  })
+
   it('shows the locked-topic message, keeps the saved topics fixed and still allows adding', async () => {
     const bodies: unknown[] = []
     server.use(
@@ -486,9 +507,10 @@ describe('ActivitiesPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '編輯' }))
     const dialog = await screen.findByRole('dialog', { name: '編輯活動' })
     await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(2))
-    // 教師移除第一題後送出，後端回 409
+    // 教師移除第一題並確認後送出，後端回 409
     await userEvent.click(within(dialog).getByRole('button', { name: '移除「電車難題」' }))
     await userEvent.click(within(dialog).getByRole('button', { name: '儲存' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '儲存' }))
     expect(await within(dialog).findAllByText(/此活動已有學生開始對話，既有題目不能移除、更換或調整順序/)).not.toHaveLength(0)
     expect(screen.queryByText('activity_topic_locked')).not.toBeInTheDocument()
     // 清單還原為已儲存的題目，既有題目的移除與排序都停用

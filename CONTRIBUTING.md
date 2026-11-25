@@ -406,7 +406,8 @@ NTNU 正式環境的資料要保留，所以 migration **只往前**（[S-09.3](
 1. **SDD：先固定規格。** Issue 需連結來源需求，描述使用者情境、成功與失敗流程、資料／權限邊界、錯誤或等待狀態，以及可觀察的驗收條件。未定義事項標為待確認，不自行補成產品決策。
 2. **TDD：先寫會失敗的測試**，再做最小實作，最後在本 Issue 範圍內整理程式。
 3. **AI 功能**：以固定情境與行為評分準則驗收，不要求生成文字逐字相同，並記錄提示／規則版本。
-4. **完成條件**：
+4. **測試不能靠時間**：後端整合測試不要「睡一段時間再斷言」、不要用耗時當斷言、不要數連線池取用次數，機器一慢就會偶發失敗。改成等明確的事件或輪詢實際結果（`backend/tests/common/mod.rs` 有 `wait_until_ai_called`、`wait_until_background_idle`、`wait_until_blocked_on_lock`）。CI 的 `Test flake lint` 會擋，規則與 `flaky-ok` 的用法見 [`scripts/test-flake-lint/README.md`](scripts/test-flake-lint/README.md)。
+5. **完成條件**：
    - 規格、測試與實作一致，新增測試通過
    - 權限與個資條件有測試證據
    - 必要文件已同步更新

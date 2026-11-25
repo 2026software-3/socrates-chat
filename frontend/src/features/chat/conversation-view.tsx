@@ -4,6 +4,7 @@ import { Link } from 'react-router'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useFocusHeader } from '@/components/vedute/shell'
 import { createChatAdapter } from '@/features/chat/chat-adapter'
 import { pickGuidingQuestion } from '@/features/chat/guiding-question'
 import { useMessageSource } from '@/features/chat/use-message-source'
@@ -138,6 +139,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <FocusHeaderSync title={detail.title} uncounted={uncounted} />
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="flex flex-wrap items-end justify-between gap-4 border-b px-4 pt-6 pb-4 md:px-8">
           <div className="flex min-w-0 flex-col gap-1">
@@ -189,6 +191,14 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
       </div>
     </AssistantRuntimeProvider>
   )
+}
+
+/** 把對話題名與即時回合數同步到專注殼層的 BackHeader（F-41.4）。 */
+function FocusHeaderSync({ title, uncounted }: { title: string; uncounted: number }) {
+  const t = useT()
+  const count = Math.max(0, useAuiState((s) => s.thread.messages.filter((m) => m.role === 'user').length) - uncounted)
+  useFocusHeader(title, t('shell.focus.rostraRound', { count }))
+  return null
 }
 
 /** 回合數：學生送出幾則訊息就是第幾回合（扣掉後端不算回合的接話）；跟著對話串即時更新。 */

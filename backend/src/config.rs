@@ -20,6 +20,8 @@ pub struct Config {
     pub google_redirect_url: String,
     /// 選填的後端 Cloud Translation API 金鑰（與 Google 登入憑證分開）。
     pub google_translation_api_key: Option<String>,
+    /// Google Books lookup key; unrelated to OAuth credentials.
+    pub google_books_api_key: Option<String>,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
     /// 首位管理者內建登入的初始密碼（S-01.3）；沒設定就不建立內建管理者帳號，只能用 Google 登入。
@@ -247,12 +249,6 @@ impl Config {
         self.admin_emails.first().map(String::as_str)
     }
 
-    /// 該信箱是否為 `ADMIN_EMAILS` 的第一個管理者（不分大小寫）。
-    pub fn is_primary_admin_email(&self, email: &str) -> bool {
-        self.primary_admin_email()
-            .is_some_and(|primary| primary.eq_ignore_ascii_case(email))
-    }
-
     /// 回覆產生的 claim 超過多久視為殘留（秒）：兩次嘗試的上限再加一點餘裕。
     pub fn generation_stale_secs(&self) -> f64 {
         self.ai_total_timeout.as_secs_f64() * 2.0 + 10.0
@@ -327,6 +323,9 @@ impl Config {
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
+            google_books_api_key: env::var("GOOGLE_BOOKS_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty()),
             google_translation_api_key: env::var("GOOGLE_TRANSLATION_API_KEY")
                 .ok()
                 .filter(|key| !key.trim().is_empty()),

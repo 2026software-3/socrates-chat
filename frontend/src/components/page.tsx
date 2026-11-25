@@ -1,22 +1,55 @@
 import { createContext, useContext, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { PageHeader as VedutePageHeader, useShellHeaderBridge } from '@/components/vedute/shell'
 import { errorText, useT } from '@/i18n'
 import { isApiError } from '@/lib/api'
 
 /** 教師／管理者工作區的名稱；學生外框沒有工作區，值為 null。由 Layout 提供。 */
 export const WorkspaceContext = createContext<string | null>(null)
 
-/**
- * 頁面標題列。工作區頁面（教師、管理者）有「工作區／頁名」麵包屑與 30px 粗體標題；
- * 學生頁面是 24px 標題，說明文字放在標題下方。
- */
 export type Crumb = { label: string; to?: string }
 
-export function PageHeader({ title, description, actions, crumbs }: { title: string; description?: ReactNode; actions?: ReactNode; crumbs?: Crumb[] }) {
+/**
+ * 頁面標題列。
+ * 在 Vedute 工作情境內以 portal 渲染進殼層頂端的滿版版畫頁首（PageHeader），避免重複標題；
+ * 在專注情境或獨立渲染時則就地呈現標題列。
+ */
+export function PageHeader({
+  title,
+  description,
+  actions,
+  crumbs,
+}: {
+  title: string
+  description?: ReactNode
+  actions?: ReactNode
+  crumbs?: Crumb[]
+}) {
   const workspace = useContext(WorkspaceContext)
+  const shell = useShellHeaderBridge(title)
+
+  if (shell?.mode === 'work') {
+    if (!shell.headerSlot) return null
+    return (
+      <>
+        {createPortal(
+          <VedutePageHeader
+            title={title}
+            subtitle={description}
+            crumbs={crumbs}
+            area={shell.area}
+          />,
+          shell.headerSlot,
+        )}
+        {actions ? <div className="flex flex-wrap items-center justify-end gap-2">{actions}</div> : null}
+      </>
+    )
+  }
+
   return (
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div className="flex min-w-0 flex-col gap-1">
