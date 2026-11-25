@@ -497,9 +497,9 @@ export function DesignOverview() {
         <h3 id="stack-bars" className="type-h3">比例長條</h3>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="grid gap-3 border border-ink bg-surface p-4">
-            <div className="flex items-center gap-3">
-              <Stamp prefix="QVAEST." numeral={1} tone="caeruleum" size="sm" />
-              <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3 md:gap-4">
+              <Stamp prefix="QVAEST." numeral={1} tone="caeruleum" />
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                 <p className="type-h3 text-ink">為救五人該犧牲一人嗎？</p>
                 <Meta icon={Users} variant="bibliographic" value="28 人參與" />
               </div>
