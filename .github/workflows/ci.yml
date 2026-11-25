@@ -8,12 +8,9 @@ on:
       - "frontend/**"
       - ".github/workflows/ci.yml"
       - ".github/scripts/**"
+  # PR 不在 workflow 層級設 paths，讓 CI Gate 對所有 PR（含純文件 PR）一律回報狀態，
+  # 才能在 Protect main ruleset 設為 required status check 而不卡住文件 PR（S-11.6）。
   pull_request:
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - ".github/workflows/ci.yml"
-      - ".github/scripts/**"
 
 permissions:
   contents: read
@@ -23,9 +20,60 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - name: Detect changed paths
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            {
+              echo "backend=true"
+              echo "frontend=true"
+              echo "scripts=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          backend=false
+          frontend=false
+          scripts=false
+
+          if grep -qE '^(backend/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            backend=true
+          fi
+          if grep -qE '^(frontend/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            frontend=true
+          fi
+          if grep -qE '^(\.github/scripts/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            scripts=true
+          fi
+
+          {
+            echo "backend=$backend"
+            echo "frontend=$frontend"
+            echo "scripts=$scripts"
+          } >> "$GITHUB_OUTPUT"
+
   # fmt/clippy 不需要 Postgres，獨立一個 job 與測試並行，也能更早回報 lint 失敗
   backend-lint:
     name: Backend (fmt, clippy)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -45,6 +93,8 @@ jobs:
   # 相依套件已知漏洞；豁免清單與理由在 backend/.cargo/audit.toml
   backend-audit:
     name: Backend (cargo audit)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -58,6 +108,8 @@ jobs:
 
   backend:
     name: Backend (test, coverage)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -109,6 +161,8 @@ jobs:
 
   frontend:
     name: Frontend (lint, typecheck, test, build, e2e)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -141,7 +195,47 @@ jobs:
 
   scripts:
     name: Scripts (project-status tests)
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: .github/scripts/project-status.test.sh
+
+  # 永遠執行的匯總檢查（Protect main ruleset 的單一 required status check）。
+  # 未觸發的區塊為 skipped 視為通過；任一已觸發 job 失敗或取消皆擋下 PR。
+  gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    needs: [changes, backend-lint, backend-audit, backend, frontend, scripts]
+    if: always()
+    steps:
+      - name: Verify all triggered CI jobs succeeded
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          BACKEND_LINT: ${{ needs.backend-lint.result }}
+          BACKEND_AUDIT: ${{ needs.backend-audit.result }}
+          BACKEND: ${{ needs.backend.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          SCRIPTS: ${{ needs.scripts.result }}
+        run: |
+          failed=0
+          for pair in \
+            "changes=$CHANGES" \
+            "backend-lint=$BACKEND_LINT" \
+            "backend-audit=$BACKEND_AUDIT" \
+            "backend=$BACKEND" \
+            "frontend=$FRONTEND" \
+            "scripts=$SCRIPTS"; do
+            name=${pair%%=*}
+            status=${pair#*=}
+            echo "$name: $status"
+            case "$status" in
+              success|skipped) ;;
+              *) failed=1 ;;
+            esac
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more CI jobs did not succeed."
+            exit 1
+          fi
