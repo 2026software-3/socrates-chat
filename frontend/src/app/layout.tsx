@@ -214,7 +214,7 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
 
           <div className="flex min-h-0 flex-1">
             {/* Desktop (≥1024): persistent 216px sidebar */}
-            <div className="vedute-sidebar-fixed paper-texture hidden shrink-0 border-r border-ink-faint lg:block">
+            <div className="vedute-sidebar-fixed hidden shrink-0 border-r border-ink-faint bg-paper lg:block">
               <aside className="sticky top-13 h-[calc(100svh-52px)] overflow-y-auto">
                 <Sidebar
                   role={role}
@@ -251,12 +251,12 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
 
                 {subTabs && <AreaSubTabs tabs={subTabs} pathname={pathname} />}
 
-                <div className="mx-auto flex w-full max-w-5xl flex-col gap-2 px-4 pt-4 empty:hidden md:px-7 lg:px-10">
+                <div className="flex w-full flex-col gap-2 px-4 pt-4 empty:hidden md:px-7 lg:px-10">
                   <AnnouncementBar />
                   {showNotifications ? <NotificationBanner key={me.id} /> : null}
                 </div>
 
-                <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 md:px-7 md:py-8 lg:px-10">
+                <div className="w-full flex-1 px-4 py-6 md:px-7 md:py-8 lg:px-10">
                   {children}
                 </div>
               </main>

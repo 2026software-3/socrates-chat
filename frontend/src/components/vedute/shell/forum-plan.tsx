@@ -1,4 +1,3 @@
-import { useId } from 'react'
 import { cn } from 'cn'
 import type { BuildingId, ShellArea } from './areas'
 
@@ -117,7 +116,6 @@ export function ForumPlan({
   onSelectArea,
   className,
 }: ForumPlanProps) {
-  const patternId = useId()
   const byBuilding = new Map(areas.map((a) => [a.building, a]))
   const currentArea = areas.find((a) => a.id === currentAreaId)
   const currentGeo = currentArea ? BUILDING_GEOMETRY.find((b) => b.id === currentArea.building) : undefined
@@ -129,22 +127,11 @@ export function ForumPlan({
       focusable="false"
       className={cn('block h-auto w-full select-none', className)}
     >
-      <defs>
-        <pattern
-          id={patternId}
-          width="3.2"
-          height="3.2"
-          patternUnits="userSpaceOnUse"
-          patternTransform="rotate(45)"
-        >
-          <path d="M0 0v3.2" stroke="var(--color-ink)" strokeWidth="0.55" />
-        </pattern>
-      </defs>
+      {/* Pure white Forum plaza ground matching Figma Nav/Forum Plan 2267:710 */}
+      <rect x="0.5" y="0.5" width="219" height="149" fill="var(--color-surface)" stroke="var(--color-ink-faint)" />
 
-      <rect x="0.5" y="0.5" width="219" height="149" fill="none" stroke="var(--color-ink-faint)" />
-
-      {/* Hatched surrounding urban fabric */}
-      <g fill={`url(#${patternId})`} stroke="var(--color-ink)" strokeWidth="0.5">
+      {/* Surrounding urban fabric in warm deep paper matching Figma 2267:710 */}
+      <g fill="var(--color-paper-deep)" stroke="var(--color-ink)" strokeWidth="0.5">
         <path d="M0 0h70v6H38v4H0z" />
         <path d="M112 0h108v40h-6V12h-60l-8-6h-34z" />
         <path d="M0 100h4v50H0z" />

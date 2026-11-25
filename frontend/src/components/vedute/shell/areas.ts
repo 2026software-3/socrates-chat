@@ -19,13 +19,13 @@ export type BuildingMeta = {
 }
 
 export const BUILDINGS: Record<BuildingId, BuildingMeta> = {
-  basilica: { id: 'basilica', latin: 'Basilica Ivlia', plate: 1, pos: '58% 62%', wash: 'aerugo' },
-  vesta: { id: 'vesta', latin: 'Aedes Vestae', plate: 1, pos: '92% 58%', wash: 'none' },
-  rostra: { id: 'rostra', latin: 'Rostra', plate: 2, pos: '50% 55%', wash: 'caeruleum' },
-  saturn: { id: 'saturn', latin: 'Aedes Satvrni', plate: 4, pos: '40% 40%', wash: 'ochra' },
-  castor: { id: 'castor', latin: 'Aedes Castoris', plate: 1, pos: '78% 45%', wash: 'none' },
-  tabularium: { id: 'tabularium', latin: 'Tabvlarivm', plate: 3, pos: '50% 40%', wash: 'none' },
-  curia: { id: 'curia', latin: 'Cvria', plate: 4, pos: '55% 30%', wash: 'none' },
+  basilica: { id: 'basilica', latin: 'Basilica Ivlia', plate: 1, pos: '50% 50%', wash: 'aerugo' },
+  vesta: { id: 'vesta', latin: 'Aedes Vestae', plate: 1, pos: '50% 50%', wash: 'none' },
+  rostra: { id: 'rostra', latin: 'Rostra', plate: 2, pos: '50% 50%', wash: 'caeruleum' },
+  saturn: { id: 'saturn', latin: 'Aedes Satvrni', plate: 4, pos: '50% 50%', wash: 'ochra' },
+  castor: { id: 'castor', latin: 'Aedes Castoris', plate: 1, pos: '50% 50%', wash: 'none' },
+  tabularium: { id: 'tabularium', latin: 'Tabvlarivm', plate: 3, pos: '50% 50%', wash: 'none' },
+  curia: { id: 'curia', latin: 'Cvria', plate: 4, pos: '50% 50%', wash: 'none' },
 }
 
 export type AreaSubTab = {

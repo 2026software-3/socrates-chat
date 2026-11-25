@@ -74,7 +74,7 @@ export function AccountMenu({
     .map((r) => t(`role.${r}`))
     .join(' / ')
   const switchRoles = availableSwitchRoles(me.roles, currentRole)
-  const showAccountLink = currentRole !== 'student' && (me.roles.student || me.can_change_password)
+  const showAccountLink = me.roles.student || me.roles.teacher || me.roles.admin || me.can_change_password
 
   function handleLanguage(next: Lang) {
     if (onSelectLanguage) {
@@ -90,7 +90,7 @@ export function AccountMenu({
       id="vedute-account-menu"
       role="region"
       aria-label={t('shell.account.menu')}
-      className="absolute top-[calc(100%+6px)] right-0 z-40 flex w-60 flex-col gap-0.5 border border-ink bg-paper px-4 pt-3 pb-2"
+      className="absolute top-full right-0 z-40 mt-px flex w-60 flex-col gap-0.5 border border-ink bg-paper px-4 pt-3 pb-2"
     >
       <div className="mb-1.5 border-b border-ink-faint pb-2.5">
         <p className="type-body-strong truncate text-ink">{name}</p>

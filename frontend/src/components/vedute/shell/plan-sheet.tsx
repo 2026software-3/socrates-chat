@@ -128,8 +128,8 @@ export function PlanSheet({ open, areas, currentArea, onClose, returnFocusTo }: 
           </Button>
         </div>
 
-        <div className="flex flex-col gap-3.5 overflow-y-auto pb-1">
-          <div className="bg-surface/65">
+        <div className="flex flex-col gap-3 overflow-y-auto pb-1">
+          <div className="bg-surface">
             <ForumPlan
               areas={areas}
               currentAreaId={currentArea?.id}

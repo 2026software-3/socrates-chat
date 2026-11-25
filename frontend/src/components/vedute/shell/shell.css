@@ -10,21 +10,7 @@
   --vedute-side-w: 216px;
 }
 
-/* 雙墨線：上下 1px 墨線、中隔 1px，不用 box-shadow（呼叫端已設 sticky／fixed／relative 定位） */
-.vedute-double-rule-b {
-  border-bottom: 1px solid var(--color-ink);
-}
-.vedute-double-rule-b::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -3px;
-  height: 1px;
-  background-color: var(--color-ink);
-  pointer-events: none;
-}
-
+/* 雙墨線：上下 1px 墨線、中隔 1px，不用 box-shadow（用於手機分頁列與平面圖面板上緣） */
 .vedute-double-rule-t {
   border-top: 1px solid var(--color-ink);
 }
@@ -37,6 +23,50 @@
   height: 1px;
   background-color: var(--color-ink);
   pointer-events: none;
+}
+
+/* 品牌拉丁副標與頁尾刻字（對應 Figma Page/Topbar 2281:2196 與 Shell/Colophon 2027:364） */
+.vedute-brand-latin {
+  font-family: var(--font-latin);
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+}
+
+.vedute-colophon-latin {
+  font-family: var(--font-latin);
+  font-size: 13px;
+  line-height: 22px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+/* 建築編號圖釘（Figma Page/Topbar 26px / 12px；Page/Header 28px / 14px；無額外字距確保置中） */
+.vedute-pin {
+  font-family: var(--font-latin);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0;
+  width: 26px;
+  height: 26px;
+  border: 1.2px solid var(--color-chalk);
+  border-radius: 9999px;
+  background-color: var(--color-paper);
+  color: var(--color-chalk);
+}
+
+.vedute-pin-lg {
+  font-family: var(--font-latin);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  width: 28px;
+  height: 28px;
+  border: 1.2px solid var(--color-chalk);
+  border-radius: 9999px;
+  background-color: var(--color-paper);
+  color: var(--color-chalk);
 }
 
 /* 拉丁銘文逐字刻出：每字 0.5s、間隔 40ms（prototypes/c-interior/index.html .insc.cut） */
@@ -140,9 +170,6 @@
 .vedute-plan-bld.is-inert {
   cursor: default;
 }
-.vedute-plan-bld.is-inert .vedute-plan-poche {
-  fill: var(--color-ink-soft);
-}
 
 /* PageHeader 白色漸層（prototypes/c-interior/index.html .veduta::after + 手機版覆寫） */
 .vedute-page-header-fade {
@@ -211,8 +238,8 @@
 }
 
 @media (width < 48rem) {
-  .vedute-work-main {
-    padding-bottom: calc(var(--size-bottom-nav) + env(safe-area-inset-bottom, 0px));
+  .vedute-colophon {
+    padding-bottom: calc(28px + var(--size-bottom-nav) + env(safe-area-inset-bottom, 0px));
   }
 }
 

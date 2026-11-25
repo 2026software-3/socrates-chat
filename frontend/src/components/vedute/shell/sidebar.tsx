@@ -60,7 +60,7 @@ export function LegendList({
               )}
             >
               {isCurrent && (
-                <span aria-hidden="true" className="absolute top-2 bottom-2 left-0 w-0.5 bg-chalk" />
+                <span aria-hidden="true" className="absolute top-2 bottom-3 left-0 w-0.5 bg-chalk" />
               )}
               <span
                 aria-hidden="true"
@@ -123,7 +123,7 @@ export function Sidebar({ role, areas, currentArea, onNavigate, footerExtra, cla
     <div
       data-vedute-sidebar=""
       className={cn(
-        'vedute-sidebar-fixed paper-texture flex h-full flex-col gap-4 border-r border-ink-faint px-4 pt-6 pb-6',
+        'vedute-sidebar-fixed flex h-full flex-col gap-4 border-r border-ink-faint bg-paper px-4 pt-[26px] pb-6',
         className,
       )}
     >
@@ -212,12 +212,12 @@ export function SidebarDrawer({
         inert={!open}
         tabIndex={-1}
         className={cn(
-          'vedute-drawer paper-texture fixed inset-y-0 left-0 z-35 hidden flex-col overflow-y-auto border-r border-ink-faint outline-none md:flex lg:hidden',
+          'vedute-drawer fixed inset-y-0 left-0 z-35 hidden flex-col overflow-y-auto border-r border-ink-faint bg-paper outline-none md:flex lg:hidden',
           shown && 'is-open',
           !open && 'pointer-events-none',
         )}
       >
-        <div className="flex items-center justify-end px-2 pt-2">
+        <div className="flex items-center justify-end px-2 pt-1">
           <Button variant="icon" aria-label={t('shell.nav.close')} onClick={onClose}>
             <X aria-hidden="true" />
           </Button>
@@ -228,7 +228,7 @@ export function SidebarDrawer({
           currentArea={currentArea}
           onNavigate={onClose}
           footerExtra={footerExtra}
-          className="h-auto flex-1 border-r-0 pt-2"
+          className="h-auto flex-1 border-r-0 pt-0"
         />
       </div>
     </>

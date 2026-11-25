@@ -37,15 +37,15 @@ export function BackHeader({
   return (
     <header
       className={cn(
-        'vedute-double-rule-b paper-texture sticky top-0 z-20 flex min-h-14 shrink-0 items-center gap-2 px-2 py-2 md:gap-4 md:px-7 md:py-3 lg:px-10',
+        'sticky top-0 z-20 flex min-h-14 shrink-0 items-center gap-2 border-b border-ink bg-paper px-3 py-2.5 md:gap-4 md:px-10 md:py-6',
         className,
       )}
     >
       <Link
         to={backTo}
-        className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-2 text-ink no-underline hover:text-chalk focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-chalk"
+        className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-1 text-ink no-underline hover:text-chalk focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-chalk"
       >
-        <ArrowLeft aria-hidden="true" className="size-5 shrink-0" />
+        <ArrowLeft aria-hidden="true" className="size-6 shrink-0" />
         <span
           className="type-body sr-only underline decoration-chalk underline-offset-4 md:not-sr-only"
           style={{ textDecorationThickness: 'var(--stroke-emphasis)' }}
@@ -61,10 +61,7 @@ export function BackHeader({
       {trailing && <div className="flex shrink-0 items-center gap-2">{trailing}</div>}
 
       <div className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
-        <span
-          aria-hidden="true"
-          className="type-latin-small inline-grid size-6.5 shrink-0 place-items-center rounded-full border border-chalk bg-paper text-chalk"
-        >
+        <span aria-hidden="true" className="vedute-pin inline-grid shrink-0 place-items-center">
           {numeral}
         </span>
         <CarvedInscription

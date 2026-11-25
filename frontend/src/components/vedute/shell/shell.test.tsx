@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router'
+import { toast } from 'sonner'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { makeMe, mockMe, renderApp } from '@/test/render'
@@ -238,7 +239,8 @@ describe('Vedute shell primitives', () => {
     expect(screen.getByText('講壇・第 5 輪')).toBeInTheDocument()
   })
 
-  it('renders Colophon with Schola Socratica lettering and report link only when allowed', () => {
+  it('renders Colophon with guide/privacy coming-soon toast and role-gated report link', async () => {
+    const infoSpy = vi.spyOn(toast, 'info')
     const { rerender } = render(
       <I18nProvider initial="zh-TW">
         <MemoryRouter>
@@ -249,6 +251,11 @@ describe('Vedute shell primitives', () => {
     expect(screen.getByRole('contentinfo')).toBeInTheDocument()
     expect(screen.getByText('SCHOLA SOCRATICA · MMXXVI')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '回報問題' })).toHaveAttribute('href', '/complaint')
+    await userEvent.click(screen.getByRole('button', { name: '使用說明' }))
+    await userEvent.click(screen.getByRole('button', { name: '紀錄與隱私' }))
+    expect(infoSpy).toHaveBeenCalledWith('你發現了神秘頁面，敬請期待。')
+    expect(infoSpy).toHaveBeenCalledTimes(2)
+    infoSpy.mockRestore()
 
     rerender(
       <I18nProvider initial="zh-TW">

@@ -34,15 +34,19 @@ export function PageHeader({
 
   if (shell?.mode === 'work') {
     if (!shell.headerSlot) return null
-    return createPortal(
-      <VedutePageHeader
-        title={title}
-        subtitle={description}
-        crumbs={crumbs}
-        actions={actions}
-        area={shell.area}
-      />,
-      shell.headerSlot,
+    return (
+      <>
+        {createPortal(
+          <VedutePageHeader
+            title={title}
+            subtitle={description}
+            crumbs={crumbs}
+            area={shell.area}
+          />,
+          shell.headerSlot,
+        )}
+        {actions ? <div className="flex flex-wrap items-center justify-end gap-2">{actions}</div> : null}
+      </>
     )
   }
 

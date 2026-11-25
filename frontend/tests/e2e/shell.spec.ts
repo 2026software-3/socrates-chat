@@ -14,6 +14,10 @@ test.describe('Vedute work shell across roles and viewports', () => {
     // No horizontal overflow at any viewport
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
+    // Resting state a11y + screenshot before interactive focus rings
+    await expectNoA11yViolations(page)
+    await expectScreenshot(page, 'shell-student.png')
+
     const project = testInfo.project.name
 
     if (project === 'desktop') {
@@ -33,7 +37,7 @@ test.describe('Vedute work shell across roles and viewports', () => {
       await expect(drawer).toBeVisible()
       await expect(drawer.getByRole('link', { name: /我的教室/ })).toHaveAttribute('aria-current', 'page')
       await expectNoA11yViolations(page)
-      await expectScreenshot(page, 'shell-student-drawer.png')
+      await expectScreenshot(page, 'shell-student-drawer.png', { fullPage: false })
 
       await page.keyboard.press('Escape')
       await expect(drawer).toBeHidden()
@@ -52,7 +56,7 @@ test.describe('Vedute work shell across roles and viewports', () => {
       await expect(sheet).toBeVisible()
       await page.mouse.move(0, 0)
       await expectNoA11yViolations(page)
-      await expectScreenshot(page, 'shell-student-sheet.png')
+      await expectScreenshot(page, 'shell-student-sheet.png', { fullPage: false })
 
       // Escape closes sheet and returns focus to Plaza button
       await page.keyboard.press('Escape')
@@ -71,17 +75,15 @@ test.describe('Vedute work shell across roles and viewports', () => {
       await page.goto('/')
     }
 
-    // Account menu open, Escape close, focus returns
+    // Account menu open (includes 個人設定 for students too), Escape close, focus returns
     const accountBtn = page.getByRole('banner').getByRole('button', { name: /合成學生/ })
     await accountBtn.click()
+    await expect(page.getByRole('link', { name: '個人設定' })).toHaveAttribute('href', '/account')
     await expect(page.getByRole('button', { name: '登出' })).toBeVisible()
     await expect(page.getByLabel('語言')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('button', { name: '登出' })).toBeHidden()
     await expect(accountBtn).toBeFocused()
-
-    await expectNoA11yViolations(page)
-    await expectScreenshot(page, 'shell-student.png')
   })
 
   test('teacher work shell across viewports with axe and screenshots', async ({ page, loginAs }, testInfo) => {

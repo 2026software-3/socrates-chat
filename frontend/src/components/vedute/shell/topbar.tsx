@@ -56,7 +56,7 @@ export function Topbar({
   const areaLabel = area ? t(area.labelKey) : ''
 
   return (
-    <header className="vedute-double-rule-b paper-texture sticky top-0 z-20 flex h-13 shrink-0 items-center justify-between gap-3 px-4 md:px-6">
+    <header className="sticky top-0 z-20 flex h-13 shrink-0 items-center justify-between gap-3 border-b border-ink bg-paper px-4 md:px-6">
       {/* Left: hamburger (tablet only) + brand (≥768) + Latin subtitle (≥1024) */}
       <div className="flex min-w-0 shrink-0 items-center gap-2.5">
         <Button
@@ -76,7 +76,7 @@ export function Topbar({
           className="hidden items-baseline gap-2.5 text-ink no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-chalk md:inline-flex"
         >
           <span className="type-h3 whitespace-nowrap">{t('shell.brand')}</span>
-          <span aria-hidden="true" className="type-latin-small hidden whitespace-nowrap text-ink-soft lg:inline">
+          <span aria-hidden="true" className="vedute-brand-latin hidden text-ink-soft lg:inline">
             Schola Socratica
           </span>
         </Link>
@@ -103,10 +103,7 @@ export function Topbar({
           </button>
 
           <div className="hidden items-center gap-3 md:flex">
-            <span
-              aria-hidden="true"
-              className="type-latin-small inline-grid size-6.5 shrink-0 place-items-center rounded-full border border-chalk bg-paper text-chalk"
-            >
+            <span aria-hidden="true" className="vedute-pin inline-grid shrink-0 place-items-center">
               {area.numeral}
             </span>
             <CarvedInscription text={building.latin} animateKey={`${role}-${area.building}`} variant="topbar" />

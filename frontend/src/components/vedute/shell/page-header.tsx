@@ -78,7 +78,7 @@ export function PageHeader({
         <span
           aria-hidden="true"
           data-vedute-header-pin=""
-          className="type-latin-small absolute top-3 right-4 z-10 inline-grid size-7 place-items-center rounded-full border border-chalk bg-paper text-chalk select-none"
+          className="vedute-pin-lg absolute top-3 right-4 z-10 inline-grid place-items-center select-none"
         >
           {area.numeral}
         </span>
