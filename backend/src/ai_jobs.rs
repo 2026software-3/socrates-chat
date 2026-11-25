@@ -39,6 +39,9 @@ pub(crate) struct JobScope {
     topic_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     classroom_id: Option<Uuid>,
+    /// 成就識別碼是文字（不是 UUID）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    achievement_id: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -46,7 +49,7 @@ pub(crate) struct AiJob {
     /// 對話相關的工作是 `{kind}:{conversation_id}`（同一個對話同一種工作只會有一筆）；
     /// 背景工作（`ai_jobs`）是工作的 UUID，可用 `GET /api/ai-jobs/{id}` 查詢。
     id: String,
-    /// `reply`、`summary`、`radar`、`argument_tree`、`summary_translation`、`regroup`、`summary_translation_view`（教師按需翻譯）。
+    /// `reply`、`summary`、`radar`、`argument_tree`、`summary_translation`、`regroup`、`summary_translation_view`（教師按需翻譯）、`topic_dimensions`、`achievement_translation`。
     kind: String,
     /// `pending`、`ready`、`failed`。
     status: String,
