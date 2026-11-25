@@ -74,7 +74,7 @@ export function AccountMenu({
     .map((r) => t(`role.${r}`))
     .join(' / ')
   const switchRoles = availableSwitchRoles(me.roles, currentRole)
-  const showAccountLink = me.roles.student || me.roles.teacher || me.roles.admin || me.can_change_password
+  const showAccountLink = me.roles.student || me.can_change_password
 
   function handleLanguage(next: Lang) {
     if (onSelectLanguage) {
