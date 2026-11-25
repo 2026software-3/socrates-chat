@@ -4,7 +4,7 @@ import { usePollJob, usePollState } from '@/lib/ai-jobs'
 import type { PollSpec } from '@/lib/poll-store'
 import type { ActiveJob } from './active-jobs'
 
-type JobDetail = { status: string; error_code?: string }
+type JobDetail = { status: string; error_code?: string; error_target?: string | null }
 export type JobOutcome = { ok: true } | { ok: false; error: unknown }
 
 /**
@@ -49,7 +49,7 @@ export function useWatchedJob(
       settled.current(outcome)
     }
     if (job.error !== undefined) finish({ ok: false, error: job.error })
-    else if (job.data?.status === 'failed') finish({ ok: false, error: new ApiError(502, job.data.error_code ?? 'ai_unavailable', '') })
+    else if (job.data?.status === 'failed') finish({ ok: false, error: new ApiError(502, job.data.error_code ?? 'ai_unavailable', '', job.data.error_target ?? undefined) })
     else if (job.data?.status === 'ready') finish({ ok: true })
   }, [jobId, job])
 
