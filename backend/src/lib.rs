@@ -46,6 +46,7 @@ pub mod admin_health;
 pub mod admin_teacher_keys;
 pub(crate) mod admin_voice_nodes;
 pub mod ai;
+pub mod ai_jobs;
 pub mod ai_providers;
 mod ai_route;
 pub mod ai_usage;
@@ -419,6 +420,7 @@ fn public_routes(state: &AppState) -> Router<AppState> {
         .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(ai_jobs::routes())
         .merge(teacher_keys::routes())
         .merge(admin_teacher_keys::routes())
         .merge(system_ai::routes())
