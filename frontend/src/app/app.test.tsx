@@ -320,6 +320,9 @@ describe('sidebar stays in view on long pages', () => {
       http.get('/api/classrooms', () => HttpResponse.json([])),
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })),
       http.get('/api/admin/*', () => HttpResponse.json([])),
+      // 首頁各自會讀的資料；沒有處理的請求在卸載時被中止，會變成測試結束後的未處理拒絕
+      http.get('/api/dashboard/class', () => HttpResponse.json({})),
+      http.get('/api/topics', () => HttpResponse.json([])),
     )
     renderApp(null, { route })
     const nav = await screen.findByRole('navigation', { name: '主導覽' })

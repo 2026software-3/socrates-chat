@@ -70,12 +70,15 @@ export class PollStore {
     this.run(entry)
   }
 
-  /** 重新開始（逾時、失敗後再檢查，或重試）；可用 `data` 先塞入剛從 POST 回來的結果。 */
-  restart<T>(key: string, { data, spec }: { data?: T; spec?: PollSpec<T> } = {}) {
+  /**
+   * 重新開始（逾時、失敗後再檢查，或重試）；可用 `data` 先塞入剛從 POST 回來的結果。
+   * 預設清掉舊資料；`keep` 保留舊資料直到新資料回來（背景刷新用，畫面不閃）。
+   */
+  restart<T>(key: string, { data, spec, keep = false }: { data?: T; spec?: PollSpec<T>; keep?: boolean } = {}) {
     const entry = this.entries.get(key)
     if (!entry) return
     if (spec) entry.spec = spec as PollSpec<unknown>
-    this.run(entry, data === undefined ? { data: undefined } : { data })
+    this.run(entry, data !== undefined ? { data } : keep ? undefined : { data: undefined })
   }
 
   /** 登出等情況：中止所有輪詢並清空。 */
