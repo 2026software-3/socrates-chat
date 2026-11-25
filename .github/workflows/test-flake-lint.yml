@@ -1,0 +1,32 @@
+name: Test flake lint
+
+# backend/tests 裡「機器一慢就偶發失敗」的寫法檢查（固定睡眠、耗時斷言、數連線池取用次數），
+# 規則與 flaky-ok 的用法見 scripts/test-flake-lint/README.md。只用 Node 內建模組，幾秒內跑完。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/tests/**"
+      - "scripts/test-flake-lint/**"
+      - ".github/workflows/test-flake-lint.yml"
+  pull_request:
+    paths:
+      - "backend/tests/**"
+      - "scripts/test-flake-lint/**"
+      - ".github/workflows/test-flake-lint.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Test flake lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: node --test scripts/test-flake-lint/lint.test.mjs
+      # 失敗時照訊息改寫測試；確定沒問題才加 `// flaky-ok: <理由>`
+      - run: node scripts/test-flake-lint/lint.mjs

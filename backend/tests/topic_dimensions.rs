@@ -11,15 +11,10 @@ const EN: &str = r#"["Conservation","Conserve water","Fairness","Share fairly","
 const ES: &str = r#"["Conservación","Conservar agua","Equidad","Distribuir con equidad","Urgencia","Actuar ya","Consulta","Escuchar a los afectados","Planificación","Planificar a largo plazo","Transparencia","Explicar las decisiones"]"#;
 
 /// Creation generates in the background: wait until the scripted AI calls were
-/// consumed, then give the task time to finish writing its result.
+/// consumed, then until the background task has finished writing its result.
 async fn settle(ai: &FakeAi, requests: usize) {
-    for _ in 0..300 {
-        if ai.requests.lock().unwrap().len() >= requests {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    wait_until_ai_called(ai, requests).await;
+    wait_until_background_idle().await;
 }
 
 async fn create(app: &axum::Router, cookie: &str) -> String {

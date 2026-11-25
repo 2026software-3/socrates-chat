@@ -858,6 +858,7 @@ async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
     let counter = acquires.clone();
     let counting = sqlx::postgres::PgPoolOptions::new()
         .min_connections(8)
+        // flaky-ok: 計數會被背景任務污染，所以下面每組重複量測取最小值（見 acquires_of_one_request）
         .before_acquire(move |_, _| {
             let counter = counter.clone();
             Box::pin(async move {
@@ -871,13 +872,19 @@ async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
     let app = test_app(counting);
     let a = seed_actors(&app).await;
 
+    // 背景任務（例如 request_stats 定期寫入）也會取用連線池，剛好落在量測期間就會多算。
+    // 背景取用只會讓計數變大，所以重複量測取最小值，就是這個請求自己的取用次數。
     let acquires_of_one_request = || async {
         // 先暖身，讓維護旗標的快取在量測期間仍有效
         send(&app, get("/api/me", Some(&a.admin))).await;
-        let before = acquires.load(Ordering::SeqCst);
-        let res = send(&app, get("/api/me", Some(&a.admin))).await;
-        assert_eq!(res.status(), StatusCode::OK);
-        acquires.load(Ordering::SeqCst) - before
+        let mut fewest = usize::MAX;
+        for _ in 0..7 {
+            let before = acquires.load(Ordering::SeqCst);
+            let res = send(&app, get("/api/me", Some(&a.admin))).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            fewest = fewest.min(acquires.load(Ordering::SeqCst) - before);
+        }
+        fewest
     };
 
     let normal = acquires_of_one_request().await;

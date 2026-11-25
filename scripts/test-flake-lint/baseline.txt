@@ -1,0 +1,2 @@
+# 後端測試偶發失敗寫法的歷史違規（file<TAB>rule<TAB>該行內容）。只能減少，不要新增。
+# 修掉一項後執行 node scripts/test-flake-lint/lint.mjs --update-baseline 重新產生。
