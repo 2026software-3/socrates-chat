@@ -173,6 +173,57 @@
   font-weight: 400;
 }
 
+/* 版號印章與教室小牌（DESIGN.md 版號目錄列統一規格：64 用 11／9／22，48 用 10／8／18） */
+@utility type-stamp-label-md {
+  font-family: var(--font-latin);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-label-sm {
+  font-family: var(--font-latin);
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-label-compact-md {
+  font-family: var(--font-latin);
+  font-size: 9px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-label-compact-sm {
+  font-family: var(--font-latin);
+  font-size: 8px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-numeral-md {
+  font-family: var(--font-latin);
+  font-size: 22px;
+  line-height: 1.1;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-numeral-sm {
+  font-family: var(--font-latin);
+  font-size: 18px;
+  line-height: 1.1;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-plate-tag {
+  font-family: var(--font-latin);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+
 /* 紙張質感（DESIGN.md Elevation）：兩層極淡黃斑、每 47px 一條鏈紋、每 3px 一條簾紋 */
 @utility paper-texture {
   background-color: var(--color-paper);
