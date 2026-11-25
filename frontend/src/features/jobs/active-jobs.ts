@@ -7,10 +7,11 @@ import type { PollSpec } from '@/lib/poll-store'
 
 export type ActiveJob = {
   id: string
-  kind: 'reply' | 'summary' | 'radar' | 'argument_tree' | 'summary_translation'
+  kind: 'reply' | 'summary' | 'radar' | 'argument_tree' | 'summary_translation' | 'regroup'
   status: 'pending' | 'ready' | 'failed'
   label_key: string
-  scope: { conversation_id: string }
+  /** 只有識別碼；背景工作（`regroup` 等）帶的是活動、題目與教室。 */
+  scope: { conversation_id?: string; activity_id?: string; topic_id?: string; classroom_id?: string }
   started_at: string
   finished_at: string | null
   retryable: boolean
@@ -24,6 +25,8 @@ const WAKE_DELAY_MS = 300
 
 /** 工作的來源頁面；完成通知的連結與「使用者已在該頁」的判斷都用它。 */
 export function jobPath(job: ActiveJob): string {
+  const { classroom_id, activity_id } = job.scope
+  if (job.kind === 'regroup' && classroom_id && activity_id) return `/teacher/classrooms/${classroom_id}/activities/${activity_id}`
   return `/conversations/${job.scope.conversation_id}`
 }
 
