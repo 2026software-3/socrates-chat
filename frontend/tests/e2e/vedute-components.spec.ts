@@ -133,7 +133,7 @@ test('Vedute interaction motion and disabled options', async ({ page }) => {
   await page.mouse.move(0, 0)
   await page.mouse.up()
 
-  const icon = page.getByRole('button', { name: '編輯' })
+  const icon = page.getByRole('button', { name: '編輯', exact: true })
   const normalIconColor = await icon.evaluate((el) => getComputedStyle(el).color)
   await icon.hover()
   await expect(icon).not.toHaveCSS('color', normalIconColor)
@@ -239,4 +239,49 @@ test('Vedute visual baseline and accessibility', async ({ page }) => {
   await page.mouse.move(0, 0)
   await expectNoA11yViolations(page)
   await expectScreenshot(page, 'vedute-components.png')
+})
+
+test('Vedute print components interactions, equal card heights, and semantics', async ({ page }) => {
+  await page.goto('/__design')
+  await expect(page.getByRole('heading', { name: 'Vedute 版畫元件' })).toBeVisible()
+
+  // WorkRow expand/collapse toggle by click and keyboard
+  const collapseJustice = page.getByRole('button', { name: '收合 2 個版本' })
+  await expect(collapseJustice).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByText("Justice: What's the Right Thing to Do?")).toBeVisible()
+  await collapseJustice.click()
+  const expandJustice = page.getByRole('button', { name: '展開 2 個版本' })
+  await expect(expandJustice).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByText("Justice: What's the Right Thing to Do?")).toHaveCount(0)
+
+  const expandRepublic = page.getByRole('button', { name: '展開 1 個版本' })
+  await expandRepublic.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: '收合 1 個版本' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByText('柏拉圖')).toBeVisible()
+
+  // PlateCards in the same grid row share equal height on tablet/desktop
+  const grid = page.getByTestId('plate-card-grid')
+  const cards = grid.locator('[data-vedute-plate-card]')
+  await expect(cards).toHaveCount(3)
+  const firstBox = (await cards.nth(0).boundingBox())!
+  const secondBox = (await cards.nth(1).boundingBox())!
+  if (Math.abs(firstBox.y - secondBox.y) < 4) {
+    expect(Math.abs(firstBox.height - secondBox.height)).toBeLessThanOrEqual(1)
+  }
+
+  // StackBar segments follow The No Right-or-Wrong Rule (caeruleum -> ochra -> aerugo -> neutral)
+  const distribution = page.getByRole('group', { name: '為救五人該犧牲一人嗎 論點分布' })
+  const tones = await distribution.locator('[data-vedute-segment]').evaluateAll((els) =>
+    els.map((el) => el.getAttribute('data-tone')),
+  )
+  expect(tones).toEqual(['caeruleum', 'ochra', 'aerugo', 'neutral'])
+
+  // Compact StageScale shows only the current stage label
+  await expect(page.locator('[data-vedute-stage-scale][data-variant="compact"]').first()).toContainText('釐清')
+
+  // No horizontal overflow across mobile, tablet, or desktop viewports
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  await expectNoA11yViolations(page)
 })

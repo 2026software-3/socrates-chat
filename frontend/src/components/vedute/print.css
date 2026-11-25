@@ -1,0 +1,29 @@
+/* Vedute 版畫元件樣式（F-41.3）：印章版痕線、教室版畫淡出與展開控制。 */
+
+.vedute-stamp::after {
+  @apply pointer-events-none absolute inset-0.5 border border-surface/60 content-[''];
+}
+
+.vedute-plate-image {
+  object-position: 58% 62%;
+}
+
+.vedute-plate-fade {
+  background-image: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-surface) 70%, transparent) 100%
+  );
+}
+
+.vedute-plate-fade-archived {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface) 35%, transparent) 0%,
+    color-mix(in srgb, var(--color-surface) 70%, transparent) 100%
+  );
+}
+
+.vedute-work-toggle:focus-visible {
+  @apply outline-2 outline-offset-2 outline-chalk;
+}
