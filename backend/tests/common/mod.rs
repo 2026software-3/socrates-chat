@@ -92,6 +92,8 @@ pub fn test_config() -> Config {
         openai_tts_base_url: None,
         cascade_realtime_url: None,
         cascade_llm_token: None,
+        cascade_max_sessions: None,
+        internal_listen_addr: None,
         openai_fallback_models: vec![],
         openai_reasoning_effort: None,
         openai_stt_model: None,

@@ -48,6 +48,7 @@ use crate::{
     error::ApiError,
     mutex::lock,
     reply::{Abandoned, ReplyText, begin_text_stream, save_heard},
+    voice_nodes::{CONNECT_TIMEOUT, Node, NodeId},
 };
 
 pub const INTERNAL_PREFIX: &str = "/internal/cascade/";
@@ -66,12 +67,21 @@ const UNAVAILABLE: ApiError = ApiError::new(
     "語音服務尚未啟用",
 );
 
+/// 瀏覽器的入口。
 pub fn routes() -> Router<AppState> {
+    Router::new().route("/api/conversations/{id}/voice", get(socket))
+}
+
+/// cascade 回呼的內部端點。設了 `INTERNAL_LISTEN_ADDR` 時由獨立的監聽器提供，不在公開 router（S-19）。
+pub fn internal_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/conversations/{id}/voice", get(socket))
         .route("/internal/cascade/v1/models", get(models))
         .route("/internal/cascade/v1/chat/completions", post(chat))
 }
+
+/// 進行中的場次多久檢查一次所屬節點是否已被停用或刪除；加上節點清單的快取時間，
+/// 最慢約 2.5 秒內結束。
+const REVOKE_CHECK: Duration = Duration::from_millis(500);
 
 /// 放進 `instructions` 的文字，也是 system message 的開頭。
 pub fn voice_session_prompt(token: &str) -> String {
@@ -94,6 +104,8 @@ pub fn allow_server_event(kind: &str) -> bool {
 struct Live {
     user: Uuid,
     conversation: Uuid,
+    /// 這場綁定的節點；內部端點用它確認呼叫者的密鑰屬於同一個節點
+    node: NodeId,
     /// cascade 上一次送來、已保存的學生發言與歷史中的學生訊息數
     spoken: String,
     user_turns: usize,
@@ -106,6 +118,37 @@ struct Live {
 struct Sessions {
     by_token: HashMap<String, Live>,
     users: HashSet<Uuid>,
+    /// 各節點進行中的場次數
+    counts: HashMap<NodeId, usize>,
+}
+
+impl Sessions {
+    /// 在候選裡選場次最少、未滿的節點；選擇與加一必須在同一把鎖內（呼叫端持有鎖）。
+    fn pick<'a>(&self, candidates: &'a [Node]) -> Option<&'a Node> {
+        let count = |n: &Node| self.counts.get(&n.id).copied().unwrap_or(0);
+        candidates
+            .iter()
+            .filter(|n| n.max_sessions.is_none_or(|max| count(n) < max))
+            .min_by(|a, b| a.pick_key(count(a)).cmp(&b.pick_key(count(b))))
+    }
+
+    fn release(&mut self, node: NodeId) {
+        if let Some(n) = self.counts.get_mut(&node) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.counts.remove(&node);
+            }
+        }
+    }
+}
+
+/// 開啟語音場次失敗的原因。
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenError {
+    /// 這位學生已有進行中的場次
+    UserBusy,
+    /// 沒有可用的節點（全部不健康、暫停或已滿）
+    NoNode,
 }
 
 /// 進行中的語音對話：一次性代號對應到學生與對話。只在記憶體，多個實例各自計算。
@@ -113,32 +156,97 @@ struct Sessions {
 pub struct VoiceSessions(Mutex<Sessions>);
 
 impl VoiceSessions {
-    /// 一位學生同時一場；已有進行中的就回 `None`。
+    /// 一位學生同時一場；已有進行中的就回 `None`。綁在環境節點、不受場次上限限制。
     pub fn open(self: &Arc<Self>, user: Uuid, conversation: Uuid) -> Option<VoiceSession> {
         let mut sessions = lock(&self.0);
-        if !sessions.users.insert(user) {
-            return None;
+        sessions.users.insert(user).then(|| {
+            self.insert(
+                &mut sessions,
+                user,
+                conversation,
+                NodeId::Env,
+                String::new(),
+            )
+        })
+    }
+
+    /// 依 S-19 的規則選節點並開啟場次：選擇與場次加一在同一把鎖內完成，併發不會超過上限。
+    pub fn open_balanced(
+        self: &Arc<Self>,
+        user: Uuid,
+        conversation: Uuid,
+        candidates: &[Node],
+    ) -> Result<VoiceSession, OpenError> {
+        let mut sessions = lock(&self.0);
+        if sessions.users.contains(&user) {
+            return Err(OpenError::UserBusy);
         }
+        let node = sessions.pick(candidates).ok_or(OpenError::NoNode)?;
+        let (id, url) = (node.id, node.realtime_url.clone());
+        sessions.users.insert(user);
+        Ok(self.insert(&mut sessions, user, conversation, id, url))
+    }
+
+    fn insert(
+        self: &Arc<Self>,
+        sessions: &mut Sessions,
+        user: Uuid,
+        conversation: Uuid,
+        node: NodeId,
+        url: String,
+    ) -> VoiceSession {
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let (notices, notices_rx) = mpsc::unbounded_channel();
+        *sessions.counts.entry(node).or_insert(0) += 1;
         sessions.by_token.insert(
             token.clone(),
             Live {
                 user,
                 conversation,
+                node,
                 spoken: String::new(),
                 user_turns: 0,
                 turn: Arc::default(),
                 notices,
             },
         );
-        Some(VoiceSession {
+        VoiceSession {
             sessions: self.clone(),
             token,
             user,
             conversation,
+            node,
+            url,
             notices: Some(notices_rx),
-        })
+        }
+    }
+
+    /// 連不上節點時改綁候選中的另一個（呼叫端已排除失敗者）。沒有可選的就維持原綁定並回 `false`，
+    /// 場次數照常在 `VoiceSession` 釋放時扣回，不會洩漏。
+    pub fn rebind(&self, session: &mut VoiceSession, candidates: &[Node]) -> bool {
+        let mut sessions = lock(&self.0);
+        let Some(node) = sessions.pick(candidates) else {
+            return false;
+        };
+        let (id, url) = (node.id, node.realtime_url.clone());
+        sessions.release(session.node);
+        *sessions.counts.entry(id).or_insert(0) += 1;
+        if let Some(live) = sessions.by_token.get_mut(&session.token) {
+            live.node = id;
+        }
+        session.node = id;
+        session.url = url;
+        true
+    }
+
+    /// 各節點進行中的場次數。
+    pub fn counts(&self) -> HashMap<NodeId, usize> {
+        lock(&self.0).counts.clone()
+    }
+
+    /// 代號綁定的節點。
+    pub fn node_of(&self, token: &str) -> Option<NodeId> {
+        lock(&self.0).by_token.get(token).map(|live| live.node)
     }
 
     /// 代號對應的（學生、對話）。
@@ -200,12 +308,18 @@ pub struct VoiceSession {
     token: String,
     user: Uuid,
     conversation: Uuid,
+    node: NodeId,
+    url: String,
     notices: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl VoiceSession {
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.node
     }
 
     /// 後端要主動告訴瀏覽器的事件；只能取走一次。
@@ -297,6 +411,7 @@ impl Drop for VoiceSession {
         let mut sessions = lock(&self.sessions.0);
         sessions.by_token.remove(&self.token);
         sessions.users.remove(&self.user);
+        sessions.release(self.node);
     }
 }
 
@@ -321,9 +436,10 @@ pub(crate) async fn socket(
     headers: HeaderMap,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Result<Response, ApiError> {
-    let Some(url) = state.config.cascade_voice_url().map(str::to_owned) else {
+    let candidates = state.voice_nodes.candidates(&state, &[]).await;
+    if candidates.is_empty() {
         return Err(UNAVAILABLE);
-    };
+    }
     let conversation = {
         let mut conn = state.pool.acquire().await?;
         crate::classrooms::writable_conversation(&mut conn, cu.user.id, id).await?
@@ -342,14 +458,16 @@ pub(crate) async fn socket(
     };
     let session = state
         .voice_sessions
-        .open(cu.user.id, id)
-        .ok_or(ApiError::conflict(
-            "voice_session_active",
-            "已有進行中的語音對話",
-        ))?;
+        .open_balanced(cu.user.id, id, &candidates)
+        .map_err(|e| match e {
+            OpenError::UserBusy => {
+                ApiError::conflict("voice_session_active", "已有進行中的語音對話")
+            }
+            OpenError::NoNode => UNAVAILABLE,
+        })?;
     Ok(upgrade
         .max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |client| relay(client, url, session, state)))
+        .on_upgrade(move |client| relay(client, session, state)))
 }
 
 fn parse_event(text: &str) -> Option<serde_json::Value> {
@@ -361,13 +479,12 @@ fn event_kind(event: &serde_json::Value) -> Option<&str> {
 }
 
 /// 兩邊互相轉送到其中一邊斷線。內容一律不寫日誌。
-async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state: AppState) {
+async fn relay(client: WebSocket, mut session: VoiceSession, state: AppState) {
     let Some(mut notices) = session.take_notices() else {
         return;
     };
     let mut heard = HeardTracker::default();
-    let Ok((cascade, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
-        tracing::warn!("cannot reach the voice cascade");
+    let Some(cascade) = connect(&mut session, &state).await else {
         return;
     };
     let (mut to_cascade, mut from_cascade) = cascade.split();
@@ -388,8 +505,15 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
     {
         return;
     }
+    let mut revoke_check = tokio::time::interval(REVOKE_CHECK);
     loop {
         tokio::select! {
+            // 節點被停用或刪除：結束這場，瀏覽器會當成中斷，學生重新按「即時」就改選別的節點
+            _ = revoke_check.tick() => {
+                if !state.voice_nodes.still_serving(&state, session.node()).await {
+                    break;
+                }
+            }
             frame = from_client.next() => match frame {
                 Some(Ok(ClientFrame::Text(text))) => {
                     let event = parse_event(&text);
@@ -433,25 +557,73 @@ async fn relay(client: WebSocket, url: String, mut session: VoiceSession, state:
     let _ = to_client.send(ClientFrame::Close(None)).await;
 }
 
-/// 比對雜湊，比較時間與密鑰內容無關。
-fn check_secret(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    let Some(secret) = state.config.cascade_llm_token.as_deref() else {
-        return Err(ApiError::not_found());
+type CascadeSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// 連上場次綁定的節點（每次最多等 `CONNECT_TIMEOUT`）。失敗就立即把該節點標為不健康，換下一個候選
+/// 重試一次；仍失敗才放棄。
+async fn connect(session: &mut VoiceSession, state: &AppState) -> Option<CascadeSocket> {
+    let mut failed = Vec::new();
+    for attempt in 0..2 {
+        let node = session.node();
+        let url = session.url.clone();
+        let connecting = tokio_tungstenite::connect_async(url.as_str());
+        match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
+            Ok(Ok((socket, _))) => return Some(socket),
+            _ => {
+                // 日誌只記節點識別，不含網址
+                tracing::warn!(%node, "cannot reach the voice cascade");
+                state.voice_nodes.mark_unhealthy(node);
+                failed.push(node);
+            }
+        }
+        if attempt == 0 {
+            let candidates = state.voice_nodes.candidates(state, &failed).await;
+            if !state.voice_sessions.rebind(session, &candidates) {
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// 驗證內部端點的 Bearer，回傳這把密鑰屬於哪個節點。環境節點的密鑰比對雜湊（時間與內容無關）；
+/// 其他節點每次直接以雜湊查資料庫，所以輪換與停用立即生效，不經過快取（S-19 7.3）。
+async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<NodeId, ApiError> {
+    let env_secret = state.config.cascade_llm_token.as_deref();
+    // 沒有任何節點時行為等同未啟用
+    let rejected = || async {
+        if env_secret.is_none() && state.voice_nodes.registered(&state.pool).await.is_empty() {
+            ApiError::not_found()
+        } else {
+            ApiError::unauthorized()
+        }
     };
-    let given = headers
+    let Some(given) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(ApiError::unauthorized())?;
-    if Sha256::digest(given.as_bytes()) == Sha256::digest(secret.as_bytes()) {
-        Ok(())
-    } else {
-        Err(ApiError::unauthorized())
+    else {
+        return Err(rejected().await);
+    };
+    let digest = Sha256::digest(given.as_bytes());
+    if env_secret.is_some_and(|secret| digest == Sha256::digest(secret.as_bytes())) {
+        return Ok(NodeId::Env);
+    }
+    let node: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM voice_nodes WHERE token_hash = $1 AND status <> 'disabled'",
+    )
+    .bind(digest.as_slice())
+    .fetch_optional(&state.pool)
+    .await?;
+    match node {
+        Some(id) => Ok(NodeId::Db(id)),
+        None => Err(rejected().await),
     }
 }
 
 async fn models(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    check_secret(&state, &headers)?;
+    authenticate(&state, &headers).await?;
     Ok(
         Json(json!({"object": "list", "data": [{"id": "socrates", "object": "model"}]}))
             .into_response(),
@@ -568,7 +740,7 @@ async fn chat(
     headers: HeaderMap,
     body: Result<Json<ChatBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    check_secret(&state, &headers)?;
+    let caller = authenticate(&state, &headers).await?;
     let Json(body) = body.map_err(|_| ApiError::invalid_message())?;
     let token = body
         .messages
@@ -585,6 +757,10 @@ async fn chat(
         .voice_sessions
         .lookup(&token)
         .ok_or(ApiError::not_found())?;
+    // 一個被入侵的節點不能代操其他節點的場次
+    if state.voice_sessions.node_of(&token) != Some(caller) {
+        return Err(ApiError::unauthorized());
+    }
     let turn = spoken_turn(&state, &token, user, id, &body.messages).await;
     if turn.is_err() {
         state.voice_sessions.turn_failed(&token, None);
