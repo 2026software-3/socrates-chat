@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import { useAccountLanguage } from '@/auth/auth-context'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -8,11 +8,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
-import type { ActiveJob } from '@/features/jobs/active-jobs'
-import { api, ApiError, isInvalidCursor } from '@/lib/api'
-import { usePollJob, usePollState } from '@/lib/ai-jobs'
+import { useWatchedJob } from '@/features/jobs/use-watched-job'
+import { api, isInvalidCursor } from '@/lib/api'
 import { wakeAiJobs } from '@/lib/ai-jobs-events'
-import type { PollSpec } from '@/lib/poll-store'
 import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
@@ -38,46 +36,12 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
   const [showOriginal, setShowOriginal] = useState(false)
   const [translating, setTranslating] = useState(false)
   const [translationError, setTranslationError] = useState<unknown>(null)
-  // 後端翻譯是背景工作（S-20）：202 後輪詢工作狀態；切頁回來時從全域進行中清單接回同一個工作
-  const [jobId, setJobId] = useState<string | null>(null)
-  const handled = useRef(new Set<string>())
-  const active = usePollState<{ jobs: ActiveJob[] }>('active-jobs')
-  const activeJob = (active.data?.jobs ?? []).find(
-    (j) => j.kind === 'summary_translation_view' && j.status === 'pending' && j.scope.conversation_id === row.conversation_id,
-  )
-  useEffect(() => {
-    if (jobId === null && activeJob && !handled.current.has(activeJob.id)) setJobId(activeJob.id)
-  }, [jobId, activeJob])
-  const jobSpec = useMemo<PollSpec<{ status: string; error_code?: string }>>(
-    () => ({
-      fetch: (signal) => api.get(`/api/ai-jobs/${jobId}`, signal),
-      next: (d) => (d.status === 'pending' ? 'poll' : 'done'),
-      intervalMs: 2000,
-      maxMs: 600_000,
-    }),
-    [jobId],
-  )
-  const { state: job } = usePollJob(jobId ? `summary-translation:${jobId}` : null, jobSpec)
-  const saved = row.translation?.language === lang ? row.translation : null
-  const current = saved ?? (translation?.language === lang ? translation : null)
-  const shown = showOriginal ? null : current
-  const visible = shown ?? row
-  const masked = row.stance === 'message' && row.reasons === 'message'
-
-  useEffect(() => {
-    if (jobId === null) return
-    const finish = () => {
-      handled.current.add(jobId)
-      setJobId(null)
-    }
-    if (job.error !== undefined) {
-      finish()
-      setTranslationError(job.error)
-    } else if (job.data?.status === 'failed') {
-      finish()
-      setTranslationError(new ApiError(502, job.data.error_code ?? 'ai_unavailable', ''))
-    } else if (job.data?.status === 'ready') {
-      finish()
+  // 後端翻譯是背景工作（S-20）：202 後看著工作；切頁回來時從全域進行中清單接回同一個工作
+  const { running: jobRunning, watch } = useWatchedJob(
+    'summary_translation_view',
+    (scope) => scope.conversation_id === row.conversation_id,
+    (outcome) => {
+      if (!outcome.ok) return setTranslationError(outcome.error)
       // 譯文已保存；再問一次同一個端點會直接以 200 回傳，不會再翻譯
       api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`).then(
         (result) => {
@@ -86,9 +50,15 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
         },
         setTranslationError,
       )
-    }
-  }, [jobId, job, row.conversation_id])
-  const waiting = translating || jobId !== null
+    },
+  )
+  const saved = row.translation?.language === lang ? row.translation : null
+  const current = saved ?? (translation?.language === lang ? translation : null)
+  const shown = showOriginal ? null : current
+  const visible = shown ?? row
+  const masked = row.stance === 'message' && row.reasons === 'message'
+
+  const waiting = translating || jobRunning
 
   async function translate() {
     setTranslating(true)
@@ -102,7 +72,7 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
       }
       const result = await api.post<SummaryTranslation | { job_id: string }>(`/api/summaries/${row.conversation_id}/translation`)
       if ('job_id' in result) {
-        setJobId(result.job_id)
+        watch(result.job_id)
         wakeAiJobs()
       } else {
         setTranslation(result)
