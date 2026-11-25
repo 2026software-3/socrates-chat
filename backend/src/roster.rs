@@ -148,8 +148,6 @@ async fn delete_email(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---- 管理者（管理者操作）----
-
 const LIST_ADMINS: &str =
     "SELECT email FROM users WHERE is_admin AND email IS NOT NULL ORDER BY email";
 
@@ -185,6 +183,13 @@ pub(crate) struct AddAdminResponse {
     temporary_password: Option<String>,
 }
 
+#[derive(sqlx::FromRow)]
+struct ExistingUser {
+    id: uuid::Uuid,
+    is_admin: bool,
+    is_student: bool,
+}
+
 #[utoipa::path(
     post,
     path = "/api/admin/admins",
@@ -207,19 +212,20 @@ pub(crate) async fn add_admin(
     let temporary_password = password::generate_temporary();
     let hash = hash_blocking(temporary_password.clone()).await?;
     let mut tx = state.pool.begin().await?;
-    let existing: Option<(uuid::Uuid, bool, bool)> = sqlx::query_as(
-        "SELECT id, is_admin, student_id IS NOT NULL FROM users WHERE email = $1 FOR UPDATE",
+    let existing: Option<ExistingUser> = sqlx::query_as(
+        "SELECT id, is_admin, student_id IS NOT NULL AS is_student FROM users WHERE email = $1 FOR UPDATE",
     )
     .bind(&email)
     .fetch_optional(&mut *tx)
     .await?;
     let issued = match existing {
-        Some((_, _, true)) => {
+        Some(ExistingUser {
+            is_student: true, ..
+        }) => {
             return Err(ApiError::conflict("is_student", "學生帳號不能設為管理者"));
         }
-        // 已是管理者：沒有改變任何事，不記錄
-        Some((_, true, _)) => None,
-        Some((id, false, _)) => {
+        Some(ExistingUser { is_admin: true, .. }) => None,
+        Some(ExistingUser { id, .. }) => {
             sqlx::query("UPDATE users SET is_admin = true, updated_at = now() WHERE id = $1")
                 .bind(id)
                 .execute(&mut *tx)

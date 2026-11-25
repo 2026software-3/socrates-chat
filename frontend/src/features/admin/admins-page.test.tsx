@@ -71,6 +71,17 @@ describe('AdminsPage', () => {
     expect(await screen.findByText('共 2 位管理者')).toBeInTheDocument()
   })
 
+  it('keeps the temporary password dialog open when Esc is pressed', async () => {
+    mockAdmins(['a@example.com'])
+    render()
+    await userEvent.type(await screen.findByLabelText('管理者電子郵件'), 'new@example.com')
+    await userEvent.click(screen.getByRole('button', { name: '新增管理者' }))
+    expect(await screen.findByLabelText('臨時密碼')).toHaveValue('TEMP2345WXYZ')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('臨時密碼')).toHaveValue('TEMP2345WXYZ')
+  })
+
   it('promotes an existing account without a temporary password', async () => {
     mockAdmins(['a@example.com'], { issued: null })
     render()
