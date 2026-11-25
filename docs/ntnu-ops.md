@@ -153,7 +153,7 @@ SKIP_PULL=1 ./scripts/deploy-ntnu.sh > deploy.log 2>&1; echo "exit=$?"
 - `GET/POST /api/admin/voice-nodes`、`PATCH/DELETE /api/admin/voice-nodes/{id}`、`POST /api/admin/voice-nodes/{id}/rotate-token`（詳見 `/api/docs`）。新增與輪換的回應**只此一次**含節點密鑰，之後看不到，請當場存進新節點的 `CASCADE_LLM_TOKEN`。
 - 新節點的 cascade 要滿足 S-19 第 2 節的契約：`/v1/realtime`、同主機同埠的 `/health`、`sglang-omni==0.2.0` 並套用 `patch_dialog.py`；`CASCADE_LLM_TOKEN` 用上面那把，`CASCADE_LLM_BASE_URL`（`docker/cascade/entrypoint.sh` 會代入 `launch.yaml`）指向後端的**內部端點位址**。
 - 下線用 `status: "draining"`（不接新場次、進行中的繼續到結束）；節點遭入侵或必須立刻切斷用 `"disabled"` 或刪除（密鑰立即失效，進行中的場次約 2.5 秒內結束）。
-- 學生的音訊走 `ws://` 是明文：遠端節點的 `realtime_url` 必須在私網（tailnet 之類的加密網路）內，否則用 `wss://`。後端不強制，由部署方負責。
+- 學生的音訊走 `ws://` 是明文：遠端節點的 `realtime_url` 必須在私網（tailnet 之類的加密網路）內，否則用 `wss://`。後端只強制節點網址的主機在內網（私有 IP、內部主機名稱，見 S-19 7.1），不強制加密，由部署方負責。
 
 ### 讓內部端點只在私網（`INTERNAL_LISTEN_ADDR`）
 
