@@ -4,9 +4,13 @@
 //! （總結、雷達、論證樹、AI 回覆中、總結翻譯），不另存資料。
 //! 回應只帶識別碼與狀態，不帶題目、訊息或總結內容；只回傳發起者自己的工作。
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::get,
+};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -19,19 +23,30 @@ const REPLY_STALE_SECS: i64 = 900;
 const LIMIT: i64 = 50;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/ai-jobs/active", get(active))
+    Router::new()
+        .route("/api/ai-jobs/active", get(active))
+        .route("/api/ai-jobs/{id}", get(get_job))
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
+/// 工作的來源識別碼，只有識別碼；前端用它連回來源頁。
+#[derive(Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub(crate) struct JobScope {
-    conversation_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activity_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    classroom_id: Option<Uuid>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct AiJob {
-    /// `{kind}:{conversation_id}`，同一個對話同一種工作只會有一筆。
+    /// 對話相關的工作是 `{kind}:{conversation_id}`（同一個對話同一種工作只會有一筆）；
+    /// 背景工作（`ai_jobs`）是工作的 UUID，可用 `GET /api/ai-jobs/{id}` 查詢。
     id: String,
-    /// `reply`、`summary`、`radar`、`argument_tree`、`summary_translation`。
+    /// `reply`、`summary`、`radar`、`argument_tree`、`summary_translation`、`regroup`。
     kind: String,
     /// `pending`、`ready`、`failed`。
     status: String,
@@ -42,6 +57,23 @@ pub(crate) struct AiJob {
     finished_at: Option<DateTime<Utc>>,
     /// 失敗後可由使用者重試。
     retryable: bool,
+}
+
+/// 背景工作登記成功的回應。
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct JobAccepted {
+    /// 用 `GET /api/ai-jobs/{id}` 查詢。
+    job_id: Uuid,
+    status: &'static str,
+}
+
+impl JobAccepted {
+    pub(crate) fn pending(job_id: Uuid) -> Self {
+        JobAccepted {
+            job_id,
+            status: "pending",
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -67,7 +99,8 @@ impl From<Row> for AiJob {
             kind: r.kind,
             status: r.status,
             scope: JobScope {
-                conversation_id: r.conversation_id,
+                conversation_id: Some(r.conversation_id),
+                ..JobScope::default()
             },
             started_at: r.started_at,
             finished_at: r.finished_at,
@@ -134,7 +167,92 @@ pub(crate) async fn active(
     .bind(LIMIT)
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(ActiveJobs {
-        jobs: rows.into_iter().map(AiJob::from).collect(),
-    }))
+    let background: Vec<BackgroundRow> = sqlx::query_as(
+        "SELECT id, kind, status, scope, created_at, finished_at, error_code
+           FROM ai_jobs
+          WHERE owner_user_id = $1
+            AND (status IN ('pending', 'running')
+                 OR finished_at > now() - make_interval(secs => $2))
+          ORDER BY created_at DESC
+          LIMIT $3",
+    )
+    .bind(cu.user.id)
+    .bind(RECENT_SECS as f64)
+    .bind(LIMIT)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut jobs: Vec<AiJob> = rows.into_iter().map(AiJob::from).collect();
+    jobs.extend(background.into_iter().map(|r| background_job(r).0));
+    jobs.sort_by_key(|j| std::cmp::Reverse(j.started_at));
+    jobs.truncate(LIMIT as usize);
+    Ok(Json(ActiveJobs { jobs }))
+}
+
+#[derive(FromRow)]
+struct BackgroundRow {
+    id: Uuid,
+    kind: String,
+    status: String,
+    scope: sqlx::types::Json<JobScope>,
+    created_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+    error_code: Option<String>,
+}
+
+/// 背景工作（`ai_jobs`）轉成對外的工作與錯誤代碼；`running` 對外一律是 `pending`。
+fn background_job(r: BackgroundRow) -> (AiJob, Option<String>) {
+    let status = if r.status == "running" {
+        "pending".to_string()
+    } else {
+        r.status
+    };
+    (
+        AiJob {
+            id: r.id.to_string(),
+            label_key: format!("jobs.{}", r.kind),
+            kind: r.kind,
+            retryable: status == "failed",
+            status,
+            scope: r.scope.0,
+            started_at: r.created_at,
+            finished_at: r.finished_at,
+        },
+        r.error_code,
+    )
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct AiJobDetail {
+    #[serde(flatten)]
+    job: AiJob,
+    /// 失敗時的固定錯誤代碼（例如 `ai_unavailable`、`interrupted`），不含任何診斷內容。
+    error_code: Option<String>,
+}
+
+/// 查詢自己的一個背景工作。
+#[utoipa::path(
+    get,
+    path = "/api/ai-jobs/{id}",
+    tag = "conversations",
+    summary = "查詢一個背景 AI 工作",
+    description = "只有發起者能查；他人的與不存在的工作一律 404。回傳工作狀態與固定錯誤代碼，不含任何內容（S-20）。",
+    params(("id" = Uuid, Path, description = "工作 ID")),
+    responses((status = 200, description = "工作", body = AiJobDetail), (status = 404, description = "not_found", body = crate::error::ErrorBody), crate::error::CommonErrors)
+)]
+pub(crate) async fn get_job(
+    AnyCurrentUser(cu): AnyCurrentUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AiJobDetail>, ApiError> {
+    let row: BackgroundRow = sqlx::query_as(
+        "SELECT id, kind, status, scope, created_at, finished_at, error_code
+           FROM ai_jobs WHERE id = $1 AND owner_user_id = $2",
+    )
+    .bind(id)
+    .bind(cu.user.id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let (job, error_code) = background_job(row);
+    Ok(Json(AiJobDetail { job, error_code }))
 }

@@ -114,7 +114,7 @@ impl Modify for SessionCookie {
     ),
     paths(
         auth::login, auth::link_start, auth::unlink_google, auth::callback, auth::password_login, auth::change_password, auth::logout,
-        auth::me, auth::update_me, auth::reset_password, ai_usage::usage, ai_jobs::active,
+        auth::me, auth::update_me, auth::reset_password, ai_usage::usage, ai_jobs::active, ai_jobs::get_job,
         teacher_keys::list_providers, teacher_keys::list_keys, teacher_keys::add_key,
         teacher_keys::replace_key, teacher_keys::delete_key, teacher_keys::test_key, teacher_keys::list_models,
         usage_api::key_usage, usage_api::classroom_usage,
