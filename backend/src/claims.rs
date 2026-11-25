@@ -13,6 +13,7 @@
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::Deserialize;
 use sqlx::PgPool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -21,8 +22,9 @@ use crate::{
         AiError, AiRequest, ChatRole, ChatTurn, build_group_assign_prompt, build_regroup_prompt,
         collect_background, parse_group_name, parse_regroup, regroup_user_message,
     },
+    ai_job_store,
     auth::RequireTeacher,
-    diagnostics::AiActivity,
+    diagnostics::{self, AiActivity},
     error::{ApiError, db_error_class},
 };
 
@@ -162,19 +164,23 @@ pub(crate) struct RegroupBody {
 }
 
 /// 教師按「重新分組」：由 AI 把該活動指定題目的全部主張重新分一次。管理者看不到分析結果（S-02.2），不能操作。
+///
+/// 背景工作（S-20）：這裡只檢查權限、登記工作並回 202，AI 呼叫與寫入在背景完成，切頁或斷線都不會中斷。
+/// 同一位教師對同一活動題目已有進行中的重新分組時，回傳那一筆（200），不重複啟動、不重複扣額度。
 #[utoipa::path(
     post,
     path = "/api/dashboard/class/regroup",
     tag = "dashboard",
-    summary = "請 AI 重新分組某活動題目的主張",
+    summary = "請 AI 重新分組某活動題目的主張（背景工作）",
+    description = "回 202 與工作 ID；用 `GET /api/ai-jobs/{id}` 查詢結果。同一題目已有進行中的重新分組時回 200 與那一筆工作。",
     request_body = RegroupBody,
-    responses((status = 204, description = "已重新分組"), (status = 404, description = "not_found：活動不存在、不在自己管理的教室，或題目不屬於活動", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / no_claims", body = crate::error::ErrorBody), (status = 502, description = "ai_unavailable", body = crate::error::ErrorBody))
+    responses((status = 202, description = "已開始", body = crate::ai_jobs::JobAccepted), (status = 200, description = "已有進行中的重新分組", body = crate::ai_jobs::JobAccepted), (status = 404, description = "not_found：活動不存在、不在自己管理的教室，或題目不屬於活動", body = crate::error::ErrorBody), (status = 409, description = "classroom_archived / no_claims", body = crate::error::ErrorBody), (status = 429, description = "ai_usage_exceeded", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn regroup(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Json(body): Json<RegroupBody>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<(StatusCode, Json<crate::ai_jobs::JobAccepted>), ApiError> {
     if cu.roles.admin {
         return Err(ApiError::no_permission());
     }
@@ -205,54 +211,170 @@ pub(crate) async fn regroup(
         ));
     };
     let title = title.clone();
-    // 群組名稱是給教師看的，用教師的語言；學生各自的對話語言不同，不能拿來決定
-    let language = cu.user.language.as_str();
-    let claims: Vec<String> = rows.iter().map(|(_, c, _)| c.clone()).collect();
+    // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
+    let usage_slot = state.charge_ai(cu.user.id)?;
+    let scope_key = format!(
+        "regroup:{}:{}:{}",
+        cu.user.id, body.activity_id, body.topic_id
+    );
+    let scope = serde_json::json!({
+        "classroom_id": activity.classroom_id,
+        "activity_id": body.activity_id,
+        "topic_id": body.topic_id,
+    });
+    let registered = ai_job_store::register(
+        &state.pool,
+        cu.user.id,
+        "regroup",
+        &scope_key,
+        &scope,
+        state.config.generation_stale_secs(),
+    )
+    .await;
+    let job = match registered {
+        Ok(ai_job_store::Registered::New(id)) => id,
+        Ok(ai_job_store::Registered::Existing(id)) => {
+            state.refund_ai(cu.user.id, usage_slot);
+            return Ok((
+                StatusCode::OK,
+                Json(crate::ai_jobs::JobAccepted::pending(id)),
+            ));
+        }
+        Err(e) => {
+            state.refund_ai(cu.user.id, usage_slot);
+            return Err(e.into());
+        }
+    };
+    let task = RegroupTask {
+        job,
+        user: cu.user.id,
+        // 群組名稱是給教師看的，用教師的語言；學生各自的對話語言不同，不能拿來決定
+        language: cu.user.language.clone(),
+        classroom: activity.classroom_id,
+        activity: body.activity_id,
+        topic: body.topic_id,
+        title,
+        rows,
+        usage_slot,
+    };
+    tokio::spawn(diagnostics::inherit_request(
+        run_regroup(state, task).in_current_span(),
+    ));
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(crate::ai_jobs::JobAccepted::pending(job)),
+    ))
+}
+
+struct RegroupTask {
+    job: Uuid,
+    user: Uuid,
+    language: String,
+    classroom: Uuid,
+    activity: Uuid,
+    topic: Uuid,
+    title: String,
+    rows: Vec<(Uuid, String, String)>,
+    usage_slot: std::time::Instant,
+}
+
+/// 背景執行重新分組；結果寫進資料庫與 `ai_jobs`。失敗時退回 AI 額度。
+async fn run_regroup(state: AppState, task: RegroupTask) {
+    let _ = ai_job_store::mark_running(&state.pool, task.job).await;
+    let outcome = regroup_groups(&state, &task).await;
+    let finished = match &outcome {
+        Ok(count) => {
+            ai_job_store::finish_ready(
+                &state.pool,
+                task.job,
+                &serde_json::json!({ "groups": count }),
+            )
+            .await
+        }
+        Err(code) => {
+            state.refund_ai(task.user, task.usage_slot);
+            ai_job_store::finish_failed(&state.pool, task.job, code).await
+        }
+    };
+    if let Err(e) = finished {
+        tracing::error!(class = %db_error_class(&e), "regroup job bookkeeping failed");
+    }
+}
+
+/// AI 分組並寫入；回傳群組數，或固定的錯誤代碼。
+async fn regroup_groups(state: &AppState, task: &RegroupTask) -> Result<usize, &'static str> {
+    let language = task.language.as_str();
+    let claims: Vec<String> = task.rows.iter().map(|(_, c, _)| c.clone()).collect();
     let req = AiRequest {
-        system: build_regroup_prompt(&title, &claims, language),
+        system: build_regroup_prompt(&task.title, &claims, language),
         messages: vec![ChatTurn {
             role: ChatRole::User,
             content: regroup_user_message(language).into(),
         }],
     };
-    // 教師按下「重新分組」才發生的 AI 呼叫，計入每位使用者的 AI 用量；沒有得到分組就退回
-    let usage_slot = state.charge_ai(cu.user.id)?;
     let system = state.system_route().await;
-    let groups = AiActivity::new(
-        "claim_regroup",
-        Some(cu.user.id),
-        Some(activity.classroom_id),
-    )
-    .statuses(204, 502)
-    .run(&state, Some(&system.model), 0, async {
-        let raw =
-            collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
-        parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
-    })
-    .await
-    .map_err(|_| {
-        state.refund_ai(cu.user.id, usage_slot);
-        ApiError::new(StatusCode::BAD_GATEWAY, "ai_unavailable", "AI 暫時無法回覆")
-    })?;
+    let groups = AiActivity::new("claim_regroup", Some(task.user), Some(task.classroom))
+        .statuses(204, 502)
+        .run(state, Some(&system.model), 0, async {
+            let raw =
+                collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+            parse_regroup(&raw, claims.len()).ok_or(AiError::invalid_output())
+        })
+        .await
+        .map_err(|_| "ai_unavailable")?;
+    let count = groups.len();
+    apply_groups(state, task, groups)
+        .await
+        .map_err(|e| match e {
+            ApplyError::Archived => "classroom_archived",
+            ApplyError::Db(e) => {
+                tracing::error!(class = %db_error_class(&e), "regroup write failed");
+                "internal"
+            }
+        })?;
+    Ok(count)
+}
+
+enum ApplyError {
+    Archived,
+    Db(sqlx::Error),
+}
+
+impl From<sqlx::Error> for ApplyError {
+    fn from(e: sqlx::Error) -> Self {
+        ApplyError::Db(e)
+    }
+}
+
+async fn apply_groups(
+    state: &AppState,
+    task: &RegroupTask,
+    groups: Vec<(String, Vec<usize>)>,
+) -> Result<(), ApplyError> {
     let mut tx = state.pool.begin().await?;
     // AI 呼叫期間教室可能被封存：寫入前在交易內再確認一次
-    crate::classrooms::ensure_writable(&mut *tx, activity.classroom_id).await?;
+    if crate::classrooms::ensure_writable(&mut *tx, task.classroom)
+        .await
+        .is_err()
+    {
+        return Err(ApplyError::Archived);
+    }
     // 舊群組刪除後，成員的 claim_group_id 會回到空，再依新結果指定
     sqlx::query("DELETE FROM claim_groups WHERE activity_id = $1 AND topic_id = $2")
-        .bind(body.activity_id)
-        .bind(body.topic_id)
+        .bind(task.activity)
+        .bind(task.topic)
         .execute(&mut *tx)
         .await?;
     for (name, members) in groups {
         let (gid,): (Uuid,) = sqlx::query_as(
             "INSERT INTO claim_groups (activity_id, topic_id, name) VALUES ($1, $2, $3) RETURNING id",
         )
-        .bind(body.activity_id)
-        .bind(body.topic_id)
+        .bind(task.activity)
+        .bind(task.topic)
         .bind(&name)
         .fetch_one(&mut *tx)
         .await?;
-        let ids: Vec<Uuid> = members.into_iter().map(|i| rows[i].0).collect();
+        let ids: Vec<Uuid> = members.into_iter().map(|i| task.rows[i].0).collect();
         sqlx::query("UPDATE summaries SET claim_group_id = $1 WHERE conversation_id = ANY($2)")
             .bind(gid)
             .bind(&ids)
@@ -260,5 +382,5 @@ pub(crate) async fn regroup(
             .await?;
     }
     tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
