@@ -1028,6 +1028,35 @@ async fn deleting_a_node_ends_its_running_sessions(pool: PgPool) {
 
 // ---------- 後台「服務」頁 ----------
 
+/// 部署預設的 MONITORED_SERVICES 已有一項 `cascade` 檢查 cascade 的 /health；
+/// 環境節點探測同一個網址，服務頁不該列兩次。
+#[sqlx::test]
+async fn a_monitored_service_probing_the_same_url_as_a_voice_node_is_listed_once(pool: PgPool) {
+    let mut config = env_config();
+    config.monitored_services = socrates_chat_backend::service_monitor::MonitoredService::parse(
+        &json!([
+            {"name": "cascade", "label": "Realtime voice", "impact": "Voice",
+             "url": "http://127.0.0.1:1/health"},
+            {"name": "tts", "label": "TTS", "impact": "Voice",
+             "url": "http://127.0.0.1:2/health"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let r = rig(pool, config, vec![]);
+    let a = seed_actors(&r.app).await;
+    let body = json_body(send(&r.app, get("/api/admin/services", Some(&a.admin))).await).await;
+    let names: Vec<_> = body["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"cascade"), "{names:?}");
+    assert!(names.contains(&"tts"), "{names:?}");
+    assert_eq!(body["voice_nodes"].as_array().unwrap().len(), 1);
+}
+
 #[sqlx::test]
 async fn the_services_page_lists_every_node_with_health_and_sessions(pool: PgPool) {
     let r = rig(pool, env_config(), vec![]);
