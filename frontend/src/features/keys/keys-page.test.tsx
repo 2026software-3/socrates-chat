@@ -203,6 +203,28 @@ describe('KeysPage', () => {
     expect(await screen.findByText('連線失敗')).toBeInTheDocument()
   })
 
+  it('aborts a pending key test when leaving the page and shows nothing afterwards (S-20)', async () => {
+    mockKeys([key()])
+    let aborted = false
+    let started = false
+    server.use(
+      http.post('/api/teacher/keys/:id/test', ({ request }) => {
+        started = true
+        return new Promise<Response>((_, reject) => {
+          request.signal.addEventListener('abort', () => {
+            aborted = true
+            reject(new DOMException('aborted', 'AbortError'))
+          })
+        })
+      }),
+    )
+    const view = render()
+    await userEvent.click(await screen.findByRole('button', { name: '測試 OpenAI …aaaa 的 key' }))
+    await waitFor(() => expect(started).toBe(true))
+    view.unmount()
+    await waitFor(() => expect(aborted).toBe(true))
+  })
+
   it('shows the rate limit message when testing too often', async () => {
     mockKeys([key()])
     server.use(http.post('/api/teacher/keys/:id/test', () => apiError(429, 'key_test_rate_limited')))

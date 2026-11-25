@@ -21,7 +21,8 @@ import { ModelFields } from '@/features/keys/ai-settings-page'
 import { StatusBadge } from '@/features/keys/keys-page'
 import { UsagePanel } from '@/features/keys/usage-panel'
 import { errorText, useI18n, useT } from '@/i18n'
-import { api } from '@/lib/api'
+import { api, isAbortError } from '@/lib/api'
+import { useAbortOnUnmount } from '@/lib/use-abort-on-unmount'
 import type { SystemAiKey, SystemAiOverview } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
@@ -80,13 +81,18 @@ export function SystemAiPage() {
     )
   }
 
+  const signalOf = useAbortOnUnmount()
+
   async function onTest(k: SystemAiKey) {
+    const signal = signalOf()
     setResults((r) => ({ ...r, [k.id]: '…' }))
     try {
-      const res = await api.post<{ result: string }>(`${BASE}/keys/${encodeURIComponent(k.id)}/test`)
+      const res = await api.post<{ result: string }>(`${BASE}/keys/${encodeURIComponent(k.id)}/test`, undefined, signal)
       setResults((r) => ({ ...r, [k.id]: res.result === 'usable' ? t('keys.test.usable') : t('keys.test.failed') }))
       data.reload()
     } catch (err) {
+      // 離開頁面時請求被中止：不更新畫面
+      if (isAbortError(err) || signal?.aborted) return
       setResults((r) => ({ ...r, [k.id]: errorText(t, err) }))
     }
   }
