@@ -96,6 +96,8 @@ pub struct Config {
     pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
     /// 周邊服務背景探測間隔（`SERVICE_PROBE_INTERVAL_SECS`，10 至 300 秒，預設 30 秒，S-09.3）。
     pub service_probe_interval: Duration,
+    /// 資料庫連線池上限（`DATABASE_MAX_CONNECTIONS`，1 至 100，預設 10，S-08.3）。
+    pub database_max_connections: u32,
 }
 
 #[derive(Debug)]
@@ -148,6 +150,29 @@ fn parse_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, ConfigErr
             .map_err(|_| ConfigError(format!("invalid value for {name}"))),
         _ => Ok(default),
     }
+}
+
+/// 資料庫連線池上限的預設值與可設定範圍（`DATABASE_MAX_CONNECTIONS`，S-08.3）。
+/// 上限取 PostgreSQL 預設的 `max_connections`，避免單一後端就用盡資料庫的連線。
+pub const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
+const MIN_DATABASE_MAX_CONNECTIONS: u32 = 1;
+const MAX_DATABASE_MAX_CONNECTIONS: u32 = 100;
+
+/// 解析 `DATABASE_MAX_CONNECTIONS`：未設定或空白用預設 10；
+/// 不是整數或不在 1 至 100 內時回錯誤，讓啟動失敗而不是悄悄改用別的值。
+pub fn parse_database_max_connections(raw: Option<&str>) -> Result<u32, ConfigError> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(DEFAULT_DATABASE_MAX_CONNECTIONS);
+    };
+    raw.parse::<u32>()
+        .ok()
+        .filter(|n| (MIN_DATABASE_MAX_CONNECTIONS..=MAX_DATABASE_MAX_CONNECTIONS).contains(n))
+        .ok_or_else(|| {
+            ConfigError(format!(
+                "DATABASE_MAX_CONNECTIONS must be a whole number between \
+                 {MIN_DATABASE_MAX_CONNECTIONS} and {MAX_DATABASE_MAX_CONNECTIONS}"
+            ))
+        })
 }
 
 /// 回合設定必須是 `1 <= 引導收尾 <= 上限 <= 1000`（S-03.3）；資料庫以 `i32` 計數，
@@ -286,6 +311,13 @@ impl Config {
                 ));
             }
         };
+        let database_max_connections = match env::var("DATABASE_MAX_CONNECTIONS") {
+            Ok(value) => parse_database_max_connections(Some(&value))?,
+            Err(env::VarError::NotPresent) => DEFAULT_DATABASE_MAX_CONNECTIONS,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError("DATABASE_MAX_CONNECTIONS must be UTF-8".into()));
+            }
+        };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
@@ -399,6 +431,7 @@ impl Config {
             classroom_ai_routing: true,
             monitored_services,
             service_probe_interval,
+            database_max_connections,
             app_base_url,
         })
     }
@@ -483,6 +516,37 @@ mod tests {
             parse_model_list(" google/gemma:free , nvidia/x:free,,a "),
             ["google/gemma:free", "nvidia/x:free", "a"]
         );
+    }
+
+    #[test]
+    fn database_max_connections_defaults_when_unset_or_blank() {
+        for raw in [None, Some(""), Some("  \n")] {
+            assert_eq!(
+                parse_database_max_connections(raw).unwrap(),
+                DEFAULT_DATABASE_MAX_CONNECTIONS
+            );
+        }
+    }
+
+    #[test]
+    fn database_max_connections_accepts_the_whole_1_to_100_range() {
+        assert_eq!(parse_database_max_connections(Some("1")).unwrap(), 1);
+        assert_eq!(parse_database_max_connections(Some(" 25 ")).unwrap(), 25);
+        assert_eq!(parse_database_max_connections(Some("100")).unwrap(), 100);
+    }
+
+    #[test]
+    fn database_max_connections_outside_the_range_or_not_a_whole_number_fails_startup() {
+        for raw in ["0", "101", "100000", "-5", "10.5", "10x", "abc"] {
+            let error = parse_database_max_connections(Some(raw))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("DATABASE_MAX_CONNECTIONS"), "{raw}: {error}");
+            assert!(
+                error.contains('1') && error.contains("100"),
+                "{raw}: {error}"
+            );
+        }
     }
 
     #[test]
