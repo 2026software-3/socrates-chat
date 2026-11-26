@@ -144,6 +144,7 @@ impl Failure {
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Ai,
+    BookSource,
     Login,
     AccountLock,
 }
@@ -152,6 +153,7 @@ impl Kind {
     fn code(self) -> &'static str {
         match self {
             Self::Ai => "ai",
+            Self::BookSource => "book_source",
             Self::Login => "login",
             Self::AccountLock => "account_lock",
         }
@@ -343,6 +345,30 @@ pub(crate) fn account_lock(
             status: status.as_u16(),
             error_code: Some(code),
             user,
+            classroom: None,
+            ai: None,
+        },
+    );
+}
+
+/// 外部書目查詢失敗（Google Books／Open Library）：記錄失敗分類與請求 ID，不含金鑰與查詢內容。
+pub(crate) fn book_source_failure(
+    pool: &PgPool,
+    function: &'static str,
+    user: Uuid,
+    failure: Failure,
+    status: StatusCode,
+    code: &'static str,
+) {
+    insert(
+        pool,
+        Event {
+            kind: Kind::BookSource,
+            failure: Some(failure),
+            function,
+            status: status.as_u16(),
+            error_code: Some(code),
+            user: Some(user),
             classroom: None,
             ai: None,
         },

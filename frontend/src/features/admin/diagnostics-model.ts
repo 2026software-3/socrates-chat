@@ -1,7 +1,7 @@
 import type { MessageKey } from '@/i18n'
 
 /** 後端診斷 API 的契約（F-33.1，`GET /api/admin/status`、`GET /api/admin/diagnostics`）。 */
-export type DiagnosticKind = 'ai' | 'login' | 'account_lock'
+export type DiagnosticKind = 'ai' | 'book_source' | 'login' | 'account_lock'
 
 export type FailureClass =
   | 'connection_failed'
@@ -55,7 +55,7 @@ export type SystemStatus = {
   recent_errors: DiagnosticEvent[]
 }
 
-export const KINDS: DiagnosticKind[] = ['ai', 'login', 'account_lock']
+export const KINDS: DiagnosticKind[] = ['ai', 'book_source', 'login', 'account_lock']
 
 /** 每種事件類型可能出現的失敗分類，用來限縮篩選選項。 */
 export const CLASSES_BY_KIND: Record<DiagnosticKind, FailureClass[]> = {
@@ -69,18 +69,26 @@ export const CLASSES_BY_KIND: Record<DiagnosticKind, FailureClass[]> = {
     'invalid_output',
     'classroom_ai_unavailable',
   ],
+  book_source: [
+    'connection_failed',
+    'timeout',
+    'invalid_key',
+    'quota_exceeded',
+    'rate_limited',
+    'service_error',
+    'invalid_output',
+  ],
   login: ['invalid_credentials', 'account_disabled'],
   account_lock: ['account_locked'],
 }
 
-export const ALL_CLASSES: FailureClass[] = [
-  ...CLASSES_BY_KIND.ai,
-  ...CLASSES_BY_KIND.login,
-  ...CLASSES_BY_KIND.account_lock,
-]
+export const ALL_CLASSES: FailureClass[] = Array.from(
+  new Set(KINDS.flatMap((kind) => CLASSES_BY_KIND[kind])),
+)
 
 export const KIND_LABEL: Record<DiagnosticKind, MessageKey> = {
   ai: 'admin.diag.kind.ai',
+  book_source: 'admin.diag.kind.book_source',
   login: 'admin.diag.kind.login',
   account_lock: 'admin.diag.kind.account_lock',
 }
@@ -109,6 +117,8 @@ export const FUNCTION_LABEL: Record<string, MessageKey> = {
   radar_scoring: 'admin.diag.fn.radar_scoring',
   voice_transcription: 'admin.diag.fn.voice_transcription',
   voice_synthesis: 'admin.diag.fn.voice_synthesis',
+  book_search: 'admin.diag.fn.book_search',
+  book_editions: 'admin.diag.fn.book_editions',
   password_login: 'admin.diag.fn.password_login',
   google_login: 'admin.diag.fn.google_login',
 }
