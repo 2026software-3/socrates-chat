@@ -69,9 +69,13 @@ async fn retry_persists_a_complete_translated_set_and_cannot_replace_it(pool: Pg
     settle(&ai, 2).await;
     let path = format!("/api/topics/{id}/dimensions");
     let retry = format!("{path}/retry");
-    let result = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
-    assert_eq!(result.status(), StatusCode::OK);
-    let view = json_body(result).await;
+    // 重試是背景工作（S-20）：202 後等工作結束，再讀目前的維度
+    let accepted = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job = json_body(accepted).await;
+    let done = wait_for_job(&app, &actors.teacher, job["job_id"].as_str().unwrap()).await;
+    assert_eq!(done["status"], "ready");
+    let view = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
     let dimensions = view["dimensions"].as_array().unwrap();
     assert_eq!(
         dimensions
@@ -94,8 +98,10 @@ async fn retry_persists_a_complete_translated_set_and_cannot_replace_it(pool: Pg
         .await
         .unwrap();
     assert_eq!(persisted, view["dimensions"]);
-    let repeated =
-        json_body(send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await).await;
+    let again = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
+    let again = json_body(again).await;
+    wait_for_job(&app, &actors.teacher, again["job_id"].as_str().unwrap()).await;
+    let repeated = json_body(send(&app, get(&path, Some(&actors.teacher))).await).await;
     assert_eq!(repeated, view);
     assert_eq!(ai.requests.lock().unwrap().len(), 5);
     sqlx::migrate!().run(&pool).await.unwrap();
@@ -379,4 +385,44 @@ async fn changing_guiding_questions_discards_unlocked_dimensions_and_regenerates
             .any(|r| r.messages[0].content.contains("新的引導問題")),
         "改了引導問題就重新產生維度，請求要帶新的引導問題"
     );
+}
+
+#[sqlx::test]
+async fn a_failed_generation_marks_the_job_failed_and_a_running_one_is_joined(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Script::Fail,
+        Script::Fail, // 建立題目時的自動產生（兩次嘗試）
+        Script::Fail,
+        Script::Fail, // 重試（兩次嘗試）
+        Script::Hang,
+    ]);
+    let app = test_app_with_ai(pool, ai.clone());
+    let actors = seed_actors(&app).await;
+    let id = create(&app, &actors.teacher).await;
+    settle(&ai, 2).await;
+    let retry = format!("/api/topics/{id}/dimensions/retry");
+
+    let accepted = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job = json_body(accepted).await;
+    let failed = wait_for_job(&app, &actors.teacher, job["job_id"].as_str().unwrap()).await;
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["error_code"], "ai_unavailable");
+
+    // 失敗後可以再試；進行中時再按回同一筆工作（200）
+    let first = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first = json_body(first).await;
+    wait_until_ai_called(&ai, 5).await;
+    let second = send(&app, json_req("POST", &retry, Some(&actors.teacher), None)).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(json_body(second).await["job_id"], first["job_id"]);
+
+    let active =
+        json_body(send(&app, get("/api/ai-jobs/active", Some(&actors.teacher))).await).await;
+    assert!(active["jobs"].as_array().unwrap().iter().any(|j| {
+        j["kind"] == "topic_dimensions"
+            && j["status"] == "pending"
+            && j["scope"]["topic_id"] == id.as_str()
+    }));
 }
