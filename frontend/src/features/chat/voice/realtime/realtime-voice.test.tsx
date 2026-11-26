@@ -73,7 +73,7 @@ describe('server voice conversation', () => {
 
   it('tells the student where the voice goes and locks typing while connected', async () => {
     await startLive()
-    expect(createRealtimeSession).toHaveBeenCalledWith('c1', expect.anything(), false)
+    expect(createRealtimeSession).toHaveBeenCalledWith('c1', expect.anything(), true)
     expect(screen.getByText(/即時傳到本系統的伺服器/)).toBeInTheDocument()
     expect(screen.getByRole('textbox')).toBeDisabled()
     expect(screen.getByRole('button', { name: '送出' })).toBeDisabled()
@@ -194,10 +194,9 @@ describe('server voice conversation', () => {
     expect(session.interrupt).toHaveBeenCalled()
   })
 
-  it('passes the barge-in switch to the session', async () => {
-    const { user } = await startLive()
-    await user.click(screen.getByRole('switch', { name: /打斷/ }))
-    expect(session.setInterruptible).toHaveBeenLastCalledWith(true)
+  it('has no barge-in switch and always starts interruptible', async () => {
+    await startLive()
+    expect(screen.queryByRole('switch', { name: /打斷/ })).not.toBeInTheDocument()
   })
 
   it('ends with the button and frees the input', async () => {
