@@ -235,11 +235,34 @@ describe('ClassroomAiSettingsPage', () => {
     expect(screen.getByRole('button', { name: '驗證並儲存' })).toBeDisabled()
   })
 
+  it('verifies in the background: waits for the job, then reloads and shows it saved (S-20)', async () => {
+    let polls = 0
+    let reloads = 0
+    mockSettings(configured)
+    server.use(
+      http.get(`/api/classrooms/${CID}/ai-settings`, () => {
+        reloads += 1
+        return HttpResponse.json(configured)
+      }),
+      http.put(`/api/classrooms/${CID}/ai-settings`, () => HttpResponse.json({ job_id: 'jv', status: 'pending' }, { status: 202 })),
+      http.get('/api/ai-jobs/jv', () => HttpResponse.json({ status: polls++ < 1 ? 'pending' : 'ready' })),
+    )
+    await open()
+    await screen.findByDisplayValue('gpt-main')
+    const before = reloads
+    await userEvent.click(screen.getByRole('button', { name: '驗證並儲存' }))
+    expect(await screen.findByRole('button', { name: '驗證中…' })).toBeDisabled()
+    expect(await screen.findByText(/可離開此頁/)).toBeInTheDocument()
+    expect(await screen.findByText('已儲存。', {}, { timeout: 8000 })).toBeInTheDocument()
+    expect(reloads).toBeGreaterThan(before)
+  }, 15_000)
+
   it('translates verification failures and points at the failing model', async () => {
     mockSettings(configured)
     server.use(
-      http.put(`/api/classrooms/${CID}/ai-settings`, () =>
-        HttpResponse.json({ error: { code: 'model_structured_output_unsupported', request_id: 'r1', target: 'fallback_1' } }, { status: 400 }),
+      http.put(`/api/classrooms/${CID}/ai-settings`, () => HttpResponse.json({ job_id: 'jf', status: 'pending' }, { status: 202 })),
+      http.get('/api/ai-jobs/jf', () =>
+        HttpResponse.json({ status: 'failed', error_code: 'model_structured_output_unsupported', error_target: 'fallback_1' }),
       ),
     )
     await open()
