@@ -48,7 +48,7 @@ jobs:
             exit 0
           fi
 
-          files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          files=$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")
           backend=false
           frontend=false
           scripts=false
