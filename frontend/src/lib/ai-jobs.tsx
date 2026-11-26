@@ -47,3 +47,14 @@ export function usePollJob<T>(key: string | null, spec: PollSpec<T>) {
   )
   return { state, restart }
 }
+
+/**
+ * 只讀一個輪詢工作的目前狀態，不啟動它（啟動的是別處的 `usePollJob`）。
+ * 沒有 provider 時永遠是閒置狀態：只有全域登記處才能讓不同元件看到同一個工作。
+ */
+export function usePollState<T>(key: string): PollState<T> {
+  const store = useAiJobsStore()
+  const fallback = useRef(new PollStore()).current
+  const s = store ?? fallback
+  return useSyncExternalStore(s.subscribe, () => s.get<T>(key)) as PollState<T>
+}
