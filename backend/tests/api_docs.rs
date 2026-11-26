@@ -171,7 +171,7 @@ async fn admin_achievement_api_contract_is_fixed() {
     );
     assert_eq!(
         property_names("AchievementResult"),
-        ["achievement", "retroactive_unlocks"]
+        ["achievement", "job_id", "retroactive_unlocks"]
     );
     assert_eq!(
         property_names("LevelView"),
