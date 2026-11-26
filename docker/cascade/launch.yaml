@@ -4,9 +4,15 @@ config_cls: StreamingCascadePipelineConfig
 model_path: /app
 
 stages:
+  # vad 與 turn_detection 併進 cascade 程序：預設各佔一個程序，每個都載入一份 torch／transformers／sglang
+  # （各約 0.6 GB），而真正的模型只有幾十 MB。實測閒置記憶體約減半，斷句與打斷行為不變
+  # （docs/specs/cascade-slimming.md）。
   vad:
+    process: cascade
     factory:
       silence_duration_ms: 1000
+  turn_detection:
+    process: cascade
 
 session_nodes:
   vad:
