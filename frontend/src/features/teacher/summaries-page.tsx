@@ -8,11 +8,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
-import { api, isInvalidCursor } from '@/lib/api'
+import { api, isApiError, isInvalidCursor } from '@/lib/api'
 import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
-import type { Page as PageResult, SummaryTranslation, TeacherSummary } from '@/lib/types'
+import type { Classroom, Page as PageResult, StudentPage, SummaryTranslation, TeacherSummary, Topic } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
 function Field({ label, value }: { label: string; value: string | null }) {
@@ -119,20 +119,39 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
   )
 }
 
-/** 教師：學生的 AI 總結列表。列表只載入總結，對話原文要點進去才請求（S-02.1）。依後端的不透明游標前後翻頁；搜尋交給後端（`q`），涵蓋所有頁。 */
+/** 篩選條件：`student` 是學生的使用者 UUID（不是電子郵件或學號），`topic` 是題目標題（後端完全相符、不分大小寫）。空字串代表不篩選。 */
+type Filters = { classroom: string; student: string; topic: string; search: string }
+
+const NO_FILTERS: Filters = { classroom: '', student: '', topic: '', search: '' }
+
+const selectClass =
+  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm shadow-xs focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none disabled:bg-transparent disabled:border-ink-soft disabled:text-ink-soft disabled:cursor-not-allowed'
+
+/** 教師：學生的 AI 總結列表。列表只載入總結，對話原文要點進去才請求（S-02.1）。依後端的不透明游標前後翻頁；搜尋（`q`）與教室、學生、題目篩選都交給後端，涵蓋所有頁。 */
 export function SummariesPage() {
   const t = useT()
   const accountLanguage = useAccountLanguage()
   const [draft, setDraft] = useState('')
-  const [search, setSearch] = useState('')
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS)
   const [cursors, setCursors] = useState<(string | null)[]>([null])
   const cursor = cursors[cursors.length - 1]
+  const filtered = Object.values(filters).some(Boolean)
 
-  // 換搜尋條件時游標失去意義，從第一頁開始
+  // 換條件時游標失去意義（後端也會拒絕沿用舊游標），從第一頁開始
+  function apply(next: Partial<Filters>) {
+    setFilters((previous) => ({ ...previous, ...next }))
+    setCursors([null])
+  }
+
+  function clear() {
+    setFilters(NO_FILTERS)
+    setDraft('')
+    setCursors([null])
+  }
+
   function submit(e: FormEvent) {
     e.preventDefault()
-    setSearch(draft.trim())
-    setCursors([null])
+    apply({ search: draft.trim() })
   }
 
   return (
@@ -140,19 +159,27 @@ export function SummariesPage() {
       <Alert>
         <AlertDescription>{t('teacher.summaries.privacyNote')}</AlertDescription>
       </Alert>
-      <form role="search" onSubmit={submit} className="flex max-w-sm items-end gap-2">
-        <div className="flex-1 space-y-1.5">
-          <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
-          <Input id="summaries-search" type="search" value={draft} onChange={(e) => setDraft(e.target.value)} />
-        </div>
-        <Button type="submit" variant="outline">
-          {t('teacher.summaries.search')}
-        </Button>
-      </form>
+      <SummaryFilters filters={filters} onChange={apply} />
+      <div className="flex flex-wrap items-end gap-2">
+        <form role="search" onSubmit={submit} className="flex w-full max-w-sm items-end gap-2">
+          <div className="flex-1 space-y-1.5">
+            <Label htmlFor="summaries-search">{t('teacher.summaries.searchLabel')}</Label>
+            <Input id="summaries-search" type="search" value={draft} onChange={(e) => setDraft(e.target.value)} />
+          </div>
+          <Button type="submit" variant="outline">
+            {t('teacher.summaries.search')}
+          </Button>
+        </form>
+        {filtered ? (
+          <Button type="button" variant="ghost" onClick={clear}>
+            {t('teacher.summaries.clearFilters')}
+          </Button>
+        ) : null}
+      </div>
       {accountLanguage ? (
         <SummaryList
-          key={`${search}\n${cursor ?? ''}\n${accountLanguage}`}
-          search={search}
+          key={`${JSON.stringify(filters)}\n${cursor ?? ''}\n${accountLanguage}`}
+          filters={filters}
           cursor={cursor}
           onNext={(next) => setCursors((previous) => [...previous, next])}
           onPrevious={cursors.length > 1 ? () => setCursors((previous) => previous.slice(0, -1)) : undefined}
@@ -163,38 +190,122 @@ export function SummariesPage() {
   )
 }
 
-function summariesPath(search: string, cursor: string | null): string {
+/**
+ * 教室、學生、題目的篩選選單。學生選項來自所選教室的名單（`/api/classrooms/{id}/students`，一頁最多 200 人），
+ * 所以要先選教室；還沒有帳號的學生沒有使用者 UUID，不列入。題目選項是題庫標題。選項載入失敗時只剩「全部」。
+ */
+function SummaryFilters({ filters, onChange }: { filters: Filters; onChange: (next: Partial<Filters>) => void }) {
+  const t = useT()
+  const classrooms = useFetch<Classroom[]>('/api/classrooms')
+  const topics = useFetch<Topic[]>('/api/topics')
+  const students = useFetch<StudentPage>(
+    filters.classroom ? `/api/classrooms/${encodeURIComponent(filters.classroom)}/students?limit=200` : null,
+  )
+  const topicTitles = [...new Set((topics.data ?? []).map((topic) => topic.title))]
+  const studentOptions = filters.classroom
+    ? (students.data?.items ?? []).flatMap((s) => (s.id ? [{ id: s.id, label: `${s.display_name ?? s.email ?? s.student_number}（${s.student_number}）` }] : []))
+    : []
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      <div className="space-y-1.5">
+        <Label htmlFor="summaries-classroom">{t('teacher.summaries.filterClassroom')}</Label>
+        <select
+          id="summaries-classroom"
+          className={selectClass}
+          value={filters.classroom}
+          // 學生選項屬於教室，換教室時一併清掉學生條件
+          onChange={(e) => onChange({ classroom: e.target.value, student: '' })}
+        >
+          <option value="">{t('teacher.summaries.allClassrooms')}</option>
+          {(classrooms.data ?? []).map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.year_label ? `${c.name}（${c.year_label}）` : c.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="summaries-student">{t('teacher.summaries.filterStudent')}</Label>
+        <select
+          id="summaries-student"
+          className={selectClass}
+          value={filters.student}
+          disabled={!filters.classroom}
+          aria-describedby={filters.classroom ? undefined : 'summaries-student-hint'}
+          onChange={(e) => onChange({ student: e.target.value })}
+        >
+          <option value="">{t('teacher.summaries.allStudents')}</option>
+          {studentOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        {filters.classroom ? null : (
+          <p id="summaries-student-hint" className="text-muted-foreground text-xs">
+            {t('teacher.summaries.studentNeedsClassroom')}
+          </p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="summaries-topic">{t('teacher.summaries.filterTopic')}</Label>
+        <select id="summaries-topic" className={selectClass} value={filters.topic} onChange={(e) => onChange({ topic: e.target.value })}>
+          <option value="">{t('teacher.summaries.allTopics')}</option>
+          {topicTitles.map((title) => (
+            <option key={title} value={title}>
+              {title}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  )
+}
+
+function summariesPath(filters: Filters, cursor: string | null): string {
   const params = new URLSearchParams()
-  if (search) params.set('q', search)
+  if (filters.classroom) params.set('classroom_id', filters.classroom)
+  if (filters.student) params.set('student', filters.student)
+  if (filters.topic) params.set('topic', filters.topic)
+  if (filters.search) params.set('q', filters.search)
   if (cursor) params.set('cursor', cursor)
   const query = params.toString()
   return `/api/summaries${query ? `?${query}` : ''}`
 }
 
 function SummaryList({
-  search,
+  filters,
   cursor,
   onNext,
   onPrevious,
   onRestart,
 }: {
-  search: string
+  filters: Filters
   cursor: string | null
   onNext: (cursor: string) => void
   onPrevious?: () => void
   onRestart: () => void
 }) {
   const t = useT()
-  const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(search, cursor))
+  const summaries = useFetch<PageResult<TeacherSummary>>(summariesPath(filters, cursor))
   const data = summaries.data?.items
   const nextCursor = summaries.data?.next_cursor
+  const filtered = Object.values(filters).some(Boolean)
+  // 篩選條件不正確時重試也不會成功，出路是上方的「清除條件」
+  const invalidFilter = isApiError(summaries.error) && summaries.error.code === 'invalid_filter'
 
   return (
     <>
       {summaries.loading && !data ? <LoadingBlock /> : null}
       {/* 失效的游標（例如部署後游標版本改變）重試也不會成功，改從第一頁開始 */}
-      {summaries.error ? <ErrorBlock error={summaries.error} onRetry={isInvalidCursor(summaries.error) ? onRestart : summaries.reload} /> : null}
-      {data && data.length === 0 ? <EmptyBlock>{search ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
+      {summaries.error ? (
+        <ErrorBlock
+          error={summaries.error}
+          onRetry={invalidFilter ? undefined : isInvalidCursor(summaries.error) ? onRestart : summaries.reload}
+        />
+      ) : null}
+      {data && data.length === 0 ? <EmptyBlock>{filtered ? t('teacher.summaries.noMatch') : t('teacher.summaries.empty')}</EmptyBlock> : null}
       {data && data.length > 0 ? (
         <ul className="space-y-3">
           {data.map((r) => (
