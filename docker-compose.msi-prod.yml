@@ -43,8 +43,11 @@ services:
 
 volumes:
   pgdata_v2:
-  # 重用測試堆疊已下載的模型與編譯快取（磁碟只剩幾 GB，不複製）
+  # 重用測試堆疊已下載的模型與編譯快取（磁碟只剩幾 GB，不複製）。這兩個卷是測試堆疊建的，所以宣告成 external：
+  # 否則每次 docker compose 都會警告「卷屬於專案 socrates-intel-test」。external 的卷不由 compose 建立或刪除。
   cascade_hf:
     name: socrates-intel-test_cascade_hf
+    external: true
   cascade_cache:
     name: socrates-intel-test_cascade_cache
+    external: true
