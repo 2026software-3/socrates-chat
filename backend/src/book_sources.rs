@@ -1,4 +1,5 @@
 //! Teacher book lookup. Credentials stay server-side; provider failures never trigger fallback.
+use crate::diagnostics::Failure;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,8 +18,41 @@ pub struct BookCandidate {
     pub source_url: Option<String>,
     pub description: Option<String>,
 }
-#[derive(Debug)]
-pub struct BookSourceError;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookProvider {
+    GoogleBooks,
+    OpenLibrary,
+}
+impl BookProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GoogleBooks => "google_books",
+            Self::OpenLibrary => "open_library",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BookSourceError {
+    pub provider: BookProvider,
+    pub class: Failure,
+    pub http_status: Option<u16>,
+}
+impl BookSourceError {
+    pub fn new(provider: BookProvider, class: Failure) -> Self {
+        Self {
+            provider,
+            class,
+            http_status: None,
+        }
+    }
+    pub fn http(provider: BookProvider, http_status: u16, class: Failure) -> Self {
+        Self {
+            provider,
+            class,
+            http_status: Some(http_status),
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RelatedEdition {
     pub work_id: String,
@@ -32,7 +66,10 @@ pub trait BookSource: Send + Sync {
         &self,
         _book: &crate::book_store::Book,
     ) -> Result<Vec<RelatedEdition>, BookSourceError> {
-        Err(BookSourceError)
+        Err(BookSourceError::new(
+            BookProvider::OpenLibrary,
+            Failure::ServiceError,
+        ))
     }
 }
 pub struct HttpBookSource {
@@ -78,9 +115,9 @@ impl HttpBookSource {
     async fn json(
         &self,
         request: reqwest::RequestBuilder,
-        ol: bool,
+        provider: BookProvider,
     ) -> Result<Value, BookSourceError> {
-        if ol {
+        if provider == BookProvider::OpenLibrary {
             let mut last = self.ol_last_request.lock().await;
             if let Some(at) = *last {
                 tokio::time::sleep_until(at + Duration::from_millis(1100)).await;
@@ -91,24 +128,60 @@ impl HttpBookSource {
             .timeout(self.provider_timeout)
             .send()
             .await
-            .map_err(|_| BookSourceError)?;
-        if !response.status().is_success() {
-            return Err(BookSourceError);
+            .map_err(|err| {
+                BookSourceError::new(
+                    provider,
+                    if err.is_timeout() {
+                        Failure::Timeout
+                    } else {
+                        Failure::ConnectionFailed
+                    },
+                )
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let code = status.as_u16();
+            let class = if provider == BookProvider::GoogleBooks && matches!(code, 400 | 401 | 403)
+            {
+                let mut bytes = Vec::new();
+                while let Ok(Some(chunk)) = response.chunk().await {
+                    if bytes.len() + chunk.len() > 64 * 1024 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                classify_google_error(code, &bytes)
+            } else if code == 429 {
+                Failure::RateLimited
+            } else {
+                Failure::ServiceError
+            };
+            return Err(BookSourceError::http(provider, code, class));
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| BookSourceError)? {
+        while let Some(chunk) = response.chunk().await.map_err(|err| {
+            BookSourceError::new(
+                provider,
+                if err.is_timeout() {
+                    Failure::Timeout
+                } else {
+                    Failure::ConnectionFailed
+                },
+            )
+        })? {
             if bytes.len() + chunk.len() > 1_000_000 {
-                return Err(BookSourceError);
+                return Err(BookSourceError::new(provider, Failure::InvalidOutput));
             }
             bytes.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&bytes).map_err(|_| BookSourceError)
+        serde_json::from_slice(&bytes)
+            .map_err(|_| BookSourceError::new(provider, Failure::InvalidOutput))
     }
     async fn lookup(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
         let Some(key) = self.key.as_deref().filter(|s| !s.trim().is_empty()) else {
             return tokio::time::timeout(self.provider_timeout, self.lookup_openlibrary(query))
                 .await
-                .map_err(|_| BookSourceError)?;
+                .map_err(|_| BookSourceError::new(BookProvider::OpenLibrary, Failure::Timeout))?;
         };
         let payload = self
             .json(
@@ -116,18 +189,28 @@ impl HttpBookSource {
                     .get(&self.google)
                     .header("X-Goog-Api-Key", key)
                     .query(&[("q", query), ("maxResults", "5"), ("printType", "books")]),
-                false,
+                BookProvider::GoogleBooks,
             )
             .await?;
         // A malformed response is a failure, not a reason to switch providers.
         if !payload.is_object() || payload.get("error").is_some() {
-            return Err(BookSourceError);
+            return Err(BookSourceError::new(
+                BookProvider::GoogleBooks,
+                Failure::InvalidOutput,
+            ));
         }
         let empty = Vec::new();
         let items = match payload.get("items") {
-            Some(v) => v.as_array().ok_or(BookSourceError)?,
+            Some(v) => v.as_array().ok_or_else(|| {
+                BookSourceError::new(BookProvider::GoogleBooks, Failure::InvalidOutput)
+            })?,
             None if payload.get("totalItems").and_then(Value::as_u64) == Some(0) => &empty,
-            None => return Err(BookSourceError),
+            None => {
+                return Err(BookSourceError::new(
+                    BookProvider::GoogleBooks,
+                    Failure::InvalidOutput,
+                ));
+            }
         };
         let found: Vec<_> = items
             .iter()
@@ -141,15 +224,29 @@ impl HttpBookSource {
         // verification share a budget. Google consumed a separate budget before this point.
         tokio::time::timeout(self.provider_timeout, self.lookup_openlibrary(query))
             .await
-            .map_err(|_| BookSourceError)?
+            .map_err(|_| BookSourceError::new(BookProvider::OpenLibrary, Failure::Timeout))?
     }
 
     async fn lookup_openlibrary(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
-        let payload=self.json(self.client.get(&self.openlibrary).query(&[("q",query),("limit","5"),("fields","key,title,author_name,editions,editions.key,editions.title,editions.language")]),true).await?;
+        let payload = self
+            .json(
+                self.client.get(&self.openlibrary).query(&[
+                    ("q", query),
+                    ("limit", "5"),
+                    (
+                        "fields",
+                        "key,title,author_name,editions,editions.key,editions.title,editions.language",
+                    ),
+                ]),
+                BookProvider::OpenLibrary,
+            )
+            .await?;
         let docs = payload
             .get("docs")
             .and_then(Value::as_array)
-            .ok_or(BookSourceError)?;
+            .ok_or_else(|| {
+                BookSourceError::new(BookProvider::OpenLibrary, Failure::InvalidOutput)
+            })?;
         let mut results = Vec::new();
         for work in docs.iter().take(5) {
             let Some(edition) = work.pointer("/editions/docs/0/key").and_then(Value::as_str) else {
@@ -163,10 +260,14 @@ impl HttpBookSource {
             {
                 continue;
             }
-            let mut url = reqwest::Url::parse(&self.openlibrary).map_err(|_| BookSourceError)?;
+            let mut url = reqwest::Url::parse(&self.openlibrary).map_err(|_| {
+                BookSourceError::new(BookProvider::OpenLibrary, Failure::ServiceError)
+            })?;
             url.set_path(&format!("/books/{code}.json"));
             url.set_query(None);
-            let data = self.json(self.client.get(url), true).await?;
+            let data = self
+                .json(self.client.get(url), BookProvider::OpenLibrary)
+                .await?;
             // A returned edition must identify the requested edition, not a different record.
             let expected_key = format!("/books/{code}");
             if data.get("key").and_then(Value::as_str) != Some(expected_key.as_str()) {
@@ -212,18 +313,97 @@ impl HttpBookSource {
         Ok(results)
     }
 }
+fn log_lookup_failure(err: BookSourceError) {
+    tracing::warn!(
+        provider = err.provider.as_str(),
+        class = err.class.code(),
+        http_status = err.http_status,
+        "external book source lookup failed"
+    );
+}
+#[derive(Deserialize)]
+struct GoogleErrorResponse {
+    #[serde(default)]
+    error: GoogleErrorBody,
+}
+#[derive(Default, Deserialize)]
+struct GoogleErrorBody {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    errors: Vec<GoogleErrorReason>,
+    #[serde(default)]
+    details: Vec<GoogleErrorDetail>,
+}
+#[derive(Deserialize)]
+struct GoogleErrorReason {
+    #[serde(default)]
+    reason: String,
+}
+#[derive(Deserialize)]
+struct GoogleErrorDetail {
+    #[serde(default)]
+    reason: String,
+}
+fn classify_google_error(status: u16, body: &[u8]) -> Failure {
+    const QUOTA_REASONS: [&str; 3] = [
+        "dailyLimitExceeded",
+        "userRateLimitExceeded",
+        "RATE_LIMIT_EXCEEDED",
+    ];
+    const QUOTA_MESSAGES: [&str; 2] = ["Daily Limit Exceeded", "User Rate Limit Exceeded"];
+    const KEY_REASONS: [&str; 2] = ["API_KEY_INVALID", "keyInvalid"];
+
+    let parsed = serde_json::from_slice::<GoogleErrorResponse>(body).ok();
+    if let Some(parsed) = parsed {
+        let reasons = parsed
+            .error
+            .errors
+            .iter()
+            .map(|item| item.reason.as_str())
+            .chain(parsed.error.details.iter().map(|d| d.reason.as_str()))
+            .collect::<Vec<_>>();
+        let is_quota = QUOTA_MESSAGES
+            .iter()
+            .any(|msg| parsed.error.message.eq_ignore_ascii_case(msg))
+            || reasons.iter().any(|r| QUOTA_REASONS.contains(r));
+        if is_quota {
+            return Failure::QuotaExceeded;
+        }
+        if status == 400
+            && (reasons.iter().any(|r| KEY_REASONS.contains(r))
+                || parsed.error.message.contains("API key not valid"))
+        {
+            return Failure::InvalidKey;
+        }
+    }
+    if matches!(status, 401 | 403) {
+        Failure::InvalidKey
+    } else {
+        Failure::ServiceError
+    }
+}
 #[async_trait]
 impl BookSource for HttpBookSource {
     async fn related(
         &self,
         book: &crate::book_store::Book,
     ) -> Result<Vec<RelatedEdition>, BookSourceError> {
-        tokio::time::timeout(self.provider_timeout, self.lookup_related(book))
+        let result = tokio::time::timeout(self.provider_timeout, self.lookup_related(book))
             .await
-            .map_err(|_| BookSourceError)?
+            .map_err(|_| BookSourceError::new(BookProvider::OpenLibrary, Failure::Timeout))
+            .and_then(|res| res);
+        if let Err(err) = &result {
+            log_lookup_failure(*err);
+        }
+        result
     }
     async fn search(&self, query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
-        self.lookup(query.trim()).await
+        let result = self.lookup(query.trim()).await;
+        if let Err(err) = &result {
+            log_lookup_failure(*err);
+        }
+        result
     }
 }
 fn text(v: &Value, key: &str) -> Option<String> {
@@ -355,7 +535,8 @@ fn ol_key(value: &str, kind: &str, suffix: char) -> bool {
 }
 impl HttpBookSource {
     fn ol_url(&self, path: &str) -> Result<reqwest::Url, BookSourceError> {
-        let mut url = reqwest::Url::parse(&self.openlibrary).map_err(|_| BookSourceError)?;
+        let mut url = reqwest::Url::parse(&self.openlibrary)
+            .map_err(|_| BookSourceError::new(BookProvider::OpenLibrary, Failure::ServiceError))?;
         url.set_path(path);
         url.set_query(None);
         Ok(url)
@@ -374,11 +555,14 @@ impl HttpBookSource {
                 .json(
                     self.client
                         .get(self.ol_url(&format!("{}.json", reference.source_id))?),
-                    true,
+                    BookProvider::OpenLibrary,
                 )
                 .await?;
             if data.get("key").and_then(Value::as_str) != Some(reference.source_id.as_str()) {
-                return Err(BookSourceError);
+                return Err(BookSourceError::new(
+                    BookProvider::OpenLibrary,
+                    Failure::InvalidOutput,
+                ));
             }
             for w in data
                 .get("works")
@@ -407,11 +591,13 @@ impl HttpBookSource {
                     request = request.query(&[("author", author)]);
                 }
             }
-            let data = self.json(request, true).await?;
+            let data = self.json(request, BookProvider::OpenLibrary).await?;
             for w in data
                 .get("docs")
                 .and_then(Value::as_array)
-                .ok_or(BookSourceError)?
+                .ok_or_else(|| {
+                    BookSourceError::new(BookProvider::OpenLibrary, Failure::InvalidOutput)
+                })?
                 .iter()
                 .take(3)
             {
@@ -440,13 +626,15 @@ impl HttpBookSource {
                     self.client
                         .get(self.ol_url(&format!("{key}/editions.json"))?)
                         .query(&[("limit", "100")]),
-                    true,
+                    BookProvider::OpenLibrary,
                 )
                 .await?;
             for entry in data
                 .get("entries")
                 .and_then(Value::as_array)
-                .ok_or(BookSourceError)?
+                .ok_or_else(|| {
+                    BookSourceError::new(BookProvider::OpenLibrary, Failure::InvalidOutput)
+                })?
                 .iter()
                 .take(100)
             {
@@ -528,5 +716,199 @@ impl HttpBookSource {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Router, http::StatusCode, routing::get};
+    use serde_json::json;
+    use std::io;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    async fn mock_server(
+        google_status: StatusCode,
+        google_body: String,
+        ol_status: StatusCode,
+        ol_body: String,
+        hang_google: bool,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new()
+            .route(
+                "/volumes",
+                get(move || {
+                    let body = google_body.clone();
+                    async move {
+                        if hang_google {
+                            std::future::pending::<()>().await;
+                        }
+                        (google_status, body)
+                    }
+                }),
+            )
+            .route(
+                "/search.json",
+                get(move || {
+                    let body = ol_body.clone();
+                    async move { (ol_status, body) }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn classifies_google_books_and_open_library_failures() {
+        let cases = [
+            (
+                StatusCode::FORBIDDEN,
+                json!({"error":{"code":403,"message":"Permission denied on the service.","details":[{"reason":"ACCESS_DENIED"}]}}).to_string(),
+                BookSourceError::http(BookProvider::GoogleBooks, 403, Failure::InvalidKey),
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                json!({"error":{"code":403,"message":"Daily Limit Exceeded","errors":[{"reason":"dailyLimitExceeded"}]}}).to_string(),
+                BookSourceError::http(BookProvider::GoogleBooks, 403, Failure::QuotaExceeded),
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                json!({"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","details":[{"reason":"API_KEY_INVALID"}]}}).to_string(),
+                BookSourceError::http(BookProvider::GoogleBooks, 400, Failure::InvalidKey),
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                json!({"error":{"code":429,"message":"Too many requests"}}).to_string(),
+                BookSourceError::http(BookProvider::GoogleBooks, 429, Failure::RateLimited),
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "upstream error".to_owned(),
+                BookSourceError::http(BookProvider::GoogleBooks, 500, Failure::ServiceError),
+            ),
+            (
+                StatusCode::OK,
+                "{not-json".to_owned(),
+                BookSourceError::new(BookProvider::GoogleBooks, Failure::InvalidOutput),
+            ),
+        ];
+
+        for (status, body, expected) in cases {
+            let (url, server) = mock_server(
+                status,
+                body,
+                StatusCode::OK,
+                json!({"docs":[]}).to_string(),
+                false,
+            )
+            .await;
+            let src = HttpBookSource::with_urls(
+                Some("synthetic-key".into()),
+                format!("{url}/volumes"),
+                format!("{url}/search.json"),
+            );
+            let err = src.search("ethics").await.unwrap_err();
+            assert_eq!(err, expected);
+            server.abort();
+        }
+
+        // Timeout without fixed sleep
+        let (url, server) = mock_server(
+            StatusCode::OK,
+            "{}".to_owned(),
+            StatusCode::OK,
+            "{}".to_owned(),
+            true,
+        )
+        .await;
+        let src = HttpBookSource::with_urls(
+            Some("synthetic-key".into()),
+            format!("{url}/volumes"),
+            format!("{url}/search.json"),
+        )
+        .with_provider_timeout(Duration::from_millis(50));
+        let err = src.search("ethics").await.unwrap_err();
+        assert_eq!(
+            err,
+            BookSourceError::new(BookProvider::GoogleBooks, Failure::Timeout)
+        );
+        server.abort();
+
+        // Open Library 503 when no key is set
+        let (url, server) = mock_server(
+            StatusCode::OK,
+            "{}".to_owned(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable".to_owned(),
+            false,
+        )
+        .await;
+        let src =
+            HttpBookSource::with_urls(None, format!("{url}/volumes"), format!("{url}/search.json"));
+        let err = src.search("ethics").await.unwrap_err();
+        assert_eq!(
+            err,
+            BookSourceError::http(BookProvider::OpenLibrary, 503, Failure::ServiceError)
+        );
+        server.abort();
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+    struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Captured {
+        type Writer = Sink;
+        fn make_writer(&'a self) -> Sink {
+            Sink(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn warn_logs_omit_api_key_query_and_upstream_body() {
+        let captured = Captured::default();
+        let subscriber = crate::logging::json_subscriber()
+            .with_env_filter(crate::logging::env_filter(Some("warn")))
+            .with_writer(captured.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (url, server) = mock_server(
+            StatusCode::FORBIDDEN,
+            json!({"error":{"code":403,"message":"secret-body-marker"}}).to_string(),
+            StatusCode::OK,
+            "{}".to_owned(),
+            false,
+        )
+        .await;
+        let src = HttpBookSource::with_urls(
+            Some("AIza-synthetic-secret-key".into()),
+            format!("{url}/volumes"),
+            format!("{url}/search.json"),
+        );
+        let err = src.search("secret-query-text").await.unwrap_err();
+        assert_eq!(
+            err,
+            BookSourceError::http(BookProvider::GoogleBooks, 403, Failure::InvalidKey)
+        );
+        server.abort();
+
+        let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("google_books"), "{logs}");
+        assert!(logs.contains("invalid_key"), "{logs}");
+        assert!(logs.contains("403"), "{logs}");
+        assert!(!logs.contains("AIza-synthetic-secret-key"), "{logs}");
+        assert!(!logs.contains("secret-query-text"), "{logs}");
+        assert!(!logs.contains("secret-body-marker"), "{logs}");
     }
 }

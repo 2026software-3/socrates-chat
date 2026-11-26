@@ -519,7 +519,10 @@ impl socrates_chat_backend::book_sources::BookSource for FakeBookSource {
     > {
         self.calls.lock().unwrap().push(query.to_owned());
         if self.fail {
-            return Err(socrates_chat_backend::book_sources::BookSourceError);
+            return Err(socrates_chat_backend::book_sources::BookSourceError::new(
+                socrates_chat_backend::book_sources::BookProvider::GoogleBooks,
+                socrates_chat_backend::diagnostics::Failure::ServiceError,
+            ));
         }
         Ok(vec![socrates_chat_backend::book_sources::BookCandidate {
             source: "Google Books".into(),
