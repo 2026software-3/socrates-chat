@@ -107,9 +107,10 @@ AI 金鑰：後端不讀 `.apikeylist`，也不讀 `OPENAI_API_KEYS`。系統用
    - 只接受 40 位小寫十六進位 SHA，且必須是 `deploy/msi-cubi-intel` 的目前 head（回滾例外，見下）。
    - 部署前 `pg_dump` 到 `/var/backups/socrates-prod`（保留最近 14 份）。**備份失敗就中止，不動任何容器。**
    - 切到該 commit（`/var/lib/socrates-prod`）；`docker build -t socrates-ntnu-app:prod-<sha12>`。
-   - `APP_IMAGE_TAG=prod-<sha12> docker compose`（四個檔、四個 profile）`up -d --no-build`。`db` 與 cascade 不會被停，只有設定有變的服務會重建。
-   - 健康檢查：經 `proxy` 的 `/ready`，90 秒內要回 200，否則標為失敗。
-   - 只保留最近 5 個 prod 映像。
+   - **cascade 映像（§13）**：算出 tag `intel-<最後改到 cascade 輸入檔的 commit 前 12 碼>`，缺的映像先建好（失敗或磁碟可用空間不足 50 GB，在動任何容器之前中止）。要換 cascade 時先等進行中的語音場次結束（讀 cascade 的 `/health`，最多約 10 分鐘），等不到就**延後**：其他服務照常部署，cascade 維持原 tag，下次部署再試。
+   - `CASCADE_INTEL_TAG=<實際使用的 tag> APP_IMAGE_TAG=prod-<sha12> docker compose`（四個檔、四個 profile）`up -d --no-build`。`db` 不會被停；cascade 只在上面決定要換時才重建，其他服務只有設定有變的會重建。tag 以環境變數傳入，優先於 `.env`。
+   - 健康檢查：經 `proxy` 的 `/ready`，90 秒內要回 200，否則標為失敗。換了 cascade 的話再等它變 healthy（最多 5 分鐘），否則標為失敗。成功後把 `.env` 的 `CASCADE_INTEL_TAG` 同步成實際使用的 tag（手動操作才不會把 cascade 換回舊映像）。
+   - 只保留最近 5 個 prod 映像；建過 cascade 映像就清建置快取，每種 cascade 映像保留最近 2 個 tag（正在使用的不刪）。
    - 同一時間只跑一個部署（workflow 的 concurrency 與腳本的 `flock`）；部署中途不取消。
 
 ### staging（自動部署）
@@ -177,7 +178,7 @@ sudo chmod 660   /var/lib/socrates-prod/.env
 
 ### 重建容器讓新設定生效
 
-只重建會用到該檔的服務。正式環境的 `cascade` 載入模型要數分鐘，不要讓它一起重建。
+只重建會用到該檔的服務。正式環境的 `cascade` 載入模型要數分鐘，不要讓它一起重建（自動部署會自己決定要不要換 cascade，見 §4）。
 
 ```bash
 # staging：staging-app 讀 .env.staging
@@ -420,7 +421,30 @@ sudo -H bash -c 'cd /var/lib/socrates-staging && export STAGING_APP_IMAGE_TAG=st
   ```
 
   正式環境的啟動、重建方式見 §5（四個檔、四個 profile）。
-- 換版時改 `CASCADE_INTEL_TAG`，再重建 cascade 服務（不要重建 `app`）。
+- 換版：正式環境由自動部署處理（§4，tag 與判斷規則見該節），不需要手動改 `CASCADE_INTEL_TAG`。手動換版才改 `.env` 的 `CASCADE_INTEL_TAG`，再重建 cascade 服務（不要重建 `app`）。
+- 自動建映像的限制：
+  - `docker/cascade-intel/npu-debs/` 在部署目錄（`/var/lib/socrates-prod`）裡沒有 `.deb`，所以自動部署**不會重建 `cascade-whisper` 映像**，沿用現有映像並印警告；whisper 的變更要由 root 把 `.deb` 放進去後手動建置。
+    - 放進去的是三個 `.deb`：`intel-level-zero-npu`、`intel-driver-compiler-npu`、`libze1`（msi_cubi 在 `~/npu_driver`，合計約 49 MB）。`intel-fw-npu` 是核心用的韌體，只裝在主機，**不要**放進這個目錄（`COPY *.deb` 會把它一起裝進映像）。
+    - **不能用 symlink。** docker build 的 `COPY` 不跟隨指向 build context 外面的 symlink，會直接失敗（`"/debs/a.deb": not found`，2026-11-27 在 msi_cubi 以 docker 29.1.3 實測）。同一個檔案系統上的**硬連結**可以（`/home/ray520` 與 `/var/lib/socrates-prod` 在同一個裝置），複製也可以。
+    - 放法（root）：`cd /var/lib/socrates-prod/docker/cascade-intel/npu-debs && ln ~ray520/npu_driver/{intel-level-zero-npu,intel-driver-compiler-npu,libze1}_*.deb .`（`ln` 失敗就改 `cp`）。`.deb` 被 `.gitignore` 忽略，部署時的 `git reset --hard` 不會刪它們。放好之後，下一次 whisper 輸入檔有變動，自動部署就會重建 whisper 映像。
+  - 建置沒有快取，冷建一組約 30 分鐘以上（`socrates-cascade-core` 實測 21 分鐘），所以 workflow 的 `timeout-minutes` 是 120。建完會清建置快取（約 30 GB），避免寫滿磁碟；磁碟可用空間不足 50 GB 時不建。
+  - 換 cascade 時，`cascade`、`cascade-adapter`、`cascade-tts`、`cascade-whisper` 會一起重建（tag 變了），語音中斷約 4 分鐘（`cascade-tts` 載入模型的 `start_period` 是 240 秒），所以腳本會先等沒有場次。
+  - 包裝腳本要由 root 重新安裝才會生效（§4「主機的一次性設定」）。第一次安裝前，先對現有三個映像補上輸入標籤，避免自動部署把已經是新的映像再建一次：
+
+    ```bash
+    cd /var/lib/socrates-prod   # root；對每個映像，用該映像的輸入檔最後一次 commit 當標籤
+    c() { git log -1 --format=%H -- "$@"; }
+    T=intel-$(c docker/cascade docker/cascade-intel scripts/whisper_text.py scripts/whisper_echo.py | cut -c1-12)
+    label() { # label <repo> <現行 tag> <輸入檔...>
+      local repo=$1 cur=$2; shift 2
+      printf 'FROM %s:%s\nLABEL socrates.inputs=%s\n' "$repo" "$cur" "$(c "$@")" | docker build -q -t "$repo:$T" -
+    }
+    label socrates-cascade-core        "$(sed -n 's/^CASCADE_INTEL_TAG=//p' .env)" docker/cascade/tts_adapter.py docker/cascade/patch_dialog.py docker/cascade/launch.yaml docker/cascade/entrypoint.sh docker/cascade-intel/core.Dockerfile
+    label socrates-cascade-tts-xpu     "$(sed -n 's/^CASCADE_INTEL_TAG=//p' .env)" docker/cascade/kokoro_server.py docker/cascade-intel/tts.Dockerfile
+    label socrates-cascade-whisper-npu "$(sed -n 's/^CASCADE_INTEL_TAG=//p' .env)" docker/cascade-intel/whisper.Dockerfile docker/cascade-intel/whisper_ov_server.py docker/cascade-intel/npu-debs scripts/whisper_text.py scripts/whisper_echo.py
+    ```
+
+    注意：自動建映像永遠從部署分支（`deploy/msi-cubi-intel`）的檔案建，不是從 main。`launch.yaml` 的 B（`vad`、`turn_detection` 併進 cascade 程序，`docs/specs/cascade-slimming.md`）若還沒合進部署分支，重建出來的映像就沒有 B。2026-11-27 起正式環境跑的是手動補上 B 的 `intel-20261127`；補標籤等於讓腳本把它當成目前部署分支的映像，下次 cascade 輸入檔有變動、重建時就會用部署分支的檔案，所以要先把 main 的 B 帶進 `deploy/msi-cubi-staging` 與 `deploy/msi-cubi-intel`，否則重建會失去 B。
 - `cascade-tts` 的第一次啟動要載入模型並編譯 SYCL 核心，healthcheck 的 `start_period` 是 240 秒。這段期間 healthcheck 未過屬正常。
 
 已知差異與風險：

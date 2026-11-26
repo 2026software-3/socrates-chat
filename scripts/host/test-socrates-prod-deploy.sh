@@ -14,13 +14,16 @@ BACKUPS="$WORK/backups"
 LOG="$WORK/calls.log"
 mkdir -p "$BIN" "$BASE"
 : > "$LOG"
-echo secret > "$BASE/.env"
+printf 'SECRET=1\nCASCADE_INTEL_TAG=intel-old\n' > "$BASE/.env"
+mkdir -p "$BASE/docker/cascade-intel/npu-debs"
+touch "$BASE/docker/cascade-intel/npu-debs/driver.deb"
 
 cat > "$BIN/git" <<'STUB'
 #!/usr/bin/env bash
 echo "git $*" >> "$TEST_LOG"
 case "$1" in
   merge-base) [ "${FAKE_ANCESTOR:-1}" = 1 ] ;;
+  log) echo "${FAKE_CASCADE_COMMIT-1111111111111111111111111111111111111111}" ;;
   rev-parse)
     case "$2" in
       origin/*) echo "${FAKE_BRANCH_HEAD:-abcdef1234567890abcdef1234567890abcdef12}" ;;
@@ -31,18 +34,48 @@ esac
 STUB
 cat > "$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
-echo "docker $* | APP_IMAGE_TAG=${APP_IMAGE_TAG:-}" >> "$TEST_LOG"
+echo "docker $* | APP_IMAGE_TAG=${APP_IMAGE_TAG:-} CASCADE_INTEL_TAG=${CASCADE_INTEL_TAG:-}" >> "$TEST_LOG"
 case "$1" in
   exec)
+    if [[ " $* " == *" socrates-ntnu-cascade-1 "* ]]; then
+      [ "${FAKE_WS_EXEC_FAIL:-0}" = 1 ] && exit 1
+      echo "${FAKE_WS_COUNT:-0}"
+      exit 0
+    fi
     [ "${FAKE_DUMP_FAIL:-0}" = 1 ] && exit 1
     [ "${FAKE_DUMP_EMPTY:-0}" = 1 ] && exit 0
     echo "-- fake dump"
     ;;
+  build)
+    [ "${FAKE_BUILD_FAIL:-0}" = 1 ] && [[ " $* " == *" socrates-cascade-"* ]] && exit 1
+    ;;
+  inspect)
+    case "$*" in
+      *Config.Image*) [ -n "${FAKE_RUNNING_TAG:-}" ] && echo "socrates-cascade-core:$FAKE_RUNNING_TAG" || exit 1 ;;
+      *Health.Status*) echo "${FAKE_CASCADE_HEALTH:-healthy}" ;;
+      *State.Running*) echo true ;;
+    esac
+    ;;
+  info) echo "$WORK_DOCKER_ROOT" ;;
   image)
-    for t in aaaa bbbb cccc dddd eeee ffff; do echo "socrates-ntnu-app:prod-$t"; done
+    case "$2" in
+      inspect) [[ " ${FAKE_IMAGES_EXIST:-} " == *" $3 "* ]] || exit 1 ;;
+      ls)
+        case "$*" in
+          *label=*) echo "${FAKE_LABELED_ID:-}" ;;
+          *reference=socrates-cascade-*:intel-*) printf '%s\n' ${FAKE_CASCADE_TAGS:-} ;;
+          *reference=socrates-cascade-*) echo "${FAKE_ANY_ID:-sha256:anyimage}" ;;
+          *) for t in aaaa bbbb cccc dddd eeee ffff; do echo "socrates-ntnu-app:prod-$t"; done ;;
+        esac
+        ;;
+    esac
     ;;
 esac
 exit 0
+STUB
+cat > "$BIN/df" <<'STUB'
+#!/usr/bin/env bash
+printf 'Avail\n %sG\n' "${FAKE_FREE_GB:-100}"
 STUB
 cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -54,7 +87,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/sleep"
 chmod +x "$BIN"/*
 
 GOOD_SHA=abcdef1234567890abcdef1234567890abcdef12
-export TEST_LOG="$LOG" PATH="$BIN:$PATH" PROD_BASE="$BASE" BACKUP_DIR="$BACKUPS"
+export TEST_LOG="$LOG" PATH="$BIN:$PATH" PROD_BASE="$BASE" BACKUP_DIR="$BACKUPS" WORK_DOCKER_ROOT="$WORK/docker-root"
+CTAG=intel-111111111111   # FAKE_CASCADE_COMMIT 的前 12 碼
 
 pass=0
 fail=0
@@ -135,6 +169,91 @@ mv "$BASE/.env" "$WORK/env.bak"
 check "缺少 .env 失敗" 1 "$(FAKE_ANCESTOR=1 run "$GOOD_SHA")"
 mv "$WORK/env.bak" "$BASE/.env"
 ok_if "缺少 .env 時沒有呼叫 docker" no_docker
+
+
+# 7. cascade 映像：沒有變動（目前的 tag 就是需要的 tag）時，不建映像、不清建置快取，tag 原樣傳給 compose
+reset_state() { : > "$LOG"; printf 'SECRET=1\nCASCADE_INTEL_TAG=intel-old\n' > "$BASE/.env"; }
+ALL_IMAGES="socrates-cascade-core:$CTAG socrates-cascade-tts-xpu:$CTAG socrates-cascade-whisper-npu:$CTAG"
+reset_state
+check "cascade 沒有變動時可以部署" 0 "$(FAKE_RUNNING_TAG=$CTAG FAKE_IMAGES_EXIST="$ALL_IMAGES" run "$GOOD_SHA")"
+ok_if "沒有建 cascade 映像" bash -c "! grep -E 'docker build.*socrates-cascade' '$LOG'"
+ok_if "沒有清建置快取" bash -c "! grep 'builder prune' '$LOG'"
+ok_if "沒有因此等待場次" bash -c "! grep 'docker exec.*socrates-ntnu-cascade-1' '$LOG'"
+ok_if "compose 帶著同一個 cascade tag" grep -q "docker compose.*up -d --no-build | APP_IMAGE_TAG=prod-.* CASCADE_INTEL_TAG=$CTAG" "$LOG"
+
+# 8. cascade 有變動、沒有場次：先建完映像才動容器，tag 用 commit SHA，建完清建置快取，.env 同步
+reset_state
+check "cascade 有變動且沒有場次時部署成功" 0 "$(FAKE_RUNNING_TAG=intel-old FAKE_WS_COUNT=0 FAKE_FREE_GB=100 FAKE_CASCADE_TAGS='intel-old intel-older intel-oldest' run "$GOOD_SHA")"
+ok_if "建了 core 與 tts，tag 是 intel-<commit 前 12 碼>" bash -c "grep -q 'docker build.*-t socrates-cascade-core:$CTAG' '$LOG' && grep -q 'docker build.*-t socrates-cascade-tts-xpu:$CTAG' '$LOG'"
+ok_if "映像帶輸入的 commit 標籤" grep -q 'label socrates.inputs=1111111111111111111111111111111111111111' "$LOG"
+ok_if "建完才啟動 compose" bash -c "[ \$(grep -n 'docker build.*socrates-cascade' '$LOG' | tail -1 | cut -d: -f1) -lt \$(grep -n 'docker compose.*up -d' '$LOG' | head -1 | cut -d: -f1) ]"
+ok_if "建完清建置快取" grep -q 'docker builder prune -a -f' "$LOG"
+ok_if "compose 用新的 cascade tag" grep -q "docker compose.*up -d --no-build | APP_IMAGE_TAG=prod-.* CASCADE_INTEL_TAG=$CTAG" "$LOG"
+ok_if ".env 的 CASCADE_INTEL_TAG 同步成新 tag，其他行不變" bash -c "grep -qx 'CASCADE_INTEL_TAG=$CTAG' '$BASE/.env' && grep -qx 'SECRET=1' '$BASE/.env'"
+ok_if "舊 tag 只保留最近 2 個，正在使用的與新的不刪" bash -c "grep -q 'docker image rm socrates-cascade-core:intel-oldest' '$LOG' && ! grep -q 'docker image rm socrates-cascade-core:intel-old\$' '$LOG' && ! grep -q 'docker image rm socrates-cascade-core:$CTAG' '$LOG'"
+
+# 9. 已有相同輸入的映像（標籤相符）：只加 tag，不重建
+reset_state
+check "輸入沒變的映像只加 tag" 0 "$(FAKE_RUNNING_TAG=intel-old FAKE_LABELED_ID=sha256:labeled run "$GOOD_SHA")"
+ok_if "用 docker tag 取代 docker build" bash -c "grep -q 'docker tag sha256:labeled socrates-cascade-core:$CTAG' '$LOG' && ! grep -E 'docker build.*socrates-cascade' '$LOG'"
+
+# 10. 建映像失敗：不能動任何容器，.env 不變
+reset_state
+check "建映像失敗時中止" 1 "$(FAKE_RUNNING_TAG=intel-old FAKE_BUILD_FAIL=1 run "$GOOD_SHA")"
+ok_if "建映像失敗時沒有 compose" bash -c "! grep 'docker compose' '$LOG'"
+ok_if "建映像失敗時 .env 不變" grep -qx 'CASCADE_INTEL_TAG=intel-old' "$BASE/.env"
+
+# 11. 磁碟不夠：不建映像、不動容器
+reset_state
+check "磁碟空間不足時中止" 1 "$(FAKE_RUNNING_TAG=intel-old FAKE_FREE_GB=10 run "$GOOD_SHA")"
+ok_if "磁碟不足時沒有建 cascade 映像也沒有 compose" bash -c "! grep -E 'docker build.*socrates-cascade' '$LOG' && ! grep 'docker compose' '$LOG'"
+
+# 12. 一直有人在用語音：延後換 cascade，其餘照常部署，cascade 維持原 tag
+reset_state
+check "有場次時部署仍成功（延後 cascade）" 0 "$(FAKE_RUNNING_TAG=intel-old FAKE_WS_COUNT=2 run "$GOOD_SHA")"
+ok_if "延後時 compose 用目前執行中的 cascade tag" grep -q "docker compose.*up -d --no-build | APP_IMAGE_TAG=prod-.* CASCADE_INTEL_TAG=intel-old" "$LOG"
+ok_if "延後時 .env 維持原 tag" grep -qx 'CASCADE_INTEL_TAG=intel-old' "$BASE/.env"
+ok_if "延後時有說明" grep -q '延後' "$WORK/out"
+# 讀不到場次（docker exec 失敗）也要保守地延後
+reset_state
+check "讀不到場次時保守延後" 0 "$(FAKE_RUNNING_TAG=intel-old FAKE_WS_EXEC_FAIL=1 run "$GOOD_SHA")"
+ok_if "讀不到場次時沒有換 tag" grep -q "docker compose.*up -d --no-build | APP_IMAGE_TAG=prod-.* CASCADE_INTEL_TAG=intel-old" "$LOG"
+
+# 13. 換 cascade 後它沒有變 healthy：部署要算失敗
+reset_state
+check "cascade 沒變 healthy 時失敗" 1 "$(FAKE_RUNNING_TAG=intel-old FAKE_CASCADE_HEALTH=unhealthy run "$GOOD_SHA")"
+
+# 14. 主機沒有 NPU 驅動 .deb：whisper 映像不重建，沿用現有映像並加 tag，部署不被擋
+rm -f "$BASE/docker/cascade-intel/npu-debs/driver.deb"
+reset_state
+check "缺 .deb 時仍可部署" 0 "$(FAKE_RUNNING_TAG=intel-old run "$GOOD_SHA")"
+ok_if "沒有重建 whisper，改沿用現有映像" bash -c "! grep -E 'docker build.*socrates-cascade-whisper-npu' '$LOG' && grep -q 'docker tag sha256:anyimage socrates-cascade-whisper-npu:$CTAG' '$LOG'"
+ok_if "缺 .deb 時有警告" grep -q 'npu-debs' "$WORK/out"
+touch "$BASE/docker/cascade-intel/npu-debs/driver.deb"
+
+# 15. 找不到任何 cascade 輸入的 commit：中止，不動容器
+reset_state
+check "算不出 cascade tag 時中止" 1 "$(FAKE_CASCADE_COMMIT= run "$GOOD_SHA")"
+ok_if "算不出 tag 時沒有 compose" bash -c "! grep 'docker compose' '$LOG'"
+
+# 16. 輸入清單要涵蓋各 Dockerfile 的 COPY 來源，之後新增 COPY 卻忘了改清單會在這裡失敗
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+inputs_in_wrapper="$(grep -E '^  \[socrates-cascade-[a-z-]+\]="' "$WRAPPER" | grep -v dockerfile || true)"
+cover_missing=""
+for df in core tts whisper; do
+  f="$REPO_ROOT/docker/cascade-intel/$df.Dockerfile"
+  while read -r src; do
+    case "$src" in
+      docker/cascade-intel/npu-debs/*) src=docker/cascade-intel/npu-debs ;;
+    esac
+    grep -q "$src" <<<"$(cat "$WRAPPER")" || cover_missing="$cover_missing $df:$src"
+  done < <(awk '/^COPY / { for (i = 2; i < NF; i++) if ($i !~ /^--/) print $i }' "$f")
+done
+ok_if "輸入清單涵蓋 Dockerfile 的 COPY 來源（缺：${cover_missing:- 無}）" test -z "$cover_missing"
+
+# 17. 場次偵測讀 cascade 的 /health（不是 TCP 連線數：app 的探測連線常駐，混在一起分不出來）
+ok_if "場次偵測讀 /health 的 request_states" bash -c "grep -q 'request_states' '$WRAPPER' && grep -q '127.0.0.1:8110/health' '$WRAPPER'"
+ok_if "沒有用 TCP 連線數判斷場次" bash -c "! grep -q '/proc/net/tcp' '$WRAPPER' || ! grep -q '\"01\"' '$WRAPPER'"
 
 echo
 echo "結果：$pass 通過，$fail 失敗"

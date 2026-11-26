@@ -16,8 +16,17 @@
 #     - 部署前先 pg_dump 備份到 $BACKUP_DIR；備份失敗就中止，不動任何容器。
 #     - 同時只會有一個部署（flock）。
 #
-# 只更新 socrates-ntnu：不使用 down、不使用 -v，不碰資料庫 volume（socrates-ntnu_pgdata_v2）。
-# 不重建 cascade 映像（用 .env 的 CASCADE_INTEL_TAG）；沒有 DEMO_MODE。
+# 只更新 socrates-ntnu：不使用 down、不使用 -v，不碰資料庫 volume（socrates-ntnu_pgdata_v2）。沒有 DEMO_MODE。
+#
+# cascade 映像（socrates-cascade-{core,tts-xpu,whisper-npu}）：
+#     - tag 是 intel-<最後改到 cascade 輸入檔的 commit 前 12 碼>（見 CASCADE_INPUTS）。tag 已存在就不建；
+#       輸入沒變的映像（標籤 socrates.inputs 相同）只加 tag，不重建。建映像失敗或磁碟不夠，在動任何容器之前中止。
+#     - 要換 cascade 時先等進行中的語音場次結束（最多約 10 分鐘）；等不到、或讀不到場次，就延後：app 等其他服務照常部署，
+#       cascade 維持目前的 tag，下次部署再試。
+#     - tag 以環境變數 CASCADE_INTEL_TAG 傳給 compose（優先於 .env），成功後把 .env 的同名變數同步成實際使用的 tag，
+#       讓手動操作（docs/ntnu-ops.md §5）不會把 cascade 換回舊映像。
+#     - 建映像後清掉建置快取，每種映像只保留最近 2 個 tag（正在使用的不刪）。
+#     - docker/cascade-intel/npu-debs 的 NPU 驅動 .deb 不進版控；主機的部署目錄沒有它時，whisper 映像不重建，沿用現有映像。
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -40,6 +49,74 @@ KEEP_IMAGES=5
 KEEP_BACKUPS=14
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.intel.yml -f docker-compose.msi-prod.yml -f docker-compose.tunnel.yml)
 PROFILES=(--profile app --profile cascade --profile proxy --profile tunnel)
+
+CASCADE_CONTAINER="${PROD_CASCADE_CONTAINER:-socrates-ntnu-cascade-1}"
+KEEP_CASCADE_TAGS=2
+CASCADE_MIN_FREE_GB=50   # 低於這個空間不建映像（一個 cascade 映像組約 35 GB）
+CASCADE_WAIT_STEPS=20    # × 30 秒 ≈ 10 分鐘：等語音場次結束
+CASCADE_HEALTH_STEPS=60  # × 5 秒 = 5 分鐘：等新的 cascade 變 healthy
+CASCADE_REPOS=(socrates-cascade-core socrates-cascade-tts-xpu socrates-cascade-whisper-npu)
+declare -A CASCADE_DOCKERFILE=(
+  [socrates-cascade-core]=docker/cascade-intel/core.Dockerfile
+  [socrates-cascade-tts-xpu]=docker/cascade-intel/tts.Dockerfile
+  [socrates-cascade-whisper-npu]=docker/cascade-intel/whisper.Dockerfile
+)
+# 各映像的輸入檔：Dockerfile 與它 COPY 進去的檔案。新增 COPY 時要同步更新（scripts/host/test-socrates-prod-deploy.sh 會檢查）。
+declare -A CASCADE_INPUTS=(
+  [socrates-cascade-core]="docker/cascade/tts_adapter.py docker/cascade/patch_dialog.py docker/cascade/launch.yaml docker/cascade/entrypoint.sh docker/cascade-intel/core.Dockerfile"
+  [socrates-cascade-tts-xpu]="docker/cascade/kokoro_server.py docker/cascade-intel/tts.Dockerfile"
+  [socrates-cascade-whisper-npu]="docker/cascade-intel/whisper.Dockerfile docker/cascade-intel/whisper_ov_server.py docker/cascade-intel/npu-debs scripts/whisper_text.py scripts/whisper_echo.py"
+)
+
+# 進行中的語音場次數：讀 cascade 自己的 /health（request_states 與 pending_completions）。閒置時是 0，每個場次期間 >= 1。
+# 不用 TCP 連線數：app 的兩個健康探測（service_monitor、voice_nodes）各留一條常駐連線，和語音場次同一個來源 IP，分不出來。
+count_voice_sessions() {
+  docker exec -i "$CASCADE_CONTAINER" python3 - 2>/dev/null <<'PY'
+import json
+import urllib.request
+
+d = json.loads(urllib.request.urlopen("http://127.0.0.1:8110/health", timeout=3).read())
+print(len(d.get("request_states") or {}) + int(d.get("pending_completions") or 0))
+PY
+}
+
+# 回傳 0 表示有語音場次（或讀不到，保守當作有），1 表示沒有。連續取樣 5 次（約 12 秒），任何一次大於 0 就算有：
+# 場次之間可能有短暫的空檔，只取一次樣可能剛好落在空檔。
+voice_sessions_active() {
+  local i n
+  [ "$(docker inspect -f '{{.State.Running}}' "$CASCADE_CONTAINER" 2>/dev/null || true)" = true ] || return 1
+  for i in 1 2 3 4 5; do
+    if ! n="$(count_voice_sessions)" || ! [[ "$n" =~ ^[0-9]+$ ]]; then
+      return 0
+    fi
+    [ "$n" -gt 0 ] && return 0
+    [ "$i" -lt 5 ] && sleep 3
+  done
+  return 1
+}
+
+# 等到沒有語音場次回傳 0；逾時回傳 1。
+wait_no_voice_sessions() {
+  local step
+  for step in $(seq 1 "$CASCADE_WAIT_STEPS"); do
+    voice_sessions_active || return 0
+    [ "$step" -lt "$CASCADE_WAIT_STEPS" ] && sleep 18
+  done
+  return 1
+}
+
+disk_checked=0
+check_disk() {
+  [ "$disk_checked" = 1 ] && return 0
+  disk_checked=1
+  local root free
+  root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
+  free="$(df --output=avail -BG "$root" | tail -1 | tr -dc '0-9')"
+  if [ "${free:-0}" -lt "$CASCADE_MIN_FREE_GB" ]; then
+    echo "磁碟可用空間 ${free:-0}G 小於 ${CASCADE_MIN_FREE_GB}G，不建 cascade 映像，中止（沒有動任何容器）" >&2
+    exit 1
+  fi
+}
 
 cd "$PROD_BASE"
 
@@ -89,11 +166,68 @@ echo "→ 切換到 $SHA"
 # --hard 只改追蹤中的檔案；被 .gitignore 的 .env 不會被動到。
 git reset --hard --quiet "$SHA"
 
+# cascade 映像 tag：用最後一個改到 cascade 輸入檔的 commit，cascade 沒動就維持不變。
+ALL_CASCADE_INPUTS=""
+for repo in "${CASCADE_REPOS[@]}"; do ALL_CASCADE_INPUTS="$ALL_CASCADE_INPUTS ${CASCADE_INPUTS[$repo]}"; done
+# shellcheck disable=SC2086
+CASCADE_COMMIT="$(git log -1 --format=%H -- $ALL_CASCADE_INPUTS)"
+if ! [[ "$CASCADE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "算不出 cascade 映像 tag（找不到改過 cascade 輸入檔的 commit），中止（沒有動任何容器）" >&2
+  exit 1
+fi
+CTAG="intel-${CASCADE_COMMIT:0:12}"
+
 TAG="prod-$(git rev-parse --short=12 HEAD)"
 echo "→ 建置映像 $IMAGE_REPO:$TAG"
 docker build --quiet -t "$IMAGE_REPO:$TAG" .
 
-echo "→ 更新正式服務（APP_IMAGE_TAG=$TAG；不使用 down、不使用 -v）"
+# 先把 cascade 映像備齊：這裡失敗就中止，舊的容器都還在跑。
+built_any=0
+for repo in "${CASCADE_REPOS[@]}"; do
+  ref="$repo:$CTAG"
+  if docker image inspect "$ref" >/dev/null 2>&1; then continue; fi
+  inputs="${CASCADE_INPUTS[$repo]}"
+  # shellcheck disable=SC2086
+  inputs_commit="$(git log -1 --format=%H -- $inputs)"
+  src="$(docker image ls --filter "reference=$repo" --filter "label=socrates.inputs=$inputs_commit" --format '{{.ID}}' | head -1)"
+  if [ -n "$src" ]; then
+    echo "→ $ref：輸入沒變，沿用 $src"
+    docker tag "$src" "$ref"
+    continue
+  fi
+  if [ "$repo" = socrates-cascade-whisper-npu ] && ! compgen -G "docker/cascade-intel/npu-debs/*.deb" >/dev/null; then
+    src="$(docker image ls --filter "reference=$repo" --format '{{.ID}}' | head -1)"
+    if [ -z "$src" ]; then
+      echo "docker/cascade-intel/npu-debs 沒有 .deb，也沒有現有的 $repo 映像可沿用，中止" >&2
+      exit 1
+    fi
+    echo "警告：docker/cascade-intel/npu-debs 沒有 .deb（NPU 驅動不進版控），不重建 $repo，沿用現有映像 $src；whisper 的變更要由 root 手動建置" >&2
+    docker tag "$src" "$ref"
+    continue
+  fi
+  check_disk
+  echo "→ 建置 $ref（輸入 commit ${inputs_commit:0:12}）"
+  docker build --quiet -f "${CASCADE_DOCKERFILE[$repo]}" --label "socrates.inputs=$inputs_commit" -t "$ref" .
+  built_any=1
+done
+if [ "$built_any" = 1 ]; then
+  echo "→ 清建置快取（cascade 映像組的建置快取約 30 GB）"
+  docker builder prune -a -f >/dev/null 2>&1 || true
+fi
+
+# 要不要現在換 cascade：換之前等進行中的語音場次結束，等不到就延後。
+RUNNING_TAG="$({ docker inspect -f '{{.Config.Image}}' "$CASCADE_CONTAINER" 2>/dev/null || true; } | sed -n 's/^[^:]*://p')"
+EFF_TAG="$CTAG"
+if [ -n "$RUNNING_TAG" ] && [ "$RUNNING_TAG" != "$CTAG" ]; then
+  echo "→ cascade 要從 $RUNNING_TAG 換成 $CTAG；確認沒有進行中的語音場次"
+  if ! wait_no_voice_sessions; then
+    echo "警告：等了約 10 分鐘仍有（或讀不到）語音場次，延後更換 cascade。其他服務照常部署，cascade 維持 $RUNNING_TAG；下次部署會再試。" >&2
+    EFF_TAG="$RUNNING_TAG"
+  fi
+fi
+export CASCADE_INTEL_TAG="$EFF_TAG"
+
+echo "→ 更新正式服務（APP_IMAGE_TAG=$TAG、CASCADE_INTEL_TAG=$EFF_TAG；不使用 down、不使用 -v）"
 APP_IMAGE_TAG="$TAG" docker compose "${COMPOSE_FILES[@]}" "${PROFILES[@]}" up -d --no-build
 
 echo "→ 健康檢查（經 proxy 的 /ready）"
@@ -111,6 +245,40 @@ if [ "$ok" -ne 1 ]; then
   echo "部署前備份：$DUMP" >&2
   exit 1
 fi
+
+if [ "$EFF_TAG" != "$RUNNING_TAG" ]; then
+  echo "→ 等 cascade 變 healthy（最多 $((CASCADE_HEALTH_STEPS * 5)) 秒）"
+  healthy=0
+  for _ in $(seq 1 "$CASCADE_HEALTH_STEPS"); do
+    if [ "$(docker inspect -f '{{.State.Health.Status}}' "$CASCADE_CONTAINER" 2>/dev/null || true)" = healthy ]; then
+      healthy=1
+      break
+    fi
+    sleep 5
+  done
+  if [ "$healthy" -ne 1 ]; then
+    echo "cascade（$EFF_TAG）沒有在 $((CASCADE_HEALTH_STEPS * 5)) 秒內變 healthy：docker logs $CASCADE_CONTAINER" >&2
+    echo "退路：${RUNNING_TAG:+把 .env 的 CASCADE_INTEL_TAG 改回 $RUNNING_TAG，再}重建 cascade（docs/ntnu-ops.md §5）" >&2
+    exit 1
+  fi
+fi
+
+# .env 同步成實際使用的 tag，手動操作才不會把 cascade 換回舊映像。
+if grep -q '^CASCADE_INTEL_TAG=' .env; then
+  sed -i "s|^CASCADE_INTEL_TAG=.*|CASCADE_INTEL_TAG=$EFF_TAG|" .env
+else
+  printf 'CASCADE_INTEL_TAG=%s\n' "$EFF_TAG" >> .env
+fi
+
+echo "→ 清理舊的 cascade 映像 tag（每種保留最近 $KEEP_CASCADE_TAGS 個；正在使用的不刪）"
+for repo in "${CASCADE_REPOS[@]}"; do
+  docker image ls --filter "reference=$repo:intel-*" --format '{{.Tag}}' \
+    | tail -n +"$((KEEP_CASCADE_TAGS + 1))" \
+    | while read -r old_tag; do
+        if [ "$old_tag" = "$EFF_TAG" ] || [ "$old_tag" = "$CTAG" ] || [ "$old_tag" = "$RUNNING_TAG" ]; then continue; fi
+        docker image rm "$repo:$old_tag" >/dev/null 2>&1 || true
+      done
+done
 
 echo "→ 清理舊的正式映像（保留最近 $KEEP_IMAGES 個；正在使用的會留下）"
 docker image ls --filter "reference=$IMAGE_REPO:prod-*" --format '{{.Repository}}:{{.Tag}}' \
