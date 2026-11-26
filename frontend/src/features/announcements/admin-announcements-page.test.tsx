@@ -53,6 +53,13 @@ function mockBackend(initial: Row[], maintenance = false) {
       Object.assign(r, body)
       return HttpResponse.json(r)
     }),
+    http.post('/api/admin/announcements/:id/retranslate', ({ params }) => {
+      calls.push({ method: 'POST', url: `/api/admin/announcements/${String(params.id)}/retranslate` })
+      const r = rows.find((x) => x.id === params.id)
+      if (!r) return apiError(404, 'not_found')
+      Object.assign(r, { text_en: r.text_en ?? 'Translated', text_es: r.text_es ?? 'Traducido', pending_languages: [] })
+      return HttpResponse.json(r)
+    }),
     http.delete('/api/admin/announcements/:id', ({ params }) => {
       calls.push({ method: 'DELETE', url: `/api/admin/announcements/${String(params.id)}` })
       const i = rows.findIndex((x) => x.id === params.id)
@@ -170,5 +177,28 @@ describe('AdminAnnouncementsPage', () => {
     await userEvent.click(screen.getByRole('switch', { name: '維護模式' }))
     await waitFor(() => expect(calls.at(-1)?.body).toEqual({ enabled: false }))
     await waitFor(() => expect(screen.getByRole('switch', { name: '維護模式' })).not.toBeChecked())
+  })
+
+  it('retranslates pending languages on demand and only offers it while a translation is pending', async () => {
+    const { calls } = mockBackend([row(), row({ id: 'a3', text_zh_tw: '翻譯中的公告', text_en: null, pending_languages: ['en'] })])
+    render()
+    const list = await screen.findByRole('list', { name: '公告清單' })
+    const [done, pending] = within(list).getAllByRole('listitem')
+    expect(within(done).queryByRole('button', { name: /重新翻譯/ })).toBeNull()
+
+    await userEvent.click(within(pending).getByRole('button', { name: '重新翻譯「翻譯中的公告」' }))
+    await waitFor(() => expect(calls).toContainEqual({ method: 'POST', url: '/api/admin/announcements/a3/retranslate' }))
+    await waitFor(() => expect(within(list).getAllByRole('listitem')[1]).not.toHaveTextContent('翻譯尚未完成'))
+    expect(within(list).queryByRole('button', { name: /重新翻譯/ })).toBeNull()
+  })
+
+  it('shows an error when retranslating fails', async () => {
+    mockBackend([row({ id: 'a3', text_zh_tw: '翻譯中的公告', text_en: null, pending_languages: ['en'] })])
+    server.use(http.post('/api/admin/announcements/:id/retranslate', () => apiError(500, 'internal')))
+    render()
+    await userEvent.click(await screen.findByRole('button', { name: '重新翻譯「翻譯中的公告」' }))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    // 仍標示待完成，可以再按一次
+    expect(screen.getByRole('button', { name: '重新翻譯「翻譯中的公告」' })).toBeEnabled()
   })
 })

@@ -98,6 +98,11 @@ async fn main() {
         0 => {}
         n => tracing::warn!(count = n, "requeued stale complaint mails"),
     }
+    // 重啟前排在記憶體的公告翻譯重試都不見了：仍有待完成翻譯的重新排入（#528）
+    match socrates_chat_backend::announcements::resume_pending_translations(&state).await {
+        0 => {}
+        n => tracing::info!(count = n, "rescheduled pending announcement translations"),
+    }
     if let Ok(seconds) = std::env::var("SUMMARY_TRANSLATION_RETRY_SECS")
         && !seconds.trim().is_empty()
     {
