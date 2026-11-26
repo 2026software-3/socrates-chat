@@ -48,6 +48,17 @@ describe('AiJobsIndicator', () => {
     toast.error.mockClear()
   })
 
+  it('lists jobs that are not tied to a conversation (achievement translation) with a label and a working link', async () => {
+    serve([[{
+      id: 'j-ach', kind: 'achievement_translation', status: 'pending', label_key: 'jobs.achievement_translation',
+      scope: { achievement_id: 'new_insight' }, started_at: new Date().toISOString(), finished_at: null, retryable: false,
+    }]])
+    renderApp(<AiJobsIndicator />)
+    await userEvent.click(await screen.findByRole('button', { name: /AI 工作中/ }))
+    const link = await screen.findByRole('link', { name: /成就翻譯/ })
+    expect(link).toHaveAttribute('href', '/admin/achievements')
+  })
+
   it('shows nothing when no AI work is running', async () => {
     const s = serve([[]])
     renderApp(<AiJobsIndicator />)
