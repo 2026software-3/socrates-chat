@@ -129,7 +129,24 @@ fn put_body(provider: &str, model: &str, fallbacks: Value, confirmed: bool) -> V
 }
 
 async fn put(w: &World, body: Value) -> (StatusCode, Value) {
-    call(&w.app, "PUT", &path(w), Some(&w.a.teacher), Some(body)).await
+    put_via(&w.app, &path(w), &w.a.teacher, body).await
+}
+
+/// 驗證模型是背景工作（S-20）：202 時等工作結束，成功回 200 與目前設定；
+/// 失敗換回當初同步版本的 400 與原因、欄位，讓各測試維持原本的斷言。
+async fn put_via(app: &Router, path: &str, cookie: &str, body: Value) -> (StatusCode, Value) {
+    let (s, v) = call(app, "PUT", path, Some(cookie), Some(body)).await;
+    if s != StatusCode::ACCEPTED {
+        return (s, v);
+    }
+    let job = wait_for_job(app, cookie, v["job_id"].as_str().unwrap()).await;
+    match job["status"].as_str().unwrap() {
+        "ready" => call(app, "GET", path, Some(cookie), None).await,
+        _ => (
+            StatusCode::BAD_REQUEST,
+            json!({"error": {"code": job["error_code"], "target": job["error_target"]}}),
+        ),
+    }
 }
 
 fn code(v: &Value) -> &str {
@@ -163,7 +180,7 @@ async fn get_before_any_setting_is_empty(pool: PgPool) {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         v,
-        json!({"transitional": false, "primary": null, "fallbacks": [], "confirmed_providers": []})
+        json!({"transitional": false, "primary": null, "fallbacks": [], "confirmed_providers": [], "pending_job": null})
     );
 }
 
@@ -507,12 +524,11 @@ async fn verification_is_rate_limited_per_teacher(pool: PgPool) {
     let p = format!("/api/classrooms/{}/ai-settings", a.classroom);
     for _ in 0..2 {
         assert_eq!(
-            call(
+            put_via(
                 &app,
-                "PUT",
                 &p,
-                Some(&a.teacher),
-                Some(put_body("openai", "m", json!([]), true))
+                &a.teacher,
+                put_body("openai", "m", json!([]), true)
             )
             .await
             .0,
@@ -594,5 +610,48 @@ async fn students_see_only_the_provider_name(pool: PgPool) {
             .await
             .0,
         StatusCode::NOT_FOUND
+    );
+}
+
+#[sqlx::test]
+async fn verification_runs_in_the_background_and_settings_apply_only_after_it_passes(pool: PgPool) {
+    let w = world(pool).await;
+    *w.models.delay.lock().unwrap() = std::time::Duration::from_millis(400);
+    let (s, v) = call(
+        &w.app,
+        "PUT",
+        &path(&w),
+        Some(&w.a.teacher),
+        Some(put_body("openai", "gpt-a", json!([]), true)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    let job = v["job_id"].as_str().unwrap().to_owned();
+
+    // 驗證還在跑：目前生效的設定不變，並回報進行中的工作；再按一次回同一筆、不再驗證
+    let (_, now) = call(&w.app, "GET", &path(&w), Some(&w.a.teacher), None).await;
+    assert!(now["primary"].is_null());
+    assert_eq!(now["pending_job"], job.as_str());
+    let (s, again) = call(
+        &w.app,
+        "PUT",
+        &path(&w),
+        Some(&w.a.teacher),
+        Some(put_body("openai", "gpt-a", json!([]), true)),
+    )
+    .await;
+    assert_eq!((s, &again["job_id"]), (StatusCode::OK, &json!(job)));
+
+    assert_eq!(
+        wait_for_job(&w.app, &w.a.teacher, &job).await["status"],
+        "ready"
+    );
+    let (_, done) = call(&w.app, "GET", &path(&w), Some(&w.a.teacher), None).await;
+    assert_eq!(done["primary"]["model"], "gpt-a");
+    assert!(done["pending_job"].is_null());
+    assert_eq!(
+        w.models.calls.lock().unwrap().len(),
+        1,
+        "加入進行中的工作不再驗證"
     );
 }
