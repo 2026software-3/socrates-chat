@@ -261,6 +261,7 @@ async fn one_student(
         s.fail(Endpoint::Login);
         return s;
     };
+    // flaky-ok: 負載測試本來就是量時間；整支測試是 #[ignore]，CI 不跑，只在手動量測時執行
     s.record(Endpoint::Login, t.elapsed());
 
     let get = |path: String| {
@@ -292,6 +293,7 @@ async fn one_student(
         .await;
     let conv = match started {
         Ok(r) if r.status().as_u16() == 201 => {
+            // flaky-ok: 負載測試本來就是量時間；整支測試是 #[ignore]，CI 不跑，只在手動量測時執行
             s.record(Endpoint::StartConversation, t.elapsed());
             r.json::<serde_json::Value>()
                 .await
@@ -324,6 +326,7 @@ async fn one_student(
             // 第一個事件是保存好的學生訊息，之後才輪到 AI
             if !saved && text.contains("event: message") {
                 saved = true;
+                // flaky-ok: 負載測試本來就是量時間；整支測試是 #[ignore]，CI 不跑，只在手動量測時執行
                 s.record(Endpoint::MessageSaved, t.elapsed());
             }
         }
@@ -331,6 +334,7 @@ async fn one_student(
             s.fail(Endpoint::MessageSaved);
         }
         if text.contains("event: done") {
+            // flaky-ok: 負載測試本來就是量時間；整支測試是 #[ignore]，CI 不跑，只在手動量測時執行
             s.record(Endpoint::MessageStreamDone, t.elapsed());
         } else {
             s.fail(Endpoint::MessageStreamDone);
@@ -376,6 +380,7 @@ async fn timed(s: &mut Samples, endpoint: Endpoint, req: reqwest::RequestBuilder
         Err(_) => false,
     };
     if ok {
+        // flaky-ok: 負載測試本來就是量時間；整支測試是 #[ignore]，CI 不跑，只在手動量測時執行
         s.record(endpoint, t.elapsed());
     } else {
         s.fail(endpoint);
@@ -446,6 +451,7 @@ fn sixty_students_at_once_meet_the_general_api_threshold() {
         for h in handles {
             all.merge(h.await.unwrap());
         }
+        // flaky-ok: 負載測試本來就是量時間；整支測試是 #[ignore]，CI 不跑，只在手動量測時執行
         let wall = began.elapsed();
 
         println!(
