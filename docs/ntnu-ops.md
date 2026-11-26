@@ -424,6 +424,9 @@ sudo -H bash -c 'cd /var/lib/socrates-staging && export STAGING_APP_IMAGE_TAG=st
 - 換版：正式環境由自動部署處理（§4，tag 與判斷規則見該節），不需要手動改 `CASCADE_INTEL_TAG`。手動換版才改 `.env` 的 `CASCADE_INTEL_TAG`，再重建 cascade 服務（不要重建 `app`）。
 - 自動建映像的限制：
   - `docker/cascade-intel/npu-debs/` 在部署目錄（`/var/lib/socrates-prod`）裡沒有 `.deb`，所以自動部署**不會重建 `cascade-whisper` 映像**，沿用現有映像並印警告；whisper 的變更要由 root 把 `.deb` 放進去後手動建置。
+    - 放進去的是三個 `.deb`：`intel-level-zero-npu`、`intel-driver-compiler-npu`、`libze1`（msi_cubi 在 `~/npu_driver`，合計約 49 MB）。`intel-fw-npu` 是核心用的韌體，只裝在主機，**不要**放進這個目錄（`COPY *.deb` 會把它一起裝進映像）。
+    - **不能用 symlink。** docker build 的 `COPY` 不跟隨指向 build context 外面的 symlink，會直接失敗（`"/debs/a.deb": not found`，2026-11-27 在 msi_cubi 以 docker 29.1.3 實測）。同一個檔案系統上的**硬連結**可以（`/home/ray520` 與 `/var/lib/socrates-prod` 在同一個裝置），複製也可以。
+    - 放法（root）：`cd /var/lib/socrates-prod/docker/cascade-intel/npu-debs && ln ~ray520/npu_driver/{intel-level-zero-npu,intel-driver-compiler-npu,libze1}_*.deb .`（`ln` 失敗就改 `cp`）。`.deb` 被 `.gitignore` 忽略，部署時的 `git reset --hard` 不會刪它們。放好之後，下一次 whisper 輸入檔有變動，自動部署就會重建 whisper 映像。
   - 建置沒有快取，冷建一組約 30 分鐘以上（`socrates-cascade-core` 實測 21 分鐘），所以 workflow 的 `timeout-minutes` 是 120。建完會清建置快取（約 30 GB），避免寫滿磁碟；磁碟可用空間不足 50 GB 時不建。
   - 換 cascade 時，`cascade`、`cascade-adapter`、`cascade-tts`、`cascade-whisper` 會一起重建（tag 變了），語音中斷約 4 分鐘（`cascade-tts` 載入模型的 `start_period` 是 240 秒），所以腳本會先等沒有場次。
   - 包裝腳本要由 root 重新安裝才會生效（§4「主機的一次性設定」）。第一次安裝前，先對現有三個映像補上輸入標籤，避免自動部署把已經是新的映像再建一次：
