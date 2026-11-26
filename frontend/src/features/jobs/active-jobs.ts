@@ -7,7 +7,7 @@ import type { PollSpec } from '@/lib/poll-store'
 
 export type ActiveJob = {
   id: string
-  kind: 'reply' | 'summary' | 'radar' | 'argument_tree' | 'summary_translation' | 'regroup' | 'summary_translation_view'
+  kind: 'reply' | 'summary' | 'radar' | 'argument_tree' | 'summary_translation' | 'regroup' | 'summary_translation_view' | 'topic_dimensions'
   status: 'pending' | 'ready' | 'failed'
   label_key: string
   /** 只有識別碼；背景工作（`regroup` 等）帶的是活動、題目與教室。 */
@@ -28,6 +28,7 @@ export function jobPath(job: ActiveJob): string {
   const { classroom_id, activity_id } = job.scope
   if (job.kind === 'regroup' && classroom_id && activity_id) return `/teacher/classrooms/${classroom_id}/activities/${activity_id}`
   if (job.kind === 'summary_translation_view' && classroom_id) return `/teacher/classrooms/${classroom_id}/conversations/${job.scope.conversation_id}`
+  if (job.kind === 'topic_dimensions') return '/teacher/topics'
   return `/conversations/${job.scope.conversation_id}`
 }
 
