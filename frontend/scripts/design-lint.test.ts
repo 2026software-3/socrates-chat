@@ -123,7 +123,7 @@ describe('用透明度表示停用', () => {
     expect(lint(`const a = (open: boolean) => (open ? 'opacity-100' : 'opacity-0')`)).toEqual([])
   })
 
-  it('擋下 Tailwind 任意值 disabled:opacity-[...]（以及 aria-disabled、data-[disabled] 與停用分支）', () => {
+  it('擋下 Tailwind 任意值 disabled:opacity-[...] 與自訂屬性 disabled:opacity-(--...)（含變體與停用分支）', () => {
     const source = `
       const a = 'disabled:opacity-[0.5]'
       const b = 'disabled:opacity-[.4]'
@@ -131,9 +131,15 @@ describe('用透明度表示停用', () => {
       const d = 'aria-disabled:opacity-[0.6]'
       const e = 'data-[disabled]:opacity-[0.4]'
       const f = (disabled: boolean) => (disabled ? 'opacity-[0.5]' : '')
+      const g = 'disabled:opacity-(--disabled-opacity)'
+      const h = 'aria-disabled:opacity-(--my-opacity)'
+      const i = (disabled: boolean) => (disabled ? 'opacity-(--disabled-opacity)' : '')
     `
     const found = lint(source)
     expect(rules(found)).toEqual([
+      'opacity-disabled',
+      'opacity-disabled',
+      'opacity-disabled',
       'opacity-disabled',
       'opacity-disabled',
       'opacity-disabled',
@@ -182,9 +188,11 @@ describe('CSS 檔', () => {
       .e[data-disabled] { @apply opacity-50; }
       .f { &:disabled { opacity: 0.4; } }
       .g:disabled { @apply opacity-[0.5]; }
+      .h:disabled { @apply opacity-(--disabled-opacity); }
     `
     const found = lintSource('src/components/vedute/demo.css', source)
     expect(rules(found)).toEqual([
+      'opacity-disabled',
       'opacity-disabled',
       'opacity-disabled',
       'opacity-disabled',

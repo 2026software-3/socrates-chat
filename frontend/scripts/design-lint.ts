@@ -106,8 +106,8 @@ interface Hit {
 const HEX = /(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])/g
 const COLOR_FN = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/g
 const FONT_SIZE = /(?<![\w-])text-\[(?:length:)?(\d*\.?\d+(?:px|rem|em))\]/g
-const DISABLED_OPACITY = /(?<!\S)\S*disabled\S*:opacity-(\d+|\[[^\s\]]+\])/g
-const ANY_OPACITY = /(?<![\w-])opacity-(\d+|\[[^\s\]]+\])/g
+const DISABLED_OPACITY = /(?<!\S)\S*disabled\S*:opacity-(\d+|\[[^\s\]]+\]|\([^\s)]+\))/g
+const ANY_OPACITY = /(?<![\w-])opacity-(\d+|\[[^\s\]]+\]|\([^\s)]+\))/g
 const ANIMATE_SPIN = /(?<![\w-])animate-spin(?![\w-])/g
 
 /** 判斷 CSS opacity 值（0..1 或百分比）是否為完全不透明（≥ 1）。 */
