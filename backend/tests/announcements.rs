@@ -962,18 +962,20 @@ async fn a_late_retry_does_not_overwrite_a_manual_translation(pool: PgPool) {
 
 // ---------- 公告翻譯（#528） ----------
 
-/// 每個翻譯要花的時間（仍在測試設定的 AI 總逾時 1 秒內）。
-const SLOW_TRANSLATION: Duration = Duration::from_millis(600);
+/// AI 逾時設得很長的設定：en 的翻譯卡住（Hang）時，依序翻譯就永遠送不出 es 的請求，
+/// 同時翻譯則會立刻送出。用來不靠時間判斷 en、es 是否同時翻譯。
+fn patient_config() -> socrates_chat_backend::config::Config {
+    let mut config = test_config();
+    config.ai_total_timeout = Duration::from_secs(600);
+    config
+}
 
-/// 等到第 `n - 1` 個請求送出後，第 `n` 個要在遠短於 `SLOW_TRANSLATION` 的時間內跟上：
-/// 依序翻譯的話，它要等前一個翻完才會送出。
-async fn assert_requested_together(ai: &FakeAi, n: usize) {
-    wait_for_ai_requests(ai, n - 1).await;
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert!(
-        ai.requests.lock().unwrap().len() >= n,
-        "en、es 沒有同時送出翻譯請求"
-    );
+/// en 的翻譯卡住期間，es 的請求也送出了（依序翻譯的話 wait_for_ai_requests 會逾時 panic）。
+async fn assert_es_requested_while_en_hangs(ai: &FakeAi, n: usize) {
+    wait_for_ai_requests(ai, n).await;
+    let requests = ai.requests.lock().unwrap();
+    assert!(requests[n - 2].system.contains("English"));
+    assert!(requests[n - 1].system.contains("Spanish"));
 }
 
 fn state_for(pool: &PgPool, ai: std::sync::Arc<FakeAi>) -> socrates_chat_backend::AppState {
@@ -1000,11 +1002,8 @@ async fn insert_pending(pool: &PgPool, pending: &[&str]) -> uuid::Uuid {
 
 #[sqlx::test]
 async fn creating_translates_en_and_es_concurrently(pool: PgPool) {
-    let ai = FakeAi::with(vec![
-        Paced(vec!["Hello"], SLOW_TRANSLATION),
-        Paced(vec!["Hola"], SLOW_TRANSLATION),
-    ]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let ai = FakeAi::with(vec![Hang, Reply(vec!["Hola"])]);
+    let app = test_app_with_config(pool, ai.clone(), patient_config());
     let a = seed_actors(&app).await;
     let (app2, admin) = (app.clone(), a.admin.clone());
     let made = tokio::spawn(async move {
@@ -1015,12 +1014,8 @@ async fn creating_translates_en_and_es_concurrently(pool: PgPool) {
         )
         .await
     });
-    // en 還沒翻完，es 的請求就該送出了
-    assert_requested_together(&ai, 2).await;
-    let made = made.await.unwrap();
-    assert_eq!(made["text_en"], "Hello");
-    assert_eq!(made["text_es"], "Hola");
-    assert_eq!(made["pending_languages"], json!([]));
+    assert_es_requested_while_en_hangs(&ai, 2).await;
+    made.abort();
 }
 
 #[sqlx::test]
@@ -1028,10 +1023,10 @@ async fn editing_zh_tw_translates_en_and_es_concurrently(pool: PgPool) {
     let ai = FakeAi::with(vec![
         Reply(vec!["Hello"]),
         Reply(vec!["Hola"]),
-        Paced(vec!["Bye"], SLOW_TRANSLATION),
-        Paced(vec!["Adiós"], SLOW_TRANSLATION),
+        Hang,
+        Reply(vec!["Adiós"]),
     ]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let app = test_app_with_config(pool, ai.clone(), patient_config());
     let a = seed_actors(&app).await;
     let made = create(
         &app,
@@ -1051,34 +1046,25 @@ async fn editing_zh_tw_translates_en_and_es_concurrently(pool: PgPool) {
         )
         .await
     });
-    assert_requested_together(&ai, 4).await;
-    let (s, v) = edited.await.unwrap();
-    assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["text_en"], "Bye");
-    assert_eq!(v["text_es"], "Adiós");
+    assert_es_requested_while_en_hangs(&ai, 4).await;
+    edited.abort();
 }
 
 #[sqlx::test]
 async fn retrying_translates_pending_languages_concurrently(pool: PgPool) {
-    let ai = FakeAi::with(vec![
-        Paced(vec!["Hello"], SLOW_TRANSLATION),
-        Paced(vec!["Hola"], SLOW_TRANSLATION),
-    ]);
+    let ai = FakeAi::with(vec![Hang, Reply(vec!["Hola"])]);
     let id = insert_pending(&pool, &["en", "es"]).await;
-    let state = state_for(&pool, ai.clone());
+    let state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        patient_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai.clone(),
+    );
     let retry = tokio::spawn(async move {
         socrates_chat_backend::announcements::retry_pending_translation(&state, id).await;
     });
-    assert_requested_together(&ai, 2).await;
-    retry.await.unwrap();
-    let row: (Option<String>, Option<String>, Vec<String>) = sqlx::query_as(
-        "SELECT text_en, text_es, pending_languages FROM announcements WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(row, (Some("Hello".into()), Some("Hola".into()), vec![]));
+    assert_es_requested_while_en_hangs(&ai, 2).await;
+    retry.abort();
 }
 
 /// 機器譯文最多放行到內文上限的兩倍；管理者手動修正同一段譯文時不能比它更嚴。
