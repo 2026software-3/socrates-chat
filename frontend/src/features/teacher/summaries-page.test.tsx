@@ -1,11 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LangSwitcher } from '@/components/lang-switcher'
 import { SummariesPage } from '@/features/teacher/summaries-page'
-import { renderTeacherPage } from '@/features/teacher/test-helpers'
-import type { Page, TeacherSummary } from '@/lib/types'
+import { ROOM_A, ROOM_B, classroom, mockClassrooms, renderTeacherPage, student } from '@/features/teacher/test-helpers'
+import type { Page, StudentPage, TeacherSummary, Topic } from '@/lib/types'
 import { apiError, makeMe } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -45,6 +45,31 @@ const rows = [
   }),
 ]
 
+const STUDENT_MING = '22222222-2222-4222-8222-222222222222'
+
+function topic(id: string, title: string): Topic {
+  return { id, title, description: '', is_active: true }
+}
+
+beforeEach(() => {
+  mockClassrooms([classroom(ROOM_A, '2026 春季班'), classroom(ROOM_B, '2026 秋季班')])
+  server.use(
+    http.get('/api/topics', () => HttpResponse.json([topic('t1', '電車難題'), topic('t2', '自由意志')])),
+    http.get('/api/classrooms/:id/students', () => {
+      const body: StudentPage = {
+        items: [
+          student('ming@example.com', { id: STUDENT_MING, display_name: '王小明' }),
+          // 還沒有帳號的學生沒有使用者 UUID，不能當篩選條件
+          student(null, { id: null, display_name: '未登入', student_number: '87654321B' }),
+        ],
+        next_cursor: null,
+        total: 2,
+      }
+      return HttpResponse.json(body)
+    }),
+  )
+})
+
 afterEach(() => {
   server.events.removeAllListeners()
   delete (globalThis as Record<string, unknown>).Translator
@@ -74,8 +99,9 @@ describe('SummariesPage classification', () => {
       ),
     )
     renderTeacherPage(<SummariesPage />)
-    const card = (await screen.findByText('電車難題')).closest('li') as HTMLElement
-    expect(within(card).getByText('該拉桿')).toBeInTheDocument()
+    // 題目篩選選單也有「電車難題」，以卡片裡的主張定位
+    const card = cardOf(await screen.findByText('該拉桿'))
+    expect(within(card).getByText('電車難題')).toBeInTheDocument()
     const masked = screen.getByText('管理者視角').closest('li') as HTMLElement
     expect(within(masked).getByText('message')).toBeInTheDocument()
   })
@@ -377,5 +403,94 @@ describe('SummariesPage', () => {
     server.use(http.get('/api/summaries', () => HttpResponse.json(page([row()]))))
     renderTeacherPage(<SummariesPage />, 'en')
     expect(await screen.findByText(/Ended Mar 5, 2026/)).toBeInTheDocument()
+  })
+})
+
+describe('SummariesPage filters', () => {
+  /** 記錄每次 GET /api/summaries 的查詢參數；`respond` 決定回應。 */
+  function recordSummaries(respond: (params: URLSearchParams) => Response | Promise<Response> = () => HttpResponse.json(page(rows))) {
+    const seen: Record<string, string>[] = []
+    server.use(
+      http.get('/api/summaries', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        seen.push(Object.fromEntries(params.entries()))
+        return respond(params)
+      }),
+    )
+    return seen
+  }
+
+  it('filters by a student of the chosen classroom using the user UUID, never the email', async () => {
+    const seen = recordSummaries()
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+    const studentSelect = screen.getByRole('combobox', { name: '學生' })
+    // 學生選項來自教室名單，要先選教室
+    expect(studentSelect).toBeDisabled()
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '教室' }), ROOM_A)
+    await waitFor(() => expect(seen.at(-1)).toEqual({ classroom_id: ROOM_A }))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '學生' })).toBeEnabled())
+    // 沒有帳號的學生不能篩選
+    expect(within(screen.getByRole('combobox', { name: '學生' })).queryByRole('option', { name: /未登入/ })).not.toBeInTheDocument()
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '學生' }), STUDENT_MING)
+    await waitFor(() => expect(seen.at(-1)).toEqual({ classroom_id: ROOM_A, student: STUDENT_MING }))
+    expect(JSON.stringify(seen)).not.toContain('@')
+  })
+
+  it('filters by topic title and combines it with the search', async () => {
+    const seen = recordSummaries()
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '題目' }), '電車難題')
+    await waitFor(() => expect(seen.at(-1)).toEqual({ topic: '電車難題' }))
+
+    await userEvent.type(screen.getByLabelText('搜尋學生或題目'), '小明{enter}')
+    await waitFor(() => expect(seen.at(-1)).toEqual({ topic: '電車難題', q: '小明' }))
+  })
+
+  it('goes back to the first page when a filter changes', async () => {
+    const seen = recordSummaries((params) =>
+      HttpResponse.json(params.get('cursor') ? page([rows[1]]) : page([rows[0]], 'next-page')),
+    )
+    renderTeacherPage(<SummariesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '下一頁' }))
+    await screen.findByText('anon@example.com')
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '題目' }), '自由意志')
+    await waitFor(() => expect(seen.at(-1)).toEqual({ topic: '自由意志' }))
+    expect(screen.queryByRole('button', { name: '上一頁' })).not.toBeInTheDocument()
+  })
+
+  it('shows the no-match state with a way to clear every condition', async () => {
+    const seen = recordSummaries((params) => HttpResponse.json(page(params.get('topic') ? [] : rows)))
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '教室' }), ROOM_B)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '題目' }), '自由意志')
+    expect(await screen.findByText('沒有符合的總結。')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '清除條件' }))
+    expect(await screen.findByText('王小明')).toBeInTheDocument()
+    expect(seen.at(-1)).toEqual({})
+    expect(screen.getByRole('combobox', { name: '教室' })).toHaveValue('')
+    expect(screen.getByRole('combobox', { name: '題目' })).toHaveValue('')
+  })
+
+  it('recovers from invalid_filter by clearing the conditions', async () => {
+    const seen = recordSummaries((params) =>
+      params.get('topic') ? apiError(400, 'invalid_filter') : HttpResponse.json(page(rows)),
+    )
+    renderTeacherPage(<SummariesPage />)
+    await screen.findByText('王小明')
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '題目' }), '電車難題')
+    expect(await screen.findByText('篩選條件不正確。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '清除條件' }))
+    expect(await screen.findByText('王小明')).toBeInTheDocument()
+    expect(seen.at(-1)).toEqual({})
   })
 })
