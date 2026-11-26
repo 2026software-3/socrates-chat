@@ -18,9 +18,9 @@ pub struct Config {
     pub google_client_id: String,
     pub google_client_secret: String,
     pub google_redirect_url: String,
-    /// 選填的後端 Cloud Translation API 金鑰（與 Google 登入憑證分開）。
+    /// 選填的後端 Cloud Translation API 金鑰；預設讀 `GOOGLE_API_KEY`，可用 `GOOGLE_TRANSLATION_API_KEY` 個別覆寫（與 Google 登入憑證分開）。
     pub google_translation_api_key: Option<String>,
-    /// Google Books lookup key; unrelated to OAuth credentials.
+    /// 選填的 Google Books API 金鑰；預設讀 `GOOGLE_API_KEY`，可用 `GOOGLE_BOOKS_API_KEY` 個別覆寫（與 Google 登入憑證分開）。
     pub google_books_api_key: Option<String>,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
@@ -150,6 +150,16 @@ fn parse_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, ConfigErr
             .map_err(|_| ConfigError(format!("invalid value for {name}"))),
         _ => Ok(default),
     }
+}
+
+/// 解析 Google API 金鑰：優先使用該服務專用變數，未設定或留白時改用共用的 `GOOGLE_API_KEY`。
+pub fn resolve_google_api_key(specific: Option<&str>, shared: Option<&str>) -> Option<String> {
+    [specific, shared]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|key| !key.is_empty())
+        .map(str::to_owned)
 }
 
 /// 資料庫連線池上限的預設值與可設定範圍（`DATABASE_MAX_CONNECTIONS`，S-08.3）。
@@ -357,18 +367,21 @@ impl Config {
                 "AI_USAGE_MAX and AI_USAGE_WINDOW_SECS must be at least 1".into(),
             ));
         }
+        let shared_google_api_key = env::var("GOOGLE_API_KEY").ok();
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
-            google_books_api_key: env::var("GOOGLE_BOOKS_API_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
-            google_translation_api_key: env::var("GOOGLE_TRANSLATION_API_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
+            google_books_api_key: resolve_google_api_key(
+                env::var("GOOGLE_BOOKS_API_KEY").ok().as_deref(),
+                shared_google_api_key.as_deref(),
+            ),
+            google_translation_api_key: resolve_google_api_key(
+                env::var("GOOGLE_TRANSLATION_API_KEY").ok().as_deref(),
+                shared_google_api_key.as_deref(),
+            ),
             admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
             admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
                 .ok()
@@ -597,5 +610,32 @@ mod tests {
                 .is_some_and(|p| p.eq_ignore_ascii_case("second@example.com"))
         );
         assert!(parse_admin_emails(" , ").is_empty());
+    }
+
+    #[test]
+    fn google_api_key_resolves_specific_override_or_shared_fallback() {
+        for (specific, shared) in [
+            (None, None),
+            (Some(""), Some("")),
+            (Some("  "), Some("\t\n")),
+        ] {
+            assert_eq!(resolve_google_api_key(specific, shared), None);
+        }
+        assert_eq!(
+            resolve_google_api_key(None, Some("  shared-key  ")).as_deref(),
+            Some("shared-key")
+        );
+        assert_eq!(
+            resolve_google_api_key(Some(" specific-key "), None).as_deref(),
+            Some("specific-key")
+        );
+        assert_eq!(
+            resolve_google_api_key(Some("specific-key"), Some("shared-key")).as_deref(),
+            Some("specific-key")
+        );
+        assert_eq!(
+            resolve_google_api_key(Some("  "), Some("shared-key")).as_deref(),
+            Some("shared-key")
+        );
     }
 }
