@@ -201,8 +201,14 @@ async fn migration_splits_existing_groups_without_losing_summaries_or_membership
     };
     let t1 = raw_topic("甲題").await;
     let t2 = raw_topic("乙題").await;
-    let act = publish_activity(&app, &a, "舊活動", &t1).await;
+    // 發布 API 會讀 activities.translations（舊結構沒有），所以發布以 raw SQL 進行。
+    let act = create_activity(&app, &a, "舊活動", &t1).await;
     let act_id: uuid::Uuid = act.parse().unwrap();
+    sqlx::query("UPDATE activities SET status = 'published' WHERE id = $1")
+        .bind(act_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO activity_topics (activity_id, topic_id, position) VALUES ($1,$2,1)")
         .bind(act_id)
         .bind(t2.parse::<uuid::Uuid>().unwrap())

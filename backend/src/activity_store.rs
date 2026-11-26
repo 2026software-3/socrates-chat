@@ -51,12 +51,8 @@ macro_rules! topic_join {
 
 macro_rules! activity_select {
     ($tail:literal) => {
-        activity_select!("", $tail)
-    };
-    ($extra:literal, $tail:literal) => {
         concat!(
-            "SELECT a.id, a.title, a.description, ",
-            $extra,
+            "SELECT a.id, a.title, a.description, a.translations, ",
             topic_columns!(),
             ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
@@ -79,7 +75,6 @@ pub async fn list(
 ) -> Result<Vec<Activity>, sqlx::Error> {
     let (after_time, after_id) = after.unzip();
     sqlx::query_as(activity_select!(
-        "a.translations, ",
         "JOIN classrooms cl ON cl.id = a.classroom_id
          WHERE ($1 OR cl.created_by = $2) AND ($3::uuid IS NULL OR a.classroom_id = $3)
            AND a.is_archived = $4
@@ -178,9 +173,9 @@ pub async fn set_status_writable(
             FROM classrooms cl
             WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
               AND NOT cl.is_archived AND NOT a.is_archived
-            RETURNING a.id, a.title, a.description, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+            RETURNING a.id, a.title, a.description, a.translations, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
          )
-         SELECT u.id, u.title, u.description, ",
+         SELECT u.id, u.title, u.description, u.translations, ",
         topic_columns!(),
         ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
          FROM upd u ",
@@ -370,9 +365,9 @@ pub async fn set_archived<'e>(
     sqlx::query_as(concat!(
         "WITH upd AS (
             UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
-            RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
+            RETURNING id, title, description, translations, classroom_id, status, is_archived, opens_at, closes_at, created_at
          )
-         SELECT u.id, u.title, u.description, ",
+         SELECT u.id, u.title, u.description, u.translations, ",
         topic_columns!(),
         ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
          FROM upd u ",

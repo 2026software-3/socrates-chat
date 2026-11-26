@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { ActivityBooksButton } from '@/features/books/book-list'
 import { Link, useParams } from 'react-router'
 import { useAccountLanguage } from '@/auth/auth-context'
@@ -129,6 +130,11 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
   const active = useFetch<PageResult<Activity>>(`/api/activities?classroom_id=${room}&limit=200`)
   const archived = useFetch<PageResult<Activity>>(`/api/activities?classroom_id=${room}&limit=200&archived=true`)
   const topics = useFetch<Topic[]>('/api/topics')
+  // 題名翻譯只是顯示用；載入中或失敗時退回儀表板給的原文標題
+  const topicTitles = useMemo(
+    () => new Map((topics.data ?? []).map((item) => [item.id, item.translations?.[lang]?.title])),
+    [topics.data, lang],
+  )
   const dashboard = useFetch<ClassDashboard>(`/api/dashboard/class?classroom_id=${room}`)
   const summaries = usePagedFetch<TeacherSummary>(
     `/api/summaries?classroom_id=${room}&activity=${encodeURIComponent(activityId)}&language=${lang}`,
@@ -168,7 +174,7 @@ function ActivityBody({ classroom, activityId }: { classroom: Classroom; activit
               {distribution.topics.map((topic) => (
                 <Card key={topic.topic_id}>
                   <CardContent className="space-y-4">
-                    <h3 className="font-medium">{topics.data?.find((item) => item.id === topic.topic_id)?.translations?.[lang]?.title ?? topic.title}</h3>
+                    <h3 className="font-medium">{topicTitles.get(topic.topic_id) ?? topic.title}</h3>
                     <p className="text-muted-foreground text-sm">
                       {t('dashboard.class.activityCompleted', { count: topic.completed })}
                     </p>

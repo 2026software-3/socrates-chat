@@ -122,12 +122,50 @@ async fn complete_fields(
     result
 }
 
+/// Languages without any value carry no information; keep them out of stored JSON.
+fn compact(mut translations: Translations) -> Translations {
+    translations.retain(|_, values| !values.is_empty());
+    translations
+}
+
+const RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(600);
+const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Rows whose translation is still incomplete back off exponentially, so a provider outage
+/// does not trigger a full retry of every row on each pass.
+#[derive(Default)]
+pub struct TranslationRetries {
+    rows: std::collections::HashMap<(String, uuid::Uuid), (u32, tokio::time::Instant)>,
+}
+
+impl TranslationRetries {
+    fn waiting(&self, row: &(String, uuid::Uuid)) -> bool {
+        self.rows
+            .get(row)
+            .is_some_and(|(_, retry_at)| tokio::time::Instant::now() < *retry_at)
+    }
+
+    fn record(&mut self, row: (String, uuid::Uuid), complete: bool) {
+        if complete {
+            self.rows.remove(&row);
+            return;
+        }
+        let failures = self.rows.get(&row).map_or(0, |(count, _)| *count);
+        let delay = RETRY_BASE
+            .saturating_mul(2u32.saturating_pow(failures))
+            .min(RETRY_MAX);
+        self.rows
+            .insert(row, (failures + 1, tokio::time::Instant::now() + delay));
+    }
+}
+
 // Background processing also covers topics and activities created before translations were stored.
 pub fn spawn_worker(state: &AppState) {
     let state = state.clone();
     tokio::spawn(async move {
+        let mut retries = TranslationRetries::default();
         loop {
-            if let Err(error) = fill_missing(&state).await {
+            if let Err(error) = fill_missing_with(&state, &mut retries).await {
                 tracing::warn!(class = %crate::error::db_error_class(&error), "learning content translation pass failed");
             }
             tokio::time::sleep(std::time::Duration::from_secs(300)).await;
@@ -136,6 +174,13 @@ pub fn spawn_worker(state: &AppState) {
 }
 
 pub async fn fill_missing(state: &AppState) -> Result<(), sqlx::Error> {
+    fill_missing_with(state, &mut TranslationRetries::default()).await
+}
+
+pub async fn fill_missing_with(
+    state: &AppState,
+    retries: &mut TranslationRetries,
+) -> Result<(), sqlx::Error> {
     use sqlx::types::Json;
     use uuid::Uuid;
 
@@ -171,6 +216,10 @@ pub async fn fill_missing(state: &AppState) -> Result<(), sqlx::Error> {
         }
         for (kind, id, title, items, old) in rows {
             after = Some((kind.clone(), id));
+            let row = (kind.clone(), id);
+            if retries.waiting(&row) {
+                continue;
+            }
             let mut fields = vec![("title".to_owned(), title.as_str(), false)];
             fields.extend(
                 items
@@ -185,9 +234,18 @@ pub async fn fill_missing(state: &AppState) -> Result<(), sqlx::Error> {
                         (key, text.as_str(), false)
                     }),
             );
-            let translations =
-                complete_fields(state, &kind, &fields, Some(&old.0), &Translations::new()).await;
-            if translations == old.0 || translations.values().all(|fields| fields.is_empty()) {
+            let translations = compact(
+                complete_fields(state, &kind, &fields, Some(&old.0), &Translations::new()).await,
+            );
+            let complete = ["en", "es"].iter().all(|language| {
+                fields.iter().all(|(key, _, _)| {
+                    translations
+                        .get(*language)
+                        .is_some_and(|values| values.contains_key(key))
+                })
+            });
+            retries.record(row, complete);
+            if translations == compact(old.0.clone()) || translations.is_empty() {
                 continue;
             }
             // A newer edit or manual translation wins over this background result.

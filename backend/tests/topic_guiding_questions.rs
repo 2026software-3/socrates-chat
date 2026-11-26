@@ -912,3 +912,80 @@ async fn backfills_existing_learning_content_and_preserves_manual_translation(po
     assert_eq!(catalog["activities"][0]["description"], "更新說明");
     assert_eq!(catalog["activities"][0]["description_pending"], true);
 }
+
+fn failing_translation_state(
+    pool: &PgPool,
+) -> (socrates_chat_backend::AppState, std::sync::Arc<FakeAi>) {
+    use socrates_chat_backend::AppState;
+    use std::sync::Arc;
+
+    let ai = FakeAi::with(Vec::new());
+    ai.topic_translation_scripts
+        .lock()
+        .unwrap()
+        .extend((0..200).map(|_| Script::Fail));
+    register_fixture_pool(pool);
+    let state = AppState::new(
+        pool.clone(),
+        test_config(),
+        Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    (state, ai)
+}
+
+#[sqlx::test]
+async fn rows_whose_translation_keeps_failing_are_not_retried_on_the_next_pass(pool: PgPool) {
+    use socrates_chat_backend::topic_translations::{TranslationRetries, fill_missing_with};
+
+    let (state, ai) = failing_translation_state(&pool);
+    sqlx::query(
+        "INSERT INTO topics (title, guiding_questions) VALUES ('舊題名', ARRAY['舊問題？'])",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut retries = TranslationRetries::default();
+    fill_missing_with(&state, &mut retries).await.unwrap();
+    let attempted = ai.topic_translation_requests.lock().unwrap().len();
+    assert!(
+        attempted > 0,
+        "the first pass tries the missing translations"
+    );
+
+    fill_missing_with(&state, &mut retries).await.unwrap();
+    assert_eq!(
+        ai.topic_translation_requests.lock().unwrap().len(),
+        attempted,
+        "a row that just failed waits out its backoff"
+    );
+}
+
+#[sqlx::test]
+async fn failed_language_does_not_rewrite_the_row_with_an_empty_entry(pool: PgPool) {
+    use socrates_chat_backend::topic_translations::fill_missing;
+
+    let (state, _ai) = failing_translation_state(&pool);
+    let stored = r#"{"en":{"title":"T","q:舊問題？":"Q"}}"#;
+    let topic: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO topics (title, guiding_questions, translations)
+         VALUES ('舊題名', ARRAY['舊問題？'], $1::jsonb) RETURNING id",
+    )
+    .bind(stored)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    fill_missing(&state).await.unwrap();
+    let after: serde_json::Value =
+        sqlx::query_scalar("SELECT translations FROM topics WHERE id = $1")
+            .bind(topic)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        after,
+        serde_json::from_str::<serde_json::Value>(stored).unwrap()
+    );
+}

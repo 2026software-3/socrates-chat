@@ -55,17 +55,13 @@ async fn existing_database_upgrades_without_losing_conversations(pool: PgPool) {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let activity = json_body(response).await["id"].as_str().unwrap().to_owned();
-    let response = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/activities/{activity}/publish"),
-            Some(&actors.teacher),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    // 升級前的資料庫還沒有 activities.translations，發布 API 會讀它，
+    // 依 migration 測試慣例，升級前的狀態變更以 raw SQL 進行。
+    sqlx::query("UPDATE activities SET status = 'published' WHERE id = $1")
+        .bind(activity.parse::<uuid::Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
     // 升級前的資料庫（< 20261107000100）還沒有 topics.guiding_questions，建立對話的 API 會讀它，
     // 依 migration 測試慣例，升級前的對話以 raw SQL 插入。
     let original: uuid::Uuid = sqlx::query_scalar(
