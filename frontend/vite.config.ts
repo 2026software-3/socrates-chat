@@ -39,7 +39,7 @@ export default defineConfig(({ mode }) => ({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     // tests/e2e/ 是 Playwright（npm run test:e2e），不歸 Vitest 跑
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.{ts,tsx}'],
     css: false,
     // 要比 testing-library 的 asyncUtilTimeout（src/test/setup.ts，5 秒）長，否則等不到就先被單一測試逾時截斷
     testTimeout: 15_000,
