@@ -8,9 +8,9 @@
 //! ```
 //!
 //! 可用環境變數調整：`LOAD_POOL_SIZES`（預設 `2,5,10,20,40`）、`LOAD_CONCURRENCY`（預設 `25,100,400,800,1600`）、
-//! `LOAD_SECONDS`（每一格的持續秒數，預設 5）。
+//! `LOAD_REQUESTS`（每一格固定發出的請求總數，預設 20000；不是跑固定秒數，所以不需要睡眠計時）。
 //!
-//! 負載：同時有 N 位學生不間斷（沒有思考時間，是最壞情況）輪流呼叫 `/api/me`、`/api/conversations`、`/api/points`，
+//! 負載：同時有 N 位學生不間斷（沒有思考時間，是最壞情況）共同領取並發出固定數量的請求，輪流呼叫 `/api/me`、`/api/conversations`、`/api/points`，
 //! 每個請求都要驗 session 並至少查詢一次資料庫。
 //!
 //! 「服務正常」的判準（與 S-09.3 的服務健康度一致的精神）：沒有任何非 2xx 回應或逾時，且 p95 延遲不超過
@@ -21,7 +21,7 @@ mod common;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -62,22 +62,26 @@ impl Outcome {
     }
 }
 
-async fn drive(app: &Router, cookie: &str, users: usize, seconds: u64) -> Outcome {
-    let stop = Arc::new(AtomicBool::new(false));
+/// N 位併發使用者共同發出 `total` 個請求：每人用共用計數器領下一個編號，領完就停。
+async fn drive(app: &Router, cookie: &str, users: usize, total: usize) -> Outcome {
+    let next = Arc::new(AtomicUsize::new(0));
     let errors = Arc::new(AtomicUsize::new(0));
     let started = Instant::now();
     let mut tasks = Vec::new();
-    for user in 0..users {
-        let (app, cookie, stop, errors) = (
+    for _ in 0..users {
+        let (app, cookie, next, errors) = (
             app.clone(),
             cookie.to_string(),
-            stop.clone(),
+            next.clone(),
             errors.clone(),
         );
         tasks.push(tokio::spawn(async move {
             let mut latencies = Vec::new();
-            let mut n = user; // 讓各使用者從不同的路徑開始
-            while !stop.load(Ordering::Relaxed) {
+            loop {
+                let n = next.fetch_add(1, Ordering::Relaxed);
+                if n >= total {
+                    break;
+                }
                 let at = Instant::now();
                 let ok = matches!(
                     app.clone()
@@ -85,21 +89,20 @@ async fn drive(app: &Router, cookie: &str, users: usize, seconds: u64) -> Outcom
                         .await,
                     Ok(res) if res.status() == StatusCode::OK
                 );
+                // flaky-ok: 壓測測量工具（#[ignore]，不進 CI）；時間只用來印出表格，沒有任何通過／失敗的斷言，機器變慢只會讓數字變差
                 latencies.push(at.elapsed());
                 if !ok {
                     errors.fetch_add(1, Ordering::Relaxed);
                 }
-                n += 1;
             }
             latencies
         }));
     }
-    tokio::time::sleep(Duration::from_secs(seconds)).await;
-    stop.store(true, Ordering::Relaxed);
     let mut all: Vec<Duration> = Vec::new();
     for task in tasks {
         all.extend(task.await.unwrap());
     }
+    // flaky-ok: 壓測測量工具（#[ignore]，不進 CI）；時間只用來印出表格，沒有任何通過／失敗的斷言，機器變慢只會讓數字變差
     let elapsed = started.elapsed().as_secs_f64();
     all.sort();
     let at = |q: f64| {
@@ -118,10 +121,10 @@ async fn drive(app: &Router, cookie: &str, users: usize, seconds: u64) -> Outcom
 }
 
 async fn measure(options: PgConnectOptions) {
-    let seconds: u64 = std::env::var("LOAD_SECONDS")
+    let total: usize = std::env::var("LOAD_REQUESTS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(20_000);
     let sizes = env_list("LOAD_POOL_SIZES", &[2, 5, 10, 20, 40]);
     let levels = env_list("LOAD_CONCURRENCY", &[25, 100, 400, 800, 1600]);
 
@@ -153,7 +156,7 @@ async fn measure(options: PgConnectOptions) {
         }
         let mut highest = 0;
         for &users in &levels {
-            let o = drive(&app, &cookie, users, seconds).await;
+            let o = drive(&app, &cookie, users, total).await;
             println!(
                 "{size:>4}  {users:>5}  {:>8}  {:>6}  {:>7.1}  {:>7.1}  {:>6.0}  {}",
                 o.requests,
