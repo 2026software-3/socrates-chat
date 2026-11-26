@@ -76,19 +76,33 @@ def candidates(provider, mode, payload):
     return payload.get("docs", [])
 
 
+def load_google_api_key(key_file):
+    """Resolve Google Books key: GOOGLE_BOOKS_API_KEY > GOOGLE_API_KEY (env then --key-file)."""
+    for env_name in ("GOOGLE_BOOKS_API_KEY", "GOOGLE_API_KEY"):
+        val = os.environ.get(env_name, "").strip()
+        if val:
+            return val
+    if key_file:
+        found = {}
+        for line in key_file.read_text().splitlines():
+            name, sep, value = line.strip().removeprefix("export ").partition("=")
+            name = name.strip()
+            if sep and name in ("GOOGLE_BOOKS_API_KEY", "GOOGLE_API_KEY"):
+                cleaned = value.strip().strip("\"'").strip()
+                if cleaned:
+                    found[name] = cleaned
+        return found.get("GOOGLE_BOOKS_API_KEY") or found.get("GOOGLE_API_KEY")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sample", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--provider", choices=["google", "openlibrary"], required=True)
-    parser.add_argument("--key-file", type=Path, help="Read only GOOGLE_BOOKS_API_KEY from a dotenv file; never execute it")
+    parser.add_argument("--key-file", type=Path, help="Read only GOOGLE_API_KEY (or GOOGLE_BOOKS_API_KEY) from a dotenv file; never execute it")
     args = parser.parse_args()
-    key = os.environ.get("GOOGLE_BOOKS_API_KEY")
-    if args.provider == "google" and args.key_file and not key:
-        for line in args.key_file.read_text().splitlines():
-            name, sep, value = line.strip().removeprefix("export ").partition("=")
-            if sep and name.strip() == "GOOGLE_BOOKS_API_KEY":
-                key = value.strip().strip("\"'")
+    key = load_google_api_key(args.key_file) if args.provider == "google" else None
     sample = json.loads(args.sample.read_text())
     results = []
     stop = "missing_api_key" if args.provider == "google" and not key else None
