@@ -99,12 +99,22 @@
 
 單場、斷句、打斷與 NVIDIA 的結果一致，記憶體同樣約減半。兩場同時時 B 的中位數高約 0.1 秒，但兩輪重複各自的差異（基準 1.32 到 1.44、B 1.43 到 1.53）互相重疊，這個樣本不足以判定是退步還是雜訊；Intel 上瓶頸是共用的 Kokoro（單一鎖）。
 
-注意：這個映像比 `CASCADE_LLM_BASE_URL` 的支援還舊，`launch.yaml` 把回呼寫死為 `http://app:3000/internal/cascade/v1`，測試時在容器內改寫。prod 的 Intel cascade 映像要重建才吃得到現行的 `entrypoint.sh`，這也是 B 要生效的前提。
+注意：這個映像比 `CASCADE_LLM_BASE_URL` 的支援還舊，`launch.yaml` 把回呼寫死為 `http://app:3000/internal/cascade/v1`，測試時在容器內改寫。當時 prod 的 Intel cascade 映像（`intel-20261116`）也是這個舊版，重建後才吃得到現行的 `entrypoint.sh` 與 B，見下節「部署紀錄」。
+
+## 部署紀錄
+
+| 時間 | 環境 | 做法 | 結果 |
+| --- | --- | --- | --- |
+| 2026-11-27 | NTNU 正式（msi_cubi） | 以 intel 分支現狀加 main 的 `launch.yaml` 建 `socrates-cascade-core:intel-20261127`；`.env` 的 `CASCADE_INTEL_TAG` 改新值，只重建 `cascade` 容器（`--no-deps`）。tts、whisper、adapter 沿用舊映像，已加同名新 tag 別名 | cascade 容器記憶體約 2.4 → 1.26 GiB，`/health` 與 `/ready` 為 200 |
+| 2026-11-27 | staging 語音節點（RTX 4050 筆電） | 以現行 `socrates-cascade:latest` 加 main 的 `launch.yaml` 建薄映像，`latest` 指向它，只重建 `cascade` 容器；舊映像保留為 `socrates-cascade:pre-b-20261127` | 容器 healthy，記憶體約 1.6 GiB，B 生效 |
+
+退路：正式環境把 `.env` 的 tag 改回 `intel-20261116` 再重建 `cascade`；筆電把 `socrates-cascade:latest` 指回 `pre-b-20261127` 再重建 `cascade`。
 
 ## 限制與未驗證
 
 - Intel 映像的量測只用舊映像（2026-11-16 建）加容器內改寫設定，沒有用重建後的映像；兩場同時的延遲差異沒有定論（見上節）。
-- 沒有部署到任何環境。msi_cubi 的 staging 只有 app、db、proxy，沒有 cascade，所以 Intel cascade 無法經 staging 驗證，改在 msi_cubi 另起隔離的測試容器（沒有學生場次的時段）。
+- msi_cubi 的 staging 只有 app、db、proxy，沒有 cascade，所以 Intel cascade 無法經 staging 驗證，改在 msi_cubi 另起隔離的測試容器（沒有學生場次的時段）。
+- 上線後沒有做真人從瀏覽器走語音（含打斷）的端到端驗證。
 - 測試語音是合成的，停頓與音量比真人規則；斷句門檻的絕對值不能直接套到真人，這份紀錄只用來比較變更前後。
 - soak 只跑了 10 分鐘，沒有做 1 小時以上的長時間測試。
 - 沒有量真正的 LLM 延遲，也沒有量記憶體隨場次數成長以外的長期變化。
