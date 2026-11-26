@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useAccountLanguage } from '@/auth/auth-context'
 import { api, isApiError, type ApiError } from '@/lib/api'
 import { usePollJob } from '@/lib/ai-jobs'
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
 import type { PollSpec } from '@/lib/poll-store'
 import type { SummaryView } from '@/lib/types'
 
@@ -57,6 +58,7 @@ export function useSummary(conversationId: string, { pollMs = SUMMARY_POLL_MS, m
     setRetryError(undefined)
     try {
       await api.post(`/api/conversations/${conversationId}/summary/retry`)
+      wakeAiJobs()
       check()
     } catch (e) {
       setRetryError(e)

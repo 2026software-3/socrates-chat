@@ -40,7 +40,7 @@ export function usePollJob<T>(key: string | null, spec: PollSpec<T>) {
 
   /** 重新開始輪詢；`data` 可先塞入剛從 POST 回來的結果，`spec` 可換成另一個讀取方式（例如重試）。 */
   const restart = useCallback(
-    (opts: { data?: T; spec?: PollSpec<T> } = {}) => {
+    (opts: { data?: T; spec?: PollSpec<T>; keep?: boolean } = {}) => {
       if (key !== null) store.restart(key, { spec: specRef.current, ...opts })
     },
     [store, key],

@@ -8,6 +8,7 @@ export const defaultHandlers = [
   // 書庫的其他版本查找；沒有特別要測的測試：沒有候選
   http.get('/api/books/:id/editions', () => HttpResponse.json([])),
   // 外框會顯示 AI 用量；沒有特別要測的測試一律回用量很低的合成值
+  http.get('/api/ai-jobs/active', () => HttpResponse.json({ jobs: [] })),
   http.get('/api/me/usage', () => HttpResponse.json({ used: 0, limit: 200, window_secs: 86400, resets_in_secs: null })),
   // 學生頂列會讀取點數餘額；沒有特別要測的測試回 0
   http.get('/api/points', () => HttpResponse.json({ balance: 0 })),

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { api, isApiError, type ApiError } from '@/lib/api'
 import { usePollJob } from '@/lib/ai-jobs'
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
 import type { PollSpec } from '@/lib/poll-store'
 import type { RadarView } from '@/lib/types'
 
@@ -64,6 +65,7 @@ export function useRadar(conversationId: string, { pollMs = RADAR_POLL_MS, maxPo
     try {
       const radar = await api.post<RadarView>(`/api/conversations/${conversationId}/radar/retry`)
       restart({ data: radar })
+      wakeAiJobs()
     } catch (e) {
       setStartError(e)
       // 409 代表後端的狀態和畫面上的不同（例如已在計算或已完成）：重新讀取
