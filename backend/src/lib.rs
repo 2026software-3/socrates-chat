@@ -46,6 +46,7 @@ pub mod admin_health;
 pub mod admin_teacher_keys;
 pub(crate) mod admin_voice_nodes;
 pub mod ai;
+pub mod ai_job_store;
 pub mod ai_jobs;
 pub mod ai_providers;
 mod ai_route;
@@ -122,7 +123,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 17] = [
+pub const LONG_RUNNING_ROUTES: [&str; 16] = [
     "/api/topics/{id}/dimensions/retry",
     // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
     "/api/books/search",
@@ -132,8 +133,6 @@ pub const LONG_RUNNING_ROUTES: [&str; 17] = [
     // 管理者新增、修改公告時同步翻譯內文
     "/api/admin/announcements",
     "/api/admin/announcements/{id}",
-    // 同步等 AI 重新分組
-    "/api/dashboard/class/regroup",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
     "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
