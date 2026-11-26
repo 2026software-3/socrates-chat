@@ -161,8 +161,16 @@ const MAX_DATABASE_MAX_CONNECTIONS: u32 = 100;
 /// 解析 `DATABASE_MAX_CONNECTIONS`：未設定或空白用預設 10；
 /// 不是整數或不在 1 至 100 內時回錯誤，讓啟動失敗而不是悄悄改用別的值。
 pub fn parse_database_max_connections(raw: Option<&str>) -> Result<u32, ConfigError> {
+    parse_database_max_connections_or(raw, DEFAULT_DATABASE_MAX_CONNECTIONS)
+}
+
+/// 同上，但未設定或空白時用呼叫端指定的預設值（例如一次性工具要比服務更小的池）。
+pub fn parse_database_max_connections_or(
+    raw: Option<&str>,
+    default: u32,
+) -> Result<u32, ConfigError> {
     let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
-        return Ok(DEFAULT_DATABASE_MAX_CONNECTIONS);
+        return Ok(default);
     };
     raw.parse::<u32>()
         .ok()
@@ -546,6 +554,28 @@ mod tests {
                 error.contains('1') && error.contains("100"),
                 "{raw}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn database_max_connections_uses_the_callers_default_when_unset_or_blank() {
+        for raw in [None, Some(""), Some("  ")] {
+            assert_eq!(parse_database_max_connections_or(raw, 3).unwrap(), 3);
+        }
+    }
+
+    #[test]
+    fn database_max_connections_explicit_value_beats_the_callers_default() {
+        assert_eq!(
+            parse_database_max_connections_or(Some("25"), 3).unwrap(),
+            25
+        );
+    }
+
+    #[test]
+    fn database_max_connections_invalid_value_fails_even_with_a_custom_default() {
+        for raw in ["0", "101", "abc"] {
+            assert!(parse_database_max_connections_or(Some(raw), 3).is_err());
         }
     }
 
