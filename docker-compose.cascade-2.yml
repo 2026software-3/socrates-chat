@@ -3,9 +3,10 @@
 # 就要一個後端一個 cascade 容器。疊在 docker-compose.yml 之上，預設不套用：
 #   docker compose -f docker-compose.yml -f docker-compose.cascade-2.yml --profile cascade up -d
 # 必填（.env）：CASCADE_B_LLM_BASE_URL、CASCADE_B_LLM_TOKEN（在第二個後端登錄為 S-19 語音節點時取得的密鑰）。
-# 選填：CASCADE_B_PORT（對主機開的埠，預設 8111）、CASCADE_B_MEM_LIMIT（預設 2g）。
+# 選填：CASCADE_B_PORT（對主機開的埠，預設 8111）、CASCADE_B_BIND（綁定位址，預設 127.0.0.1）、CASCADE_B_MEM_LIMIT（預設 2g）。
 # 實測（docs/specs/cascade-slimming.md）：兩個 cascade 各接一個後端、同時各一場，互不干擾；重啟其中一個不影響另一個。
-# 對主機開 port 只在需要讓別的機器連進來時才用；只在 compose 網路內用就不必開。
+# cascade 的 /v1/realtime 本身沒有驗證，不要綁 0.0.0.0。要讓別的機器連進來時，把 CASCADE_B_BIND 設成 tailnet IP；
+# 只在 compose 網路內用就不必開埠。
 services:
   cascade-b:
     profiles: ["cascade"]
@@ -22,7 +23,7 @@ services:
       CASCADE_LLM_TOKEN: ${CASCADE_B_LLM_TOKEN:?設定 .env 的 CASCADE_B_LLM_TOKEN}
       CASCADE_LLM_BASE_URL: ${CASCADE_B_LLM_BASE_URL:?設定 .env 的 CASCADE_B_LLM_BASE_URL}
     ports:
-      - "${CASCADE_B_PORT:-8111}:8110"
+      - "${CASCADE_B_BIND:-127.0.0.1}:${CASCADE_B_PORT:-8111}:8110"
     volumes:
       - cascade_cache:/root/.cache
       - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
