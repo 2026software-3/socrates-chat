@@ -1126,8 +1126,6 @@ describe('barge-in during AI playback (S-05.5)', () => {
     installAudioGraph()
     installRecognition()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // 預設關閉，這組測試都是學生自己開啟之後的行為
-    localStorage.setItem('voice.bargeIn', 'true')
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -1223,55 +1221,6 @@ describe('barge-in during AI playback (S-05.5)', () => {
     chat.finish()
     await new Promise((r) => setTimeout(r, 20))
     expect(spoken).toHaveLength(1)
-  })
-
-  it('stays off until the student turns it on', async () => {
-    const { getUserMedia } = installMediaDevices()
-    localStorage.removeItem('voice.bargeIn')
-    await untilSpeaking()
-    await new Promise((r) => setTimeout(r, 20))
-    expect(getUserMedia).not.toHaveBeenCalled()
-    expect(screen.getByRole('switch', { name: '開口打斷 AI' })).not.toBeChecked()
-    expect(screen.queryByTestId('voice-audio-diagnostics')).not.toBeInTheDocument()
-  })
-
-  it('remembers that the student turned it on', async () => {
-    const { getUserMedia } = installMediaDevices()
-    localStorage.removeItem('voice.bargeIn')
-    await untilSpeaking()
-    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
-    expect(localStorage.getItem('voice.bargeIn')).toBe('true')
-    expect(getUserMedia).not.toHaveBeenCalled() // 這一輪已開始播放，下一輪才生效
-  })
-
-  it('turning the switch off during playback releases the microphone at once', async () => {
-    const { tracks } = installMediaDevices()
-    await untilSpeaking()
-    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
-    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
-    expect(tracks[0].readyState).toBe('ended')
-    expect(FakeAudioContext.last.close).toHaveBeenCalled()
-    expect(localStorage.getItem('voice.bargeIn')).toBe('false')
-  })
-
-  it('does not reopen anything when the switch goes off before the AI starts speaking', async () => {
-    const { getUserMedia } = installMediaDevices()
-    const { synth } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
-    let utterance: FakeUtterance | undefined
-    synth.speak = (u: FakeUtterance) => {
-      utterance = u
-    }
-    mockChat()
-    renderChat()
-    await input()
-    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
-    FakeRecognition.last.say('開始', true)
-    await waitFor(() => expect(utterance).toBeDefined())
-    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
-    utterance?.onstart?.()
-    await new Promise((r) => setTimeout(r, 20))
-    expect(getUserMedia).not.toHaveBeenCalled()
-    expect(FakeAudioContext.instances.filter((c) => c.state !== 'closed')).toEqual([])
   })
 
   it('keeps playing and offers the button when the microphone is denied', async () => {

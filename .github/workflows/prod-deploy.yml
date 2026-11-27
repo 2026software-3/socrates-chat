@@ -28,7 +28,8 @@ jobs:
     name: Deploy production to msi_cubi
     environment: prod-deploy
     runs-on: [self-hosted, linux, msi-cubi-prod]
-    timeout-minutes: 45
+    # app 映像約幾分鐘；cascade 映像沒有快取時冷建一組 30 分鐘以上，換 cascade 前最多再等 10 分鐘讓語音場次結束，另加起容器與健康檢查。
+    timeout-minutes: 120
     steps:
       - name: Deploy production (root wrapper via sudo)
         env:

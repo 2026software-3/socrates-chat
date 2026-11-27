@@ -198,9 +198,15 @@ describe('PlateCard', () => {
     expect(onEnter).toHaveBeenCalledOnce()
   })
 
-  it('renders PlateCardSkeleton with aria-hidden placeholders', () => {
-    const { container } = render(<PlateCardSkeleton />)
-    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThanOrEqual(4)
+  it('renders PlateCardSkeleton with aria-hidden placeholders and configurable meta count', () => {
+    const { container, rerender } = render(<PlateCardSkeleton />)
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(6)
+
+    rerender(<PlateCardSkeleton metaCount={2} />)
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(5)
+
+    rerender(<PlateCardSkeleton metaCount={0} />)
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(3)
   })
 })
 

@@ -67,6 +67,7 @@ const argumentSegments = [
 
 export function DesignOverview() {
   const [page, setPage] = useState(1)
+  const [plateCardLoaded, setPlateCardLoaded] = useState(false)
   const [notification, setNotification] = useState<ToastNotification | null>(null)
   const notificationId = useRef(0)
 
@@ -333,59 +334,100 @@ export function DesignOverview() {
       </section>
 
       <section className="grid gap-3 border-t border-ink-faint pt-3" aria-labelledby="plate-cards">
-        <h3 id="plate-cards" className="type-h3">教室版畫卡</h3>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3" data-testid="plate-card-grid">
-          <PlateCard
-            numeral={1}
-            title="倫理學討論室"
-            headerAction={
-              <Button variant="icon" aria-label="倫理學討論室更多操作">
-                <Ellipsis aria-hidden="true" />
-              </Button>
-            }
-            meta={
-              <>
-                <Meta icon={Users} variant="bibliographic" value="32 位學生" />
-                <Meta icon={ListChecks} variant="bibliographic" value="2 個進行中活動" />
-                <Meta icon={CalendarClock} variant="bibliographic" value="下個截止 11/30" />
-              </>
-            }
-            action={
-              <Button>
-                進入教室
-                <ArrowRight aria-hidden="true" />
-              </Button>
-            }
-          />
-          <PlateCard
-            numeral={2}
-            title="哲學概論・週二班"
-            meta={<Meta icon={ListChecks} variant="bibliographic" value="目前沒有活動" />}
-            action={
-              <Button>
-                進入教室
-                <ArrowRight aria-hidden="true" />
-              </Button>
-            }
-          />
-          <PlateCard
-            numeral={3}
-            title="邏輯導論（封存範例）"
-            archived
-            meta={
-              <>
-                <Meta icon={ListChecks} variant="bibliographic" value="6 個活動" />
-                <Meta icon={Archive} variant="bibliographic" value="已封存・唯讀" />
-              </>
-            }
-            action={
-              <Button variant="quiet">
-                <Eye aria-hidden="true" />
-                查看教室
-              </Button>
-            }
-          />
-          <PlateCardSkeleton />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 id="plate-cards" className="type-h3">教室版畫卡</h3>
+          <Button variant="quiet" onClick={() => setPlateCardLoaded((loaded) => !loaded)}>
+            {plateCardLoaded ? '重置骨架' : '模擬載入完成'}
+          </Button>
+        </div>
+        <div className="grid gap-4">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3" data-testid="plate-card-grid">
+            <PlateCard
+              numeral={1}
+              title="倫理學討論室"
+              headerAction={
+                <Button variant="icon" aria-label="倫理學討論室更多操作">
+                  <Ellipsis aria-hidden="true" />
+                </Button>
+              }
+              meta={
+                <>
+                  <Meta icon={Users} variant="bibliographic" value="32 位學生" />
+                  <Meta icon={ListChecks} variant="bibliographic" value="2 個進行中活動" />
+                  <Meta icon={CalendarClock} variant="bibliographic" value="下個截止 11/30" />
+                </>
+              }
+              action={
+                <Button>
+                  進入教室
+                  <ArrowRight aria-hidden="true" />
+                </Button>
+              }
+            />
+            <PlateCard
+              numeral={2}
+              title="哲學概論・週二班"
+              meta={<Meta icon={ListChecks} variant="bibliographic" value="目前沒有活動" />}
+              action={
+                <Button>
+                  進入教室
+                  <ArrowRight aria-hidden="true" />
+                </Button>
+              }
+            />
+            <PlateCard
+              numeral={3}
+              title="邏輯導論（封存範例）"
+              archived
+              meta={
+                <>
+                  <Meta icon={ListChecks} variant="bibliographic" value="6 個活動" />
+                  <Meta icon={Archive} variant="bibliographic" value="已封存・唯讀" />
+                </>
+              }
+              action={
+                <Button variant="quiet">
+                  <Eye aria-hidden="true" />
+                  查看教室
+                </Button>
+              }
+            />
+          </div>
+          <div
+            data-testid="plate-card-swap"
+            aria-busy={!plateCardLoaded || undefined}
+            className="grid gap-4 md:grid-cols-2 lg:grid-cols-3"
+          >
+            {plateCardLoaded ? (
+              <PlateCard
+                numeral={4}
+                title="政治哲學導論"
+                headerAction={
+                  <Button variant="icon" aria-label="政治哲學導論更多操作">
+                    <Ellipsis aria-hidden="true" />
+                  </Button>
+                }
+                meta={
+                  <>
+                    <Meta icon={Users} variant="bibliographic" value="32 位學生" />
+                    <Meta icon={ListChecks} variant="bibliographic" value="2 個進行中活動" />
+                    <Meta icon={CalendarClock} variant="bibliographic" value="下個截止 11/30" />
+                  </>
+                }
+                action={
+                  <Button>
+                    進入教室
+                    <ArrowRight aria-hidden="true" />
+                  </Button>
+                }
+              />
+            ) : (
+              <PlateCardSkeleton />
+            )}
+          </div>
+          {!plateCardLoaded && (
+            <span className="sr-only" role="status">正在載入教室卡片</span>
+          )}
         </div>
       </section>
 

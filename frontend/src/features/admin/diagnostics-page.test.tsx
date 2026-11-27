@@ -170,6 +170,39 @@ describe('DiagnosticsPage', () => {
     await waitFor(() => expect(last(queries).get('failure_class')).toBe('classroom_ai_unavailable'))
   })
 
+  it('names external book lookup failures and lets the admin filter by book_source', async () => {
+    mockMe(makeMe({ admin: true }))
+    const queries = mockDiagnostics(() =>
+      pageOf([
+        {
+          ...aiEvent,
+          kind: 'book_source',
+          failure_class: 'invalid_key',
+          function: 'book_search',
+          route: '/api/books/search',
+          status: 503,
+          error_code: 'book_source_unavailable',
+          classroom_id: null,
+          duration_ms: null,
+          retry_count: null,
+          model: null,
+        },
+      ]),
+    )
+    const user = userEvent.setup()
+
+    renderApp(<DiagnosticsPage />, { route: '/admin/diagnostics' })
+
+    const table = await screen.findByRole('table', { name: '診斷事件' })
+    const row = within(table).getAllByRole('row')[1]
+    for (const text of ['外部書目', '金鑰無效', '書目搜尋', '503']) {
+      expect(within(row).getByText(text)).toBeInTheDocument()
+    }
+    await user.selectOptions(screen.getByLabelText('類型'), 'book_source')
+    await user.click(screen.getByRole('button', { name: '查詢' }))
+    await waitFor(() => expect(last(queries).get('kind')).toBe('book_source'))
+  })
+
   it('limits failure classes to those of the selected type and drops one that no longer fits', async () => {
     mockMe(makeMe({ admin: true }))
     mockDiagnostics()
