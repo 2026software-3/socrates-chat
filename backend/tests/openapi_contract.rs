@@ -483,3 +483,35 @@ fn radar_contract_exposes_status_retry_and_scores_without_the_rubric() {
     assert!(dimension["name"].is_object() && dimension["description"].is_object());
     assert!(dimension.get("rubric").is_none());
 }
+
+/// 整份 OpenAPI 與進版控的快照（`docs/api/openapi.json`）逐項比對。
+/// 前端的契約測試（`frontend/src/test/contract.test.ts`）用同一份快照驗證 MSW 假後端的回應，
+/// 所以 API 有任何變動，都要明確更新快照，前端才會發現假後端落後。
+/// 更新方式：`UPDATE_OPENAPI_SNAPSHOT=1 cargo test --test openapi_contract snapshot`。
+mod snapshot {
+    use socrates_chat_backend::openapi;
+    use std::path::PathBuf;
+
+    #[test]
+    fn openapi_document_matches_committed_snapshot() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/api/openapi.json");
+        let actual = serde_json::to_value(openapi::document()).unwrap();
+
+        if std::env::var_os("UPDATE_OPENAPI_SNAPSHOT").is_some() {
+            let mut text = serde_json::to_string_pretty(&actual).unwrap();
+            text.push('\n');
+            std::fs::write(&path, text).unwrap();
+            return;
+        }
+
+        let committed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("缺少 docs/api/openapi.json 快照"),
+        )
+        .expect("快照不是合法 JSON");
+        assert!(
+            committed == actual,
+            "API 契約與 docs/api/openapi.json 不一致；確認變動符合預期後，\
+             以 UPDATE_OPENAPI_SNAPSHOT=1 cargo test --test openapi_contract snapshot 更新快照"
+        );
+    }
+}
