@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router'
-import { EmptyBlock, ErrorBlock, LoadingBlock } from '@/components/page'
+import { Link, useLocation, useNavigate } from 'react-router'
+import { EmptyBlock, ErrorBlock, LoadingBlock, PageHeader } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,6 +40,7 @@ export function AvailablePage() {
   const t = useT()
   const { lang } = useI18n()
   const navigate = useNavigate()
+  const { hash } = useLocation()
   const [query, setQuery] = useState('')
   const { data, error, loading, reload } = useFetch<Available>(`/api/catalog?language=${lang}`)
   const [startingKey, setStartingKey] = useState<string>()
@@ -51,6 +52,19 @@ export function AvailablePage() {
   useEffect(() => {
     if (startError) errorRef.current?.scrollIntoView?.({ block: 'nearest' })
   }, [startError])
+
+  // 側欄「II 個人練習」連到 `/#practice` 時捲到個人練習區；清掉 hash 回到「I 我的教室」時捲回頂端
+  const wasPracticeRef = useRef(false)
+  useEffect(() => {
+    if (!data) return
+    if (hash === '#practice') {
+      wasPracticeRef.current = true
+      document.getElementById('practice')?.scrollIntoView?.({ block: 'start' })
+    } else if (wasPracticeRef.current) {
+      wasPracticeRef.current = false
+      document.documentElement.scrollIntoView?.({ block: 'start' })
+    }
+  }, [hash, data])
 
   async function start(key: string, source: Source) {
     if (busy.current) return // 防止連點建立兩場對話
@@ -125,24 +139,23 @@ export function AvailablePage() {
             ))
           )}
         </Block>
-        <Section
-          title={t('student.available.topics')}
-          emptyText={needle ? t('student.available.noMatch') : t('student.available.noTopics')}
-          items={topics}
-          startingKey={startingKey}
-          onStart={start}
-          layout="list"
-        />
+        <div id="practice" className="scroll-mt-16">
+          <Section
+            title={t('student.available.topics')}
+            emptyText={needle ? t('student.available.noMatch') : t('student.available.noTopics')}
+            items={topics}
+            startingKey={startingKey}
+            onStart={start}
+            layout="list"
+          />
+        </div>
       </div>
     )
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl leading-8 font-medium">{t('student.available.title')}</h1>
-        <p className="text-muted-foreground text-xs">{t('student.available.subtitle')}</p>
-        <p className="text-muted-foreground text-xs">{t('classroomAi.privacy')}</p>
-      </div>
+      <PageHeader title={t('student.available.title')} description={t('student.available.subtitle')} />
+      <p className="text-muted-foreground text-xs">{t('classroomAi.privacy')}</p>
       <div>
         <label htmlFor="available-search" className="sr-only">
           {t('student.available.searchLabel')}

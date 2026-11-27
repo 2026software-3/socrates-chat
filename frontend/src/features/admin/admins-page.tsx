@@ -13,7 +13,6 @@ import { api } from '@/lib/api'
 import { useFetch } from '@/lib/use-fetch'
 import type { AdminList } from '@/lib/types'
 
-/** 管理者管理：列出管理者、新增管理者、重設管理者密碼（只有管理者進得來）。 */
 export function AdminsPage() {
   const t = useT()
   const { lang } = useI18n()

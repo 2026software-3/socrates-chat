@@ -43,7 +43,6 @@ export const BARGE_IN_DETECTOR: Record<EchoRisk, { calibrationMs: number; margin
 
 /** 語音偏好存在這個裝置的 localStorage（只是個人偏好，不影響後端）。 */
 const AUTO_SEND_KEY = 'voice.autoSend'
-const BARGE_IN_KEY = 'voice.bargeIn'
 
 function loadFlag(key: string, fallback: boolean): boolean {
   try {
@@ -64,6 +63,3 @@ function saveFlag(key: string, on: boolean) {
 
 export const loadAutoSend = () => loadFlag(AUTO_SEND_KEY, true)
 export const saveAutoSend = (on: boolean) => saveFlag(AUTO_SEND_KEY, on)
-/** 預設關閉：iOS 實機驗證通過之前，播放時不主動開麥克風（S-05.5）。 */
-export const loadBargeIn = () => loadFlag(BARGE_IN_KEY, false)
-export const saveBargeIn = (on: boolean) => saveFlag(BARGE_IN_KEY, on)

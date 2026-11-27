@@ -106,9 +106,23 @@ interface Hit {
 const HEX = /(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])/g
 const COLOR_FN = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/g
 const FONT_SIZE = /(?<![\w-])text-\[(?:length:)?(\d*\.?\d+(?:px|rem|em))\]/g
-const DISABLED_OPACITY = /(?<!\S)\S*disabled\S*:opacity-\d+/g
-const ANY_OPACITY = /(?<![\w-])opacity-\d+/g
+const DISABLED_OPACITY = /(?<!\S)\S*disabled\S*:opacity-(\d+|\[[^\s\]]+\]|\([^\s)]+\))/g
+const ANY_OPACITY = /(?<![\w-])opacity-(\d+|\[[^\s\]]+\]|\([^\s)]+\))/g
 const ANIMATE_SPIN = /(?<![\w-])animate-spin(?![\w-])/g
+
+/** 判斷 CSS opacity 值（0..1 或百分比）是否為完全不透明（≥ 1）。 */
+function isFullCssOpacity(raw: string): boolean {
+  const value = raw.replace(/!important/gi, '').trim()
+  if (/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value)) return parseFloat(value) >= 1
+  if (/^(?:\d+(?:\.\d+)?|\.\d+)%$/.test(value)) return parseFloat(value) >= 100
+  return false
+}
+
+/** 判斷 Tailwind `opacity-<suffix>` 是否為完全不透明（`100` 或 `[1]`／`[100%]`）。 */
+function isFullTailwindOpacity(suffix: string): boolean {
+  if (suffix.startsWith('[') && suffix.endsWith(']')) return isFullCssOpacity(suffix.slice(1, -1))
+  return /^\d+$/.test(suffix) && parseFloat(suffix) >= 100
+}
 
 function scanText(text: string, { skipHex = false } = {}): Hit[] {
   const hits: Hit[] = []
@@ -118,7 +132,11 @@ function scanText(text: string, { skipHex = false } = {}): Hit[] {
   if (!skipHex) add(HEX, 'raw-color', (m) => rawColorMessage(m[0]))
   add(COLOR_FN, 'raw-color', (m) => rawColorMessage(`${m[0]}…)`))
   add(FONT_SIZE, 'arbitrary-font-size', (m) => fontSizeMessage(m[0], m[1] ?? ''))
-  add(DISABLED_OPACITY, 'opacity-disabled', (m) => opacityMessage(m[0]))
+  for (const m of text.matchAll(DISABLED_OPACITY)) {
+    if (!isFullTailwindOpacity(m[1] ?? '')) {
+      hits.push({ rule: 'opacity-disabled', index: m.index ?? 0, message: opacityMessage(m[0]) })
+    }
+  }
   add(ANIMATE_SPIN, 'spinner', (m) => spinnerMessage(m[0]))
   return hits.sort((a, b) => a.index - b.index)
 }
@@ -206,7 +224,7 @@ function lintTs(file: string, source: string): Violation[] {
         if (underDisabledCondition(node, sf)) {
           for (const m of node.text.matchAll(ANY_OPACITY)) {
             // disabled:opacity-* 已由 scanText 回報
-            if (!/\S*disabled\S*:$/.test(node.text.slice(0, m.index))) {
+            if (!/\S*disabled\S*:$/.test(node.text.slice(0, m.index)) && !isFullTailwindOpacity(m[1] ?? '')) {
               report(start + (m.index ?? 0), 'opacity-disabled', opacityMessage(`${m[0]}（停用時才加上）`))
             }
           }
@@ -224,10 +242,96 @@ function lintTs(file: string, source: string): Violation[] {
 
 // ---- CSS ----
 
+function stripNotPseudo(selector: string): string {
+  let out = ''
+  let i = 0
+  while (i < selector.length) {
+    if (selector.startsWith(':not(', i)) {
+      let depth = 1
+      i += 5
+      while (i < selector.length && depth > 0) {
+        if (selector[i] === '(') depth++
+        else if (selector[i] === ')') depth--
+        i++
+      }
+      continue
+    }
+    out += selector[i]
+    i++
+  }
+  return out
+}
+
+function isDisabledSelector(selector: string): boolean {
+  const trimmed = selector.trim()
+  if (!trimmed || trimmed.startsWith('@')) return false
+  const stripped = stripNotPseudo(trimmed)
+  if (/:disabled(?![\w-])/.test(stripped)) return true
+  for (const m of stripped.matchAll(/\[(?:aria-|data-)?disabled(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s\]]*)))?\]/gi)) {
+    const attrVal = m[1] ?? m[2] ?? m[3]
+    if (attrVal?.toLowerCase() !== 'false') return true
+  }
+  return false
+}
+
+function scanDisabledCssStatements(code: string): Hit[] {
+  const hits: Hit[] = []
+  const stack: boolean[] = []
+  let stmtStart = 0
+  let inString: "'" | '"' | null = null
+
+  const checkStatement = (start: number, end: number) => {
+    if (!stack[stack.length - 1]) return
+    const stmt = code.slice(start, end)
+    const offset = stmt.search(/\S/)
+    if (offset === -1) return
+    const trimmed = stmt.slice(offset).trimEnd()
+    if (/^@apply\b/.test(trimmed)) {
+      for (const m of stmt.matchAll(ANY_OPACITY)) {
+        if (!/\S*disabled\S*:$/.test(stmt.slice(0, m.index)) && !isFullTailwindOpacity(m[1] ?? '')) {
+          hits.push({ rule: 'opacity-disabled', index: start + (m.index ?? 0), message: opacityMessage(m[0]) })
+        }
+      }
+      return
+    }
+    const decl = /^opacity\s*:\s*([\s\S]+)$/i.exec(trimmed)
+    if (decl && !isFullCssOpacity(decl[1] ?? '')) {
+      hits.push({ rule: 'opacity-disabled', index: start + offset, message: opacityMessage(trimmed) })
+    }
+  }
+
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]
+    if (inString) {
+      if (ch === '\\') i++
+      else if (ch === inString) inString = null
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      inString = ch
+    } else if (ch === ';') {
+      checkStatement(stmtStart, i)
+      stmtStart = i + 1
+    } else if (ch === '{') {
+      const header = code.slice(stmtStart, i)
+      const parentDisabled = stack[stack.length - 1] ?? false
+      const nextDisabled = header.trim().startsWith('@') ? parentDisabled : parentDisabled || isDisabledSelector(header)
+      stack.push(nextDisabled)
+      stmtStart = i + 1
+    } else if (ch === '}') {
+      checkStatement(stmtStart, i)
+      stack.pop()
+      stmtStart = i + 1
+    }
+  }
+  return hits
+}
+
 function lintCss(file: string, source: string): Violation[] {
   // 註解換成等長空白，位置不變
   const code = source.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' '))
-  return scanText(code).map((hit) => {
+  const hits = [...scanText(code), ...scanDisabledCssStatements(code)].sort((a, b) => a.index - b.index)
+  return hits.map((hit) => {
     const before = code.slice(0, hit.index)
     const line = before.split('\n').length
     const column = hit.index - before.lastIndexOf('\n')

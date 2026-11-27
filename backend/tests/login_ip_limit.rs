@@ -391,9 +391,11 @@ async fn one_ip_flooding_the_login_endpoint_is_rate_limited(pool: PgPool) {
 
 #[sqlx::test]
 async fn burst_and_replenish_interval_come_from_the_config(pool: PgPool) {
+    // 令牌桶用真實時間：回補間隔拉到 2 秒，讓「連打 4 次仍是用完」與「回補後緊接著第二次被擋」
+    // 都有 1 秒以上的餘裕；等回補改成輪詢，不賭固定睡眠時間。
     let mut config = test_config();
     config.login_rate_burst = 3;
-    config.login_rate_replenish = std::time::Duration::from_millis(500);
+    config.login_rate_replenish = std::time::Duration::from_secs(2);
     let app = test_app_with_config(pool, FakeAi::with(vec![]), config);
     for i in 0..3 {
         assert_ne!(
@@ -407,13 +409,15 @@ async fn burst_and_replenish_interval_come_from_the_config(pool: PgPool) {
         StatusCode::TOO_MANY_REQUESTS,
         "burst of 3 is used up"
     );
-    // 過一個回補間隔後只回補一個請求
-    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-    assert_ne!(
-        cheap_request(&app, "198.51.100.8", None).await,
-        StatusCode::TOO_MANY_REQUESTS,
-        "one request is replenished"
-    );
+    // 過一個回補間隔後只回補一個請求：被擋的請求不耗令牌，輪詢到第一個放行為止
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while cheap_request(&app, "198.51.100.8", None).await == StatusCode::TOO_MANY_REQUESTS {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "one request is replenished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(
         cheap_request(&app, "198.51.100.8", None).await,
         StatusCode::TOO_MANY_REQUESTS,

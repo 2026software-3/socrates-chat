@@ -118,7 +118,21 @@ async fn regroup(app: &Router, cookie: Option<&str>, activity: &str) -> (StatusC
         ),
     )
     .await;
-    (res.status(), json_body(res).await)
+    let status = res.status();
+    let body = json_body(res).await;
+    if status != StatusCode::ACCEPTED {
+        return (status, body);
+    }
+    // 重新分組是背景工作（S-20）：等它結束，再把結果換回當初同步版本的狀態碼，讓各測試維持原本的斷言
+    let job = wait_for_job(app, cookie.unwrap(), body["job_id"].as_str().unwrap()).await;
+    match job["status"].as_str().unwrap() {
+        "ready" => (StatusCode::NO_CONTENT, Value::Null),
+        "failed" => {
+            let code = job["error_code"].as_str().unwrap();
+            (StatusCode::BAD_GATEWAY, json!({"error": {"code": code}}))
+        }
+        other => panic!("重新分組工作沒有結束：{other}"),
+    }
 }
 
 #[sqlx::test]
@@ -403,7 +417,7 @@ async fn groups_are_scoped_to_the_activity_not_the_topic(pool: PgPool) {
 
 #[sqlx::test]
 async fn regroup_may_wait_for_the_ai_longer_than_the_general_timeout(pool: PgPool) {
-    // 重新分組會同步等 AI；一般請求逾時（#325）比 AI 逾時短時，仍要等到 AI 的結果
+    // 重新分組在背景等 AI；一般請求逾時（#325）比 AI 逾時短時，仍要等到 AI 的結果
     let s1 = summary("該拉桿", "理由甲");
     let ai = FakeAi::with(vec![
         Reply(vec![Box::leak(s1.into_boxed_str())]),

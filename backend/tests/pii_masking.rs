@@ -165,7 +165,13 @@ async fn summary_and_claim_grouping_requests_are_masked(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    // 重新分組在背景完成（S-20）
+    let job = json_body(res).await["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        wait_for_job(&app, &a.teacher, &job).await["status"],
+        "ready"
+    );
 
     let reqs = ai.requests.lock().unwrap().clone();
     assert_eq!(reqs.len(), 3);

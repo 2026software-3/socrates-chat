@@ -52,11 +52,19 @@ describe('admin complaints', () => {
     )
   })
 
-  it('is reachable from the navigation of an admin-only account', async () => {
+  it('is reachable from the logs area of an admin-only account', async () => {
     mockList([])
+    server.use(
+      http.get('/api/admin/diagnostics', () => HttpResponse.json({ items: [], next_cursor: null })),
+      http.get('/api/admin/status', () =>
+        HttpResponse.json({ service: 'ok', database: 'ok', period: '24h', diagnostics_available: true, statistics: null, recent_errors: [] }),
+      ),
+    )
     renderApp(null, { route: '/admin' })
-    const nav = await screen.findByRole('navigation', { name: 'main' })
-    await userEvent.click(within(nav).getByRole('link', { name: '客訴' }))
+    const nav = await screen.findByRole('navigation', { name: '主導覽' })
+    await userEvent.click(within(nav).getByRole('link', { name: /執行日誌/ }))
+    const subTabs = await screen.findByRole('navigation', { name: '區域分頁' })
+    await userEvent.click(within(subTabs).getByRole('link', { name: '客訴' }))
     expect(await screen.findByRole('heading', { name: '客訴' })).toBeInTheDocument()
   })
 
@@ -176,7 +184,7 @@ describe('admin complaints', () => {
     mockMe(makeMe({ teacher: true }))
     server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/admin/complaints' })
-    await screen.findByRole('navigation', { name: 'main' })
+    await screen.findByRole('navigation', { name: '主導覽' })
     expect(screen.queryByRole('heading', { name: '客訴' })).not.toBeInTheDocument()
   })
 })

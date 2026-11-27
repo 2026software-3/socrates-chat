@@ -5,8 +5,13 @@ import { http, HttpResponse } from 'msw'
  * Playwright 的瀏覽器 worker（src/test/browser.ts）都從這裡開始。
  */
 export const defaultHandlers = [
+  // 書庫的其他版本查找；沒有特別要測的測試：沒有候選
+  http.get('/api/books/:id/editions', () => HttpResponse.json([])),
   // 外框會顯示 AI 用量；沒有特別要測的測試一律回用量很低的合成值
+  http.get('/api/ai-jobs/active', () => HttpResponse.json({ jobs: [] })),
   http.get('/api/me/usage', () => HttpResponse.json({ used: 0, limit: 200, window_secs: 86400, resets_in_secs: null })),
+  // 學生頂列會讀取點數餘額；沒有特別要測的測試回 0
+  http.get('/api/points', () => HttpResponse.json({ balance: 0 })),
   // 沒有特別要測的測試：沒有公告、沒有維護
   http.get('/api/announcements', () => HttpResponse.json({ maintenance: false, announcements: [] })),
   http.get('/api/notifications', () => HttpResponse.json([])),

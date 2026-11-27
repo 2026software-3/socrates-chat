@@ -139,6 +139,7 @@
   - `dimensions`：題目的六個維度 `{ id, name, description }`，`name` 與 `description` 各含 `zh_tw`、`en`、`es`，前端依介面語言顯示；不含評分準則。題目沒有維度時為 `null`。
   - `rules_version`（評分提示版本）與 `completed_at` 只有 `ready` 時有值。
 - `POST /api/conversations/{id}/radar/retry`：開始或重新計算，成功回 `202` 與目前的雷達圖狀態（`pending`）。`409 dimensions_pending`＝題目維度尚未完成；`409 radar_not_retryable`＝計算中、已成功、總結尚未成功或題目已不存在；`409 classroom_archived`＝教室已封存。失敗時後端已自動重試一次（S-03.5），之後才需要學生手動重試。
+- `GET /api/ai-jobs/active`（S-20）：目前登入者自己的進行中與剛結束（10 分鐘內）的 AI 工作，最新的在前，最多 50 筆，回 `{ jobs: [{ id, kind, status, label_key, scope: { conversation_id }, started_at, finished_at, retryable }] }`。`kind` 為 `reply`（AI 回覆中）、`summary`、`radar`、`argument_tree`、`summary_translation`；`status` 為 `pending`／`ready`／`failed`；`id` 是 `{kind}:{conversation_id}`；`retryable` 只在失敗時為 `true`。只含識別碼與狀態，不含題目、訊息或總結內容；他人與管理者的工作不會出現。前端在重新整理後用它還原進度顯示。
 - 刪除對話會一併刪除訊息與總結。
 
 ## 儀表板

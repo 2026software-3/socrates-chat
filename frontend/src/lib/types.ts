@@ -270,7 +270,6 @@ export type EmailList = { emails: string[] }
 
 export type AdminList = {
   emails: string[]
-  /** 環境變數 ADMIN_EMAILS 的第一個管理者信箱；只有本人能重設其密碼。未設定時為 null。 */
   primary_email: string | null
 }
 
@@ -382,6 +381,8 @@ export type ClassroomAiSettings = {
   primary: ModelRef | null
   fallbacks: ModelRef[]
   confirmed_providers: string[]
+  /** 正在背景驗證的設定；驗證通過前，上面的仍是目前生效的設定（S-20）。 */
+  pending_job?: string | null
 }
 
 /** `GET /api/admin/system-ai`：系統用途的模型、key 與近 30 天用量。 */

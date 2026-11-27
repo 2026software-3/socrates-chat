@@ -66,10 +66,16 @@ describe('teacher topic bank', () => {
       locked: true, prompt_version: 'topic-dimensions-v1', pending_languages: [],
     }
     let submitted: unknown
+    let generated = false
     server.use(
       http.get('/api/topics', () => HttpResponse.json([trolley])),
-      http.get('/api/topics/t1/dimensions', () => HttpResponse.json(empty)),
-      http.post('/api/topics/t1/dimensions/retry', () => HttpResponse.json(ready)),
+      // 重新產生是背景工作（S-20）：202 後等工作結束，再讀一次維度
+      http.get('/api/topics/t1/dimensions', () => HttpResponse.json(generated ? ready : empty)),
+      http.post('/api/topics/t1/dimensions/retry', () => {
+        generated = true
+        return HttpResponse.json({ job_id: 'jd', status: 'pending' }, { status: 202 })
+      }),
+      http.get('/api/ai-jobs/jd', () => HttpResponse.json({ status: 'ready' })),
       http.patch('/api/topics/t1/dimensions', async ({ request }) => {
         submitted = await request.json()
         return HttpResponse.json(ready)

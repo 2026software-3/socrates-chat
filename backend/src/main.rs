@@ -1,9 +1,9 @@
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, complaints, config::Config, demo,
-    identity::GoogleIdentity, logging, password, radar_store, service_monitor, summary,
-    summary_translation,
+    AppState, ai::OpenAiProvider, ai_job_store, app, auth_store, catalog, complaints,
+    config::Config, demo, identity::GoogleIdentity, logging, password, radar_store,
+    service_monitor, summary, summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
 
@@ -26,7 +26,7 @@ async fn main() {
         );
     }
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(config.database_max_connections)
         .connect(&config.database_url)
         .await
         .expect("failed to connect to database");
@@ -48,6 +48,12 @@ async fn main() {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned radar results as failed"),
         Err(_) => tracing::error!("failed to recover orphaned radar results"),
+    }
+    // 重啟前卡住的背景 AI 工作（S-20）同樣標記為失敗，使用者可以重試
+    match ai_job_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "marked orphaned AI jobs as failed"),
+        Err(_) => tracing::error!("failed to recover orphaned AI jobs"),
     }
     // 內建題目（電車難題）：已存在時不動它
     if catalog::seed_builtin_topics(&pool).await.is_err() {

@@ -730,6 +730,11 @@ pub(crate) async fn list(
         monitor.view(&state.pool, period_days),
         monitor.voice_views(&state.pool, period_days)
     );
+    // 部署預設的 MONITORED_SERVICES 已有檢查 cascade /health 的項目；語音節點探測同一個位址時，
+    // 只留節點那一列（資訊較完整），避免同一個目標列兩次。
+    let voice_targets: Vec<_> = voice.values().filter_map(|v| v.target.clone()).collect();
+    view.services
+        .retain(|s| s.target.as_ref().is_none_or(|t| !voice_targets.contains(t)));
     let counts = state.voice_sessions.counts();
     view.voice_nodes = nodes
         .into_iter()

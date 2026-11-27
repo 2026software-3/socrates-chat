@@ -1,5 +1,6 @@
 [package]
 name = "socrates-chat-backend"
+default-run = "socrates-chat-backend"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"

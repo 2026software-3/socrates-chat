@@ -7,10 +7,10 @@ use utoipa::{
 };
 
 use crate::{
-    accounts, achievement_admin, ai_usage, announcements, argument_tree, auth, cascade, catalog,
-    chat, claims, classroom_ai_settings, classroom_store, classrooms, complaints, dashboard, demo,
-    error::ErrorBody, points, purchase, reply, roster, roster_store, summary, tasks, teacher_keys,
-    usage_api, voice,
+    accounts, achievement_admin, ai_jobs, ai_usage, announcements, argument_tree, auth, cascade,
+    catalog, chat, claims, classroom_ai_settings, classroom_store, classrooms, complaints,
+    dashboard, demo, error::ErrorBody, points, purchase, reply, roster, roster_store, summary,
+    tasks, teacher_keys, usage_api, voice,
 };
 
 struct SessionCookie;
@@ -114,7 +114,7 @@ impl Modify for SessionCookie {
     ),
     paths(
         auth::login, auth::link_start, auth::unlink_google, auth::callback, auth::password_login, auth::change_password, auth::logout,
-        auth::me, auth::update_me, auth::reset_password, ai_usage::usage,
+        auth::me, auth::update_me, auth::reset_password, ai_usage::usage, ai_jobs::active, ai_jobs::get_job,
         teacher_keys::list_providers, teacher_keys::list_keys, teacher_keys::add_key,
         teacher_keys::replace_key, teacher_keys::delete_key, teacher_keys::test_key, teacher_keys::list_models,
         usage_api::key_usage, usage_api::classroom_usage,
@@ -125,6 +125,13 @@ impl Modify for SessionCookie {
         roster::import_roster, roster::remove_from_roster,
         accounts::list_students, accounts::set_status,
         accounts::delete_student,
+        crate::book_works::rename, crate::book_works::list, crate::book_works::impact, crate::book_works::edition_work_impact,
+        crate::book_works::merge, crate::book_works::move_edition, crate::book_works::set_status, crate::book_works::remove,
+        crate::book_editions::related, crate::book_editions::import,
+        crate::books::list, crate::books::read, crate::books::create, crate::books::update,
+        crate::books::set_status, crate::books::deletion_impact, crate::books::remove, crate::books::search,
+        crate::books::topic_list, crate::books::replace_topic_list,
+        crate::books::activity_list, crate::books::replace_activity_list,
         catalog::list_topics_for_teacher,
         catalog::create_topic_for_teacher,
         crate::topic_dimensions::read,

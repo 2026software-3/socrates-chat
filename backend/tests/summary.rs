@@ -450,19 +450,10 @@ async fn teacher_translates_a_summary_into_their_account_language_without_conver
     assert!(list[0]["translation"].is_null());
     assert_eq!(list[0]["stance"], "會拉桿");
 
-    let response = send(
-        &app,
-        json_req(
-            "POST",
-            &format!("/api/summaries/{conv}/translation"),
-            Some(&a.teacher),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    let (status, body) = post_translation(&app, Some(&a.teacher), &conv).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        json_body(response).await,
+        body,
         json!({
             "language": "en",
             "stance": "Would pull the lever",
@@ -653,9 +644,9 @@ async fn summary_translation_keeps_teacher_scope_and_admin_masking_boundaries(po
         ),
     )
     .await;
-    let failed = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
-    assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
-    assert_eq!(json_body(failed).await["error"]["code"], "ai_unavailable");
+    let (status, failed) = post_translation(&app, Some(&a.teacher), &conv).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(failed["error"]["code"], "ai_unavailable");
     assert_eq!(ai.request_count(), 2, "拒絕的請求不得呼叫 AI");
 }
 
@@ -848,8 +839,8 @@ async fn superseded_generation_cannot_overwrite_the_newer_one(pool: PgPool) {
         "ready"
     );
 
-    // 等第一代的逾時與自動重試都結束
-    tokio::time::sleep(Duration::from_millis(1700)).await;
+    // 等第一代的逾時與自動重試都結束（等背景工作真的結束，不賭睡眠時間）
+    wait_until_background_idle().await;
     let s = settled_summary(&app, &a.student, &conv).await;
     assert_eq!(s["status"], "ready");
     assert_eq!(s["stance"], "會拉桿");
@@ -931,17 +922,42 @@ async fn set_teacher_language(app: &Router, a: &Actors, language: &str) {
 }
 
 async fn translate(app: &Router, a: &Actors, conv: &str) -> (StatusCode, Value) {
-    let res = send(
-        app,
-        json_req(
-            "POST",
-            &format!("/api/summaries/{conv}/translation"),
-            Some(&a.teacher),
-            None,
-        ),
-    )
-    .await;
-    (res.status(), json_body(res).await)
+    post_translation(app, Some(&a.teacher), conv).await
+}
+
+/// 翻譯是背景工作（S-20）：202 時等工作結束，成功就再呼叫一次拿保存的譯文（200）；
+/// 失敗則換回當初同步版本的狀態碼，讓各測試維持原本的斷言。
+async fn post_translation(app: &Router, cookie: Option<&str>, conv: &str) -> (StatusCode, Value) {
+    let path = format!("/api/summaries/{conv}/translation");
+    let res = send(app, json_req("POST", &path, cookie, None)).await;
+    let (status, body) = (res.status(), json_body(res).await);
+    if status != StatusCode::ACCEPTED {
+        return (status, body);
+    }
+    let job = wait_for_job(app, cookie.unwrap(), body["job_id"].as_str().unwrap()).await;
+    match job["status"].as_str().unwrap() {
+        "ready" => {
+            let res = send(app, json_req("POST", &path, cookie, None)).await;
+            (res.status(), json_body(res).await)
+        }
+        _ => {
+            let code = job["error_code"].as_str().unwrap();
+            let status = if code == "ai_usage_exceeded" {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, json!({"error": {"code": code}}))
+        }
+    }
+}
+
+/// 已保存的譯文會直接回覆、不再呼叫 AI（S-20）；要重複測「每次都翻譯」的額度行為時，先清掉它。
+async fn forget_translations(pool: &PgPool) {
+    sqlx::query("DELETE FROM summary_translations")
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 fn translation_reply(reasons_chars: usize) -> &'static str {
@@ -982,13 +998,15 @@ async fn translation_counts_against_the_ai_usage_limit_and_failures_are_refunded
         ai_usage_max: 1,
         ..test_config()
     };
-    let (app, a, conv) = translation_fixture_with_config(pool, ai.clone(), None, config).await;
+    let (app, a, conv) =
+        translation_fixture_with_config(pool.clone(), ai.clone(), None, config).await;
     set_teacher_language(&app, &a, "en").await;
 
     // AI 失敗：不扣額度
     assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
     // 成功一次後用完；再按被擋，而且不碰 AI
     assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    forget_translations(&pool).await;
     let before = ai.request_count();
     let (status, body) = translate(&app, &a, &conv).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
@@ -1031,8 +1049,12 @@ async fn translation_requests_are_rate_limited_per_teacher(pool: PgPool) {
         Reply(vec![translation_reply(10)]),
         Reply(vec![translation_reply(10)]),
     ]);
-    let (app, a, conv) =
-        translation_fixture(pool, ai.clone(), Some((2, Duration::from_secs(600)))).await;
+    let (app, a, conv) = translation_fixture(
+        pool.clone(),
+        ai.clone(),
+        Some((2, Duration::from_secs(600))),
+    )
+    .await;
 
     // 語言相同不會呼叫 AI，不吃額度
     for _ in 0..5 {
@@ -1042,7 +1064,9 @@ async fn translation_requests_are_rate_limited_per_teacher(pool: PgPool) {
 
     set_teacher_language(&app, &a, "en").await;
     assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    forget_translations(&pool).await;
     assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    forget_translations(&pool).await;
     let (status, body) = translate(&app, &a, &conv).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["error"]["code"], "too_many_translations");
@@ -1058,7 +1082,8 @@ async fn a_failed_translation_does_not_use_up_the_teachers_quota(pool: PgPool) {
         Reply(vec![translation_reply(9000)]), // 譯文過長
         Reply(vec![translation_reply(10)]),
     ]);
-    let (app, a, conv) = translation_fixture(pool, ai, Some((1, Duration::from_secs(600)))).await;
+    let (app, a, conv) =
+        translation_fixture(pool.clone(), ai, Some((1, Duration::from_secs(600)))).await;
     set_teacher_language(&app, &a, "en").await;
 
     // 額度只有 1：三次失敗都不能吃掉它，之後的成功請求仍然可以通過
@@ -1066,9 +1091,56 @@ async fn a_failed_translation_does_not_use_up_the_teachers_quota(pool: PgPool) {
         assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::BAD_GATEWAY);
     }
     assert_eq!(translate(&app, &a, &conv).await.0, StatusCode::OK);
+    forget_translations(&pool).await;
     // 成功的那次才算數
     assert_eq!(
         translate(&app, &a, &conv).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
+}
+
+#[sqlx::test]
+async fn translation_is_a_background_job_and_the_saved_result_is_returned_without_another_call(
+    pool: PgPool,
+) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Reply(vec![translation_reply(10)])]);
+    let (app, a, conv) = translation_fixture(pool, ai.clone(), None).await;
+    set_teacher_language(&app, &a, "en").await;
+    let path = format!("/api/summaries/{conv}/translation");
+
+    let res = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let body = json_body(res).await;
+    let job = wait_for_job(&app, &a.teacher, body["job_id"].as_str().unwrap()).await;
+    assert_eq!(job["status"], "ready");
+
+    // 之後同一個請求直接拿保存的譯文：200、不再呼叫 AI
+    let res = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json_body(res).await["stance"], "Would pull");
+    assert_eq!(ai.request_count(), 2);
+}
+
+#[sqlx::test]
+async fn a_second_translation_request_while_running_joins_the_same_job(pool: PgPool) {
+    let ai = FakeAi::with(vec![Reply(vec![GOOD]), Hang]);
+    let (app, a, conv) = translation_fixture(pool, ai.clone(), None).await;
+    set_teacher_language(&app, &a, "en").await;
+    let path = format!("/api/summaries/{conv}/translation");
+
+    let first = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first = json_body(first).await;
+    wait_until_ai_called(&ai, 2).await;
+    let second = send(&app, json_req("POST", &path, Some(&a.teacher), None)).await;
+    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    assert_eq!(json_body(second).await["job_id"], first["job_id"]);
+    assert_eq!(ai.request_count(), 2, "加入進行中的工作不會再呼叫 AI");
+
+    // 進行中的翻譯會出現在彙總裡，且只有識別碼
+    let active = json_body(send(&app, get("/api/ai-jobs/active", Some(&a.teacher))).await).await;
+    let jobs = active["jobs"].as_array().unwrap();
+    assert!(jobs.iter().any(|j| j["kind"] == "summary_translation_view"
+        && j["status"] == "pending"
+        && j["scope"]["conversation_id"] == conv.as_str()));
 }
