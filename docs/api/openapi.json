@@ -13492,6 +13492,16 @@
               }
             }
           },
+          "400": {
+            "description": "invalid_title / invalid_guiding_questions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "未登入（`unauthorized`）",
             "content": {
@@ -13561,6 +13571,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Topic"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_title / invalid_guiding_questions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -18347,6 +18367,44 @@
           }
         ]
       },
+      "ServiceVoiceNode": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ServiceView"
+          },
+          {
+            "type": "object",
+            "required": [
+              "node_status",
+              "healthy",
+              "sessions"
+            ],
+            "properties": {
+              "healthy": {
+                "type": "boolean",
+                "description": "是否接新場次的路由判斷（連續 3 次探測失敗為 false），與 `status` 的判斷規則不同"
+              },
+              "max_sessions": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "環境節點預設不設上限",
+                "minimum": 0
+              },
+              "node_status": {
+                "type": "string",
+                "description": "`active`、`draining` 或 `disabled`"
+              },
+              "sessions": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "即時語音節點（S-19）：監控資料與周邊服務相同（狀態、回應時間、可用率、歷史），另加節點自己的欄位。"
+      },
       "ServicesView": {
         "type": "object",
         "required": [
@@ -18372,7 +18430,7 @@
           "voice_nodes": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VoiceNodeView"
+              "$ref": "#/components/schemas/ServiceVoiceNode"
             }
           }
         }

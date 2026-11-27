@@ -13,6 +13,8 @@ const topic = (id: string, over: Partial<Topic> = {}): Topic => ({
   description: '',
   guiding_questions: [],
   is_active: true,
+  title_pending: false,
+  pending_questions: [],
   ...over,
 })
 
