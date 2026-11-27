@@ -312,6 +312,39 @@ describe('activity claim distribution', () => {
     expect(screen.getByText('甲')).toBeInTheDocument()
   })
 
+  it('regroups as a background job: shows it running until the job ends, then reloads (S-20)', async () => {
+    let loads = 0
+    let polls = 0
+    let registered = false
+    const job = (status: string) => ({
+      id: 'j1', kind: 'regroup', status, label_key: 'jobs.regroup',
+      scope: { classroom_id: ROOM_A, activity_id: ACT, topic_id: 't1' },
+      started_at: new Date().toISOString(), finished_at: status === 'pending' ? null : new Date().toISOString(), retryable: false,
+    })
+    mockApi()
+    server.use(
+      http.get('/api/dashboard/class', () => {
+        loads += 1
+        return HttpResponse.json({ ...dashboard, activities: [distribution({ ungrouped: loads < 3 ? 2 : 0 })] })
+      }),
+      http.post('/api/dashboard/class/regroup', () => {
+        registered = true
+        return HttpResponse.json({ job_id: 'j1', status: 'pending' }, { status: 202 })
+      }),
+      // 登記之前沒有工作；登記之後的前兩次查詢是進行中，之後結束
+      http.get('/api/ai-jobs/active', () => HttpResponse.json({ jobs: !registered ? [] : polls++ < 2 ? [job('pending')] : [job('ready')] })),
+    )
+    renderAt(path)
+    expect(await screen.findByText('2 場的主張還沒有歸群。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重新分組' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '重新分組' }))
+    expect(await screen.findByRole('button', { name: '分組中…' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: /AI 工作中/ })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('2 場的主張還沒有歸群。')).not.toBeInTheDocument(), { timeout: 8000 })
+    // 結束後全域指示消失（這個題目已全部歸群，所以重新分組按鈕也不再出現）
+    await waitFor(() => expect(screen.queryByRole('button', { name: /AI 工作中/ })).toBeNull())
+  }, 15_000)
+
   it('regroups by activity_id and topic_id on request and reloads', async () => {
     let body: unknown
     let loads = 0

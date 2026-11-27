@@ -164,17 +164,54 @@ fn clean_name(raw: &str) -> Result<String, ApiError> {
     Ok(name.to_string())
 }
 
+/// 內部主機名稱的後綴：容器／區網常用的名稱，加上 tailnet 的 MagicDNS（`.ts.net`，解析結果是 tailnet 位址）。
+const INTERNAL_SUFFIXES: [&str; 5] = [".internal", ".local", ".lan", ".localdomain", ".ts.net"];
+
+/// 只判斷寫法，不做 DNS 解析：IP 必須是私有、迴路、link-local、CGNAT（tailnet）；
+/// 主機名稱必須沒有點（例如 compose 服務名 `cascade`）或以內部後綴結尾。
+fn is_internal_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    // `Url` 已把 134744072、0x7f.1 這類寫法正規化成點分十進位；IPv6 帶方括號
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    match bare.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || (a == 100 && (64..=127).contains(&b))
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+        Err(_) => {
+            let name = host.trim_end_matches('.').to_ascii_lowercase();
+            !name.is_empty()
+                && (!name.contains('.')
+                    || INTERNAL_SUFFIXES
+                        .iter()
+                        .any(|suffix| name.ends_with(suffix)))
+        }
+    }
+}
+
 fn clean_url(raw: &str) -> Result<String, ApiError> {
     let url = raw.trim();
-    let ok = Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "ws" | "wss") && u.has_host());
-    if ok && !url.chars().any(char::is_control) {
-        Ok(url.to_string())
-    } else {
-        Err(ApiError::bad_request(
-            "invalid_realtime_url",
-            "網址必須是 ws:// 或 wss://",
-        ))
+    let parsed = Url::parse(url)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "ws" | "wss") && u.has_host())
+        .filter(|_| !url.chars().any(char::is_control))
+        .ok_or_else(|| {
+            ApiError::bad_request("invalid_realtime_url", "網址必須是 ws:// 或 wss://")
+        })?;
+    if !parsed.host_str().is_some_and(is_internal_host) {
+        return Err(ApiError::bad_request(
+            "realtime_url_not_internal",
+            "節點網址必須是內網位址或內部主機名稱",
+        ));
     }
+    Ok(url.to_string())
 }
 
 fn clean_max(raw: i64) -> Result<i32, ApiError> {

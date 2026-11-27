@@ -25,3 +25,5 @@ export const ClassroomAiSettingsPage = lazyPage(load, 'ClassroomAiSettingsPage')
 export const KeysPage = lazyPage(load, 'KeysPage')
 export const RosterPage = lazyPage(load, 'RosterPage')
 export const SummariesPage = lazyPage(load, 'SummariesPage')
+
+export const BooksPage = lazyPage(load, 'BooksPage')

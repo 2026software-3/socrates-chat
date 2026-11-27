@@ -19,7 +19,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { UsagePanel } from '@/features/keys/usage-panel'
 import { errorText, useI18n, useT, type MessageKey } from '@/i18n'
-import { api } from '@/lib/api'
+import { api, isAbortError } from '@/lib/api'
+import { useAbortOnUnmount } from '@/lib/use-abort-on-unmount'
 import type { AiProvider, KeyStatus, TeacherKey } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
@@ -116,18 +117,23 @@ export function KeysPage() {
     }
   }
 
+  const signalOf = useAbortOnUnmount()
+
   async function onTest(key: TeacherKey) {
     if (testing) return
+    const signal = signalOf()
     setTesting(key.id)
     try {
-      const res = await api.post<{ result: 'usable' | 'connection_failed' }>(`/api/teacher/keys/${encodeURIComponent(key.id)}/test`)
+      const res = await api.post<{ result: 'usable' | 'connection_failed' }>(`/api/teacher/keys/${encodeURIComponent(key.id)}/test`, undefined, signal)
       setResults((r) => ({ ...r, [key.id]: res.result }))
       // 測試可用時後端會清掉先前記下的失敗狀態：重新載入清單，狀態標籤才會更新
       if (res.result === 'usable') keys.reload()
     } catch (err) {
+      // 離開頁面時請求被中止：不更新畫面
+      if (isAbortError(err) || signal?.aborted) return
       setResults((r) => ({ ...r, [key.id]: { error: err } }))
     } finally {
-      setTesting(undefined)
+      if (!signal?.aborted) setTesting(undefined)
     }
   }
 

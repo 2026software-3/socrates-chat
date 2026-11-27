@@ -4,7 +4,6 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{Router, http::StatusCode};
 use common::Script::*;
@@ -184,12 +183,7 @@ async fn argument_tree_input_carries_neither_the_description_nor_the_guiding_que
     )
     .await;
     assert_eq!(res.status(), StatusCode::ACCEPTED);
-    for _ in 0..100 {
-        if f.ai.request_count() >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&f.ai, 2).await;
 
     let requests = f.ai.requests.lock().unwrap();
     // 論證樹只從學生的發言整理論點，送給模型的輸入本來就只有標題與逐輪對話（沒有題目說明），
@@ -229,12 +223,7 @@ async fn radar_scoring_input_carries_guiding_questions_and_not_the_description(p
     .await
     .unwrap();
     end_and_settle(&f, &pool).await;
-    for _ in 0..200 {
-        if f.ai.request_count() >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until_ai_called(&f.ai, 2).await;
 
     let requests = f.ai.requests.lock().unwrap();
     let content = &requests[1].messages[0].content;

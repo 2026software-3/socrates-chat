@@ -49,8 +49,8 @@ export async function expectNoA11yViolations(page: Page, { exclude = [] }: { exc
   expect(blocking, 'axe serious/critical violations').toEqual([])
 }
 
-/** 整頁截圖比對：先等字型載入完成，避免字型還在下載時截到後備字型。 */
-export async function expectScreenshot(page: Page, name: string) {
+/** 整頁（或視窗覆蓋層）截圖比對：先等字型載入完成，避免字型還在下載時截到後備字型。 */
+export async function expectScreenshot(page: Page, name: string, { fullPage = true }: { fullPage?: boolean } = {}) {
   await page.evaluate(() => document.fonts.ready)
-  await expect(page).toHaveScreenshot(name, { fullPage: true })
+  await expect(page).toHaveScreenshot(name, { fullPage })
 }

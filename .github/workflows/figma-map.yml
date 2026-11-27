@@ -1,0 +1,33 @@
+name: Figma map
+
+# docs/design/figma-map.md 由 scripts/figma-map/build.mjs 產生，寫死了前端的檔名與路由。
+# 前端搬檔、改名或對照設定有變時，確認對照表沒有過時（只用 Node 內建模組，幾秒內跑完）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/src/**"
+      - "scripts/figma-map/**"
+      - "docs/design/figma-map.md"
+      - ".github/workflows/figma-map.yml"
+  pull_request:
+    paths:
+      - "frontend/src/**"
+      - "scripts/figma-map/**"
+      - "docs/design/figma-map.md"
+      - ".github/workflows/figma-map.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Figma map (check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # 失敗時照訊息改 scripts/figma-map/screens.mjs，再執行 node scripts/figma-map/build.mjs 重新產生
+      - run: node scripts/figma-map/build.mjs --check

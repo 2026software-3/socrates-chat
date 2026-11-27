@@ -10,10 +10,16 @@ async function startMockBackend() {
   await startWorker()
 }
 
-void startMockBackend().then(() => {
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  )
-})
+async function mount() {
+  const root = createRoot(document.getElementById('root')!)
+  if (import.meta.env.DEV && window.location.pathname === '/__design') {
+    const { DesignOverview } = await import('@/design/overview')
+    root.render(<StrictMode><DesignOverview /></StrictMode>)
+    return
+  }
+
+  await startMockBackend()
+  root.render(<StrictMode><App /></StrictMode>)
+}
+
+void mount()

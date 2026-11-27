@@ -151,17 +151,15 @@ async fn ready_returns_503_in_bounded_time_when_database_hangs(pool: PgPool) {
 
     let started = Instant::now();
     let res = send(&app, get("/ready", None)).await;
+    // flaky-ok: 資料庫卡住時探針的逾時遠小於 pool 預設的 30 秒；8 秒上限擋的是「沒有逾時」
+    let took = started.elapsed();
 
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         json_body(res).await["error"]["code"],
         "database_unavailable"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "ready took {:?}",
-        started.elapsed()
-    );
+    assert!(took < Duration::from_secs(8), "ready took {took:?}");
 }
 
 #[test]

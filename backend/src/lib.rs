@@ -46,6 +46,8 @@ pub mod admin_health;
 pub mod admin_teacher_keys;
 pub(crate) mod admin_voice_nodes;
 pub mod ai;
+pub mod ai_job_store;
+pub mod ai_jobs;
 pub mod ai_providers;
 mod ai_route;
 pub mod ai_usage;
@@ -53,6 +55,12 @@ pub mod announcements;
 pub mod argument_tree;
 pub mod auth;
 pub mod auth_store;
+pub mod book_editions;
+pub mod book_import;
+pub mod book_sources;
+pub mod book_store;
+pub mod book_works;
+pub mod books;
 pub mod cascade;
 pub mod catalog;
 pub mod chat;
@@ -115,15 +123,13 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 15] = [
-    "/api/topics/{id}/dimensions/retry",
-    // 管理者新增成就時同步翻譯名稱與說明
-    "/api/admin/achievements",
+pub const LONG_RUNNING_ROUTES: [&str; 13] = [
+    // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
+    "/api/books/search",
+    "/api/books/{id}/editions",
     // 管理者新增、修改公告時同步翻譯內文
     "/api/admin/announcements",
     "/api/admin/announcements/{id}",
-    // 同步等 AI 重新分組
-    "/api/dashboard/class/regroup",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
     "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
@@ -134,8 +140,6 @@ pub const LONG_RUNNING_ROUTES: [&str; 15] = [
     "/api/classrooms/{id}/roster/import",
     // 同步等供應商回應 key 測試
     "/api/teacher/keys/{id}/test",
-    // 儲存教室 AI 設定前，對主模型與每個備援各送一次最小串流與 JSON 請求
-    "/api/classrooms/{id}/ai-settings",
     // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
     "/api/teacher/keys/models",
     // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
@@ -151,6 +155,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    /// 教師外部書目搜尋；可替換為測試來源，不讓測試呼叫真實服務。
+    pub book_source: Arc<dyn book_sources::BookSource>,
     pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 正在產生維度的題目，避免同一題目重複呼叫 AI（F-03.4）。
     pub(crate) dimension_jobs: Arc<topic_dimensions::Jobs>,
@@ -203,6 +209,9 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let book_source = Arc::new(book_sources::HttpBookSource::new(
+            config.google_books_api_key.clone(),
+        ));
         let google_translation = config
             .google_translation_api_key
             .as_deref()
@@ -225,6 +234,7 @@ impl AppState {
             google_translation,
             dimension_jobs: Arc::default(),
             voice,
+            book_source,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
             voice_nodes: Arc::default(),
@@ -247,6 +257,11 @@ impl AppState {
             key_rotation: Arc::default(),
             route_endpoint: None,
         }
+    }
+
+    pub fn with_book_source(mut self, source: Arc<dyn book_sources::BookSource>) -> Self {
+        self.book_source = source;
+        self
     }
 
     /// 啟動每日清理與請求統計的每分鐘寫入（F-39.2）。
@@ -377,6 +392,9 @@ fn public_routes(state: &AppState) -> Router<AppState> {
         .merge(dashboard::routes())
         .merge(claims::routes())
         .merge(catalog::routes())
+        .merge(books::routes())
+        .merge(book_editions::routes())
+        .merge(book_works::routes())
         .merge(topic_dimensions::routes())
         .merge(radar::routes())
         .merge(chat::routes())
@@ -396,6 +414,7 @@ fn public_routes(state: &AppState) -> Router<AppState> {
         .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(ai_jobs::routes())
         .merge(teacher_keys::routes())
         .merge(admin_teacher_keys::routes())
         .merge(system_ai::routes())

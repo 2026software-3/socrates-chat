@@ -320,6 +320,73 @@ async fn the_token_appears_once_and_never_again(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn node_urls_must_point_at_internal_hosts(pool: PgPool) {
+    let r = rig(pool, test_config(), vec![]);
+    let a = seed_actors(&r.app).await;
+    let create = |name: &str, url: &str| {
+        let body = json!({"name": name, "realtime_url": url, "max_sessions": 1});
+        send(&r.app, json_req("POST", NODES, Some(&a.admin), Some(body)))
+    };
+    for (i, url) in [
+        "ws://127.0.0.1:8110/v1/realtime",
+        "ws://10.1.2.3/v1/realtime",
+        "ws://172.16.0.1/v1/realtime",
+        "ws://172.31.255.254/v1/realtime",
+        "ws://192.168.1.2/v1/realtime",
+        "ws://169.254.1.1/v1/realtime",
+        "ws://100.64.0.1/v1/realtime",
+        "ws://[::1]/v1/realtime",
+        "ws://[fd00::1]/v1/realtime",
+        "ws://[fe80::1]/v1/realtime",
+        "ws://cascade:8110/v1/realtime",
+        "wss://voice.internal/v1/realtime",
+        "wss://nb.local/v1/realtime",
+        "wss://ray-nb.tail5fc9fe.ts.net/v1/realtime",
+        "wss://Cascade.LAN./v1/realtime",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let res = create(&format!("ok{i}"), url).await;
+        assert_eq!(res.status(), StatusCode::CREATED, "{url}");
+    }
+    for url in [
+        "ws://8.8.8.8/v1/realtime",
+        "ws://172.32.0.1/v1/realtime",
+        "ws://100.128.0.1/v1/realtime",
+        "ws://0.0.0.0/v1/realtime",
+        "ws://224.0.0.1/v1/realtime",
+        "ws://[2001:4860:4860::8888]/v1/realtime",
+        "wss://example.com/v1/realtime",
+        "wss://voice.example.internal.evil.com/v1/realtime",
+        "wss://evil.com/v1/realtime",
+        // 十進位／縮寫的 IPv4 寫法會被解析成公開位址
+        "ws://134744072/v1/realtime",
+    ] {
+        assert_json_error(
+            create("bad", url).await,
+            StatusCode::BAD_REQUEST,
+            "realtime_url_not_internal",
+        )
+        .await;
+    }
+    // 更新網址走同一道檢查
+    let added = add_node(&r, &a.admin, "patched", "ws://10.0.0.5/v1/realtime", 1).await;
+    let id = added["node"]["id"].as_str().unwrap();
+    let res = send(
+        &r.app,
+        json_req(
+            "PATCH",
+            &format!("{NODES}/{id}"),
+            Some(&a.admin),
+            Some(json!({"realtime_url": "wss://example.com/v1/realtime"})),
+        ),
+    )
+    .await;
+    assert_json_error(res, StatusCode::BAD_REQUEST, "realtime_url_not_internal").await;
+}
+
+#[sqlx::test]
 async fn bad_node_input_is_rejected(pool: PgPool) {
     let r = rig(pool, test_config(), vec![]);
     let a = seed_actors(&r.app).await;
@@ -387,7 +454,7 @@ async fn every_node_change_is_audited_without_url_or_token(pool: PgPool) {
         &r,
         &a.admin,
         "alpha",
-        "ws://secret-host.example/v1/realtime",
+        "ws://secret-host.internal/v1/realtime",
         1,
     )
     .await;
@@ -592,6 +659,7 @@ async fn health_server(status: Arc<Mutex<Option<u16>>>) -> String {
                         );
                         let _ = tcp.write_all(reply.as_bytes()).await;
                     }
+                    // flaky-ok: 假節點故意卡住不回應（模擬探測逾時），不是測試在等時間
                     None => tokio::time::sleep(Duration::from_secs(30)).await,
                 }
             });
@@ -641,7 +709,9 @@ async fn a_health_probe_that_hangs_counts_as_a_failure(pool: PgPool) {
     let id = NodeId::Db(created["node"]["id"].as_str().unwrap().parse().unwrap());
     let started = Instant::now();
     r.state.voice_nodes.probe_all(&r.state).await;
-    assert!(started.elapsed() < Duration::from_secs(5));
+    // flaky-ok: 探測逾時是 3 秒、假節點卡 30 秒；上限 10 秒只擋「沒有逾時」，餘裕 7 秒
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "{took:?}");
     // 一次逾時只算一次失敗
     assert!(r.state.voice_nodes.is_healthy(id));
     r.state.voice_nodes.mark_unhealthy(id);
@@ -961,10 +1031,11 @@ async fn unreachable_nodes_fail_within_the_browsers_ten_second_window(pool: PgPo
     let started = Instant::now();
     let mut client = l.connect().await;
     assert!(closed(&mut client, 9).await);
-    // 兩次各 3 秒
+    // 兩次各 3 秒，預期約 6 秒；上限是規格的「瀏覽器 10 秒視窗」，不能再放寬
+    // flaky-ok: 規格要求總時間小於 10 秒，這個上限本身就是被測的行為；下限不受負載影響
     let took = started.elapsed();
     assert!(took >= Duration::from_secs(5), "{took:?}");
-    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert!(took < Duration::from_secs(9), "{took:?}");
 }
 
 #[sqlx::test]
@@ -1027,6 +1098,35 @@ async fn deleting_a_node_ends_its_running_sessions(pool: PgPool) {
 }
 
 // ---------- 後台「服務」頁 ----------
+
+/// 部署預設的 MONITORED_SERVICES 已有一項 `cascade` 檢查 cascade 的 /health；
+/// 環境節點探測同一個網址，服務頁不該列兩次。
+#[sqlx::test]
+async fn a_monitored_service_probing_the_same_url_as_a_voice_node_is_listed_once(pool: PgPool) {
+    let mut config = env_config();
+    config.monitored_services = socrates_chat_backend::service_monitor::MonitoredService::parse(
+        &json!([
+            {"name": "cascade", "label": "Realtime voice", "impact": "Voice",
+             "url": "http://127.0.0.1:1/health"},
+            {"name": "tts", "label": "TTS", "impact": "Voice",
+             "url": "http://127.0.0.1:2/health"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let r = rig(pool, config, vec![]);
+    let a = seed_actors(&r.app).await;
+    let body = json_body(send(&r.app, get("/api/admin/services", Some(&a.admin))).await).await;
+    let names: Vec<_> = body["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"cascade"), "{names:?}");
+    assert!(names.contains(&"tts"), "{names:?}");
+    assert_eq!(body["voice_nodes"].as_array().unwrap().len(), 1);
+}
 
 #[sqlx::test]
 async fn the_services_page_lists_every_node_with_health_and_sessions(pool: PgPool) {

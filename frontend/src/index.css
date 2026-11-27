@@ -5,6 +5,9 @@
 @import "@fontsource/im-fell-english-sc/400.css";
 @import "@fontsource/im-fell-english/400-italic.css";
 @import "./styles/tokens.css";
+@import "./components/vedute/primitives.css";
+@import "./components/vedute/print.css";
+@import "./components/vedute/shell/shell.css";
 
 @custom-variant dark (&:is(.dark *));
 

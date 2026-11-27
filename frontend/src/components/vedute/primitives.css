@@ -1,0 +1,470 @@
+/* Override generated shadcn styles without changing the primitives used by existing pages. */
+/* Timing follows the interior prototype's sheet and scrim transitions. */
+:where(.vedute-button, .vedute-switch, .vedute-input, .vedute-tab, .vedute-toast) {
+  --vedute-motion: 320ms cubic-bezier(.2, .7, .2, 1);
+  --vedute-fade: 250ms ease;
+}
+
+.vedute-button {
+  @apply type-body-strong relative h-auto min-h-11 min-w-11 gap-2 rounded-sm border-transparent bg-transparent px-4 py-2 text-ink shadow-none;
+  translate: none;
+  transition-property: background-color, border-color, color, text-decoration-color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+.vedute-button[data-vedute-variant="primary"]:not(:disabled):active {
+  @apply border-chalk-deep bg-chalk-deep;
+}
+
+.vedute-button[data-vedute-variant="quiet"]:not(:disabled):is(:active, [data-pressed]) {
+  @apply border-chalk-deep bg-chalk-wash text-chalk-deep;
+}
+
+.vedute-button[data-vedute-variant="ghost"]:not(.vedute-page, :disabled):is(:active, [data-pressed]) {
+  background-color: color-mix(in srgb, var(--color-paper-deep) 88%, var(--color-ink));
+}
+
+.vedute-button[data-pressed] {
+  transition-property: none;
+}
+
+.vedute-button:is([data-vedute-variant="icon"], [data-vedute-variant="link"]):not(:disabled):active {
+  @apply bg-transparent text-chalk-deep;
+}
+
+.vedute-button[data-vedute-variant="link"]:not(:disabled):active {
+  @apply decoration-chalk-deep decoration-2;
+}
+
+.vedute-button[data-vedute-variant="icon"]:not(.vedute-page, :disabled):active svg {
+  @apply stroke-3;
+}
+
+.vedute-button[data-vedute-variant="primary"]:not(:disabled):active::after {
+  @apply border-paper;
+}
+
+.vedute-button:focus-visible,
+.vedute-switch:focus-visible,
+.vedute-tab:focus-visible,
+.vedute-tab-content:focus-visible {
+  @apply ring-0 outline-2 outline-offset-2 outline-chalk;
+}
+
+.vedute-button[data-vedute-variant="primary"] {
+  @apply border-ink bg-ink text-paper;
+}
+
+.vedute-button[data-vedute-variant="primary"]::after {
+  @apply pointer-events-none absolute inset-0.5 rounded-sm border border-paper/55 content-[''];
+}
+
+.vedute-button[data-vedute-variant="quiet"] {
+  @apply border-ink;
+}
+
+.vedute-button[data-vedute-variant="link"] {
+  @apply underline decoration-chalk underline-offset-5;
+  text-decoration-thickness: var(--stroke-emphasis);
+}
+
+.vedute-button[data-vedute-variant="icon"] {
+  @apply px-0;
+}
+
+.vedute-button svg {
+  @apply size-4;
+}
+
+.vedute-button[data-vedute-variant="primary"] svg {
+  @apply size-4.5;
+}
+
+@media (hover: hover) {
+  .vedute-button[data-vedute-variant="primary"]:hover:not(:disabled, :active) {
+    @apply border-chalk bg-chalk text-paper;
+  }
+
+  .vedute-button[data-vedute-variant="quiet"]:hover:not(:disabled, :active, [data-pressed]) {
+    @apply border-chalk text-chalk-deep;
+  }
+
+  .vedute-button[data-vedute-variant="link"]:hover:not(:disabled) {
+    @apply text-chalk-deep;
+  }
+
+  .vedute-button[data-vedute-variant="icon"]:hover:not(:disabled) {
+    @apply text-chalk-deep;
+  }
+
+  .vedute-button[data-vedute-variant="icon"]:hover:not(.vedute-page, :disabled, :active) svg {
+    stroke-width: var(--stroke-icon-hover);
+  }
+
+  .vedute-button[data-vedute-variant="ghost"]:hover:not(.vedute-page, :disabled, :active, [data-pressed]) {
+    @apply bg-paper-deep;
+  }
+}
+
+.vedute-button:disabled,
+.vedute-switch,
+.vedute-input,
+.vedute-tab {
+  @apply opacity-100;
+}
+
+.vedute-button:disabled {
+  @apply pointer-events-auto cursor-not-allowed border-ink-soft bg-transparent text-ink-soft no-underline;
+}
+
+.vedute-button:disabled::after {
+  content: none;
+}
+
+.vedute-switch {
+  @apply size-11 border-0 bg-transparent ring-0;
+}
+
+.vedute-switch::after {
+  content: none;
+}
+
+.vedute-switch::before {
+  @apply pointer-events-none absolute inset-x-0 top-1/2 h-6 -translate-y-1/2 rounded-full border border-ink bg-surface content-[''];
+  transition: background-color var(--vedute-fade);
+}
+
+.vedute-switch [data-slot="switch-thumb"] {
+  @apply absolute left-1 top-1/2 size-4 -translate-y-1/2 translate-x-0 bg-ink;
+  transition: translate var(--vedute-motion), background-color var(--vedute-fade);
+}
+
+.vedute-switch[data-state="checked"]::before {
+  @apply bg-ink;
+}
+
+.vedute-switch[data-state="checked"] [data-slot="switch-thumb"] {
+  @apply translate-x-5 bg-surface;
+}
+
+.vedute-switch:disabled::before {
+  @apply border-ink-soft;
+}
+
+.vedute-switch:disabled[data-state="checked"]::before,
+.vedute-switch:disabled[data-state="unchecked"] [data-slot="switch-thumb"] {
+  @apply bg-ink-soft;
+}
+
+.vedute-switch:disabled[data-state="unchecked"]::before {
+  @apply border-dashed bg-paper-deep;
+}
+
+.vedute-switch:disabled[data-locked]::before {
+  @apply border-solid;
+}
+
+.vedute-switch[data-locked] [data-slot="switch-thumb"] {
+  @apply hidden;
+}
+
+.vedute-label.type-note {
+  @apply type-note;
+}
+
+.vedute-label.type-switch-label {
+  @apply type-switch-label;
+}
+
+/*
+ * 紙上橫線：兩層背景畫在欄位最下緣，不用 border。底層是 1px 淡墨線；焦點時上層 2px 紅粉筆線
+ * 從左畫到右「蓋住」底層，所以焦點的線只有 2px，不會跟原本的線疊加。
+ */
+.vedute-input {
+  @apply type-control h-auto min-h-11 w-full rounded-none border-0 bg-transparent px-0 pt-2 text-ink;
+  --vedute-field-line: var(--color-chalk);
+  --vedute-field-base: var(--color-ink-soft);
+  --vedute-field-focus: --spacing(0.5);
+  --vedute-field-rule: 1px;
+  padding-bottom: calc(--spacing(2) + var(--vedute-field-rule));
+  box-shadow: none;
+  background-image:
+    linear-gradient(var(--vedute-field-line), var(--vedute-field-line)),
+    linear-gradient(var(--vedute-field-base), var(--vedute-field-base));
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 0 var(--vedute-field-focus), 100% var(--vedute-field-rule);
+  transition: background-size var(--vedute-motion);
+}
+
+.vedute-input::placeholder,
+.vedute-input[data-placeholder] {
+  @apply text-placeholder;
+}
+
+.vedute-input:focus {
+  @apply inset-ring-0 ring-0 outline-none;
+  background-size: 100% var(--vedute-field-focus), 100% var(--vedute-field-rule);
+}
+
+.vedute-input[aria-invalid]:not([aria-invalid="false"]) {
+  --vedute-field-line: var(--color-error);
+  --vedute-field-base: var(--color-error);
+}
+
+.vedute-input:disabled {
+  @apply bg-transparent text-ink-soft;
+}
+
+.vedute-input[data-slot="select-trigger"] {
+  @apply min-w-0;
+}
+
+.vedute-input[data-slot="select-trigger"] [data-slot="select-value"] {
+  @apply truncate;
+}
+
+textarea.vedute-input {
+  @apply field-sizing-fixed resize-y;
+}
+
+/* 下拉選單：一張壓在紙上的紙條。紙底、1px 墨框、內側一圈淡墨版痕線，不加投影（The Pressed Not Lifted Rule）。 */
+.vedute-select-trigger {
+  @apply flex items-center justify-between gap-2 text-left;
+}
+
+.vedute-select-chevron {
+  @apply size-4 shrink-0 text-ink-soft;
+  transition: rotate var(--vedute-motion);
+}
+
+.vedute-select-trigger[data-state="open"] {
+  background-size: 100% var(--vedute-field-focus), 100% var(--vedute-field-rule);
+}
+
+.vedute-select-trigger[data-state="open"] .vedute-select-chevron {
+  @apply text-chalk;
+  rotate: 180deg;
+}
+
+.vedute-select-content {
+  @apply relative z-50 w-(--radix-select-trigger-width) min-w-48 max-w-(--radix-select-content-available-width) overflow-hidden rounded-sm border border-ink bg-paper text-ink;
+  max-height: min(--spacing(80), var(--radix-select-content-available-height));
+  animation: vedute-select-enter 140ms ease-out both;
+}
+
+.vedute-select-content::before {
+  @apply pointer-events-none absolute inset-0.5 z-10 border border-ink-faint content-[''];
+}
+
+.vedute-select-viewport {
+  @apply p-1.5;
+}
+
+.vedute-select-item {
+  @apply type-control relative flex min-h-11 cursor-pointer items-center gap-3 py-2 pr-3 pl-4 text-ink outline-none select-none;
+}
+
+/* 目前指到（滑鼠或鍵盤）：深紙底＋左側 3px 紅粉筆線，跟頁籤、目前位置同一種記號。 */
+.vedute-select-item::before {
+  @apply pointer-events-none absolute inset-y-1 left-1 w-0.75 bg-chalk content-[''];
+  scale: 1 0;
+  transition: scale 120ms ease-out;
+}
+
+.vedute-select-item[data-highlighted] {
+  @apply bg-paper-deep;
+}
+
+.vedute-select-item[data-highlighted]::before {
+  scale: 1 1;
+}
+
+.vedute-select-item[data-state="checked"] {
+  @apply type-control-strong;
+}
+
+.vedute-select-hint {
+  @apply type-note ml-auto shrink-0 text-ink-soft;
+}
+
+.vedute-select-check {
+  @apply ml-auto flex shrink-0 items-center text-ink;
+}
+
+.vedute-select-hint + .vedute-select-check {
+  @apply ml-0;
+}
+
+/* 不能選：淡墨字、不反白，原因寫在 hint，不用透明度。 */
+.vedute-select-item[data-disabled] {
+  @apply cursor-not-allowed text-ink-soft;
+}
+
+/* 封存、停用的選項把名稱劃掉（原因留在右側 hint，不劃） */
+.vedute-select-item[data-disabled] > span:first-child {
+  @apply line-through decoration-ink-soft decoration-1;
+}
+
+.vedute-select-scroll {
+  @apply flex h-7 items-center justify-center bg-paper text-ink-soft;
+}
+
+@keyframes vedute-select-enter {
+  from { opacity: 0; translate: 0 calc(--spacing(1) * -1); }
+  to { opacity: 1; translate: 0 0; }
+}
+
+.vedute-tabs-list {
+  @apply h-auto max-w-full justify-start gap-7 overflow-x-auto p-1;
+}
+
+.vedute-tab {
+  @apply type-body h-auto min-h-12 flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 py-2 text-ink-soft;
+}
+
+.vedute-tab::after {
+  @apply pointer-events-none absolute inset-x-0 -bottom-0.5 h-0.5 origin-left bg-chalk opacity-100 content-[''];
+  scale: 0 1;
+  transition: scale var(--vedute-motion);
+}
+
+.vedute-tab[aria-selected="true"]::after {
+  scale: 1 1;
+}
+
+.vedute-tab[aria-selected="true"] {
+  @apply type-body-strong text-ink;
+}
+
+.vedute-tab:disabled {
+  @apply text-ink-soft;
+}
+
+.vedute-tab:focus-visible {
+  @apply -outline-offset-2;
+}
+
+.vedute-tab-content {
+  @apply type-body;
+}
+
+.vedute-status-chip {
+  @apply type-note h-auto rounded-sm px-2 py-0;
+}
+
+.vedute-alert {
+  @apply type-note block rounded-none border-0 border-l border-caeruleum bg-transparent py-1 pl-3 pr-0 text-ink;
+}
+
+.vedute-alert[data-kind="error"] {
+  @apply border-error text-error;
+}
+
+.vedute-skeleton {
+  @apply rounded-sm bg-paper-deep;
+  animation: vedute-skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vedute-skeleton-pulse {
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vedute-skeleton {
+    animation: none;
+  }
+}
+
+.vedute-button.vedute-page {
+  @apply type-control rounded-none border-0 border-b-2 border-transparent bg-transparent px-1 text-ink;
+}
+
+.vedute-button.vedute-page:hover:not(:disabled),
+.vedute-button.vedute-page[aria-current="page"] {
+  @apply text-chalk;
+}
+
+.vedute-button.vedute-page[aria-current="page"] {
+  @apply type-control-strong border-chalk;
+}
+
+.vedute-button.vedute-page:not(:disabled):is(:active:not([aria-current="page"]), [data-pressed]) {
+  color: color-mix(in srgb, var(--color-chalk) 75%, var(--color-chalk-deep));
+}
+
+.vedute-button.vedute-page:disabled {
+  @apply text-ink-soft;
+}
+
+.vedute-toast {
+  @apply type-body z-50 flex min-h-13 items-center gap-3 rounded-sm border-ink bg-paper py-0.5 pl-4 pr-2 text-ink;
+  animation: vedute-toast-enter var(--vedute-motion) both;
+  border-width: var(--stroke-emphasis);
+}
+
+.vedute-toast::before {
+  @apply pointer-events-none absolute inset-0.5 border border-ink-faint content-[''];
+}
+
+.vedute-toast[data-placement="viewport"] {
+  @apply fixed inset-x-4 md:inset-x-auto md:right-6 md:bottom-6 md:w-toast;
+}
+
+@media (width < 48rem) {
+  .vedute-toast[data-placement="viewport"] {
+    bottom: calc(var(--vedute-bottom-nav-height, var(--size-bottom-nav)) + --spacing(3) + env(safe-area-inset-bottom));
+  }
+}
+
+.vedute-toast[data-placement="anchor"] {
+  @apply absolute right-0 bottom-full mb-3 w-full max-w-toast;
+}
+
+.vedute-button.vedute-toast-action {
+  @apply px-1;
+}
+
+.vedute-toast[data-exiting] {
+  animation: vedute-toast-exit var(--vedute-fade) both;
+}
+
+.vedute-toast[data-exiting="replace"] {
+  animation-duration: 150ms;
+}
+
+@keyframes vedute-toast-enter {
+  from { opacity: 0; translate: 0 --spacing(3); }
+  to { opacity: 1; translate: 0 0; }
+}
+
+@keyframes vedute-toast-exit {
+  from { opacity: 1; translate: 0 0; }
+  to { opacity: 0; translate: 0 --spacing(3); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vedute-button,
+  .vedute-switch::before,
+  .vedute-switch [data-slot="switch-thumb"],
+  .vedute-input,
+  .vedute-tab,
+  .vedute-tab::after,
+  .vedute-select-chevron,
+  .vedute-select-item::before {
+    transition: none;
+  }
+
+  .vedute-select-content {
+    animation: none;
+  }
+
+  .vedute-toast {
+    animation: none;
+  }
+
+  .vedute-toast[data-exiting] {
+    animation-duration: 0s;
+  }
+}

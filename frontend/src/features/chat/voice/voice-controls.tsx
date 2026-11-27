@@ -141,7 +141,7 @@ export function VoiceControls({
   }
   const v = useVoice(host, reply)
   const [fellBack, setFellBack] = useState(false)
-  const rt = useRealtimeVoice(realtime, v.bargeIn, () => {
+  const rt = useRealtimeVoice(realtime, true, () => {
     setFellBack(true)
     v.toggleConverse()
   })
@@ -230,17 +230,11 @@ export function VoiceControls({
               </Label>
             </div>
           )}
-          <div className="flex items-center gap-2">
-            <Switch id="voice-barge-in" checked={v.bargeIn} onCheckedChange={v.setBargeIn} />
-            <Label htmlFor="voice-barge-in" className="text-xs sm:text-sm">
-              {t('voice.bargeIn')}
-            </Label>
-          </div>
         </div>
       ) : null}
       {live ? (
         <AudioDiagnostics status={{ state: rt.phase === 'connecting' ? 'starting' : 'monitoring', microphone: rt.microphone }} />
-      ) : converse && v.bargeIn ? (
+      ) : converse ? (
         <AudioDiagnostics status={v.audioStatus} />
       ) : null}
 

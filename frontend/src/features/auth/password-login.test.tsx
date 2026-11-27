@@ -30,7 +30,7 @@ describe('built-in login', () => {
     await userEvent.type(await screen.findByLabelText('學號或電子郵件'), 'a@example.com')
     await userEvent.type(screen.getByLabelText('密碼'), 'password-123')
     await userEvent.click(screen.getByRole('button', { name: '登入' }))
-    expect(await screen.findByRole('navigation', { name: 'main' })).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: '主導覽' })).toBeInTheDocument()
     expect(body).toEqual({ account: 'a@example.com', password: 'password-123' })
   })
 
@@ -73,7 +73,7 @@ describe('forced password change', () => {
     mockMe(tempMe())
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '更改密碼' })).toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'main' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: '主導覽' })).not.toBeInTheDocument()
   })
 
   it('rejects mismatched confirmation without calling the API', async () => {
@@ -102,7 +102,7 @@ describe('forced password change', () => {
     await userEvent.type(screen.getByLabelText('新密碼'), 'new-password-1')
     await userEvent.type(screen.getByLabelText('確認新密碼'), 'new-password-1')
     await userEvent.click(screen.getByRole('button', { name: '更改密碼' }))
-    expect(await screen.findByRole('navigation', { name: 'main' })).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: '主導覽' })).toBeInTheDocument()
     expect(body).toEqual({ current_password: 'temp-password', new_password: 'new-password-1' })
   })
 

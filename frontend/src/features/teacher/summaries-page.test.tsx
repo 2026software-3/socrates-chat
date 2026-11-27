@@ -187,6 +187,45 @@ describe('SummariesPage', () => {
     expect(within(card).getByText('拯救較多人')).toBeInTheDocument()
   })
 
+  it('translates as a background job: waits for the job, then shows the saved translation (S-20)', async () => {
+    let polls = 0
+    let posts = 0
+    Object.assign(globalThis, { Translator: { availability: vi.fn(async () => 'unavailable'), create: vi.fn() } })
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([row()]))),
+      http.post('/api/summaries/c1/translation', () => {
+        posts += 1
+        return posts === 1
+          ? HttpResponse.json({ job_id: 'j1', status: 'pending' }, { status: 202 })
+          : HttpResponse.json({ language: 'en', stance: 'Would pull the lever', reasons: 'Save more people' })
+      }),
+      http.get('/api/ai-jobs/j1', () => HttpResponse.json({ status: polls++ < 1 ? 'pending' : 'ready' })),
+    )
+    renderTeacherPage(<SummariesPage />, 'en')
+    const card = cardOf(await screen.findByText('應該拉桿'))
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Translate to English' }))
+    expect(await within(card).findByRole('button', { name: 'Translating…' })).toBeDisabled()
+    expect(await within(card).findByText('Would pull the lever', {}, { timeout: 8000 })).toBeInTheDocument()
+    expect(within(card).getByText('Save more people')).toBeInTheDocument()
+    expect(posts).toBe(2)
+  }, 15_000)
+
+  it('shows the error when the background translation job fails', async () => {
+    Object.assign(globalThis, { Translator: { availability: vi.fn(async () => 'unavailable'), create: vi.fn() } })
+    server.use(
+      http.get('/api/summaries', () => HttpResponse.json(page([row()]))),
+      http.post('/api/summaries/c1/translation', () => HttpResponse.json({ job_id: 'j2', status: 'pending' }, { status: 202 })),
+      http.get('/api/ai-jobs/j2', () => HttpResponse.json({ status: 'failed', error_code: 'ai_unavailable' })),
+    )
+    renderTeacherPage(<SummariesPage />, 'en')
+    const card = cardOf(await screen.findByText('應該拉桿'))
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Translate to English' }))
+    expect(await within(card).findByRole('alert')).toHaveTextContent('The AI is temporarily unavailable.')
+    expect(within(card).getByRole('button', { name: 'Translate to English' })).toBeEnabled()
+  })
+
   it('keeps the original visible when translation fails and allows retrying', async () => {
     let calls = 0
     Object.assign(globalThis, {
