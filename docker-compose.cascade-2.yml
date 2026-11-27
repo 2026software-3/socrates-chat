@@ -1,0 +1,38 @@
+# 第二個 cascade 容器（cascade-b），與 cascade 共用同一組 cascade-tts、cascade-whisper、cascade-adapter。
+# 一個 cascade 程序只有一個 LLM 回呼位址與一把密鑰，所以同一台機器要同時服務兩個後端（例如正式與 staging），
+# 就要一個後端一個 cascade 容器。疊在 docker-compose.yml 之上，預設不套用：
+#   docker compose -f docker-compose.yml -f docker-compose.cascade-2.yml --profile cascade up -d
+# 必填（.env）：CASCADE_B_LLM_BASE_URL、CASCADE_B_LLM_TOKEN（在第二個後端登錄為 S-19 語音節點時取得的密鑰）。
+# 選填：CASCADE_B_PORT（對主機開的埠，預設 8111）、CASCADE_B_BIND（綁定位址，預設 127.0.0.1）、CASCADE_B_MEM_LIMIT（預設 2g）。
+# 實測（docs/specs/cascade-slimming.md）：兩個 cascade 各接一個後端、同時各一場，互不干擾；重啟其中一個不影響另一個。
+# cascade 的 /v1/realtime 本身沒有驗證，不要綁 0.0.0.0。要讓別的機器連進來時，把 CASCADE_B_BIND 設成 tailnet IP；
+# 只在 compose 網路內用就不必開埠。
+services:
+  cascade-b:
+    profiles: ["cascade"]
+    image: socrates-cascade:latest
+    command: ["cascade"]
+    restart: unless-stopped
+    mem_limit: ${CASCADE_B_MEM_LIMIT:-2g}
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "5"
+    environment:
+      CASCADE_LLM_TOKEN: ${CASCADE_B_LLM_TOKEN:?設定 .env 的 CASCADE_B_LLM_TOKEN}
+      CASCADE_LLM_BASE_URL: ${CASCADE_B_LLM_BASE_URL:?設定 .env 的 CASCADE_B_LLM_BASE_URL}
+    ports:
+      - "${CASCADE_B_BIND:-127.0.0.1}:${CASCADE_B_PORT:-8111}:8110"
+    volumes:
+      - cascade_cache:/root/.cache
+      - ${CASCADE_HF_CACHE:-cascade_hf}:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8110/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      cascade-adapter:
+        condition: service_healthy

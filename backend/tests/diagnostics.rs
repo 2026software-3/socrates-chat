@@ -562,3 +562,79 @@ async fn classroom_ai_unavailability_can_be_filtered_and_counts_as_a_failure(poo
     assert_eq!(items.len(), 1, "{listed}");
     assert_eq!(items[0]["failure_class"], "classroom_ai_unavailable");
 }
+
+#[sqlx::test]
+async fn external_book_source_failure_is_recorded_without_query_and_excludes_ai_stats(
+    pool: PgPool,
+) {
+    use socrates_chat_backend::book_sources::{
+        BookCandidate, BookProvider, BookSource, BookSourceError,
+    };
+    use socrates_chat_backend::diagnostics::Failure;
+
+    struct FailingBooks;
+    #[async_trait::async_trait]
+    impl BookSource for FailingBooks {
+        async fn search(&self, _query: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
+            Err(BookSourceError::http(
+                BookProvider::GoogleBooks,
+                403,
+                Failure::InvalidKey,
+            ))
+        }
+    }
+
+    use socrates_chat_backend::{AppState, app as make_app};
+    use std::sync::Arc;
+    register_fixture_pool(&pool);
+    let app = make_app(
+        AppState::new(
+            pool,
+            test_config(),
+            Arc::new(FakeIdentity),
+            FakeAi::with(vec![]),
+        )
+        .with_book_source(Arc::new(FailingBooks)),
+    );
+    let actors = seed_actors(&app).await;
+    let response = send(
+        &app,
+        get(
+            "/api/books/search?q=secret-book-query",
+            Some(&actors.teacher),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "book_source_unavailable"
+    );
+
+    let status = admin_json(&app, &actors.admin, "/api/admin/status").await;
+    assert_eq!(status["statistics"]["ai_calls"], 0);
+    assert_eq!(status["statistics"]["ai_failures"], 0);
+    let recent = status["recent_errors"].as_array().unwrap();
+    assert_eq!(recent.len(), 1, "{status}");
+    assert_eq!(recent[0]["kind"], "book_source");
+    assert_eq!(recent[0]["failure_class"], "invalid_key");
+    assert_eq!(recent[0]["function"], "book_search");
+    assert_eq!(recent[0]["route"], "/api/books/search");
+    assert_eq!(recent[0]["status"], 503);
+    assert_eq!(recent[0]["error_code"], "book_source_unavailable");
+    assert_eq!(recent[0]["request_id"], request_id);
+    assert!(recent[0]["user_id"].as_str().is_some());
+
+    let listed = admin_json(
+        &app,
+        &actors.admin,
+        "/api/admin/diagnostics?kind=book_source",
+    )
+    .await;
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1, "{listed}");
+    assert!(!listed.to_string().contains("secret-book-query"));
+}

@@ -280,6 +280,29 @@ test('Vedute print components interactions, equal card heights, and semantics', 
   // Compact StageScale shows only the current stage label
   await expect(page.locator('[data-vedute-stage-scale][data-variant="compact"]').first()).toContainText('釐清')
 
+  // PlateCardSkeleton -> PlateCard transition should not shift content below it
+  const swapRegion = page.getByTestId('plate-card-swap')
+  const belowHeading = page.getByRole('heading', { name: '書目與共用書庫' })
+  const getDocTop = (el: Element) => el.getBoundingClientRect().top + window.scrollY
+  const skeletonCard = swapRegion.locator('[data-vedute-plate-card-skeleton]')
+  const skeletonHeight = (await skeletonCard.boundingBox())!.height
+  const beforeY = await belowHeading.evaluate(getDocTop)
+  await page.getByRole('button', { name: '模擬載入完成' }).click()
+  const loadedCard = swapRegion.locator('[data-vedute-plate-card]')
+  await expect(loadedCard).toBeVisible()
+  const afterY = await belowHeading.evaluate(getDocTop)
+  const loadedHeight = (await loadedCard.boundingBox())!.height
+  expect(
+    Math.abs(loadedHeight - skeletonHeight),
+    `card height changed from ${skeletonHeight}px to ${loadedHeight}px`,
+  ).toBeLessThanOrEqual(1)
+  expect(
+    Math.abs(afterY - beforeY),
+    `below content shifted by ${afterY - beforeY}px (skeleton=${skeletonHeight}, card=${loadedHeight})`,
+  ).toBeLessThanOrEqual(1)
+  await page.getByRole('button', { name: '重置骨架' }).click()
+  await expect(loadedCard).toHaveCount(0)
+
   // No horizontal overflow across mobile, tablet, or desktop viewports
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 

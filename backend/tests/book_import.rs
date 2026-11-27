@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use socrates_chat_backend::{
     book_import::import_csv,
-    book_sources::{BookCandidate, BookSource, BookSourceError},
+    book_sources::{BookCandidate, BookProvider, BookSource, BookSourceError},
+    diagnostics::Failure,
 };
 use sqlx::PgPool;
 struct NoResults;
@@ -86,7 +87,10 @@ struct SourceFailure;
 #[async_trait]
 impl BookSource for SourceFailure {
     async fn search(&self, _: &str) -> Result<Vec<BookCandidate>, BookSourceError> {
-        Err(BookSourceError)
+        Err(BookSourceError::new(
+            BookProvider::GoogleBooks,
+            Failure::ServiceError,
+        ))
     }
 }
 fn candidate(title: &str) -> BookCandidate {

@@ -24,14 +24,22 @@ pub fn routes() -> Router<AppState> {
 
 #[utoipa::path(get,path="/api/books/{id}/editions",tag="books",summary="搜尋其他語言／出版版本候選；不寫入書庫",params(("id"=Uuid,Path)),responses((status=200,description="Open Library 作品關係候選，仍須教師確認；有界查詢不保證找齊",body=Vec<RelatedEdition>),(status=503,description="book_source_unavailable",body=ErrorBody),crate::error::CommonErrors))]
 pub(crate) async fn related(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<RelatedEdition>>, ApiError> {
     let book = book_store::get(&state.pool, id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let mut candidates = state.book_source.related(&book).await.map_err(|_| {
+    let mut candidates = state.book_source.related(&book).await.map_err(|err| {
+        crate::diagnostics::book_source_failure(
+            &state.pool,
+            "book_editions",
+            cu.user.id,
+            err.class,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "book_source_unavailable",
+        );
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "book_source_unavailable",

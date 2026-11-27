@@ -74,7 +74,7 @@ export function PlateCard({
       </div>
 
       <div className="flex flex-1 flex-col gap-2 px-4 pt-3.5 pb-4">
-        <div className="flex items-start justify-between gap-2">
+        <div className="flex min-h-7 items-start justify-between gap-2">
           <div className="type-h3 min-w-0 flex-1 line-clamp-2 text-ink">{title}</div>
           {headerAction && <div className="-my-2 -mr-2 shrink-0">{headerAction}</div>}
         </div>
@@ -87,9 +87,18 @@ export function PlateCard({
   )
 }
 
-export function PlateCardSkeleton({ className }: { className?: string }) {
+const META_SKELETON_WIDTHS = ['w-18', 'w-28', 'w-25'] as const
+
+export function PlateCardSkeleton({
+  metaCount = 3,
+  className,
+}: {
+  metaCount?: number
+  className?: string
+}) {
   return (
     <div
+      data-vedute-plate-card-skeleton=""
       className={cn(
         'flex h-full flex-col overflow-hidden rounded-none border border-ink bg-surface',
         className,
@@ -97,12 +106,20 @@ export function PlateCardSkeleton({ className }: { className?: string }) {
     >
       <Skeleton className="h-24 w-full shrink-0 rounded-none" />
       <div className="flex flex-1 flex-col gap-2 px-4 pt-3.5 pb-4">
-        <Skeleton className="h-6.5 w-3/5" />
-        <div className="flex flex-wrap gap-3">
-          <Skeleton className="h-5 w-24" />
-          <Skeleton className="h-5 w-20" />
+        <Skeleton className="h-7 w-3/5" />
+        {metaCount > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
+            {Array.from({ length: metaCount }, (_, i) => (
+              <Skeleton
+                key={i}
+                className={cn('h-5.25', META_SKELETON_WIDTHS[i % META_SKELETON_WIDTHS.length])}
+              />
+            ))}
+          </div>
+        )}
+        <div className="mt-auto pt-1">
+          <Skeleton className="h-11 w-full" />
         </div>
-        <Skeleton className="mt-auto h-11 w-full" />
       </div>
     </div>
   )
