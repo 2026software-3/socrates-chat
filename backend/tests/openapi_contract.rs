@@ -484,6 +484,73 @@ fn radar_contract_exposes_status_retry_and_scores_without_the_rubric() {
     assert!(dimension.get("rubric").is_none());
 }
 
+/// utoipa 以型別名稱註冊 schema；兩個同名的 `ToSchema` 型別在 OpenAPI 裡會互相覆蓋
+/// （曾讓 `/api/admin/users/{id}/status` 的請求格式變成客訴的 `StatusBody`），所以名稱不可重複。
+mod schema_names {
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    /// 形狀完全相同、覆蓋也無妨的同名型別。
+    const IDENTICAL: &[&str] = &["Localized"];
+
+    fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn to_schema_type_names_are_unique() {
+        let mut files = Vec::new();
+        rust_files(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for file in files {
+            let text = fs::read_to_string(&file).unwrap();
+            let mut derives_schema = false;
+            for line in text.lines().map(str::trim) {
+                if line.starts_with("#[derive(") {
+                    derives_schema = line.contains("ToSchema");
+                    continue;
+                }
+                if line.starts_with("#[") || line.starts_with("///") {
+                    continue;
+                }
+                let declaration = line
+                    .trim_start_matches("pub(crate) ")
+                    .trim_start_matches("pub ");
+                let name = declaration
+                    .strip_prefix("struct ")
+                    .or_else(|| declaration.strip_prefix("enum "));
+                if let (true, Some(rest)) = (derives_schema, name) {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    seen.entry(name)
+                        .or_default()
+                        .push(file.file_name().unwrap().to_string_lossy().into_owned());
+                }
+                derives_schema = false;
+            }
+        }
+        let duplicated: Vec<_> = seen
+            .iter()
+            .filter(|(name, files)| files.len() > 1 && !IDENTICAL.contains(&name.as_str()))
+            .collect();
+        assert!(
+            duplicated.is_empty(),
+            "同名的 ToSchema 型別會在 OpenAPI 互相覆蓋：{duplicated:?}"
+        );
+    }
+}
+
 /// 整份 OpenAPI 與進版控的快照（`docs/api/openapi.json`）逐項比對。
 /// 前端的契約測試（`frontend/src/test/contract.test.ts`）用同一份快照驗證 MSW 假後端的回應，
 /// 所以 API 有任何變動，都要明確更新快照，前端才會發現假後端落後。

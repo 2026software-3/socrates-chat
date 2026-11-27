@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, configure } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, expect } from 'vitest'
 import { server } from '@/test/server'
-import { CONTRACT_ENFORCED, CONTRACT_EXEMPT_FILES, contractViolations } from '@/test/contract'
+import { CONTRACT_ENFORCED, CONTRACT_EXEMPT_FILES, contractViolations, requestViolations } from '@/test/contract'
 
 // findBy／waitFor 預設只等 1 秒。每個測試的第一個 findBy 要等整個 App 啟動（登入狀態、外框、延遲載入的路由、資料請求），
 // 整套測試並行、機器忙碌時（CI、開著別的程式）常常超過 1 秒而偶發失敗。通過的測試不會因此變慢，
@@ -25,8 +25,20 @@ if (typeof Element.prototype.scrollIntoView !== 'function') {
   Element.prototype.scrollIntoView = () => {}
 }
 
-// 前後端契約：每個 MSW 假回應都用 docs/api/openapi.json 驗證；納入 CONTRACT_ENFORCED 的測試檔有不符就失敗
+// 前後端契約：每個 MSW 假回應與前端送出的 JSON 請求本文，都用 docs/api/openapi.json 驗證；納入 CONTRACT_ENFORCED 的測試檔有不符就失敗
 const pendingChecks: Promise<string[]>[] = []
+server.events.on('request:start', ({ request }) => {
+  const { pathname } = new URL(request.url)
+  if (!pathname.startsWith('/api/') || !(request.headers.get('content-type') ?? '').includes('json')) return
+  // 在 handler 讀走本文之前複製
+  pendingChecks.push(
+    request
+      .clone()
+      .text()
+      .then((text) => (text === '' ? [] : requestViolations(request.method, pathname, JSON.parse(text))))
+      .catch(() => []),
+  )
+})
 server.events.on('response:mocked', ({ request, response }) => {
   const { pathname } = new URL(request.url)
   if (!pathname.startsWith('/api/') || !(response.headers.get('content-type') ?? '').includes('json')) return

@@ -7,6 +7,7 @@ import openapi from '../../../docs/api/openapi.json'
  */
 
 type Operation = {
+  requestBody?: { content?: Record<string, unknown> }
   parameters?: { name: string; in: string; required?: boolean }[]
   responses?: Record<string, { content?: Record<string, unknown> }>
 }
@@ -57,6 +58,23 @@ export function contractViolations(method: string, path: string, status: number,
   return validate(body)
     ? []
     : (validate.errors ?? []).map((e) => `${method.toUpperCase()} ${found.specPath} ${status}：${e.instancePath || '/'} ${e.message}`)
+}
+
+/**
+ * 前端送給 MSW handler 的 JSON 請求本文是否符合契約的 requestBody。
+ * 不是 JSON 的本文（語音音檔等）不檢查；端點不在契約裡的由回應檢查回報，這裡略過。
+ */
+export function requestViolations(method: string, path: string, body: unknown): string[] {
+  const found = findOperation(method, path)
+  if (!found) return []
+  const label = `${method.toUpperCase()} ${found.specPath} 的請求`
+  const content = found.operation.requestBody?.content
+  if (!content) return [`${label}：契約沒有記載 requestBody，但送出了本文`]
+  if (!content['application/json']) return []
+  const validate = ajv.compile({
+    $ref: `openapi#${pointer('paths', found.specPath, method.toLowerCase(), 'requestBody', 'content', 'application/json', 'schema')}`,
+  })
+  return validate(body) ? [] : (validate.errors ?? []).map((e) => `${label}：${e.instancePath || '/'} ${e.message}`)
 }
 
 /**
