@@ -60,7 +60,10 @@ export function contractViolations(method: string, path: string, status: number,
 }
 
 /**
- * 已納入「所有 MSW 假回應都要符合契約」的測試（以測試檔路徑比對）。
- * 其餘目錄逐步加入；每加一個目錄，該目錄測試裡與 docs/api/openapi.json 不符的假回應要先修正。
+ * 所有測試的 MSW 假回應都要符合契約（以測試檔路徑比對）；新目錄自動納入。
+ * 確實不該檢查的測試檔放進 `CONTRACT_EXEMPT_FILES`，並寫明理由。
  */
-export const CONTRACT_ENFORCED = ['src/features/books/', 'src/features/classrooms/', 'src/features/dashboard/', 'src/features/admin/', 'src/features/teacher/', 'src/features/chat/', 'src/features/student/', 'src/features/keys/', 'src/features/announcements/', 'src/features/complaints/']
+export const CONTRACT_ENFORCED = ['src/']
+
+/** 不檢查的測試檔：用虛構端點（`/api/x`、`/api/ok`…）測 HTTP 客戶端本身，不是真實 API。 */
+export const CONTRACT_EXEMPT_FILES = ['src/lib/api.test.ts']

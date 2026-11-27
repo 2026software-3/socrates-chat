@@ -380,7 +380,7 @@ describe('drawer, plan sheet, focus management, and reduced motion', () => {
       http.get('/api/catalog', () =>
         HttpResponse.json({
           activities: [],
-          topics: [{ id: 't1', title: '自由意志', description: 'desc' }],
+          topics: [{ id: 't1', title: '自由意志', description: 'desc', is_active: true, title_pending: false, pending_questions: [] }],
         }),
       ),
       http.get('/api/points', () => HttpResponse.json({ balance: 128 })),
@@ -426,6 +426,7 @@ describe('drawer, plan sheet, focus management, and reduced motion', () => {
           activity_title: null,
           topic_id: 't1',
           title: '正義是什麼？',
+          title_pending: false,
           description: '',
           language: 'zh-TW',
           status: 'active',
@@ -439,7 +440,7 @@ describe('drawer, plan sheet, focus management, and reduced motion', () => {
           classroom_name: null,
           classroom_archived: false,
           messages: [
-            { id: 'm1', role: 'student', content: '我認為正義是公平。', created_at: '2026-11-01T00:00:00Z' },
+            { id: 'm1', role: 'student', content: '我認為正義是公平。', source: 'text', question_type: null, created_at: '2026-11-01T00:00:00Z' },
           ],
           generating: false,
           voice_realtime: false,

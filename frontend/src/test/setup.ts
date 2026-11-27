@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, configure } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, expect } from 'vitest'
 import { server } from '@/test/server'
-import { CONTRACT_ENFORCED, contractViolations } from '@/test/contract'
+import { CONTRACT_ENFORCED, CONTRACT_EXEMPT_FILES, contractViolations } from '@/test/contract'
 
 // findBy／waitFor 預設只等 1 秒。每個測試的第一個 findBy 要等整個 App 啟動（登入狀態、外框、延遲載入的路由、資料請求），
 // 整套測試並行、機器忙碌時（CI、開著別的程式）常常超過 1 秒而偶發失敗。通過的測試不會因此變慢，
@@ -48,7 +48,7 @@ afterEach(async () => {
   server.resetHandlers()
   localStorage.clear()
   sessionStorage.clear()
-  if (violations.length > 0 && CONTRACT_ENFORCED.some((dir) => file.includes(dir))) {
+  if (violations.length > 0 && CONTRACT_ENFORCED.some((dir) => file.includes(dir)) && !CONTRACT_EXEMPT_FILES.some((f) => file.endsWith(f))) {
     throw new Error(`MSW 假回應不符合 docs/api/openapi.json：\n${violations.join('\n')}`)
   }
 })
