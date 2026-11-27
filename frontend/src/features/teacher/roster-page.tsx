@@ -375,7 +375,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
 
   /** 有帳號的學生可點進去看他的討論情形。 */
   const studentLink = (s: StudentRow) =>
-    s.id ? (
+    s.has_account && s.id ? (
       <Link to={`${base}/${classroom.id}/students/${s.id}`} className="underline-offset-4 hover:underline">
         {s.email ?? s.student_number}
       </Link>

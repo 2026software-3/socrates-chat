@@ -8,6 +8,7 @@ import { makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 const teacher = makeMe({ teacher: true })
+const topic = (id: string, title: string) => ({ id, title, description: '', is_active: true, title_pending: false, pending_questions: [] })
 const book = (id: string, active = true) => { const edition = { external_sources: [], id, work_id: id, title: `Book ${id}`, authors: null, language: null, publication_year: null, isbn: null, source_url: null, description: null, recommendation_note: null, created_by: teacher.id, is_active: active, created_at: '', updated_at: '' }; return { ...edition, editions: [edition] } }
 
 describe('topic reading lists', () => {
@@ -40,7 +41,7 @@ describe('topic reading lists', () => {
     let selected = [book('old'), book('inactive', false)]
     const puts: unknown[] = []
     server.use(
-      http.get('/api/topics', () => HttpResponse.json([{ id: 't1', title: 'Synthetic topic', description: '', category: null, is_active: true }])),
+      http.get('/api/topics', () => HttpResponse.json([topic('t1', 'Synthetic topic')])),
       http.get('/api/topics/t1/books', () => HttpResponse.json(selected)),
       http.get('/api/book-works', () => HttpResponse.json([book('old'), book('new'), book('inactive', false)])),
       http.put('/api/topics/t1/books', async ({ request }) => { const body = await request.json() as { work_ids: string[] }; puts.push(body); selected = body.work_ids.map((id) => book(id, id !== 'inactive')); return HttpResponse.json(selected) }),
@@ -61,7 +62,7 @@ describe('topic reading lists', () => {
 const activity: Activity = { id: 'a1', title: 'Synthetic activity', description: '', topic_ids: ['t1', 't2'], opens_at: null, closes_at: null, classroom_id: 'c1', status: 'published', is_archived: false, created_at: '' }
 
 function activityMocks() {
-  server.use(http.get('/api/topics', () => HttpResponse.json([{ id: 't1', title: 'Topic one' }, { id: 't2', title: 'Topic two' }])), http.get('/api/book-works', () => HttpResponse.json([book('one'), book('two'), book('new')])), http.get('/api/activities/a1/topics/:topic/books', ({ params }) => HttpResponse.json([book(params.topic === 't1' ? 'one' : 'two')])))
+  server.use(http.get('/api/topics', () => HttpResponse.json([topic('t1', 'Topic one'), topic('t2', 'Topic two')])), http.get('/api/book-works', () => HttpResponse.json([book('one'), book('two'), book('new')])), http.get('/api/activities/a1/topics/:topic/books', ({ params }) => HttpResponse.json([book(params.topic === 't1' ? 'one' : 'two')])))
 }
 
 describe('activity reading lists', () => {
