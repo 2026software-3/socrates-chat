@@ -814,7 +814,7 @@ pub(crate) struct LoginResponse {
     summary = "內建帳號登入（學號或電子郵件加密碼）",
     request_body = LoginBody,
     security(()),
-    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody))
+    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody), (status = 503, description = "maintenance：維護模式中只有管理者能登入", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn password_login(
     State(state): State<AppState>,

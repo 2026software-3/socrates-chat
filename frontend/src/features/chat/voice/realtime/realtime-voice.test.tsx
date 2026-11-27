@@ -8,7 +8,7 @@ import { makeDetail, makeMessage } from '@/features/chat/test-data'
 import { createRealtimeSession, type RealtimeCallbacks } from '@/features/chat/voice/realtime/realtime-session'
 import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import type { ConversationDetail } from '@/lib/types'
-import { makeMe, mockMe, renderApp } from '@/test/render'
+import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 vi.mock('@/features/chat/voice/realtime/realtime-session', async (original) => ({
@@ -24,7 +24,7 @@ function renderPage(detail: ConversationDetail) {
     http.get('/api/conversations/c1', () => HttpResponse.json(detail)),
     http.post('/api/conversations/c1/messages', async ({ request }) => {
       posts.push(await request.json())
-      return HttpResponse.json({}, { status: 500 })
+      return apiError(500, 'internal')
     }),
   )
   mockMe(makeMe({ student: true }, { language: 'zh-TW' }))
@@ -165,7 +165,7 @@ describe('server voice conversation', () => {
   it('takes stage and ending from the server after a turn', async () => {
     const { cb } = await startLive()
     server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: 'ended', voice_realtime: true }))))
-    server.use(http.get('/api/conversations/c1/summary', () => HttpResponse.json({ status: 'generating' })))
+    server.use(http.get('/api/conversations/c1/summary', () => HttpResponse.json({ status: 'generating', translation_pending: false })))
     act(() => cb.onSettled())
     await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument())
     expect(session.close).toHaveBeenCalled()

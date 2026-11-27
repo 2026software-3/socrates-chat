@@ -5546,6 +5546,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "maintenance：維護模式中只有管理者能登入",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [

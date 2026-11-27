@@ -35,11 +35,20 @@ export function findOperation(method: string, path: string) {
   return specPath && operation ? { specPath, operation } : undefined
 }
 
+/** 維護模式的閘門（backend/src/lib.rs `maintenance_gate`）放行的路徑；其餘 `/api` 路徑在維護中一律回 503 `maintenance`。 */
+const MAINTENANCE_EXEMPT = /^\/api\/(announcements|openapi\.json|auth\/(login|logout|google\/.+)|docs.*)$/
+
+const errorBody = ajv.compile({ $ref: 'openapi#/components/schemas/ErrorBody' })
+
 /** 回傳違反契約的訊息；空陣列代表符合。未記載的端點或狀態碼也算違反。 */
 export function contractViolations(method: string, path: string, status: number, body: unknown): string[] {
   const found = findOperation(method, path)
   if (!found) return [`契約沒有 ${method.toUpperCase()} ${path}`]
   const response = found.operation.responses?.[String(status)]
+  // 維護閘門是跨端點的 middleware，不會寫在每個端點的契約裡；回應仍要是標準錯誤格式
+  if (!response && status === 503 && !MAINTENANCE_EXEMPT.test(found.specPath)) {
+    return errorBody(body) ? [] : [`維護中的 503：${errorBody.errors?.map((e) => `${e.instancePath || '/'} ${e.message}`).join('、')}`]
+  }
   if (!response) return [`契約沒有記載 ${method.toUpperCase()} ${found.specPath} 的 ${status} 回應`]
   if (!response.content?.['application/json']) return []
   const validate = ajv.compile({
@@ -54,4 +63,4 @@ export function contractViolations(method: string, path: string, status: number,
  * 已納入「所有 MSW 假回應都要符合契約」的測試（以測試檔路徑比對）。
  * 其餘目錄逐步加入；每加一個目錄，該目錄測試裡與 docs/api/openapi.json 不符的假回應要先修正。
  */
-export const CONTRACT_ENFORCED = ['src/features/books/', 'src/features/classrooms/', 'src/features/dashboard/', 'src/features/admin/', 'src/features/teacher/']
+export const CONTRACT_ENFORCED = ['src/features/books/', 'src/features/classrooms/', 'src/features/dashboard/', 'src/features/admin/', 'src/features/teacher/', 'src/features/chat/', 'src/features/student/', 'src/features/keys/', 'src/features/announcements/', 'src/features/complaints/']
