@@ -10,6 +10,8 @@ const CID = '22222222-2222-4222-8222-222222222222'
 const activity: StudentActivity = {
   id: 'act-1',
   title: '合成活動',
+  title_pending: false,
+  description_pending: false,
   description: '說明',
   topic_ids: ['A'],
   opens_at: null,
