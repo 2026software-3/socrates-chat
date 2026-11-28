@@ -140,6 +140,11 @@ pub struct AiError {
     pub(crate) retry_after: Option<Duration>,
     /// 供應商回的 HTTP 狀態碼（只有狀態碼，不含本文）；供模型驗證區分「模型不存在」（F-40.3）。
     pub(crate) http_status: Option<u16>,
+    /// 供應商回應本文裡的固定錯誤代碼（如 `rate_limit_exceeded`）；只留像代碼的短字串，供日誌分辨限制種類。
+    pub(crate) provider_code: Option<String>,
+    /// `x-ratelimit-remaining-requests`／`-tokens`：供應商回報的剩餘額度（只有數字）。
+    pub(crate) ratelimit_remaining_requests: Option<u64>,
+    pub(crate) ratelimit_remaining_tokens: Option<u64>,
 }
 
 impl AiError {
@@ -160,6 +165,9 @@ impl AiError {
             provider_attempts: 0,
             retry_after: None,
             http_status: None,
+            provider_code: None,
+            ratelimit_remaining_requests: None,
+            ratelimit_remaining_tokens: None,
         }
     }
 
@@ -229,6 +237,37 @@ impl AiError {
 
     pub fn http_status(&self) -> Option<u16> {
         self.http_status
+    }
+
+    pub fn provider_code(&self) -> Option<&str> {
+        self.provider_code.as_deref()
+    }
+
+    pub fn ratelimit_remaining_requests(&self) -> Option<u64> {
+        self.ratelimit_remaining_requests
+    }
+
+    pub fn ratelimit_remaining_tokens(&self) -> Option<u64> {
+        self.ratelimit_remaining_tokens
+    }
+
+    /// 記下供應商的固定錯誤代碼與剩餘額度；代碼不像固定代碼（含空白、過長等）就不記，避免帶出本文。
+    pub(crate) fn with_rate_limit_details(
+        mut self,
+        code: Option<&str>,
+        remaining_requests: Option<u64>,
+        remaining_tokens: Option<u64>,
+    ) -> Self {
+        self.provider_code = code
+            .filter(|c| {
+                (1..=64).contains(&c.len())
+                    && c.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            })
+            .map(str::to_owned);
+        self.ratelimit_remaining_requests = remaining_requests;
+        self.ratelimit_remaining_tokens = remaining_tokens;
+        self
     }
 
     pub(crate) fn with_http_status(mut self, status: u16) -> Self {
