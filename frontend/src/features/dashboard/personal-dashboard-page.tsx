@@ -11,7 +11,8 @@ import { useFetch } from '@/lib/use-fetch'
 
 /** 學生帳號頁（S-18）裡的儀表板內容：自己的對話數量、最近完成的討論（主張、立場、回合數）。只算自己的資料。 */
 export function PersonalDashboardContent() {
-  const { data, error, loading, reload } = useFetch<PersonalDashboard>('/api/dashboard/me')
+  const { lang } = useI18n()
+  const { data, error, loading, reload } = useFetch<PersonalDashboard>(`/api/dashboard/me?language=${lang}`)
 
   return (
     <>
@@ -54,6 +55,7 @@ function Body({ d }: { d: PersonalDashboard }) {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <Link to={`/conversations/${r.conversation_id}`} className="font-medium break-words underline-offset-4 hover:underline">
                         {r.title}
+                        {r.title_pending && <small> {t('admin.dimensions.translationPending')}</small>}
                       </Link>
                       <span className="text-muted-foreground text-xs">{formatDate(r.ended_at, lang)}</span>
                     </div>

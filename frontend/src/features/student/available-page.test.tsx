@@ -17,6 +17,8 @@ function makeActivity(topics: TopicProgress[], overrides: Partial<StudentActivit
   return {
     id: 'act-1',
     title: 'Activity One',
+    title_pending: false,
+    description_pending: false,
     description: 'Activity desc',
     topic_ids: topics.map((t) => t.topic_id),
     opens_at: null,

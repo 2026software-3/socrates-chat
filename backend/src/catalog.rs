@@ -693,6 +693,16 @@ pub(crate) async fn update_activity(
 
     sqlx::query(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
+                translations = CASE
+                    WHEN ($2::text IS NOT NULL AND $2 <> title)
+                      OR ($3::text IS NOT NULL AND $3 <> description)
+                    THEN (
+                        SELECT COALESCE(jsonb_object_agg(lang, fields
+                            - CASE WHEN $2 IS NOT NULL AND $2 <> title THEN 'title' ELSE '' END
+                            - CASE WHEN $3 IS NOT NULL AND $3 <> description THEN 'description' ELSE '' END), '{}')
+                        FROM jsonb_each(translations) AS entries(lang, fields)
+                    )
+                    ELSE translations END,
                 opens_at = $4, closes_at = $5, updated_at = now()
          WHERE id = $1",
     )
@@ -903,7 +913,7 @@ pub(crate) struct Available {
 
 #[derive(Deserialize)]
 pub(crate) struct CatalogLanguage {
-    language: Option<String>,
+    pub(crate) language: Option<String>,
 }
 
 pub(crate) fn display_language<'a>(
@@ -959,6 +969,23 @@ pub(crate) async fn available(
     }
     let by_id: std::collections::HashMap<_, _> = topics.iter().map(|t| (t.id, t)).collect();
     for activity in &mut activities {
+        let all = std::mem::take(&mut activity.activity.translations);
+        if language != "zh-TW" {
+            let translations = all.get(language);
+            if let Some(title) = translations.and_then(|fields| fields.get("title")) {
+                activity.activity.title.clone_from(title);
+            } else {
+                activity.title_pending = true;
+            }
+            if !activity.activity.description.trim().is_empty() {
+                if let Some(description) = translations.and_then(|fields| fields.get("description"))
+                {
+                    activity.activity.description.clone_from(description);
+                } else {
+                    activity.description_pending = true;
+                }
+            }
+        }
         for progress in &mut activity.topics {
             if let Some(topic) = by_id.get(&progress.topic_id) {
                 progress.title.clone_from(&topic.title);

@@ -24,10 +24,17 @@ async fn ready_conversation(pool: &PgPool) -> Uuid {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;
     // 這個夾具也會在舊版資料庫結構（還沒有 topics.guiding_questions）上用到，
-    // 建立對話的 API 會讀該欄位，所以對話以 raw SQL 插入。
-    let activity = published_activity_with_topic(&app, &a, "電車難題")
+    // 建立對話的 API 會讀該欄位，所以對話以 raw SQL 插入；
+    // 發布 API 會讀 activities.translations（同樣是舊結構沒有的欄位），所以發布也以 raw SQL 進行。
+    let topic = seed_topic("電車難題").await;
+    let activity = create_activity(&app, &a, "電車難題", &topic)
         .await
         .parse::<Uuid>()
+        .unwrap();
+    sqlx::query("UPDATE activities SET status = 'published' WHERE id = $1")
+        .bind(activity)
+        .execute(pool)
+        .await
         .unwrap();
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)

@@ -150,7 +150,7 @@ describe('student topic detail page', () => {
   it('is reachable from an activity topic row, keeping the activity', async () => {
     mockCatalog([topic()], [
       {
-        id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
+        id: 'act-1', title: 'Activity One', title_pending: false, description: '', description_pending: false, topic_ids: ['top-1'], opens_at: null, closes_at: null,
         classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
         created_at: '2026-01-01T00:00:00Z', completed: false,
         topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: null, conversation_status: null, summary_ready: false, title_pending: false }],
@@ -164,7 +164,7 @@ describe('student topic detail page', () => {
   it('offers to continue instead of starting again when this activity topic already has a conversation', async () => {
     mockCatalog([topic()], [
       {
-        id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
+        id: 'act-1', title: 'Activity One', title_pending: false, description: '', description_pending: false, topic_ids: ['top-1'], opens_at: null, closes_at: null,
         classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
         created_at: '2026-01-01T00:00:00Z', completed: false,
         topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: 'c9', conversation_status: 'active', summary_ready: false, title_pending: false }],

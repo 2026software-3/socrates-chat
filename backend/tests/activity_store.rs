@@ -238,3 +238,53 @@ async fn personal_practice_never_matches_a_classroom_scoped_query(pool: PgPool) 
             .is_some()
     );
 }
+
+#[sqlx::test]
+async fn every_activity_read_and_state_change_carries_translations(pool: PgPool) {
+    let teacher = user(&pool, "t@example.com").await;
+    let classroom = room(&pool, teacher, "A").await;
+    let topic = topic(&pool).await;
+    let created = activity_store::create_with_schedule(
+        &pool,
+        classroom,
+        teacher,
+        "甲",
+        "",
+        &[topic],
+        (None, None),
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE activities SET translations = '{"en":{"title":"Localized"}}' WHERE id = $1"#,
+    )
+    .bind(created.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let english_title = |a: &activity_store::Activity| {
+        serde_json::to_value(a).unwrap()["translations"]["en"]["title"].clone()
+    };
+    let visible = activity_store::get_visible(&pool, created.id, teacher, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(english_title(&visible), "Localized", "get_visible");
+    let found = activity_store::find_by_id(&pool, created.id).await.unwrap();
+    assert_eq!(english_title(&found), "Localized", "find_by_id");
+    let published =
+        activity_store::set_status_writable(&pool, created.id, teacher, false, "published")
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        english_title(&published),
+        "Localized",
+        "set_status_writable"
+    );
+    let archived = activity_store::set_archived(&pool, created.id, true)
+        .await
+        .unwrap();
+    assert_eq!(english_title(&archived), "Localized", "set_archived");
+}

@@ -250,6 +250,7 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     {
       conversation_id: '11111111-1111-4111-8111-111111111111',
       title: '電車難題',
+      title_pending: false,
       claim: '不應該扳動',
       stance: '義務論',
       stage: 3,

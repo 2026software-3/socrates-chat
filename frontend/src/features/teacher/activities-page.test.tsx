@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ActivitiesPanel } from '@/features/teacher/activities-page'
 import { classroom, mockClassrooms, ROOM_A, renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Activity, Topic } from '@/lib/types'
-import { apiError, pageOf } from '@/test/render'
+import { apiError, mockMe, makeMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 // 契約規定的欄位：沒有翻譯中的標題，也沒有待補的問題
@@ -97,6 +97,19 @@ describe('ActivitiesPanel', () => {
     expect(screen.getByText('已發布')).toBeInTheDocument()
     expect(within(screen.getByRole('table')).getByText('電車難題')).toBeInTheDocument()
     expect(within(screen.getByRole('table')).getByText('自由意志')).toBeInTheDocument()
+  })
+
+  it('shows translated activity and topic text in the classroom list', async () => {
+    mockClassrooms()
+    mockMe(makeMe({ teacher: true }, { language: 'en' }))
+    mockList([act({ translations: { en: { title: 'Week one', description: 'Discuss fairness' } } })])
+    server.use(http.get('/api/topics', () => HttpResponse.json([
+      { ...topics[0], translations: { en: { title: 'Trolley problem' } } },
+    ])))
+    renderApp(<ActivitiesPanel classroomId={ROOM_A} detailBase="/teacher/classrooms/room/activities" />, { lang: 'en' })
+    expect(await screen.findByRole('link', { name: 'Week one' })).toBeInTheDocument()
+    expect(screen.getByText('Discuss fairness')).toBeInTheDocument()
+    expect(await screen.findByText('Trolley problem')).toBeInTheDocument()
   })
 
   it('loads the next page of activities on demand', async () => {
