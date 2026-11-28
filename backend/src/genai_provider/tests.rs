@@ -535,6 +535,54 @@ async fn classifies_http_failures_before_any_text_for_both_calls() {
 }
 
 #[tokio::test]
+async fn rate_limit_details_keep_only_the_fixed_code_and_remaining_counts() {
+    let limited = json!({"error": {"code": "rate_limit_exceeded", "type": "requests",
+        "message": PROVIDER_BODY}})
+    .to_string();
+    let headers = vec![
+        ("retry-after", "1728"),
+        ("x-ratelimit-remaining-requests", "0"),
+        ("x-ratelimit-remaining-tokens", "12345"),
+    ];
+    let (endpoint, _) = spawn(Reply::failure(429, headers.clone(), limited.clone())).await;
+    let p = provider(Family::OpenAi, &endpoint);
+    let (_, error) = drain(&p).await;
+    let error = error.expect("stream must fail");
+    assert_eq!(error.class, Failure::RateLimited);
+    assert_eq!(error.http_status(), Some(429));
+    assert_eq!(error.retry_after(), Some(Duration::from_secs(1728)));
+    assert_eq!(error.provider_code(), Some("rate_limit_exceeded"));
+    assert_eq!(error.ratelimit_remaining_requests(), Some(0));
+    assert_eq!(error.ratelimit_remaining_tokens(), Some(12345));
+    assert_clean(&error, "rate limit stream");
+    let error = p
+        .complete_json(json_request())
+        .await
+        .expect_err("json must fail");
+    assert_eq!(error.provider_code(), Some("rate_limit_exceeded"));
+    assert_eq!(error.ratelimit_remaining_tokens(), Some(12345));
+
+    // 不像固定代碼的值（含空白或過長）、數字代碼、非數字的剩餘量：一律不記
+    for body in [
+        json!({"error": {"code": format!("{PROVIDER_BODY} with spaces")}}).to_string(),
+        json!({"error": {"code": "x".repeat(65)}}).to_string(),
+        json!({"error": {"code": 429}}).to_string(),
+    ] {
+        let (endpoint, _) = spawn(Reply::failure(
+            429,
+            vec![("x-ratelimit-remaining-requests", "many")],
+            body.clone(),
+        ))
+        .await;
+        let (_, error) = drain(&provider(Family::OpenAi, &endpoint)).await;
+        let error = error.expect("stream must fail");
+        assert_eq!(error.provider_code(), None, "{body}");
+        assert_eq!(error.ratelimit_remaining_requests(), None, "{body}");
+        assert_clean(&error, &body);
+    }
+}
+
+#[tokio::test]
 async fn an_unreachable_endpoint_is_a_connection_failure() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/api/v1/", listener.local_addr().unwrap());
