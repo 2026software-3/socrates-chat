@@ -504,10 +504,14 @@ mod snapshot {
             return;
         }
 
-        let committed: serde_json::Value = serde_json::from_str(
+        let mut committed: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&path).expect("缺少 docs/api/openapi.json 快照"),
         )
         .expect("快照不是合法 JSON");
+        // `info.version` 來自 Cargo.toml；改版本號不是 API 變動，不該讓這個測試失敗
+        let mut actual = actual;
+        committed["info"]["version"] = serde_json::Value::Null;
+        actual["info"]["version"] = serde_json::Value::Null;
         assert!(
             committed == actual,
             "API 契約與 docs/api/openapi.json 不一致；確認變動符合預期後，\

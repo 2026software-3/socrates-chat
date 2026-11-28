@@ -27,6 +27,8 @@ describe('前後端契約：MSW 預設假端點符合後端 OpenAPI', () => {
     expect(contractViolations('GET', '/api/me', 503, body)).toEqual([])
     expect(contractViolations('GET', '/api/me', 503, {})).not.toEqual([])
     expect(contractViolations('GET', '/api/announcements', 503, body)).not.toEqual([])
+    // 維護閘門只會回 maintenance；別的 code 沒記載就是違反
+    expect(contractViolations('GET', '/api/me', 503, { error: { code: 'database_unavailable', request_id: 'r' } })).not.toEqual([])
   })
 
   it('契約沒有的端點或狀態碼算違反', () => {
