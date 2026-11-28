@@ -382,6 +382,14 @@ NTNU 正式環境的資料要保留，所以 migration **只往前**（[S-09.3](
 
 這只決定資料保留與 migration 規則，不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
 
+## API 契約快照
+
+後端的 OpenAPI 文件（`GET /api/openapi.json`）有一份進版控的快照 `docs/api/openapi.json`。後端測試比對兩者，前端測試用它驗證 MSW 假後端（見 [`docs/specs/decisions.md`](docs/specs/decisions.md) 的測試重心決策）。
+
+- 改了 API（路徑、請求或回應格式、`#[utoipa::path]` 的狀態碼、`ToSchema` 型別）時，後端的 `snapshot` 測試會失敗。確認變動符合預期後，用 `UPDATE_OPENAPI_SNAPSHOT=1 cargo test --test openapi_contract snapshot` 更新快照，與程式一起提交。`info.version` 不納入比對。
+- 快照變了，前端 MSW 假回應與請求若不符會在前端測試失敗，一併修正。CI 在 `docs/api/openapi.json` 變動時兩邊都會跑。
+- `ToSchema` 型別名稱在整個後端不可重複（utoipa 以名稱註冊 schema，同名會互相覆蓋）。
+
 ## 規格決策流程
 
 `docs/specs/` 是專案規則的唯一來源。Issue 負責討論與追蹤，不重複規則細節。

@@ -507,7 +507,9 @@ pub fn isbn13(value: &str) -> Option<String> {
         let sum: u32 = prefix
             .chars()
             .enumerate()
-            .map(|(i, c)| c.to_digit(10).unwrap() * if i % 2 == 0 { 1 } else { 3 })
+            .map(|(i, c)| {
+                c.to_digit(10).expect("ISBN prefix is all digits") * if i % 2 == 0 { 1 } else { 3 }
+            })
             .sum();
         return Some(format!("{prefix}{}", (10 - sum % 10) % 10));
     }

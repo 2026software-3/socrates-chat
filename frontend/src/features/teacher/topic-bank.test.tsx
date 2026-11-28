@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { TopicsPage } from '@/features/admin/topics-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Topic } from '@/lib/types'
+import { apiError } from '@/test/render'
 import { server } from '@/test/server'
 
 const trolley: Topic = {
@@ -12,6 +13,8 @@ const trolley: Topic = {
   title: '電車難題',
   description: '你會拉桿嗎？',
   is_active: true,
+  title_pending: false,
+  pending_questions: [],
 }
 
 describe('teacher topic bank', () => {
@@ -54,7 +57,7 @@ describe('teacher topic bank', () => {
   })
 
   it('retries pending dimensions and edits one language on a locked topic', async () => {
-    const empty = { dimensions: null, locked: false, prompt_version: null, pending_languages: [] }
+    const empty = { scale: 'legacy', dimensions: null, locked: false, prompt_version: null, pending_languages: [] }
     const dimension = {
       id: 'd1',
       name: { zh_tw: '謹慎', en: 'Caution', es: 'Cautela' },
@@ -62,6 +65,7 @@ describe('teacher topic bank', () => {
       rubric: ['一', '二', '三', '四', '五'],
     }
     const ready = {
+      scale: 'legacy',
       dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
       locked: true, prompt_version: 'topic-dimensions-v1', pending_languages: [],
     }
@@ -75,7 +79,7 @@ describe('teacher topic bank', () => {
         generated = true
         return HttpResponse.json({ job_id: 'jd', status: 'pending' }, { status: 202 })
       }),
-      http.get('/api/ai-jobs/jd', () => HttpResponse.json({ status: 'ready' })),
+      http.get('/api/ai-jobs/jd', () => HttpResponse.json({ id: 'jd', kind: 'topic_dimensions', status: 'ready', label_key: 'jobs.topic_dimensions', scope: { topic_id: 't1' }, started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z', retryable: false })),
       http.patch('/api/topics/t1/dimensions', async ({ request }) => {
         submitted = await request.json()
         return HttpResponse.json(ready)
@@ -111,6 +115,7 @@ describe('teacher topic bank', () => {
       rubric: ['一', '二', '三', '四', '五'],
     }
     const view = {
+      scale: 'legacy',
       dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
       locked: false, prompt_version: 'topic-dimensions-v1', rubric_language: 'zh-TW', pending_languages: [],
     }
@@ -144,8 +149,8 @@ describe('teacher topic bank', () => {
       http.get('/api/topics/t1/dimensions', () => {
         attempts += 1
         return attempts === 1
-          ? HttpResponse.json({ error: { code: 'internal' } }, { status: 500 })
-          : HttpResponse.json({ dimensions: null, locked: false, pending_languages: [] })
+          ? apiError(500, 'internal')
+          : HttpResponse.json({ scale: 'legacy', dimensions: null, locked: false, pending_languages: [] })
       }),
     )
     renderTeacherPage(<TopicsPage />)

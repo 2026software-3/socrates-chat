@@ -13,6 +13,9 @@ pub struct Activity {
     pub id: Uuid,
     pub title: String,
     pub description: String,
+    #[serde(skip_serializing_if = "crate::topic_translations::Translations::is_empty")]
+    #[sqlx(json, default)]
+    pub(crate) translations: crate::topic_translations::Translations,
     /// 活動題目清單（S-04.7、F-29.1）
     pub topic_ids: Vec<Uuid>,
     /// 相容舊欄位（第一個題目；沒有題目時為 null）
@@ -49,7 +52,7 @@ macro_rules! topic_join {
 macro_rules! activity_select {
     ($tail:literal) => {
         concat!(
-            "SELECT a.id, a.title, a.description, ",
+            "SELECT a.id, a.title, a.description, a.translations, ",
             topic_columns!(),
             ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
              FROM activities a ",
@@ -170,9 +173,9 @@ pub async fn set_status_writable(
             FROM classrooms cl
             WHERE a.id = $1 AND cl.id = a.classroom_id AND ($3 OR cl.created_by = $4)
               AND NOT cl.is_archived AND NOT a.is_archived
-            RETURNING a.id, a.title, a.description, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
+            RETURNING a.id, a.title, a.description, a.translations, a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at
          )
-         SELECT u.id, u.title, u.description, ",
+         SELECT u.id, u.title, u.description, u.translations, ",
         topic_columns!(),
         ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
          FROM upd u ",
@@ -193,7 +196,7 @@ pub async fn list_published_for_student(
 ) -> Result<Vec<PublishedActivity>, sqlx::Error> {
     // 同一個查詢帶出教室名稱：活動都在學生名單內的教室，所以只會有學生自己所在教室的名稱（S-14）
     sqlx::query_as(concat!(
-        "SELECT a.id, a.title, a.description, ",
+        "SELECT a.id, a.title, a.description, a.translations, ",
         topic_columns!(),
         ", a.classroom_id, a.status, a.is_archived, a.opens_at, a.closes_at, a.created_at,
            cl.name AS classroom_name
@@ -238,6 +241,8 @@ pub struct TopicProgress {
 /// 學生看到的活動：活動本身加上所屬教室名稱（供前端依教室分組，S-14）、每題進度與整體完成度。
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StudentActivity {
+    pub title_pending: bool,
+    pub description_pending: bool,
     #[serde(flatten)]
     pub activity: Activity,
     /// 所屬教室名稱；學生看得到的教室資訊只有名稱
@@ -288,6 +293,8 @@ pub async fn list_published_with_progress(
                 .unwrap_or_default();
             let completed = !topics.is_empty() && topics.iter().all(|t| t.summary_ready);
             StudentActivity {
+                title_pending: false,
+                description_pending: false,
                 activity: published.activity,
                 classroom_name: published.classroom_name,
                 topics,
@@ -358,9 +365,9 @@ pub async fn set_archived<'e>(
     sqlx::query_as(concat!(
         "WITH upd AS (
             UPDATE activities SET is_archived = $2, updated_at = now() WHERE id = $1
-            RETURNING id, title, description, classroom_id, status, is_archived, opens_at, closes_at, created_at
+            RETURNING id, title, description, translations, classroom_id, status, is_archived, opens_at, closes_at, created_at
          )
-         SELECT u.id, u.title, u.description, ",
+         SELECT u.id, u.title, u.description, u.translations, ",
         topic_columns!(),
         ", u.classroom_id, u.status, u.is_archived, u.opens_at, u.closes_at, u.created_at
          FROM upd u ",

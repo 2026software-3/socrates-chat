@@ -156,7 +156,7 @@ impl Modify for SessionCookie {
         tasks::list, tasks::claim, tasks::admin_list, tasks::update,
         purchase::list, purchase::buy, purchase::admin_list, purchase::update,
         achievement_admin::list, achievement_admin::create, achievement_admin::update,
-        announcements::public_list, announcements::list, announcements::create, announcements::update,
+        announcements::public_list, announcements::list, announcements::create, announcements::update, announcements::retranslate,
         announcements::remove, announcements::get_maintenance, announcements::set_maintenance,
         crate::admin_teacher_keys::list_keys, crate::admin_teacher_keys::delete_key,
         crate::admin_voice_nodes::list, crate::admin_voice_nodes::create, crate::admin_voice_nodes::update,

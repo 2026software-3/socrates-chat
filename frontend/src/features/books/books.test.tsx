@@ -105,7 +105,7 @@ describe('shared books', () => {
     let deleted: unknown
     server.use(
       http.get('/api/book-works', () => HttpResponse.json(deleted ? [] : [target])),
-      http.get('/api/books/shared/deletion-impact', () => HttpResponse.json({ topic_count: 2, activity_topic_count: 3 })),
+      http.get('/api/books/shared/deletion-impact', () => HttpResponse.json({ deletes_work: false, topic_count: 2, activity_topic_count: 3 })),
       http.delete('/api/books/shared', async ({ request }) => { deleted = await request.json(); return new HttpResponse(null, { status: 204 }) }),
     )
     renderApp(null, { route: '/admin/books' })
@@ -148,7 +148,7 @@ describe('shared books', () => {
   it('validates Unicode character limits and unsafe URLs without losing input', async () => {
     mockMe(teacher)
     let writes = 0
-    server.use(http.get('/api/book-works', () => HttpResponse.json([])), http.post('/api/books', () => { writes++; return HttpResponse.json(book('new')) }))
+    server.use(http.get('/api/book-works', () => HttpResponse.json([])), http.post('/api/books', () => { writes++; return HttpResponse.json(book('new'), { status: 201 }) }))
     renderApp(null, { route: '/teacher/books' })
     await userEvent.click(await screen.findByRole('button', { name: '新增書目' }))
     const dialog = await screen.findByRole('dialog')

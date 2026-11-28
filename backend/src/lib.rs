@@ -1,3 +1,7 @@
+// 伺服器程式碼：輸出一律走 tracing，不用 print；不 unwrap，改用 expect 寫明為何不會失敗。
+// tests/ 的壓測輸出與 bin/import-books 的命令列輸出不受此限。
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::unwrap_used)]
+
 use std::{
     sync::{Arc, LazyLock},
     time::{Duration, Instant},
@@ -110,7 +114,7 @@ pub mod teacher_key_store;
 pub mod teacher_key_usage;
 pub mod teacher_keys;
 pub mod topic_dimensions;
-mod topic_translations;
+pub mod topic_translations;
 pub mod usage_api;
 pub(crate) mod user_limit;
 pub mod voice;
@@ -123,13 +127,14 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 13] = [
+pub const LONG_RUNNING_ROUTES: [&str; 14] = [
     // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
     "/api/books/search",
     "/api/books/{id}/editions",
-    // 管理者新增、修改公告時同步翻譯內文
+    // 管理者新增、修改公告與重新翻譯時同步翻譯內文
     "/api/admin/announcements",
     "/api/admin/announcements/{id}",
+    "/api/admin/announcements/{id}/retranslate",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
     "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
@@ -177,6 +182,8 @@ pub struct AppState {
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
     /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
     pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
+    /// 已排入背景重試翻譯的公告，同一則只排一個（#528）。
+    pub(crate) announcement_retries: Arc<announcements::RetryJobs>,
     /// 教師 key 認證測試的對外探測；測試時以 `with_key_verifier` 換成假的。
     pub(crate) key_verifier: Arc<dyn ai_providers::KeyVerifier>,
     /// 教室模型設定的模型驗證；測試時以 `with_model_verifier` 換成假的。
@@ -243,6 +250,7 @@ impl AppState {
             summary_translation_wake: Arc::default(),
             ai_usage,
             maintenance: Arc::default(),
+            announcement_retries: Arc::default(),
             key_verifier: Arc::new(ai_providers::HttpKeyVerifier),
             model_verifier: Arc::new(ai_providers::HttpModelVerifier),
             key_test_limit: Arc::new(user_limit::UserLimiter::new(
@@ -641,6 +649,7 @@ fn is_api_path(path: &str) -> bool {
 
 /// 維護模式中照常服務的路徑（S-15.2）：公告端點（登入頁據此顯示維護提示）、登入與登出
 /// （非管理者的登入在核發 session 前另行拒絕）、API 文件。`/health`、`/ready` 與前端檔案不在 `/api` 底下。
+/// 前端契約測試（`frontend/src/test/contract.ts` 的 `MAINTENANCE_EXEMPT`）有一份手動副本，這裡的清單變動時要一併更新。
 fn maintenance_exempt(path: &str) -> bool {
     matches!(
         path,

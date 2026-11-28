@@ -2,7 +2,7 @@ import { Link, useParams } from 'react-router'
 import { ErrorBlock, LoadingBlock } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { ConversationView, type SummaryTiming } from '@/features/chat/conversation-view'
-import { useT } from '@/i18n'
+import { useI18n, useT } from '@/i18n'
 import type { ConversationDetail } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
@@ -10,7 +10,8 @@ import { useFetch } from '@/lib/use-fetch'
 export function ConversationPage(timing: SummaryTiming) {
   const { id = '' } = useParams()
   const t = useT()
-  const { data, error, loading, reload } = useFetch<ConversationDetail>(`/api/conversations/${id}`)
+  const { lang } = useI18n()
+  const { data, error, loading, reload } = useFetch<ConversationDetail>(`/api/conversations/${id}?language=${lang}`)
 
   // 路由參數換了但元件沒卸載時，useFetch 仍留著舊資料；id 不符就當作還沒載入
   if (data && data.id === id) return <ConversationView key={data.id} detail={data} {...timing} />

@@ -205,7 +205,7 @@ pub(crate) fn clean_reason(reason: Option<String>) -> Option<String> {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
-pub(crate) struct StatusBody {
+pub(crate) struct AccountStatusBody {
     disabled: bool,
     reason: Option<String>,
 }
@@ -216,14 +216,14 @@ pub(crate) struct StatusBody {
     tag = "admin",
     summary = "設定帳號停用狀態（冪等）",
     params(("id" = Uuid, Path, description = "使用者 ID")),
-    request_body = StatusBody,
+    request_body = AccountStatusBody,
     responses((status = 204, description = "狀態已設定；相同狀態不重複稽核"), (status = 409, description = "cannot_disable_self / last_admin", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn set_status(
     RequireAdmin(cu): RequireAdmin,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Json(body): Json<StatusBody>,
+    Json(body): Json<AccountStatusBody>,
 ) -> Result<StatusCode, ApiError> {
     if body.disabled && id == cu.user.id {
         return Err(ApiError::conflict(

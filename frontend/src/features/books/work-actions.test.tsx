@@ -9,9 +9,10 @@ import { server } from '@/test/server'
 import { WorkActions, MoveEditionButton } from './work-actions'
 import type { Book, BookWork } from './types'
 function Ready({ children }: { children: ReactNode }) { const auth = useAuth(); return auth.status === 'authed' ? children : null }
-const edition = { id: 'edition', work_id: 'source', title: 'Edition' } as Book
-const source = { id: 'source', title: 'Source', is_active: true, editions: [edition] } as BookWork
-const target = { id: 'target', title: 'Target', is_active: false, editions: [] } as unknown as BookWork
+const stamps = { created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }
+const edition = { id: 'edition', work_id: 'source', title: 'Edition', external_sources: [], is_active: true, ...stamps } as unknown as Book
+const source = { id: 'source', title: 'Source', is_active: true, editions: [edition], ...stamps } as BookWork
+const target = { id: 'target', title: 'Target', is_active: false, editions: [], ...stamps } as unknown as BookWork
 it('cancels merge without writing and confirms source title and inactive destination explicitly', async () => {
  mockMe(makeMe({ teacher: true }))
  let payload: unknown

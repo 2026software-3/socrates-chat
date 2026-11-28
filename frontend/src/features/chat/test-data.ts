@@ -8,6 +8,7 @@ export function makeConversation(overrides: Partial<Conversation> = {}): Convers
     activity_title: null,
     topic_id: 't1',
     title: '合成題目：電車難題',
+    title_pending: false,
     description: '合成描述：該不該扳動拉桿？',
     language: 'zh-TW',
     status: 'active',
@@ -53,6 +54,7 @@ export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
     stance: '合成立場：支持扳動拉桿',
     reasons: '合成理由：結果論',
     completed_at: '2026-03-05T09:00:00Z',
+    translation_pending: false,
     ...overrides,
   }
 }
@@ -60,6 +62,7 @@ export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
 /** 已完成的單場雷達圖；其他狀態用 `makeRadarState`。 */
 export function makeRadar(overrides: Partial<RadarView> = {}): RadarView {
   return {
+    scale: 'legacy',
     status: 'ready',
     retryable: false,
     scores: { d1: 5, d2: 0, d3: 3, d4: 1, d5: 0, d6: 2 },

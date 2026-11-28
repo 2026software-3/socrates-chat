@@ -14,7 +14,10 @@ const existing: Classroom = {
   created_at: '2026-10-01T00:00:00Z',
   is_archived: false,
   updated_at: '2026-10-01T00:00:00Z',
+  ai_model_missing: false,
 }
+// 新增與更新教室的回應（ClassroomDetail）多帶人數統計
+const counts = { student_count: 0, joined_count: 0, never_logged_in_count: 0 }
 
 function renderTeacher() {
   mockMe(makeMe({ teacher: true }))
@@ -37,7 +40,7 @@ describe('classroom management', () => {
           year_label: body.year_label,
           description: body.description,
         })
-        return HttpResponse.json(rows[1], { status: 201 })
+        return HttpResponse.json({ ...rows[1], ...counts }, { status: 201 })
       }),
     )
     renderTeacher()
@@ -104,7 +107,7 @@ describe('classroom management', () => {
         const body = (await request.json()) as Partial<typeof existing>
         patchBodies.push(body)
         current = { ...current, ...body }
-        return HttpResponse.json(current)
+        return HttpResponse.json({ ...current, ...counts })
       }),
     )
     renderTeacher()
@@ -161,7 +164,7 @@ it('archives a classroom, moves it to the archived view and restores it', async 
     http.get('/api/classrooms', () => HttpResponse.json([row])),
     http.patch('/api/classrooms/:id', async ({ request }) => {
       row = { ...row, ...await request.json() as { is_archived: boolean } }
-      return HttpResponse.json(row)
+      return HttpResponse.json({ ...row, ...counts })
     }),
   )
   renderTeacher()

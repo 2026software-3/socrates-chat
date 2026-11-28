@@ -129,7 +129,7 @@ pub struct GenaiProvider {
 impl GenaiProvider {
     /// 最近一次呼叫的用量；沒有回報時兩欄都是 `None`。
     pub fn last_usage(&self) -> TokenUsage {
-        *self.usage.lock().unwrap()
+        *self.usage.lock().expect("usage lock poisoned")
     }
 }
 
@@ -169,7 +169,7 @@ impl AiProvider for GenaiProvider {
                     Ok(ChatStreamEvent::ReasoningChunk(_)) => Some(Ok(String::new())),
                     Ok(ChatStreamEvent::End(end)) => {
                         if let Some(u) = end.captured_usage {
-                            *usage.lock().unwrap() = TokenUsage::from(&u);
+                            *usage.lock().expect("usage lock poisoned") = TokenUsage::from(&u);
                         }
                         None
                     }
@@ -199,7 +199,7 @@ impl AiProvider for GenaiProvider {
             .await
             .map_err(|e| classify(&e).with_model(&model))?;
 
-        *self.usage.lock().unwrap() = TokenUsage::from(&response.usage);
+        *self.usage.lock().expect("usage lock poisoned") = TokenUsage::from(&response.usage);
         let used_model = response.provider_model_iden.model_name.to_string();
         let content = response
             .into_first_text()
