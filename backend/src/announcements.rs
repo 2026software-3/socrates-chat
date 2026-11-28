@@ -11,7 +11,7 @@
 //! 稽核日誌只記操作者、動作與公告編號，不記公告內文。
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, hash_map::Entry},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -39,6 +39,24 @@ const KINDS: [&str; 2] = ["general", "downtime"];
 const MAX_TEXT_CHARS: usize = 1000;
 /// en、es 譯文的上限：機器譯文與管理者手動修正共用，避免長公告的機器譯文改一個字就被拒（#528）。
 const MAX_TRANSLATION_CHARS: usize = MAX_TEXT_CHARS * 2;
+
+/// 文字欄位的字數上限，與超過時回給前端的訊息（訊息裡寫的字數要等於 `max_chars`）。
+#[derive(Clone, Copy)]
+struct TextLimit {
+    max_chars: usize,
+    message: &'static str,
+}
+
+/// zh-TW 內文。
+const TEXT_LIMIT: TextLimit = TextLimit {
+    max_chars: MAX_TEXT_CHARS,
+    message: "公告內文不得為空、不可含控制字元 NUL，且最多 1000 字",
+};
+/// 管理者手動輸入的 en、es 譯文。
+const TRANSLATION_LIMIT: TextLimit = TextLimit {
+    max_chars: MAX_TRANSLATION_CHARS,
+    message: "公告譯文不得為空、不可含控制字元 NUL，且最多 2000 字",
+};
 const TRANSLATION_PROMPT_VERSION: &str = "announcement-translation-v1";
 /// 需要翻譯的語言：（代碼，給 AI 的語言名稱）。
 const TRANSLATED: [(&str, &str); 2] = [("en", "English"), ("es", "Spanish")];
@@ -262,14 +280,11 @@ fn invalid_body(_: JsonRejection) -> ApiError {
     ApiError::bad_request("invalid_request", "請求內容不正確")
 }
 
-fn clean_text(raw: &str, max_chars: usize) -> Result<String, ApiError> {
+fn clean_text(raw: &str, limit: TextLimit) -> Result<String, ApiError> {
     let text = raw.trim();
     // NUL 字元存不進 Postgres 的 text 欄位，寫入會失敗變成 500，所以在這裡就拒絕
-    if text.is_empty() || text.chars().count() > max_chars || text.contains('\0') {
-        return Err(ApiError::bad_request(
-            "invalid_text",
-            "公告內文不得為空、不可含控制字元 NUL，且最多 1000 字",
-        ));
+    if text.is_empty() || text.chars().count() > limit.max_chars || text.contains('\0') {
+        return Err(ApiError::bad_request("invalid_text", limit.message));
     }
     Ok(text.to_string())
 }
@@ -395,54 +410,96 @@ pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
 
 /// 已排入背景重試的公告。每次修改（連只切換啟用也算）都會檢查待完成翻譯，
 /// 沒有這份登記就會為同一則公告疊出多個各睡 30 分鐘的重試（#528）。只在本程序內有效。
+/// 值表示排程中又被要求過（被拒絕的排程），現有的重試結束前要再跑一輪。
 #[derive(Default)]
-pub struct RetryJobs(Mutex<HashSet<Uuid>>);
+pub struct RetryJobs(Mutex<HashMap<Uuid, bool>>);
 
-/// 重試結束（含程序關閉時被丟棄）就從登記移除。
-struct RetryGuard(Arc<RetryJobs>, Uuid);
+/// 持有這則公告的重試登記。重試結束前呼叫 `release_or_rerun`；被丟棄（含程序關閉、panic）時仍持有就移除登記。
+struct RetryGuard {
+    jobs: Arc<RetryJobs>,
+    id: Uuid,
+    held: bool,
+}
 
 impl RetryJobs {
-    fn start(self: &Arc<Self>, id: Uuid) -> Option<RetryGuard> {
-        let mut running = self
-            .0
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, bool>> {
+        self.0
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        running.insert(id).then(|| RetryGuard(Arc::clone(self), id))
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 取得這則公告的重試登記；已有重試在排程時不另排，改為要求它再跑一輪，回傳 `None`。
+    fn start(self: &Arc<Self>, id: Uuid) -> Option<RetryGuard> {
+        match self.lock().entry(id) {
+            Entry::Occupied(mut rerun) => {
+                rerun.insert(true);
+                None
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(false);
+                Some(RetryGuard {
+                    jobs: Arc::clone(self),
+                    id,
+                    held: true,
+                })
+            }
+        }
+    }
+}
+
+impl RetryGuard {
+    /// 重試正要結束：期間有被拒絕的排程就清掉要求、回傳 `true`（要再跑一輪）；否則釋放登記、回傳 `false`。
+    /// 檢查與釋放在同一把鎖內，排程不會落在「已決定結束、還沒釋放」之間而遺失。
+    fn release_or_rerun(&mut self) -> bool {
+        let mut jobs = self.jobs.lock();
+        match jobs.get_mut(&self.id) {
+            Some(rerun) if *rerun => {
+                *rerun = false;
+                true
+            }
+            _ => {
+                jobs.remove(&self.id);
+                self.held = false;
+                false
+            }
+        }
     }
 }
 
 impl Drop for RetryGuard {
     fn drop(&mut self) {
-        let mut running = self
-            .0
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        running.remove(&self.1);
+        if self.held {
+            self.jobs.lock().remove(&self.id);
+        }
     }
 }
 
 /// 排入背景自動重試：依 `RETRY_DELAYS` 等待後重試，直到沒有待完成的語言或次數用完。
 /// 這則公告已經有重試在排程時不再多排，回傳 `false`；排程中的重試每次都重讀待完成的語言，
-/// 所以之後才標示待完成的語言也會被它處理。
+/// 所以之後才標示待完成的語言也會被它處理。被拒絕的排程若落在重試正要結束時，
+/// 由現有的重試從頭再跑一輪接手，不會遺失。
 pub fn schedule_retry(state: &AppState, id: Uuid) -> bool {
-    let Some(guard) = state.announcement_retries.start(id) else {
+    let Some(mut guard) = state.announcement_retries.start(id) else {
         return false;
     };
     let state = state.clone();
     tokio::spawn(async move {
-        let _guard = guard;
-        for delay in RETRY_DELAYS {
-            tokio::time::sleep(delay).await;
-            retry_pending_translation(&state, id).await;
-            let pending: Option<Vec<String>> =
-                sqlx::query_scalar("SELECT pending_languages FROM announcements WHERE id = $1")
-                    .bind(id)
-                    .fetch_optional(&state.pool)
-                    .await
-                    .ok()
-                    .flatten();
-            if pending.is_none_or(|p| p.is_empty()) {
+        loop {
+            for delay in RETRY_DELAYS {
+                tokio::time::sleep(delay).await;
+                retry_pending_translation(&state, id).await;
+                let pending: Option<Vec<String>> =
+                    sqlx::query_scalar("SELECT pending_languages FROM announcements WHERE id = $1")
+                        .bind(id)
+                        .fetch_optional(&state.pool)
+                        .await
+                        .ok()
+                        .flatten();
+                if pending.is_none_or(|p| p.is_empty()) {
+                    break;
+                }
+            }
+            if !guard.release_or_rerun() {
                 return;
             }
         }
@@ -556,7 +613,7 @@ pub(crate) async fn create(
 ) -> Result<(StatusCode, Json<AnnouncementView>), ApiError> {
     let Json(b) = body.map_err(invalid_body)?;
     check_kind(&b.kind)?;
-    let text = clean_text(&b.text_zh_tw, MAX_TEXT_CHARS)?;
+    let text = clean_text(&b.text_zh_tw, TEXT_LIMIT)?;
     let starts = b.starts_at.unwrap_or_else(Utc::now);
     check_period(starts, b.ends_at)?;
 
@@ -644,13 +701,13 @@ pub(crate) async fn update(
     check_period(starts, ends)?;
 
     let text = match &b.text_zh_tw {
-        Some(raw) => clean_text(raw, MAX_TEXT_CHARS)?,
+        Some(raw) => clean_text(raw, TEXT_LIMIT)?,
         None => current.text_zh_tw.clone(),
     };
     let zh_changed = text != current.text_zh_tw;
     let manual = |raw: &Option<String>| {
         raw.as_deref()
-            .map(|t| clean_text(t, MAX_TRANSLATION_CHARS))
+            .map(|t| clean_text(t, TRANSLATION_LIMIT))
             .transpose()
     };
     let manual_en = manual(&b.text_en)?;
@@ -920,5 +977,52 @@ mod tests {
         let (_, ()) = tokio::join!(read, interleave);
 
         assert!(flag.is_on_with(|| async { None }).await);
+    }
+
+    /// 錯誤訊息裡寫的字數要與實際套用的上限一致。
+    #[test]
+    fn text_limit_messages_state_their_own_limit() {
+        for limit in [TEXT_LIMIT, TRANSLATION_LIMIT] {
+            assert!(
+                limit.message.contains(&limit.max_chars.to_string()),
+                "{} 沒寫出上限 {}",
+                limit.message,
+                limit.max_chars
+            );
+        }
+        assert_ne!(TEXT_LIMIT.max_chars, TRANSLATION_LIMIT.max_chars);
+    }
+
+    /// 重試正要結束時被拒絕的排程（同一則已有重試）不能遺失：結束前要接手再跑一輪（#528）。
+    #[test]
+    fn a_retry_refused_while_one_is_finishing_is_rerun() {
+        let jobs = Arc::new(RetryJobs::default());
+        let id = Uuid::new_v4();
+        let mut guard = jobs.start(id).expect("第一次排程");
+
+        // 沒有人再要求時，結束即釋放，之後可以重新排
+        assert!(!guard.release_or_rerun());
+        let mut guard = jobs.start(id).expect("釋放後可以再排");
+
+        // 排程中又有修改標示待完成：不另排，但要求現有的重試再跑一輪
+        assert!(jobs.start(id).is_none());
+        assert!(jobs.start(id).is_none());
+        assert!(guard.release_or_rerun(), "被拒絕的排程要讓現有重試再跑一輪");
+        // 那一輪跑完沒有新要求，才真正釋放
+        assert!(!guard.release_or_rerun());
+        drop(guard);
+        assert!(jobs.start(id).is_some());
+    }
+
+    /// 釋放後丟棄舊 guard，不得把之後新排的重試從登記移除。
+    #[test]
+    fn dropping_a_released_guard_keeps_a_newer_registration() {
+        let jobs = Arc::new(RetryJobs::default());
+        let id = Uuid::new_v4();
+        let mut old = jobs.start(id).unwrap();
+        assert!(!old.release_or_rerun());
+        let _new = jobs.start(id).unwrap();
+        drop(old);
+        assert!(jobs.start(id).is_none(), "新排的重試仍在登記中");
     }
 }
