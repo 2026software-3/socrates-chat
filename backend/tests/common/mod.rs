@@ -29,6 +29,20 @@ use tower::ServiceExt;
 
 pub const APP_URL: &str = "https://app.test";
 
+/// `dir` 底下所有 `.rs` 檔（遞迴）；原始碼掃描型的守衛測試共用。
+pub fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(rust_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// 假的 Google：授權碼格式為 `ok:<sub>:<email>`、`unverified:<sub>:<email>`，其他一律失敗。
 pub struct FakeIdentity;
 

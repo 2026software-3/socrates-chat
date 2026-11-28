@@ -145,7 +145,7 @@ enum Status {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
-enum Failure {
+enum ServiceFailure {
     ConnectionFailed,
     Timeout,
     #[serde(rename = "non_2xx")]
@@ -167,13 +167,13 @@ struct StatusEvent {
     service_name: String,
     status: EventStatus,
     occurred_at: DateTime<Utc>,
-    failure: Option<Failure>,
+    failure: Option<ServiceFailure>,
 }
 
 #[derive(Clone, Default, Serialize, ToSchema)]
 struct CurrentStatus {
     status: Status,
-    failure: Option<Failure>,
+    failure: Option<ServiceFailure>,
     response_time_ms: Option<u64>,
     checked_at: Option<DateTime<Utc>>,
     last_healthy_at: Option<DateTime<Utc>>,
@@ -194,7 +194,7 @@ enum Trigger {
 }
 
 struct ProbeResult {
-    failure: Option<Failure>,
+    failure: Option<ServiceFailure>,
     response_time_ms: Option<u64>,
 }
 
@@ -343,12 +343,13 @@ impl Monitor {
             match self.http.get(url.clone()).send().await {
                 Ok(response) => {
                     return ProbeResult {
-                        failure: (!response.status().is_success()).then_some(Failure::Non2xx),
+                        failure: (!response.status().is_success())
+                            .then_some(ServiceFailure::Non2xx),
                         response_time_ms: Some(elapsed()),
                     };
                 }
-                Err(error) if error.is_timeout() => Failure::Timeout,
-                Err(_) => Failure::ConnectionFailed,
+                Err(error) if error.is_timeout() => ServiceFailure::Timeout,
+                Err(_) => ServiceFailure::ConnectionFailed,
             }
         } else {
             match crate::probe_database(pool).await {
@@ -358,8 +359,8 @@ impl Monitor {
                         response_time_ms: Some(elapsed()),
                     };
                 }
-                Err(_) | Ok(Err(sqlx::Error::PoolTimedOut)) => Failure::Timeout,
-                Ok(Err(_)) => Failure::ConnectionFailed,
+                Err(_) | Ok(Err(sqlx::Error::PoolTimedOut)) => ServiceFailure::Timeout,
+                Ok(Err(_)) => ServiceFailure::ConnectionFailed,
             }
         };
         ProbeResult {
@@ -848,8 +849,8 @@ mod tests {
         let results = [
             (Status::Healthy, None, 1),
             (Status::Healthy, None, 1),
-            (Status::Unhealthy, Some(Failure::Timeout), 2),
-            (Status::Unhealthy, Some(Failure::Non2xx), 2),
+            (Status::Unhealthy, Some(ServiceFailure::Timeout), 2),
+            (Status::Unhealthy, Some(ServiceFailure::Non2xx), 2),
             (Status::Healthy, None, 3),
             (Status::Healthy, None, 3),
         ];
@@ -875,7 +876,7 @@ mod tests {
             .await;
         let history = load_history(&pool, &["asr"], Utc::now()).await.unwrap();
         assert_eq!(history["asr"].len(), 3);
-        assert_eq!(history["asr"][1].failure, Some(Failure::Timeout));
+        assert_eq!(history["asr"][1].failure, Some(ServiceFailure::Timeout));
         let closed = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://127.0.0.1:1/unused")
             .unwrap();
@@ -932,7 +933,7 @@ mod tests {
 
     fn failed() -> ProbeResult {
         ProbeResult {
-            failure: Some(Failure::Timeout),
+            failure: Some(ServiceFailure::Timeout),
             response_time_ms: None,
         }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contractViolations, findOperation } from '@/test/contract'
+import { contractViolations, findOperation, requestViolations } from '@/test/contract'
 import { defaultHandlers } from '@/test/handlers'
 
 describe('前後端契約：MSW 預設假端點符合後端 OpenAPI', () => {
@@ -29,6 +29,16 @@ describe('前後端契約：MSW 預設假端點符合後端 OpenAPI', () => {
     expect(contractViolations('GET', '/api/announcements', 503, body)).not.toEqual([])
     // 維護閘門只會回 maintenance；別的 code 沒記載就是違反
     expect(contractViolations('GET', '/api/me', 503, { error: { code: 'database_unavailable', request_id: 'r' } })).not.toEqual([])
+  })
+
+  it('請求本文：缺必填欄位、多餘欄位、型別錯誤都算違反', () => {
+    const put = (body: unknown) => requestViolations('PUT', '/api/admin/users/11111111-1111-4111-8111-111111111111/status', body)
+    expect(put({ disabled: true, reason: '測試' })).toEqual([])
+    expect(put({ disabled: 'yes' })).not.toEqual([])
+    expect(put({})).not.toEqual([])
+    expect(requestViolations('GET', '/api/points', { x: 1 })).not.toEqual([])
+    // 契約裡沒有的端點由回應檢查回報，請求檢查略過
+    expect(requestViolations('POST', '/api/no-such-endpoint', { x: 1 })).toEqual([])
   })
 
   it('契約沒有的端點或狀態碼算違反', () => {
