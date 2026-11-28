@@ -19,6 +19,8 @@ for (const scenario of ['complete', 'partial', 'unknown'] as const) {
     await page.getByTestId('radar-chart').scrollIntoViewIfNeeded()
     await expect(page.getByTestId('radar-chart')).toBeInViewport({ ratio: 1 })
     await expectNoA11yViolations(page)
+    // 整頁截圖前回到頂端：focus 外殼是整頁捲動＋sticky 頂欄，捲動中截整頁會把頂欄畫在頁面中段
+    await page.evaluate(() => window.scrollTo(0, 0))
     await expectScreenshot(page, `stance-${scenario}.png`)
   })
 }
