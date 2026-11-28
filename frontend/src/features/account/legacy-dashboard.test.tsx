@@ -30,7 +30,7 @@ async function visit(roles: Partial<Roles>, url: string) {
     </>,
     { route: url },
   )
-  await screen.findByRole('heading', { level: 1, name: '帳號' })
+  await screen.findByRole('heading', { level: 1, name: roles.student ? '個人檔案' : '帳號' })
 }
 
 describe('the retired /dashboard URL', () => {

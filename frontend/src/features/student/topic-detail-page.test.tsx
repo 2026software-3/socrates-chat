@@ -7,7 +7,7 @@ import { LangSwitcher } from '@/components/lang-switcher'
 import { TopicDetailPage } from '@/features/student/topic-detail-page'
 import { AvailablePage } from '@/features/student/available-page'
 import { makeConversation } from '@/features/chat/test-data'
-import type { Available, Topic } from '@/lib/types'
+import type { Available, StudentActivity, Topic } from '@/lib/types'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -19,6 +19,32 @@ const topic = (over: Partial<Topic> = {}): Topic => ({
   title_pending: false,
   pending_questions: [],
   guiding_questions: ['Who is responsible?', 'Does intent matter?'],
+  ...over,
+})
+
+const makeActivity = (over: Partial<StudentActivity> = {}): StudentActivity => ({
+  id: 'act-1',
+  title: '倫理學第一週討論',
+  description: '請閱讀課前資料後，選擇一個立場並說明你的理由。',
+  topic_ids: ['top-1'],
+  opens_at: '2026-11-01T08:00:00Z',
+  closes_at: '2026-11-30T23:59:00Z',
+  classroom_id: 'room-a',
+  classroom_name: '哲學概論 A 班',
+  status: 'published',
+  is_archived: false,
+  created_at: '2026-11-01T00:00:00Z',
+  completed: false,
+  topics: [
+    {
+      topic_id: 'top-1',
+      title: 'Trolley problem',
+      conversation_id: null,
+      conversation_status: null,
+      summary_ready: false,
+      title_pending: false,
+    },
+  ],
   ...over,
 })
 
@@ -108,7 +134,7 @@ describe('student topic detail page', () => {
   })
 
   it('starts within the activity when opened from an activity topic', async () => {
-    mockCatalog([topic()])
+    mockCatalog([topic()], [makeActivity()])
     let body: unknown
     server.use(
       http.post('/api/conversations', async ({ request }) => {
@@ -120,6 +146,28 @@ describe('student topic detail page', () => {
     await userEvent.click(await screen.findByRole('button', { name: '開始討論' }))
     await screen.findByText('chat page')
     expect(body).toEqual({ activity_id: 'act-1', topic_id: 'top-1' })
+  })
+
+  it('shows R02 classroom activity metadata, description, status chip, and back link when opened with ?activity=', async () => {
+    mockCatalog([topic()], [makeActivity()])
+    renderDetail('/topics/top-1?activity=act-1')
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Trolley problem' })).toBeInTheDocument()
+    expect(screen.getAllByText('倫理學第一週討論')).toHaveLength(2)
+    expect(screen.getAllByText('哲學概論 A 班')).toHaveLength(2)
+    expect(screen.getByText('開放中')).toBeInTheDocument()
+    expect(screen.getByText(/發布時間/)).toBeInTheDocument()
+    expect(screen.getByText(/截止時間/)).toBeInTheDocument()
+    expect(screen.getByText('請閱讀課前資料後，選擇一個立場並說明你的理由。')).toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: /返回/ })[0]).toHaveAttribute('href', '/')
+  })
+
+  it('shows closed status chip when an activity is closed', async () => {
+    mockCatalog([topic()], [makeActivity({ status: 'closed' })])
+    renderDetail('/topics/top-1?activity=act-1')
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Trolley problem' })).toBeInTheDocument()
+    expect(screen.getByText('已截止')).toBeInTheDocument()
   })
 
   it('shows a not-found message for an unknown topic', async () => {
@@ -148,28 +196,21 @@ describe('student topic detail page', () => {
   })
 
   it('is reachable from an activity topic row, keeping the activity', async () => {
-    mockCatalog([topic()], [
-      {
-        id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
-        classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
-        created_at: '2026-01-01T00:00:00Z', completed: false,
-        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: null, conversation_status: null, summary_ready: false, title_pending: false }],
-      },
-    ])
+    mockCatalog([topic()], [makeActivity()])
     renderDetail('/')
     const act = await screen.findByRole('region', { name: '教室活動' })
     expect(within(act).getByRole('link', { name: '查看題目：Trolley problem' })).toHaveAttribute('href', '/topics/top-1?activity=act-1')
   })
 
   it('offers to continue instead of starting again when this activity topic already has a conversation', async () => {
-    mockCatalog([topic()], [
-      {
-        id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
-        classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
-        created_at: '2026-01-01T00:00:00Z', completed: false,
-        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: 'c9', conversation_status: 'active', summary_ready: false, title_pending: false }],
-      },
-    ])
+    mockCatalog(
+      [topic()],
+      [
+        makeActivity({
+          topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: 'c9', conversation_status: 'active', summary_ready: false, title_pending: false }],
+        }),
+      ],
+    )
     renderDetail('/topics/top-1?activity=act-1')
     await screen.findByRole('heading', { level: 1, name: 'Trolley problem' })
     expect(screen.queryByRole('button', { name: '開始討論' })).not.toBeInTheDocument()

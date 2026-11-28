@@ -16,27 +16,27 @@ const personal: PersonalDashboard = {
   ],
 }
 
-describe('personal dashboard content (shown on the student account page)', () => {
-  it('shows my own counts and the claims, stances and turns of recent discussions', async () => {
+describe('personal dashboard content (shown on the student profile stats tab)', () => {
+  it('shows my own counts and recent discussions with 查看總結 links', async () => {
     server.use(http.get('/api/dashboard/me', () => HttpResponse.json(personal)))
     renderTeacherPage(<PersonalDashboardContent />, undefined, { student: true })
-    expect(await screen.findByText('對話數')).toBeInTheDocument()
-    expect(screen.getByText('17')).toBeInTheDocument()
-    const link = screen.getByRole('link', { name: '電車難題' })
-    expect(link).toHaveAttribute('href', '/conversations/c1')
-    const card = link.closest('li') as HTMLElement
-    expect(within(card).getByText('該拉桿')).toBeInTheDocument()
-    expect(within(card).getByText('傾向拉桿')).toBeInTheDocument()
-    expect(within(card).getByText('6 回合')).toBeInTheDocument()
-    // 沒有主張的討論仍列出，改顯示立場
-    expect(screen.getByRole('link', { name: '說謊可以嗎' })).toBeInTheDocument()
-    expect(screen.getByText('不可以')).toBeInTheDocument()
+    expect(await screen.findByText('已完成的討論')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('進行中的討論')).toBeInTheDocument()
+    expect(screen.getByText('1')).toBeInTheDocument()
+    expect(screen.getByText('對話總數')).toBeInTheDocument()
+    expect(screen.getByText('4')).toBeInTheDocument()
+
+    const row = screen.getByText('電車難題').closest('li') as HTMLElement
+    expect(within(row).getByRole('link', { name: /查看總結/ })).toHaveAttribute('href', '/conversations/c1')
+    expect(screen.getByText('說謊可以嗎')).toBeInTheDocument()
+    expect(screen.getByText('統計只有你自己看得到')).toBeInTheDocument()
   })
 
   it('shows no radar chart and no ethical school label', async () => {
     server.use(http.get('/api/dashboard/me', () => HttpResponse.json(personal)))
     renderTeacherPage(<PersonalDashboardContent />, undefined, { student: true })
-    await screen.findByRole('link', { name: '電車難題' })
+    await screen.findByText('電車難題')
     expect(screen.queryByTestId('radar-chart')).not.toBeInTheDocument()
     expect(screen.queryByText(/效益主義|義務論|德行倫理|契約論|關懷倫理|存在主義|論證傾向|學派/)).not.toBeInTheDocument()
   })
