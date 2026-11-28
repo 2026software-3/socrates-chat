@@ -16,6 +16,8 @@ const topic = (over: Partial<Topic> = {}): Topic => ({
   title: 'Trolley problem',
   description: '',
   is_active: true,
+  title_pending: false,
+  pending_questions: [],
   guiding_questions: ['Who is responsible?', 'Does intent matter?'],
   ...over,
 })
@@ -151,7 +153,7 @@ describe('student topic detail page', () => {
         id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
         classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
         created_at: '2026-01-01T00:00:00Z', completed: false,
-        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: null, conversation_status: null, summary_ready: false }],
+        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: null, conversation_status: null, summary_ready: false, title_pending: false }],
       },
     ])
     renderDetail('/')
@@ -165,7 +167,7 @@ describe('student topic detail page', () => {
         id: 'act-1', title: 'Activity One', description: '', topic_ids: ['top-1'], opens_at: null, closes_at: null,
         classroom_id: 'room-a', classroom_name: '合成 A 班', status: 'published', is_archived: false,
         created_at: '2026-01-01T00:00:00Z', completed: false,
-        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: 'c9', conversation_status: 'active', summary_ready: false }],
+        topics: [{ topic_id: 'top-1', title: 'Trolley problem', conversation_id: 'c9', conversation_status: 'active', summary_ready: false, title_pending: false }],
       },
     ])
     renderDetail('/topics/top-1?activity=act-1')

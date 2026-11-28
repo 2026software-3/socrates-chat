@@ -67,6 +67,7 @@ const summary: TeacherSummary = {
   language: 'zh-TW',
   stance: '應該拉桿',
   reasons: '拯救較多人',
+  translation_pending: false,
 }
 
 const seen: URL[] = []
@@ -202,8 +203,8 @@ describe('classroom → activity → student navigation', () => {
       http.get(`/api/classrooms/${ROOM_A}/students`, () =>
         pageOf(
           [
-            { id: STUDENT, email: 'ming@example.com', display_name: '王小明', has_account: true, disabled: false, completed_conversations: 1 },
-            { id: null, email: 'new@example.com', display_name: null, has_account: false, disabled: false, completed_conversations: 0 },
+            { id: STUDENT, email: 'ming@example.com', student_number: '12345678A', display_name: '王小明', has_account: true, disabled: false, completed_conversations: 1 },
+            { id: '22222222-2222-4222-8222-222222222222', email: 'new@example.com', student_number: '12345679B', display_name: null, has_account: false, disabled: false, completed_conversations: 0 },
           ],
           null,
           { total: 2 },
@@ -371,13 +372,13 @@ describe('activity claim distribution', () => {
     expect(body).toEqual({ activity_id: ACT, topic_id: 't1' })
   })
 
-  it('keeps the groups and shows a translated message when regrouping fails', async () => {
+  it('keeps the groups and shows a translated message when regrouping is refused', async () => {
     mockApi()
-    server.use(http.post('/api/dashboard/class/regroup', () => apiError(502, 'ai_unavailable')))
+    server.use(http.post('/api/dashboard/class/regroup', () => apiError(429, 'ai_usage_exceeded')))
     renderAt(path)
     await userEvent.click(await screen.findByRole('button', { name: '重新分組' }))
     await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '重新分組' }))
-    expect(await screen.findByText('AI 暫時無法回覆。')).toBeInTheDocument()
+    expect(await screen.findByText('AI 用量已達上限，請稍後再試。')).toBeInTheDocument()
     expect(screen.getAllByTestId('claim-group')).toHaveLength(3)
   })
 

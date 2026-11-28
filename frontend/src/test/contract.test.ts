@@ -22,6 +22,15 @@ describe('前後端契約：MSW 預設假端點符合後端 OpenAPI', () => {
     expect(contractViolations('GET', '/api/points', 200, { balance: 0 })).toEqual([])
   })
 
+  it('維護中的 503 是跨端點的標準錯誤；閘門放行的路徑不適用', () => {
+    const body = { error: { code: 'maintenance', request_id: 'r' } }
+    expect(contractViolations('GET', '/api/me', 503, body)).toEqual([])
+    expect(contractViolations('GET', '/api/me', 503, {})).not.toEqual([])
+    expect(contractViolations('GET', '/api/announcements', 503, body)).not.toEqual([])
+    // 維護閘門只會回 maintenance；別的 code 沒記載就是違反
+    expect(contractViolations('GET', '/api/me', 503, { error: { code: 'database_unavailable', request_id: 'r' } })).not.toEqual([])
+  })
+
   it('契約沒有的端點或狀態碼算違反', () => {
     expect(contractViolations('GET', '/api/no-such-endpoint', 200, {})).not.toEqual([])
     expect(contractViolations('GET', '/api/points', 418, {})).not.toEqual([])

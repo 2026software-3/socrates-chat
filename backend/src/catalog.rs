@@ -166,7 +166,7 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     tag = "topics",
     summary = "新增題目",
     request_body = NewTopic,
-    responses((status = 201, description = "已建立", body = Topic))
+    responses((status = 201, description = "已建立", body = Topic), (status = 400, description = "invalid_title / invalid_guiding_questions", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create_topic_for_teacher(
     RequireTeacher(user): RequireTeacher,
@@ -214,7 +214,7 @@ async fn insert_topic(
     summary = "修改題目（merge-patch）",
     params(("id" = Uuid, Path, description = "題目 ID")),
     request_body = TopicPatch,
-    responses((status = 200, description = "更新後的題目", body = Topic))
+    responses((status = 200, description = "更新後的題目", body = Topic), (status = 400, description = "invalid_title / invalid_guiding_questions", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn update_topic_for_teacher(
     RequireTeacher(user): RequireTeacher,

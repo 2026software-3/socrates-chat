@@ -12,7 +12,7 @@ const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
 
 /** 名單上的學生（已有帳號、使用中）。 */
 const rows = (list: string[]) =>
-  list.map((email) => ({ email, display_name: null, id: '11111111-1111-4111-8111-111111111111', has_account: true, disabled: false, completed_conversations: 0 }))
+  list.map((email, i) => ({ email, student_number: `1000000${i}A`, display_name: null, id: '11111111-1111-4111-8111-111111111111', has_account: true, disabled: false, completed_conversations: 0 }))
 
 const students = (room: string) => `/api/classrooms/${room}/students`
 
@@ -135,7 +135,9 @@ describe('RosterPage', () => {
         return HttpResponse.json({
           added: 2,
           existing: 1,
+          errors: 1,
           invalid: [{ line: 4, reason: 'invalid_format' }],
+          credentials: [],
         })
       }),
     )
@@ -258,7 +260,7 @@ describe('RosterPage', () => {
     server.use(
       http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => {
         calls += 1
-        return calls === 1 ? HttpResponse.json({ added: 1, existing: 0, invalid: [] }) : apiError(403, 'forbidden')
+        return calls === 1 ? HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] }) : apiError(403, 'forbidden')
       }),
     )
     setup()
@@ -280,7 +282,7 @@ describe('RosterPage', () => {
         calls += 1
         return calls === 2 ? apiError(500, 'internal') : studentPage(emails)
       }),
-      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] })),
     )
     setup()
     await screen.findByText('alice@example.com')
@@ -315,6 +317,7 @@ describe('RosterPage', () => {
         HttpResponse.json({
           added: 1,
           existing: 0,
+          errors: 0,
           invalid: [],
           credentials: [{ student_number: '12345678A', temporary_password: 'ABCD2345WXYZ' }],
         }),
@@ -437,7 +440,7 @@ describe('RosterPage', () => {
       http.get(students(ROOM_B), () => studentPage(['zoe@example.com'])),
       http.post('/api/classrooms/:id/roster/import', ({ params }) => {
         target = String(params.id)
-        return HttpResponse.json({ added: 1, existing: 0, invalid: [] })
+        return HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] })
       }),
     )
     setup()
@@ -456,7 +459,7 @@ describe('RosterPage', () => {
     mockRoster()
     server.use(
       http.get(students(ROOM_B), () => studentPage([])),
-      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, invalid: [] })),
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] })),
     )
     setup()
     await screen.findByText('alice@example.com')

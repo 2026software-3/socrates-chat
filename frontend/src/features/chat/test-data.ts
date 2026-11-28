@@ -8,6 +8,7 @@ export function makeConversation(overrides: Partial<Conversation> = {}): Convers
     activity_title: null,
     topic_id: 't1',
     title: '合成題目：電車難題',
+    title_pending: false,
     description: '合成描述：該不該扳動拉桿？',
     language: 'zh-TW',
     status: 'active',
@@ -53,6 +54,7 @@ export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
     stance: '合成立場：支持扳動拉桿',
     reasons: '合成理由：結果論',
     completed_at: '2026-03-05T09:00:00Z',
+    translation_pending: false,
     ...overrides,
   }
 }

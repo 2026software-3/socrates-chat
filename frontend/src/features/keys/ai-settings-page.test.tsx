@@ -21,7 +21,13 @@ const classroom = (over: Partial<Classroom> = {}): Classroom => ({
   is_archived: false,
   created_at: '2026-11-18T01:00:00Z',
   updated_at: '2026-11-18T01:00:00Z',
+  ai_model_missing: false,
   ...over,
+})
+/** 背景工作（GET /api/ai-jobs/{id}）：契約規定的欄位齊全，`over` 可帶 `error_code` 等額外欄位。 */
+const aiJob = (id: string, status: 'pending' | 'ready' | 'failed', over: Record<string, unknown> = {}) => ({
+  id, kind: 'classroom_ai_settings', status, label_key: 'jobs.classroom_ai_settings', scope: { classroom_id: CID },
+  started_at: '2026-11-18T01:00:00Z', finished_at: status === 'pending' ? null : '2026-11-18T01:00:05Z', retryable: false, ...over,
 })
 const key = (provider: string): TeacherKey => ({
   id: `k-${provider}`,
@@ -44,8 +50,9 @@ function mockSettings(settings: ClassroomAiSettings, opts: { keys?: string[]; ar
     http.get(`/api/classrooms/${CID}/ai-usage`, () => HttpResponse.json(emptyUsage)),
     http.put(`/api/classrooms/${CID}/ai-settings`, async ({ request }) => {
       puts.push(await request.json())
-      return HttpResponse.json(settings)
+      return HttpResponse.json({ job_id: 'j-default', status: 'pending' }, { status: 202 })
     }),
+    http.get('/api/ai-jobs/j-default', () => HttpResponse.json(aiJob('j-default', 'ready'))),
   )
   return puts
 }
@@ -245,7 +252,7 @@ describe('ClassroomAiSettingsPage', () => {
         return HttpResponse.json(configured)
       }),
       http.put(`/api/classrooms/${CID}/ai-settings`, () => HttpResponse.json({ job_id: 'jv', status: 'pending' }, { status: 202 })),
-      http.get('/api/ai-jobs/jv', () => HttpResponse.json({ status: polls++ < 1 ? 'pending' : 'ready' })),
+      http.get('/api/ai-jobs/jv', () => HttpResponse.json(aiJob('jv', polls++ < 1 ? 'pending' : 'ready'))),
     )
     await open()
     await screen.findByDisplayValue('gpt-main')
@@ -262,7 +269,7 @@ describe('ClassroomAiSettingsPage', () => {
     server.use(
       http.put(`/api/classrooms/${CID}/ai-settings`, () => HttpResponse.json({ job_id: 'jf', status: 'pending' }, { status: 202 })),
       http.get('/api/ai-jobs/jf', () =>
-        HttpResponse.json({ status: 'failed', error_code: 'model_structured_output_unsupported', error_target: 'fallback_1' }),
+        HttpResponse.json(aiJob('jf', 'failed', { error_code: 'model_structured_output_unsupported', error_target: 'fallback_1' })),
       ),
     )
     await open()

@@ -24,6 +24,7 @@ function row(over: Partial<TeacherSummary> = {}): TeacherSummary {
     language: 'zh-TW',
     stance: '應該拉桿',
     reasons: '拯救較多人',
+    translation_pending: false,
     ...over,
   }
 }
