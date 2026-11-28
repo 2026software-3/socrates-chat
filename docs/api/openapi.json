@@ -16418,7 +16418,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Definitions for scores 1 through 5, in that order."
+            "description": "Legacy: 1..5; stance: -2,-1,0,1,2. Preserve existing rubrics unchanged."
           }
         }
       },
@@ -16473,6 +16473,7 @@
       "DimensionsView": {
         "type": "object",
         "required": [
+          "scale",
           "locked",
           "pending_languages"
         ],
@@ -16507,6 +16508,9 @@
               "null"
             ],
             "description": "The only language in which the rubric is written and may be edited."
+          },
+          "scale": {
+            "type": "string"
           }
         }
       },
@@ -18106,6 +18110,7 @@
       "RadarView": {
         "type": "object",
         "required": [
+          "scale",
           "status",
           "retryable"
         ],
@@ -18139,16 +18144,18 @@
             ],
             "description": "評分提示版本；只有 `ready` 時有值"
           },
+          "scale": {
+            "type": "string"
+          },
           "scores": {
             "type": [
               "object",
               "null"
             ],
-            "description": "以維度識別碼為 key 的 0 到 5 整數分；只有 `ready` 時有值，且六個維度齊全",
+            "description": "Only ready: legacy has all six scores 0..5; stance has -2..2 and omits unknown keys.",
             "additionalProperties": {
               "type": "integer",
-              "format": "int32",
-              "minimum": 0
+              "format": "int32"
             },
             "propertyNames": {
               "type": "string"
