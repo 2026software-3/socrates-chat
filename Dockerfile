@@ -6,6 +6,9 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+# src/test/contract.ts 以相對路徑 import 後端的 OpenAPI 快照（../../../docs/api/openapi.json），
+# 而 tsconfig.app.json 涵蓋整個 src，tsc -b 會去解析它；不放進來建置就失敗（2026-11-28 staging）。
+COPY docs/api/openapi.json /docs/api/openapi.json
 # 文字類產物預先壓成 .gz（保留原檔）：後端在瀏覽器接受 gzip 時直接送 .gz，執行期不必壓縮。
 # 字型（woff2）本身已壓縮，不處理
 # 最後一步把權限統一成目錄 755、檔案 644：後端以非 root 的 socrates 執行，讀不到 root 專屬（0600）的檔案時，

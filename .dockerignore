@@ -1,6 +1,8 @@
 .git
 .github
 docs
+# 前端型別檢查會 import OpenAPI 快照（見 Dockerfile 的 web stage）
+!docs/api/openapi.json
 **/node_modules
 **/target
 **/dist
