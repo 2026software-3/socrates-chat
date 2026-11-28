@@ -57,7 +57,7 @@ describe('teacher topic bank', () => {
   })
 
   it('retries pending dimensions and edits one language on a locked topic', async () => {
-    const empty = { dimensions: null, locked: false, prompt_version: null, pending_languages: [] }
+    const empty = { scale: 'legacy', dimensions: null, locked: false, prompt_version: null, pending_languages: [] }
     const dimension = {
       id: 'd1',
       name: { zh_tw: '謹慎', en: 'Caution', es: 'Cautela' },
@@ -65,6 +65,7 @@ describe('teacher topic bank', () => {
       rubric: ['一', '二', '三', '四', '五'],
     }
     const ready = {
+      scale: 'legacy',
       dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
       locked: true, prompt_version: 'topic-dimensions-v1', pending_languages: [],
     }
@@ -114,6 +115,7 @@ describe('teacher topic bank', () => {
       rubric: ['一', '二', '三', '四', '五'],
     }
     const view = {
+      scale: 'legacy',
       dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
       locked: false, prompt_version: 'topic-dimensions-v1', rubric_language: 'zh-TW', pending_languages: [],
     }
@@ -148,7 +150,7 @@ describe('teacher topic bank', () => {
         attempts += 1
         return attempts === 1
           ? apiError(500, 'internal')
-          : HttpResponse.json({ dimensions: null, locked: false, pending_languages: [] })
+          : HttpResponse.json({ scale: 'legacy', dimensions: null, locked: false, pending_languages: [] })
       }),
     )
     renderTeacherPage(<TopicsPage />)

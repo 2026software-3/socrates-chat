@@ -62,6 +62,7 @@ export function makeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
 /** 已完成的單場雷達圖；其他狀態用 `makeRadarState`。 */
 export function makeRadar(overrides: Partial<RadarView> = {}): RadarView {
   return {
+    scale: 'legacy',
     status: 'ready',
     retryable: false,
     scores: { d1: 5, d2: 0, d3: 3, d4: 1, d5: 0, d6: 2 },
