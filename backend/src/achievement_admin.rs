@@ -475,9 +475,9 @@ pub(crate) async fn create(
                     .collect();
                 deferred = Some((source.to_owned(), name.clone(), description.clone()));
                 let mut texts = texts.into_iter();
-                let (zh_name, zh_desc) = texts.next().unwrap();
-                let (en_name, en_desc) = texts.next().unwrap();
-                let (es_name, es_desc) = texts.next().unwrap();
+                let (zh_name, zh_desc) = texts.next().expect("texts has one entry per language");
+                let (en_name, en_desc) = texts.next().expect("texts has one entry per language");
+                let (es_name, es_desc) = texts.next().expect("texts has one entry per language");
                 (
                     zh_name, en_name, es_name, zh_desc, en_desc, es_desc, pending,
                 )

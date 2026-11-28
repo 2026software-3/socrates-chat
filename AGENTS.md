@@ -26,7 +26,7 @@ cargo test                         # 測試
 cargo run                          # 啟動於 127.0.0.1:3000
 ```
 
-提交前，上述 fmt、clippy、test 都必須通過。改了 API 要同步更新契約快照 `docs/api/openapi.json`（流程見 [CONTRIBUTING.md](CONTRIBUTING.md#api-契約快照)）。
+提交前，上述 fmt、clippy、test 都必須通過。後端自訂的 lint 規則在 `backend/Cargo.toml` 的 `[lints.clippy]`、`backend/clippy.toml` 與 `src/lib.rs`、`src/main.rs` 開頭；照錯誤訊息修正；確實需要例外時用 `#[expect(<lint>, reason = "...")]` 寫明原因，不要用 `allow`。改了 API 要同步更新契約快照 `docs/api/openapi.json`（流程見 [CONTRIBUTING.md](CONTRIBUTING.md#api-契約快照)）。
 
 ## 技術前提（不可超出）
 

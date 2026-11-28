@@ -472,16 +472,16 @@ async fn prepare(
     let dimensions = IDS.map(|id| Dimension {
         id: id.to_owned(),
         name: Localized {
-            zh_tw: zh.next().unwrap(),
-            en: en.next().unwrap(),
-            es: es.next().unwrap(),
+            zh_tw: zh.next().expect("translation has 12 strings"),
+            en: en.next().expect("translation has 12 strings"),
+            es: es.next().expect("translation has 12 strings"),
         },
         description: Localized {
-            zh_tw: zh.next().unwrap(),
-            en: en.next().unwrap(),
-            es: es.next().unwrap(),
+            zh_tw: zh.next().expect("translation has 12 strings"),
+            en: en.next().expect("translation has 12 strings"),
+            es: es.next().expect("translation has 12 strings"),
         },
-        rubric: drafts.next().unwrap().rubric,
+        rubric: drafts.next().expect("one draft per dimension").rubric,
     });
     Some((dimensions, pending))
 }
