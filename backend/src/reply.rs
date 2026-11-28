@@ -525,7 +525,7 @@ async fn generate(
                 &route.model,
                 retry,
                 *emitted,
-                stage,
+                *stage,
                 started.elapsed(),
             );
         }
@@ -583,7 +583,7 @@ async fn attempt(
     state: &AppState,
     reply: &LiveReply,
     req: &AiRequest,
-) -> Result<(String, TurnMeta), (AiError, bool, &'static str)> {
+) -> Result<(String, TurnMeta), (AiError, bool, Stage)> {
     let start = Instant::now();
     // 建立連線與等待第一個片段共用同一個首 token 期限（S-03.5）
     let first_token_deadline = start + state.config.ai_first_token_timeout;
@@ -591,8 +591,8 @@ async fn attempt(
 
     let mut stream = match timeout_at(first_token_deadline, ai.stream_chat(req.clone())).await {
         Ok(Ok(s)) => s,
-        Ok(Err(error)) => return Err((error, false, "request")),
-        Err(_) => return Err((deadline(), false, "request")),
+        Ok(Err(error)) => return Err((error, false, Stage::Request)),
+        Err(_) => return Err((deadline(), false, Stage::Request)),
     };
     let mut got_chunk = false;
     let mut emitted = false;
@@ -627,7 +627,7 @@ async fn attempt(
         reply.delta(&rest);
     }
     if text.trim().is_empty() {
-        return Err((AiError::invalid_output(), emitted, "empty_reply"));
+        return Err((AiError::invalid_output(), emitted, Stage::EmptyReply));
     }
     Ok((text.trim().to_string(), parse_meta(&meta_raw)))
 }
@@ -637,11 +637,31 @@ fn deadline() -> AiError {
     AiError::classified(Failure::Timeout).with_kind(crate::ai::ErrorKind::Deadline)
 }
 
-fn stream_stage(got_chunk: bool) -> &'static str {
+/// 一次 AI 呼叫失敗在哪個階段；用列舉（一個位元組），失敗結果才不會超過 clippy `result_large_err`。
+#[derive(Clone, Copy)]
+enum Stage {
+    Request,
+    FirstChunk,
+    MidStream,
+    EmptyReply,
+}
+
+impl Stage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::FirstChunk => "first_chunk",
+            Self::MidStream => "mid_stream",
+            Self::EmptyReply => "empty_reply",
+        }
+    }
+}
+
+fn stream_stage(got_chunk: bool) -> Stage {
     if got_chunk {
-        "mid_stream"
+        Stage::MidStream
     } else {
-        "first_chunk"
+        Stage::FirstChunk
     }
 }
 
@@ -652,14 +672,14 @@ fn log_attempt_failure(
     model: &str,
     retry: i32,
     emitted: bool,
-    stage: &'static str,
+    stage: Stage,
     elapsed: std::time::Duration,
 ) {
     tracing::warn!(
         class = error.class.code(),
         model,
         retry,
-        stage,
+        stage = stage.as_str(),
         emitted,
         http_status = error.http_status(),
         error_kind = error.kind(),
