@@ -154,6 +154,12 @@ pub struct AiError {
     /// `x-ratelimit-remaining-requests`／`-tokens`：供應商回報的剩餘額度（只有數字）。
     pub(crate) ratelimit_remaining_requests: Option<u64>,
     pub(crate) ratelimit_remaining_tokens: Option<u64>,
+    /// 錯誤種類（固定字串，例如 `http_status`、`stream_error_event`、`stream_transport`），只給日誌用。
+    pub(crate) kind: Option<&'static str>,
+    /// 串流中途錯誤事件的狀態代碼（例如 Gemini 的 `UNAVAILABLE`）；只留固定格式的大寫代碼。
+    pub(crate) provider_status: Option<String>,
+    /// 串流中途錯誤事件的數字代碼（例如 503）；不是 HTTP 狀態，是事件本文裡的代碼。
+    pub(crate) event_code: Option<u16>,
 }
 
 impl AiError {
@@ -177,6 +183,9 @@ impl AiError {
             provider_code: None,
             ratelimit_remaining_requests: None,
             ratelimit_remaining_tokens: None,
+            kind: None,
+            provider_status: None,
+            event_code: None,
         }
     }
 
@@ -276,6 +285,35 @@ impl AiError {
             .map(str::to_owned);
         self.ratelimit_remaining_requests = remaining_requests;
         self.ratelimit_remaining_tokens = remaining_tokens;
+        self
+    }
+
+    pub fn kind(&self) -> Option<&'static str> {
+        self.kind
+    }
+
+    pub fn provider_status(&self) -> Option<&str> {
+        self.provider_status.as_deref()
+    }
+
+    pub fn event_code(&self) -> Option<u16> {
+        self.event_code
+    }
+
+    pub(crate) fn with_kind(mut self, kind: &'static str) -> Self {
+        self.kind = Some(kind);
+        self
+    }
+
+    /// 錯誤事件的代碼：狀態代碼只留 1–40 字的大寫英文與底線（例如 `UNAVAILABLE`），其餘丟掉。
+    pub(crate) fn with_error_event(mut self, status: Option<&str>, code: Option<u64>) -> Self {
+        self.provider_status = status
+            .filter(|s| {
+                (1..=40).contains(&s.len())
+                    && s.bytes().all(|c| c.is_ascii_uppercase() || c == b'_')
+            })
+            .map(str::to_owned);
+        self.event_code = code.and_then(|c| u16::try_from(c).ok());
         self
     }
 
