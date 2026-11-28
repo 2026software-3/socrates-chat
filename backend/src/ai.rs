@@ -293,6 +293,7 @@ pub struct TurnMeta {
     pub advance: bool,
     /// 模型對階段判斷的理由（S-03.2）；只供稽核與評估，不回傳給學生。
     pub reason: Option<String>,
+    pub dimensions: crate::dimension_dialogue::Progress,
 }
 
 /// 判斷理由的長度上限（字元）。
@@ -315,6 +316,8 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
         #[serde(default)]
         advance: bool,
         reason: Option<String>,
+        #[serde(flatten)]
+        dimensions: crate::dimension_dialogue::Progress,
     }
     match extract_json::<Raw>(raw) {
         Some(r) => TurnMeta {
@@ -323,11 +326,13 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
                 .filter(|q| QUESTION_TYPES.contains(&q.as_str())),
             advance: r.advance,
             reason: r.reason.and_then(|s| clip(&s, MAX_REASON_CHARS)),
+            dimensions: r.dimensions,
         },
         None => TurnMeta {
             question_type: None,
             advance: false,
             reason: None,
+            dimensions: Default::default(),
         },
     }
 }
@@ -2086,7 +2091,8 @@ mod tests {
             TurnMeta {
                 question_type: None,
                 advance: false,
-                reason: None
+                reason: None,
+                dimensions: Default::default(),
             }
         );
     }

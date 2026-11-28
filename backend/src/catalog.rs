@@ -195,7 +195,7 @@ async fn insert_topic(
     )
     .await?;
     let t = sqlx::query_as(
-        "INSERT INTO topics (title, description, guiding_questions, translations) VALUES ($1, $2, $3, $4)
+        "INSERT INTO topics (title, description, guiding_questions, translations, radar_scale) VALUES ($1, $2, $3, $4, 'stance')
          RETURNING id, title, description, is_active, guiding_questions, translations",
     )
     .bind(b.title.trim())
@@ -326,7 +326,7 @@ pub const TROLLEY_TOPIC_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_00
 /// 直接寫入引導問題（S-04.8 修訂：不再寫 description），內容與遷移既有題目的轉換結果相同。
 pub async fn seed_builtin_topics(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO topics (id, title, guiding_questions) VALUES ($1, $2, $3)
+        "INSERT INTO topics (id, title, guiding_questions, radar_scale) VALUES ($1, $2, $3, 'stance')
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(TROLLEY_TOPIC_ID)

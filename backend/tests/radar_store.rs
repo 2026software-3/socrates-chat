@@ -91,7 +91,7 @@ async fn database_guards_only_the_shape_of_scores_without_touching_summary(pool:
 }
 
 fn scores() -> Scores {
-    (1..=6).map(|d| (format!("d{d}"), (d - 1) as u8)).collect()
+    (1..=6).map(|d| (format!("d{d}"), (d - 1) as i16)).collect()
 }
 
 fn rubric() -> Rubric {
