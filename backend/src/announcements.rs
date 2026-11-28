@@ -2,7 +2,8 @@
 //!
 //! 公告：只有管理者能新增、修改、刪除與啟停；管理者只寫 zh-TW，en／es 由系統翻譯
 //! （沿用既有 AI 介面）。翻譯失敗時公告照常以 zh-TW 生效，對應語言列入 `pending_languages`，
-//! 由背景工作自動重試。免登入的 `GET /api/announcements` 只回傳目前有效的公告，並帶維護模式是否開啟。
+//! 由背景工作自動重試（同一則公告同時只排一個重試，啟動時補排重啟前留下的），
+//! 管理者也可以按「重新翻譯」立即重試。免登入的 `GET /api/announcements` 只回傳目前有效的公告，並帶維護模式是否開啟。
 //!
 //! 維護模式：旗標存資料庫（重啟後仍有效），在記憶體快取數秒，避免每個請求多一次資料庫往返；
 //! 開啟後由 `lib.rs` 的 `maintenance_gate` 擋下非管理者的請求。
@@ -10,7 +11,8 @@
 //! 稽核日誌只記操作者、動作與公告編號，不記公告內文。
 
 use std::{
-    sync::Mutex,
+    collections::{HashMap, hash_map::Entry},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -35,6 +37,26 @@ use crate::{
 
 const KINDS: [&str; 2] = ["general", "downtime"];
 const MAX_TEXT_CHARS: usize = 1000;
+/// en、es 譯文的上限：機器譯文與管理者手動修正共用，避免長公告的機器譯文改一個字就被拒（#528）。
+const MAX_TRANSLATION_CHARS: usize = MAX_TEXT_CHARS * 2;
+
+/// 文字欄位的字數上限，與超過時回給前端的訊息（訊息裡寫的字數要等於 `max_chars`）。
+#[derive(Clone, Copy)]
+struct TextLimit {
+    max_chars: usize,
+    message: &'static str,
+}
+
+/// zh-TW 內文。
+const TEXT_LIMIT: TextLimit = TextLimit {
+    max_chars: MAX_TEXT_CHARS,
+    message: "公告內文不得為空、不可含控制字元 NUL，且最多 1000 字",
+};
+/// 管理者手動輸入的 en、es 譯文。
+const TRANSLATION_LIMIT: TextLimit = TextLimit {
+    max_chars: MAX_TRANSLATION_CHARS,
+    message: "公告譯文不得為空、不可含控制字元 NUL，且最多 2000 字",
+};
 const TRANSLATION_PROMPT_VERSION: &str = "announcement-translation-v1";
 /// 需要翻譯的語言：（代碼，給 AI 的語言名稱）。
 const TRANSLATED: [(&str, &str); 2] = [("en", "English"), ("es", "Spanish")];
@@ -61,6 +83,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/admin/announcements/{id}",
             axum::routing::patch(update).delete(remove),
+        )
+        .route(
+            "/api/admin/announcements/{id}/retranslate",
+            axum::routing::post(retranslate),
         )
         .route(
             "/api/admin/maintenance",
@@ -254,14 +280,11 @@ fn invalid_body(_: JsonRejection) -> ApiError {
     ApiError::bad_request("invalid_request", "請求內容不正確")
 }
 
-fn clean_text(raw: &str) -> Result<String, ApiError> {
+fn clean_text(raw: &str, limit: TextLimit) -> Result<String, ApiError> {
     let text = raw.trim();
     // NUL 字元存不進 Postgres 的 text 欄位，寫入會失敗變成 500，所以在這裡就拒絕
-    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS || text.contains('\0') {
-        return Err(ApiError::bad_request(
-            "invalid_text",
-            "公告內文不得為空、不可含控制字元 NUL，且最多 1000 字",
-        ));
+    if text.is_empty() || text.chars().count() > limit.max_chars || text.contains('\0') {
+        return Err(ApiError::bad_request("invalid_text", limit.message));
     }
     Ok(text.to_string())
 }
@@ -315,10 +338,29 @@ async fn translate(state: &AppState, language: &str, text: &str) -> Option<Strin
         .await
         .ok()?;
     let translated = raw.trim();
-    if translated.is_empty() || translated.chars().count() > MAX_TEXT_CHARS * 2 {
+    if translated.is_empty() || translated.chars().count() > MAX_TRANSLATION_CHARS {
         return None;
     }
     Some(translated.to_string())
+}
+
+/// 同時翻譯 en 與 es；不需要的語言傳 `false`，回傳 `None`。
+/// 依序翻譯會讓兩次 AI 逾時相加，撞上請求的時間上限（#528）。
+async fn translate_pair(
+    state: &AppState,
+    text: &str,
+    want_en: bool,
+    want_es: bool,
+) -> (Option<String>, Option<String>) {
+    let [(_, english), (_, spanish)] = TRANSLATED;
+    let one = |want: bool, language: &'static str| async move {
+        if want {
+            translate(state, language, text).await
+        } else {
+            None
+        }
+    };
+    tokio::join!(one(want_en, english), one(want_es, spanish))
 }
 
 /// 重試這則公告尚未完成的翻譯；系統自動重試與測試都呼叫它。
@@ -341,11 +383,10 @@ pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
     let Some((source, pending)) = row else {
         return;
     };
-    for (code, language) in TRANSLATED {
-        if !pending.iter().any(|p| p == code) {
-            continue;
-        }
-        let Some(text) = translate(state, language, &source).await else {
+    let wants = |code: &str| pending.iter().any(|p| p == code);
+    let (en, es) = translate_pair(state, &source, wants("en"), wants("es")).await;
+    for ((code, _), translated) in TRANSLATED.into_iter().zip([en, es]) {
+        let Some(text) = translated else {
             continue;
         };
         if let Err(e) = sqlx::query(
@@ -367,24 +408,123 @@ pub async fn retry_pending_translation(state: &AppState, id: Uuid) {
     }
 }
 
-/// 背景自動重試：依 `RETRY_DELAYS` 等待後重試，直到沒有待完成的語言或次數用完。
-fn spawn_retry(state: AppState, id: Uuid) {
+/// 已排入背景重試的公告。每次修改（連只切換啟用也算）都會檢查待完成翻譯，
+/// 沒有這份登記就會為同一則公告疊出多個各睡 30 分鐘的重試（#528）。只在本程序內有效。
+/// 值表示排程中又被要求過（被拒絕的排程），現有的重試結束前要再跑一輪。
+#[derive(Default)]
+pub struct RetryJobs(Mutex<HashMap<Uuid, bool>>);
+
+/// 持有這則公告的重試登記。重試結束前呼叫 `release_or_rerun`；被丟棄（含程序關閉、panic）時仍持有就移除登記。
+struct RetryGuard {
+    jobs: Arc<RetryJobs>,
+    id: Uuid,
+    held: bool,
+}
+
+impl RetryJobs {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, bool>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 取得這則公告的重試登記；已有重試在排程時不另排，改為要求它再跑一輪，回傳 `None`。
+    fn start(self: &Arc<Self>, id: Uuid) -> Option<RetryGuard> {
+        match self.lock().entry(id) {
+            Entry::Occupied(mut rerun) => {
+                rerun.insert(true);
+                None
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(false);
+                Some(RetryGuard {
+                    jobs: Arc::clone(self),
+                    id,
+                    held: true,
+                })
+            }
+        }
+    }
+}
+
+impl RetryGuard {
+    /// 重試正要結束：期間有被拒絕的排程就清掉要求、回傳 `true`（要再跑一輪）；否則釋放登記、回傳 `false`。
+    /// 檢查與釋放在同一把鎖內，排程不會落在「已決定結束、還沒釋放」之間而遺失。
+    fn release_or_rerun(&mut self) -> bool {
+        let mut jobs = self.jobs.lock();
+        match jobs.get_mut(&self.id) {
+            Some(rerun) if *rerun => {
+                *rerun = false;
+                true
+            }
+            _ => {
+                jobs.remove(&self.id);
+                self.held = false;
+                false
+            }
+        }
+    }
+}
+
+impl Drop for RetryGuard {
+    fn drop(&mut self) {
+        if self.held {
+            self.jobs.lock().remove(&self.id);
+        }
+    }
+}
+
+/// 排入背景自動重試：依 `RETRY_DELAYS` 等待後重試，直到沒有待完成的語言或次數用完。
+/// 這則公告已經有重試在排程時不再多排，回傳 `false`；排程中的重試每次都重讀待完成的語言，
+/// 所以之後才標示待完成的語言也會被它處理。被拒絕的排程若落在重試正要結束時，
+/// 由現有的重試從頭再跑一輪接手，不會遺失。
+pub fn schedule_retry(state: &AppState, id: Uuid) -> bool {
+    let Some(mut guard) = state.announcement_retries.start(id) else {
+        return false;
+    };
+    let state = state.clone();
     tokio::spawn(async move {
-        for delay in RETRY_DELAYS {
-            tokio::time::sleep(delay).await;
-            retry_pending_translation(&state, id).await;
-            let pending: Option<Vec<String>> =
-                sqlx::query_scalar("SELECT pending_languages FROM announcements WHERE id = $1")
-                    .bind(id)
-                    .fetch_optional(&state.pool)
-                    .await
-                    .ok()
-                    .flatten();
-            if pending.is_none_or(|p| p.is_empty()) {
+        loop {
+            for delay in RETRY_DELAYS {
+                tokio::time::sleep(delay).await;
+                retry_pending_translation(&state, id).await;
+                let pending: Option<Vec<String>> =
+                    sqlx::query_scalar("SELECT pending_languages FROM announcements WHERE id = $1")
+                        .bind(id)
+                        .fetch_optional(&state.pool)
+                        .await
+                        .ok()
+                        .flatten();
+                if pending.is_none_or(|p| p.is_empty()) {
+                    break;
+                }
+            }
+            if !guard.release_or_rerun() {
                 return;
             }
         }
     });
+    true
+}
+
+/// 啟動時把仍有待完成翻譯的公告重新排入重試：重試只存在記憶體，重啟前排的都不見了（#528）。
+/// 回傳這次新排入的公告數。
+pub async fn resume_pending_translations(state: &AppState) -> usize {
+    let ids: Vec<Uuid> = match sqlx::query_scalar(
+        "SELECT id FROM announcements WHERE cardinality(pending_languages) > 0",
+    )
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(class = %crate::error::db_error_class(&e), "failed to load announcements with pending translations");
+            return 0;
+        }
+    };
+    ids.into_iter()
+        .filter(|id| schedule_retry(state, *id))
+        .count()
 }
 
 // ---------- 免登入的讀取端點 ----------
@@ -473,24 +613,17 @@ pub(crate) async fn create(
 ) -> Result<(StatusCode, Json<AnnouncementView>), ApiError> {
     let Json(b) = body.map_err(invalid_body)?;
     check_kind(&b.kind)?;
-    let text = clean_text(&b.text_zh_tw)?;
+    let text = clean_text(&b.text_zh_tw, TEXT_LIMIT)?;
     let starts = b.starts_at.unwrap_or_else(Utc::now);
     check_period(starts, b.ends_at)?;
 
-    let mut en = None;
-    let mut es = None;
-    let mut pending = Vec::new();
-    for (code, language) in TRANSLATED {
-        let translated = translate(&state, language, &text).await;
-        if translated.is_none() {
-            pending.push(code.to_string());
-        }
-        if code == "en" {
-            en = translated;
-        } else {
-            es = translated;
-        }
-    }
+    let (en, es) = translate_pair(&state, &text, true, true).await;
+    let pending: Vec<String> = TRANSLATED
+        .into_iter()
+        .zip([&en, &es])
+        .filter(|(_, translated)| translated.is_none())
+        .map(|((code, _), _)| code.to_string())
+        .collect();
 
     let view: AnnouncementView = sqlx::query_as(concat!(
         "INSERT INTO announcements (kind, text_zh_tw, text_en, text_es, pending_languages, starts_at, ends_at, enabled)
@@ -515,7 +648,7 @@ pub(crate) async fn create(
     )
     .await?;
     if !view.pending_languages.is_empty() {
-        spawn_retry(state, view.id);
+        schedule_retry(&state, view.id);
     }
     Ok((StatusCode::CREATED, Json(view)))
 }
@@ -568,12 +701,26 @@ pub(crate) async fn update(
     check_period(starts, ends)?;
 
     let text = match &b.text_zh_tw {
-        Some(raw) => clean_text(raw)?,
+        Some(raw) => clean_text(raw, TEXT_LIMIT)?,
         None => current.text_zh_tw.clone(),
     };
     let zh_changed = text != current.text_zh_tw;
-    let manual_en = b.text_en.as_deref().map(clean_text).transpose()?;
-    let manual_es = b.text_es.as_deref().map(clean_text).transpose()?;
+    let manual = |raw: &Option<String>| {
+        raw.as_deref()
+            .map(|t| clean_text(t, TRANSLATION_LIMIT))
+            .transpose()
+    };
+    let manual_en = manual(&b.text_en)?;
+    let manual_es = manual(&b.text_es)?;
+    // 內文改了就重新翻譯沒有手動給譯文的語言（en、es 同時翻）
+    let (auto_en, auto_es) = translate_pair(
+        &state,
+        &text,
+        zh_changed && manual_en.is_none(),
+        zh_changed && manual_es.is_none(),
+    )
+    .await;
+    let mut auto = [auto_en, auto_es];
 
     // 只記下這次請求要改的譯文：`None`＝不動，`Some(None)`＝清掉（翻譯失敗）
     let mut en: Option<Option<String>> = None;
@@ -581,14 +728,14 @@ pub(crate) async fn update(
     // 這次寫過的語言先從待完成移除，翻譯失敗的再加回去
     let mut touched: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
-    for (code, language) in TRANSLATED {
+    for (i, (code, _)) in TRANSLATED.into_iter().enumerate() {
         let manual = if code == "en" { &manual_en } else { &manual_es };
         let value = if let Some(m) = manual {
             // 手動給的譯文優先
             Some(m.clone())
         } else if zh_changed {
-            // 內文改了：重新翻譯並覆蓋舊譯文；失敗時舊譯文已過期，清掉並標示待完成
-            let translated = translate(&state, language, &text).await;
+            // 內文改了：用新譯文覆蓋舊譯文；失敗時舊譯文已過期，清掉並標示待完成
+            let translated = auto[i].take();
             if translated.is_none() {
                 failed.push(code.to_string());
             }
@@ -664,7 +811,55 @@ pub(crate) async fn update(
     )
     .await?;
     if !view.pending_languages.is_empty() {
-        spawn_retry(state, id);
+        schedule_retry(&state, id);
+    }
+    Ok(Json(view))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/admin/announcements/{id}/retranslate",
+    tag = "announcements",
+    summary = "立即重新翻譯待完成的譯文（管理者）",
+    description = "重試這則公告標示待完成的 en、es 譯文，供自動重試用完或重啟後使用；已完成與手動輸入的譯文不動。仍失敗的語言保留待完成，並再排入自動重試。",
+    params(("id" = Uuid, Path, description = "公告 ID")),
+    responses(
+        (status = 200, description = "重試後的公告", body = AnnouncementView),
+        (status = 404, description = "not_found", body = crate::error::ErrorBody)
+    )
+)]
+pub(crate) async fn retranslate(
+    RequireAdmin(cu): RequireAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AnnouncementView>, ApiError> {
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM announcements WHERE id = $1)")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?;
+    if !exists {
+        return Err(ApiError::not_found());
+    }
+    retry_pending_translation(&state, id).await;
+    let view: AnnouncementView = sqlx::query_as(concat!(
+        "SELECT ",
+        view_columns!(),
+        " FROM announcements WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    audit(
+        &state.pool,
+        cu.user.id,
+        "announcement_retranslated",
+        &id.to_string(),
+    )
+    .await?;
+    if !view.pending_languages.is_empty() {
+        schedule_retry(&state, id);
     }
     Ok(Json(view))
 }
@@ -782,5 +977,52 @@ mod tests {
         let (_, ()) = tokio::join!(read, interleave);
 
         assert!(flag.is_on_with(|| async { None }).await);
+    }
+
+    /// 錯誤訊息裡寫的字數要與實際套用的上限一致。
+    #[test]
+    fn text_limit_messages_state_their_own_limit() {
+        for limit in [TEXT_LIMIT, TRANSLATION_LIMIT] {
+            assert!(
+                limit.message.contains(&limit.max_chars.to_string()),
+                "{} 沒寫出上限 {}",
+                limit.message,
+                limit.max_chars
+            );
+        }
+        assert_ne!(TEXT_LIMIT.max_chars, TRANSLATION_LIMIT.max_chars);
+    }
+
+    /// 重試正要結束時被拒絕的排程（同一則已有重試）不能遺失：結束前要接手再跑一輪（#528）。
+    #[test]
+    fn a_retry_refused_while_one_is_finishing_is_rerun() {
+        let jobs = Arc::new(RetryJobs::default());
+        let id = Uuid::new_v4();
+        let mut guard = jobs.start(id).expect("第一次排程");
+
+        // 沒有人再要求時，結束即釋放，之後可以重新排
+        assert!(!guard.release_or_rerun());
+        let mut guard = jobs.start(id).expect("釋放後可以再排");
+
+        // 排程中又有修改標示待完成：不另排，但要求現有的重試再跑一輪
+        assert!(jobs.start(id).is_none());
+        assert!(jobs.start(id).is_none());
+        assert!(guard.release_or_rerun(), "被拒絕的排程要讓現有重試再跑一輪");
+        // 那一輪跑完沒有新要求，才真正釋放
+        assert!(!guard.release_or_rerun());
+        drop(guard);
+        assert!(jobs.start(id).is_some());
+    }
+
+    /// 釋放後丟棄舊 guard，不得把之後新排的重試從登記移除。
+    #[test]
+    fn dropping_a_released_guard_keeps_a_newer_registration() {
+        let jobs = Arc::new(RetryJobs::default());
+        let id = Uuid::new_v4();
+        let mut old = jobs.start(id).unwrap();
+        assert!(!old.release_or_rerun());
+        let _new = jobs.start(id).unwrap();
+        drop(old);
+        assert!(jobs.start(id).is_none(), "新排的重試仍在登記中");
     }
 }

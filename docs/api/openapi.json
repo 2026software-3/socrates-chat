@@ -2140,6 +2140,80 @@
         }
       }
     },
+    "/api/admin/announcements/{id}/retranslate": {
+      "post": {
+        "tags": [
+          "announcements"
+        ],
+        "summary": "立即重新翻譯待完成的譯文（管理者）",
+        "description": "重試這則公告標示待完成的 en、es 譯文，供自動重試用完或重啟後使用；已完成與手動輸入的譯文不動。仍失敗的語言保留待完成，並再排入自動重試。",
+        "operationId": "retranslate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "公告 ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "重試後的公告",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnouncementView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登入（`unauthorized`）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "角色不符、名單外、帳號停用、須先改密碼或 CSRF（`forbidden`／`not_enrolled`／`account_disabled`／`password_change_required`／`csrf`）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "系統錯誤（`internal`）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/complaints": {
       "get": {
         "tags": [
