@@ -6,7 +6,7 @@
 }
 
 .vedute-button {
-  @apply type-body-strong relative h-auto min-h-11 min-w-11 gap-2 rounded-sm border-transparent bg-transparent px-4 py-2 text-ink shadow-none;
+  @apply type-body-strong relative h-auto min-h-11 min-w-11 cursor-pointer gap-2 rounded-sm border-transparent bg-transparent px-4 py-2 text-ink shadow-none;
   translate: none;
   transition-property: background-color, border-color, color, text-decoration-color;
   transition-duration: 120ms;
@@ -123,7 +123,11 @@
 }
 
 .vedute-switch {
-  @apply size-11 border-0 bg-transparent ring-0;
+  @apply size-11 cursor-pointer border-0 bg-transparent ring-0;
+}
+
+.vedute-switch:disabled {
+  @apply cursor-not-allowed;
 }
 
 .vedute-switch::after {
@@ -174,7 +178,12 @@
 }
 
 .vedute-label.type-switch-label {
-  @apply type-switch-label;
+  @apply type-switch-label cursor-pointer;
+}
+
+/* 點標籤也會切換開關，所以游標跟開關一致；停用或鎖定時一起變成 not-allowed。 */
+span:has(> .vedute-switch:disabled) + .vedute-label.type-switch-label {
+  @apply cursor-not-allowed;
 }
 
 /*
@@ -231,7 +240,11 @@ textarea.vedute-input {
 
 /* 下拉選單：一張壓在紙上的紙條。紙底、1px 墨框、內側一圈淡墨版痕線，不加投影（The Pressed Not Lifted Rule）。 */
 .vedute-select-trigger {
-  @apply flex items-center justify-between gap-2 text-left;
+  @apply flex cursor-pointer items-center justify-between gap-2 text-left;
+}
+
+.vedute-select-trigger:disabled {
+  @apply cursor-not-allowed;
 }
 
 .vedute-select-chevron {
@@ -321,7 +334,7 @@ textarea.vedute-input {
 }
 
 .vedute-tab {
-  @apply type-body h-auto min-h-12 flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 py-2 text-ink-soft;
+  @apply type-body h-auto min-h-12 flex-none cursor-pointer rounded-none border-0 border-b-2 border-transparent px-0.5 py-2 text-ink-soft;
 }
 
 .vedute-tab::after {
@@ -338,8 +351,13 @@ textarea.vedute-input {
   @apply type-body-strong text-ink;
 }
 
+/*
+ * 停用的頁籤跟停用的按鈕、開關、選項一樣用 not-allowed：頁籤看起來就是可以點的東西，
+ * 用 default 會讓人以為游標沒對準或頁面沒反應。shadcn 的 disabled:pointer-events-none 會讓游標穿透，
+ * 所以跟 .vedute-button:disabled 一樣改回 pointer-events-auto（按鈕本身仍是 disabled，不會觸發）。
+ */
 .vedute-tab:disabled {
-  @apply text-ink-soft;
+  @apply pointer-events-auto cursor-not-allowed text-ink-soft;
 }
 
 .vedute-tab:focus-visible {

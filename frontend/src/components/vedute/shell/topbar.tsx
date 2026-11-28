@@ -95,7 +95,7 @@ export function Topbar({
             aria-expanded={sheetOpen}
             aria-controls="vedute-plan-sheet"
             onClick={() => onOpenSheet(locationBtnRef.current)}
-            className="pointer-events-auto inline-flex min-h-11 items-center gap-1 bg-transparent p-0 text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-chalk md:hidden"
+            className="pointer-events-auto inline-flex min-h-11 cursor-pointer items-center gap-1 bg-transparent p-0 text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-chalk md:hidden"
           >
             <span className="sr-only">{t('shell.plan.openLocation', { label: areaLabel })}</span>
             <CarvedInscription text={building.latin} animateKey={`${role}-${area.building}`} variant="topbar" />
