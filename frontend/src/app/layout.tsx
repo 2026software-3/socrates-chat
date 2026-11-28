@@ -23,6 +23,7 @@ import {
   type ShellHeaderContextValue,
 } from '@/components/vedute/shell'
 import { WorkspaceContext } from '@/components/page'
+import { AiJobsIndicator } from '@/features/jobs/ai-jobs-indicator'
 import { AnnouncementBar } from '@/features/announcements/announcement-banner'
 import { NotificationBanner } from '@/features/notifications/notification-banner'
 import { AiUsageMeter } from '@/features/usage/ai-usage-meter'
@@ -168,6 +169,7 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
               latin={focusBuilding.latin}
               detail={focusDetail ?? t('shell.focus.rostraDetail')}
             />
+            <AiJobsIndicator />
             <div className="mx-auto flex w-full max-w-[760px] flex-col gap-2 px-4 pt-3 empty:hidden">
               <AnnouncementBar />
               {showNotifications ? <NotificationBanner key={me.id} /> : null}
@@ -240,6 +242,7 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
             {/* Work area (white surface + full-bleed PageHeader + optional area sub-tabs + content + Colophon) */}
             <div className="vedute-work-main flex min-w-0 flex-1 flex-col bg-surface">
               <main className="flex min-w-0 flex-1 flex-col">
+                <AiJobsIndicator />
                 <div ref={setHeaderSlot} data-vedute-header-slot="" className="empty:hidden" />
                 {pageHeaderCount === 0 && currentArea && (
                   <VedutePageHeader

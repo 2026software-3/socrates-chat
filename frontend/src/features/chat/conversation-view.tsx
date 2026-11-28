@@ -1,3 +1,4 @@
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
 import { AssistantRuntimeProvider, useAuiState, useLocalRuntime, type ThreadMessageLike } from '@assistant-ui/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
@@ -129,6 +130,7 @@ export function ConversationView({ detail, pollMs, maxPollMs }: { detail: Conver
     try {
       // 202 開始產生總結；已結束時為 200
       await api.post(`/api/conversations/${detail.id}/end`)
+      wakeAiJobs()
       setStatus('ended')
     } catch (e) {
       setEndError(e)

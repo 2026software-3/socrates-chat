@@ -112,6 +112,7 @@ pub fn test_config() -> Config {
         classroom_ai_routing: false,
         monitored_services: vec![],
         service_probe_interval: socrates_chat_backend::service_monitor::DEFAULT_PROBE_INTERVAL,
+        database_max_connections: socrates_chat_backend::config::DEFAULT_DATABASE_MAX_CONNECTIONS,
     }
 }
 
@@ -271,6 +272,20 @@ pub async fn wait_until_blocked_on_lock(pool: &PgPool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("沒有任何連線卡在鎖上");
+}
+
+/// 等一個背景 AI 工作（`ai_jobs`，S-20）離開 pending／running，回傳它的最終狀態；最多 10 秒，逾時就失敗。
+/// 看的是這個工作本身，比「等所有背景工作結束」穩：後者的基準會受別的背景工作影響。
+pub async fn wait_for_job(app: &Router, cookie: &str, id: &str) -> Value {
+    for _ in 0..1000 {
+        let job =
+            json_body(send(app, get(&format!("/api/ai-jobs/{id}"), Some(cookie))).await).await;
+        if job["status"] != "pending" {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("背景工作 {id} 沒有在時限內結束");
 }
 
 /// 等請求觸發的背景工作全部結束（最多 10 秒，逾時就失敗）。比「固定睡一段時間等它寫完」可靠：

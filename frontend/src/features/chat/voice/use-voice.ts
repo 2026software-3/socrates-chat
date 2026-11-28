@@ -5,9 +5,7 @@ import {
   MAX_UTTERANCE_MS,
   SILENCE_MS,
   loadAutoSend,
-  loadBargeIn,
   saveAutoSend,
-  saveBargeIn,
   speechLang,
 } from '@/features/chat/voice/config'
 import { createBargeInMonitor, type BargeInMonitor, type BargeInStatus, type PlaybackPath } from '@/features/chat/voice/audio/barge-in'
@@ -78,7 +76,7 @@ type ReplyStream = { id: string; take: SentenceSplitter; speech?: SpeechTurn }
  * - `converse`：AI 回覆邊生成邊唸，湊滿一句就開始；唸完自動收音；靜音 3 秒進入 3 秒倒數後
  *   自動送出（可關閉自動送出，只用按鈕）。回覆還在生成時被打斷，學生可以先說，訊息等這則回覆
  *   結束才送出：這時送出會中止前端的串流，後端卻還在生成。
- *   學生開啟「開口打斷」後，播放時麥克風只在瀏覽器內偵測開口
+ *   播放時（開口打斷一律開啟，不提供開關）麥克風只在瀏覽器內偵測開口
  *   （S-05.5），偵測到就打斷播放、換回辨識器並請學生再說一次，因為偵測期間的聲音沒有進辨識器；
  *   辨識器本身仍不在播放時運作，避免把 AI 的聲音錄成學生發言。
  * 備援的 OpenAI 辨識沒有即時文字也沒有靜音偵測，需按按鈕結束發言。
@@ -89,7 +87,6 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const [notice, setNotice] = useState<VoiceNotice>()
   const [countdown, setCountdown] = useState(0) // 0..1
   const [autoSend, setAutoSendState] = useState(loadAutoSend)
-  const [bargeIn, setBargeInState] = useState(loadBargeIn)
   const [audioStatus, setAudioStatus] = useState<BargeInStatus>({ state: 'idle' })
 
   const hostRef = useRef(host)
@@ -99,7 +96,6 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
   const recRef = useRef<Recognizer>(undefined)
   const speakerRef = useRef<Speaker>(undefined)
   const monitorRef = useRef<BargeInMonitor>(undefined)
-  const bargeInRef = useRef(bargeIn)
   const speakTurnRef = useRef(0)
   const bargedInRef = useRef(false)
   const baseRef = useRef('')
@@ -315,7 +311,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       replyAbandonedRef.current = false
       const turn = ++speakTurnRef.current
       // 只有語音對話才監聽開口；開始發聲才開麥克風，音量校準才會對到 AI 的聲音
-      const monitor = bargeInRef.current && modeRef.current === 'converse' ? ensureMonitor() : undefined
+      const monitor = modeRef.current === 'converse' ? ensureMonitor() : undefined
       try {
         await play((path) => {
           // 等待發聲期間，這一輪可能已被取代，或開關已被關閉
@@ -447,7 +443,6 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
     notice,
     countdown,
     autoSend,
-    bargeIn,
     /** 麥克風前處理與開口偵測的狀態，供疑難排解。 */
     audioStatus,
     stopDictationForEdit,
@@ -481,7 +476,7 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
       stopRecognizer()
       setMode('converse')
       // 這裡還在點擊事件內：之後 AI 開始說話時已經沒有使用者手勢了
-      if (bargeInRef.current) ensureMonitor().unlock()
+      ensureMonitor().unlock()
       // 一開始先聆聽；之後每個 AI 回覆自動播放，已經開始生成的這則不唸
       handledReplyRef.current = replyRef.current?.id
       startListening('converse')
@@ -514,17 +509,6 @@ export function useVoice(host: VoiceHost, reply: VoiceReply | undefined) {
         window.clearTimeout(timers.current.silence)
         if (phaseRef.current === 'countdown') keepListening()
       } else if (phaseRef.current === 'listening') armSilence()
-    },
-    setBargeIn(on: boolean) {
-      bargeInRef.current = on
-      setBargeInState(on)
-      saveBargeIn(on)
-      if (on) ensureMonitor().unlock()
-      else {
-        // 關閉要立刻生效：麥克風不繼續開著
-        monitorRef.current?.close()
-        monitorRef.current = undefined
-      }
     },
     dismissNotice: () => setNotice(undefined),
   }

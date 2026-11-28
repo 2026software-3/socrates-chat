@@ -332,7 +332,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
   const rowActions = (s: StudentRow) => (
     <>
       {resetButton(s)}
-      {isAdmin && s.id ? (
+      {isAdmin && s.has_account ? (
         s.disabled ? (
           <Button
             variant="outline"
@@ -358,7 +358,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         variant="outline"
         size="sm"
         aria-label={t('teacher.roster.removeLabel', { email: s.email ?? s.student_number })}
-        onClick={() => open({ kind: 'remove', email: s.email ?? s.student_number, id: s.id ?? '' })}
+        onClick={() => open({ kind: 'remove', email: s.email ?? s.student_number, id: s.id })}
       >
         {t('teacher.roster.remove')}
       </Button>
@@ -366,7 +366,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
         variant="destructive"
         size="sm"
         aria-label={t('teacher.roster.deleteLabel', { email: s.email ?? s.student_number })}
-        onClick={() => open({ kind: 'delete', email: s.email ?? s.student_number, id: s.id ?? '', studentNumber: s.student_number })}
+        onClick={() => open({ kind: 'delete', email: s.email ?? s.student_number, id: s.id, studentNumber: s.student_number })}
       >
         {t('teacher.roster.deleteAccount')}
       </Button>
@@ -375,7 +375,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
 
   /** 有帳號的學生可點進去看他的討論情形。 */
   const studentLink = (s: StudentRow) =>
-    s.id ? (
+    s.has_account ? (
       <Link to={`${base}/${classroom.id}/students/${s.id}`} className="underline-offset-4 hover:underline">
         {s.email ?? s.student_number}
       </Link>
@@ -430,7 +430,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                   {students.map((s) => {
                     const status = statusOf(s)
                     return (
-                      <li key={s.email ?? s.id ?? s.student_number} className="space-y-3 rounded-lg border p-3">
+                      <li key={s.email ?? s.student_number} className="space-y-3 rounded-lg border p-3">
                         <div className="space-y-1">
                           <p className="font-medium break-all">{studentLink(s)}</p>
                           {s.display_name ? <p className="text-muted-foreground text-sm">{s.display_name}</p> : null}
@@ -459,7 +459,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                     </TableHeader>
                     <TableBody>
                       {students.map((s) => (
-                        <TableRow key={s.email ?? s.id ?? s.student_number}>
+                        <TableRow key={s.email ?? s.student_number}>
                           <TableCell className="break-all">
                             {studentLink(s)}
                             {s.display_name ? <span className="text-muted-foreground block text-xs">{s.display_name}</span> : null}

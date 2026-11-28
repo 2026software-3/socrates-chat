@@ -204,12 +204,13 @@ export type SummaryTranslation = {
 
 /** 教室修課名單上的學生與帳號狀態（GET /api/classrooms/{id}/students）。 */
 export type StudentRow = {
-  id: string | null
+  /** 帳號 UUID；名單上的學生一律有（尚未登入的也已建立帳號列），是否已登入看 `has_account` */
+  id: string
   email: string | null
   /** 學號（大寫）；學生的帳號 UUID 是 `id` */
   student_number: string
   display_name: string | null
-  /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */
+  /** 已有帳號（登入過，或管理者匯入時建立了內建帳號）。目前後端對名單上的學生一律回 true；前端仍依它決定連結與停用等操作 */
   has_account: boolean
   disabled: boolean
   completed_conversations: number
@@ -383,6 +384,8 @@ export type ClassroomAiSettings = {
   primary: ModelRef | null
   fallbacks: ModelRef[]
   confirmed_providers: string[]
+  /** 正在背景驗證的設定；驗證通過前，上面的仍是目前生效的設定（S-20）。 */
+  pending_job?: string | null
 }
 
 /** `GET /api/admin/system-ai`：系統用途的模型、key 與近 30 天用量。 */

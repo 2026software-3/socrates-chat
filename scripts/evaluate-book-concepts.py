@@ -19,12 +19,7 @@ def main():
     if args.output.exists():
         parser.error('Output exists; use a new filename to preserve evidence')
     helpers = runpy.run_path(str(Path(__file__).with_name('evaluate-book-sources.py')))
-    key = None
-    if args.provider == 'google' and args.key_file:
-        for line in args.key_file.read_text().splitlines():
-            name, sep, value = line.strip().removeprefix('export ').partition('=')
-            if sep and name.strip() == 'GOOGLE_BOOKS_API_KEY':
-                key = value.strip().strip('\"\'')
+    key = helpers['load_google_api_key'](args.key_file) if args.provider == 'google' else None
     sample = json.loads(args.sample.read_text())
     report = {'provider': args.provider, 'sample': args.sample.name,
               'started_at': datetime.now(timezone.utc).isoformat(),

@@ -5,6 +5,23 @@ import { describe, expect, it } from 'vitest'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
+const emptyClass = {
+  masked: false,
+  students_total: 0,
+  students_participating: 0,
+  completed: 0,
+  activities: [],
+}
+
+const opsStatus = {
+  service: 'ok',
+  database: 'ok',
+  period: '24h',
+  diagnostics_available: true,
+  statistics: null,
+  recent_errors: [],
+}
+
 describe('app shell', () => {
   it('sends anonymous visitors to the login page', async () => {
     mockMe(null)
@@ -88,14 +105,6 @@ describe('app shell', () => {
     renderApp(null, { route: '/' })
     expect(await screen.findByRole('heading', { name: '選擇題目' })).toBeInTheDocument()
   })
-
-  const emptyClass = {
-    masked: false,
-    students_total: 0,
-    students_participating: 0,
-    completed: 0,
-    activities: [],
-  }
 
   it('takes teachers to their classrooms — they do not take part in discussions', async () => {
     mockMe(makeMe({ teacher: true }))
@@ -191,16 +200,7 @@ describe('app shell', () => {
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: ['t@example.com'] })),
       http.get('/api/dashboard/class', () => HttpResponse.json({ ...emptyClass, masked: true, students_total: 2 })),
       http.get('/api/topics', () => HttpResponse.json([])),
-      http.get('/api/admin/status', () =>
-        HttpResponse.json({
-          service: 'ok',
-          database: 'ok',
-          period: '24h',
-          diagnostics_available: true,
-          statistics: null,
-          recent_errors: [],
-        }),
-      ),
+      http.get('/api/admin/status', () => HttpResponse.json(opsStatus)),
     )
   }
 
@@ -319,7 +319,13 @@ describe('sidebar stays in view on long pages', () => {
     server.use(
       http.get('/api/classrooms', () => HttpResponse.json([])),
       http.get('/api/catalog', () => HttpResponse.json({ activities: [], topics: [] })),
-      http.get('/api/admin/*', () => HttpResponse.json([])),
+      http.get('/api/admin/teachers', () => HttpResponse.json({ emails: [] })),
+      http.get('/api/admin/status', () => HttpResponse.json(opsStatus)),
+      // 服務健康度交給預設的假端點（不是 `[]`）
+      http.get('/api/admin/*', ({ request }) => (new URL(request.url).pathname === '/api/admin/health' ? undefined : HttpResponse.json([]))),
+      // 首頁各自會讀的資料；沒有處理的請求在卸載時被中止，會變成測試結束後的未處理拒絕
+      http.get('/api/dashboard/class', () => HttpResponse.json(emptyClass)),
+      http.get('/api/topics', () => HttpResponse.json([])),
     )
     renderApp(null, { route })
     const nav = await screen.findByRole('navigation', { name: '主導覽' })

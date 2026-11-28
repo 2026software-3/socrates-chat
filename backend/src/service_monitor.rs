@@ -665,7 +665,7 @@ pub(crate) struct ServiceSummary {
 
 /// 即時語音節點（S-19）：監控資料與周邊服務相同（狀態、回應時間、可用率、歷史），另加節點自己的欄位。
 #[derive(Serialize, ToSchema)]
-pub(crate) struct VoiceNodeView {
+pub(crate) struct ServiceVoiceNode {
     #[serde(flatten)]
     service: ServiceView,
     /// `active`、`draining` 或 `disabled`
@@ -682,7 +682,7 @@ pub(crate) struct ServicesView {
     services: Vec<ServiceView>,
     history_available: bool,
     period_days: i64,
-    voice_nodes: Vec<VoiceNodeView>,
+    voice_nodes: Vec<ServiceVoiceNode>,
 }
 
 #[derive(Deserialize)]
@@ -739,7 +739,7 @@ pub(crate) async fn list(
     view.voice_nodes = nodes
         .into_iter()
         .filter_map(|node| {
-            Some(VoiceNodeView {
+            Some(ServiceVoiceNode {
                 service: voice.remove(&voice_service_name(node.id))?,
                 healthy: state.voice_nodes.is_healthy(node.id),
                 sessions: counts.get(&node.id).copied().unwrap_or(0),

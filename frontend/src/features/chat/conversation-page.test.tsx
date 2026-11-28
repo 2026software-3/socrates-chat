@@ -522,7 +522,7 @@ describe('ConversationPage: ending', () => {
     server.use(
       http.post('/api/conversations/c1/end', () => {
         ends += 1
-        return HttpResponse.json({ status: 'pending' }, { status: 202 })
+        return HttpResponse.json(makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null }), { status: 202 })
       }),
     )
     const pending = makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null })
@@ -579,7 +579,7 @@ describe('ConversationPage: ending', () => {
       http.post('/api/conversations/c1/end', async () => {
         ends += 1
         await gate
-        return HttpResponse.json({}, { status: 202 })
+        return HttpResponse.json(makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null }), { status: 202 })
       }),
     )
     mockSummaries(makeSummary())
@@ -660,7 +660,7 @@ describe('ConversationPage: summary states', () => {
     server.use(
       http.post('/api/conversations/c1/summary/retry', () => {
         retries += 1
-        return HttpResponse.json({}, { status: 202 })
+        return HttpResponse.json(makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null }), { status: 202 })
       }),
     )
     renderPage()
@@ -729,7 +729,7 @@ describe('ConversationPage: summary states', () => {
         gets += 1
         return gets === 1 ? HttpResponse.json(failed) : apiError(500, 'internal')
       }),
-      http.post('/api/conversations/c1/summary/retry', () => HttpResponse.json({}, { status: 202 })),
+      http.post('/api/conversations/c1/summary/retry', () => HttpResponse.json(makeSummary({ status: 'pending', stance: null, reasons: null, completed_at: null }), { status: 202 })),
     )
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: '重新產生總結' }))

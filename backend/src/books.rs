@@ -337,12 +337,20 @@ pub(crate) async fn remove(
 
 #[utoipa::path(get, path="/api/books/search", tag="books", summary="搜尋外部書目（不寫入書庫）", params(("q"=String, Query, description="書名、作者或 ISBN；最多 1000 字元")), responses((status=200, description="待教師選定版本的候選；正常無結果為空陣列", body=Vec<crate::book_sources::BookCandidate>), (status=400, description="invalid_filter", body=ErrorBody), (status=503, description="book_source_unavailable；保留手填內容", body=ErrorBody), crate::error::CommonErrors))]
 pub(crate) async fn search(
-    _: RequireTeacher,
+    RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<Vec<crate::book_sources::BookCandidate>>, ApiError> {
     let q = query_text(&query, true)?.ok_or_else(ApiError::invalid_filter)?;
-    state.book_source.search(q).await.map(Json).map_err(|_| {
+    state.book_source.search(q).await.map(Json).map_err(|err| {
+        crate::diagnostics::book_source_failure(
+            &state.pool,
+            "book_search",
+            cu.user.id,
+            err.class,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "book_source_unavailable",
+        );
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "book_source_unavailable",

@@ -10,7 +10,7 @@ import { server } from '@/test/server'
 
 const roster = [
   student('active@example.com', { display_name: 'Ada', completed_conversations: 3 }),
-  student('later@example.com', { id: null, has_account: false }),
+  student('later@example.com', { has_account: false }),
   student('off@example.com', { disabled: true }),
 ]
 

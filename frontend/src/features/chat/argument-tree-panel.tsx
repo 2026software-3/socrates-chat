@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { errorText, useT } from '@/i18n'
-import { api, isAbortError } from '@/lib/api'
+import { api } from '@/lib/api'
+import { usePollJob } from '@/lib/ai-jobs'
+import type { PollSpec } from '@/lib/poll-store'
 import { markAiUsageStale } from '@/lib/ai-usage-events'
 
 type NodeKind = 'claim' | 'premise' | 'boundary' | 'rebuttal' | 'precision' | 'independent_judgment' | 'opposing_proposition'
@@ -35,59 +37,59 @@ type ViewState =
 const POLL_MS = 1000
 const MAX_POLL_MS = 15 * 60 * 1000
 
-/** Only explicit opening starts requests. POST is idempotent for pending/ready results. */
+/**
+ * 讀取論證樹；尚無結果（missing）時接著 POST 啟動，POST 本身對 pending／ready 結果是冪等的。
+ * `postFirst` 用於失敗後的明確重試：第一次直接 POST，之後改用 GET 輪詢。
+ */
+function treeSpec(conversationId: string, postFirst: boolean): PollSpec<TreeView> {
+  const path = '/api/conversations/' + conversationId + '/argument-tree'
+  let posted = !postFirst
+  const post = async (signal: AbortSignal) => {
+    try {
+      return await api.post<TreeView>(path, undefined, signal)
+    } finally {
+      markAiUsageStale()
+    }
+  }
+  return {
+    fetch: async (signal) => {
+      if (!posted) {
+        posted = true
+        return post(signal)
+      }
+      const result = await api.get<TreeView>(path, signal)
+      return result.status === 'missing' ? post(signal) : result
+    },
+    next: (r) => (r.status === 'pending' ? 'poll-limited' : 'done'),
+    intervalMs: POLL_MS,
+    maxMs: MAX_POLL_MS,
+  }
+}
+
+/**
+ * Only explicit opening starts requests. 輪詢由全域登記處持有（S-20）：關閉視窗或離頁後，
+ * 後端工作與輪詢都繼續，再打開時直接接上。
+ */
 export function ArgumentTreePanel({ conversationId, topicTitle }: { conversationId: string; topicTitle: string }) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  const [state, setState] = useState<ViewState>({ kind: 'loading' })
-  const [action, setAction] = useState({ revision: 0, retry: false })
+  const [started, setStarted] = useState(false)
+  const spec = useMemo(() => treeSpec(conversationId, false), [conversationId])
+  const { state: poll, restart } = usePollJob(started ? `argtree:${conversationId}` : null, spec)
 
-  useEffect(() => {
-    if (!open) return
-    const ctrl = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const path = '/api/conversations/' + conversationId + '/argument-tree'
-    const startedAt = Date.now()
-    async function start() {
-      try {
-        const result = await api.post<TreeView>(path, undefined, ctrl.signal)
-        markAiUsageStale()
-        if (!ctrl.signal.aborted) accept(result)
-      } catch (error) {
-        markAiUsageStale()
-        if (!ctrl.signal.aborted && !isAbortError(error)) setState({ kind: 'error', error })
-      }
-    }
-    function accept(result: TreeView) {
-      if (result.status === 'ready' && result.tree) setState({ kind: 'ready', tree: result.tree })
-      else if (result.status === 'failed') setState({ kind: 'failed' })
-      else if (result.status === 'missing') void start()
-      else if (Date.now() - startedAt >= MAX_POLL_MS) setState({ kind: 'slow' })
-      else {
-        setState({ kind: 'pending' })
-        timer = setTimeout(() => void read(), POLL_MS)
-      }
-    }
-    async function read() {
-      try {
-        const result = await api.get<TreeView>(path, ctrl.signal)
-        if (!ctrl.signal.aborted) accept(result)
-      } catch (error) {
-        if (!ctrl.signal.aborted && !isAbortError(error)) setState({ kind: 'error', error })
-      }
-    }
-    if (action.retry) void start()
-    else void read()
-    return () => { ctrl.abort(); clearTimeout(timer) }
-  }, [open, conversationId, action])
+  const state: ViewState = poll.error !== undefined ? { kind: 'error', error: poll.error }
+    : poll.data?.status === 'ready' && poll.data.tree ? { kind: 'ready', tree: poll.data.tree }
+    : poll.data?.status === 'failed' ? { kind: 'failed' }
+    : poll.timedOut ? { kind: 'slow' }
+    : poll.data ? { kind: 'pending' }
+    : { kind: 'loading' }
 
   const busy = open && (state.kind === 'loading' || state.kind === 'pending')
   return (
     <Dialog open={open} onOpenChange={(next) => {
-      if (next) {
-        setState({ kind: 'loading' })
-        setAction((a) => ({ revision: a.revision + 1, retry: false }))
-      }
+      // 再次打開時，已停止的工作重新讀一次已保存的結果；仍在輪詢的直接接上
+      if (next && started && !poll.polling) restart({})
+      if (next) setStarted(true)
       setOpen(next)
     }}>
       <DialogTrigger asChild>
@@ -105,7 +107,7 @@ export function ArgumentTreePanel({ conversationId, topicTitle }: { conversation
           <Alert variant="destructive" role="alert">
             <AlertTitle>{t('chat.tree.failed')}</AlertTitle>
             {state.kind === 'error' ? <AlertDescription>{errorText(t, state.error)}</AlertDescription> : null}
-            <Button variant="outline" className="mt-3" onClick={() => { setState({ kind: 'loading' }); setAction((a) => ({ revision: a.revision + 1, retry: true })) }}>
+            <Button variant="outline" className="mt-3" onClick={() => restart({ spec: treeSpec(conversationId, true) })}>
               {t('chat.tree.retry')}
             </Button>
           </Alert>
@@ -113,7 +115,7 @@ export function ArgumentTreePanel({ conversationId, topicTitle }: { conversation
         {state.kind === 'slow' ? (
           <Alert role="status">
             <AlertTitle>{t('chat.tree.slow')}</AlertTitle>
-            <Button variant="outline" className="mt-3" onClick={() => { setState({ kind: 'loading' }); setAction((a) => ({ revision: a.revision + 1, retry: false })) }}>
+            <Button variant="outline" className="mt-3" onClick={() => restart({})}>
               {t('chat.tree.check')}
             </Button>
           </Alert>

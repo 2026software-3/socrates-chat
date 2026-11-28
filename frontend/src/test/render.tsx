@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { AppRoutes } from '@/app/routes'
 import { AuthProvider } from '@/auth/auth-context'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { AiJobsProvider } from '@/lib/ai-jobs'
 import { I18nProvider } from '@/i18n'
 import type { Lang } from '@/i18n/define'
 import type { Me, Roles } from '@/lib/types'
@@ -51,7 +52,9 @@ export function renderApp(ui: ReactElement | null = null, { route = '/', lang = 
     <I18nProvider initial={lang}>
       <AuthProvider>
         <TooltipProvider>
-          <MemoryRouter initialEntries={[route]}>{ui ?? <AppRoutes />}</MemoryRouter>
+          <AiJobsProvider>
+            <MemoryRouter initialEntries={[route]}>{ui ?? <AppRoutes />}</MemoryRouter>
+          </AiJobsProvider>
         </TooltipProvider>
       </AuthProvider>
     </I18nProvider>,

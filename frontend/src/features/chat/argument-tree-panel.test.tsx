@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
@@ -104,15 +104,18 @@ describe('saved argument tree button', () => {
     expect(screen.queryByRole('button', { name: '總結論證樹' })).not.toBeInTheDocument()
   })
 
-  it('stops polling when the dialog is closed', async () => {
+  it('keeps polling after the dialog is closed and shows the finished tree on reopen (S-20)', async () => {
     let reads = 0
-    server.use(http.get('/api/conversations/c1/argument-tree', () => { reads++; return HttpResponse.json(state('pending')) }))
+    server.use(
+      http.get('/api/conversations/c1/argument-tree', () => HttpResponse.json(++reads < 3 ? state('pending') : ready)),
+      http.post('/api/conversations/c1/argument-tree', () => HttpResponse.json(state('pending'), { status: 202 })),
+    )
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: '總結論證樹' }))
     await screen.findByText('正在產生論證樹…')
     await userEvent.keyboard('{Escape}')
-    const before = reads
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)) })
-    expect(reads).toBe(before)
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3), { timeout: 5000 })
+    await userEvent.click(await screen.findByRole('button', { name: '總結論證樹' }))
+    expect(await screen.findByText('支持使用工具')).toBeInTheDocument()
   })
 })

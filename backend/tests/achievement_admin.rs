@@ -842,6 +842,32 @@ async fn admin_cannot_create_levels_with_non_increasing_thresholds(pool: PgPool)
     assert_eq!(count, 0);
 }
 
+/// 建立成就後，其他語言由背景補譯（S-20）：等工作結束，回傳工作狀態與重新讀取的成就。
+async fn finish_translation(
+    app: &axum::Router,
+    admin: &str,
+    result: &Value,
+    id: &str,
+) -> (Value, Value) {
+    let job = wait_for_job(
+        app,
+        admin,
+        result["job_id"]
+            .as_str()
+            .expect("有待補譯的語言就有 job_id"),
+    )
+    .await;
+    let (_, list) = call(app, "GET", LIST, admin, Value::Null).await;
+    let view = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == id)
+        .cloned()
+        .expect("成就在列表中");
+    (job, view)
+}
+
 #[sqlx::test]
 async fn creating_in_one_language_translates_and_records_completion_status(pool: PgPool) {
     let ai = FakeAi::with(vec![
@@ -858,11 +884,18 @@ async fn creating_in_one_language_translates_and_records_completion_status(pool:
         "source_language":"zh-TW", "name":"新見解", "description":"完成一場對話"});
     let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
     assert_eq!(status, StatusCode::CREATED, "{result}");
+    // 建立時先存原文，其他語言標為待補譯（S-20）
     assert_eq!(
-        result["achievement"]["name"],
+        result["achievement"]["pending_languages"],
+        json!(["en", "es"])
+    );
+    let (job, view) = finish_translation(&app, &a.admin, &result, "translated").await;
+    assert_eq!(job["status"], "ready");
+    assert_eq!(
+        view["name"],
         json!({"zh_tw":"新見解", "en":"New insight", "es":"Nueva idea"})
     );
-    assert_eq!(result["achievement"]["pending_languages"], json!([]));
+    assert_eq!(view["pending_languages"], json!([]));
     let requests = ai.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(
@@ -886,11 +919,15 @@ async fn browser_translations_take_precedence_and_missing_languages_use_fallback
     });
     let (status, result) = call(&app, "POST", LIST, &actors.admin, body).await;
     assert_eq!(status, StatusCode::CREATED, "{result}");
+    // 瀏覽器譯文立即套用，只剩西班牙文待補譯
+    assert_eq!(result["achievement"]["name"]["en"], "New insight");
+    assert_eq!(result["achievement"]["pending_languages"], json!(["es"]));
+    let (_, view) = finish_translation(&app, &actors.admin, &result, "browser_translated").await;
     assert_eq!(
-        result["achievement"]["name"],
+        view["name"],
         json!({"zh_tw": "新見解", "en": "New insight", "es": "Nueva idea"})
     );
-    assert_eq!(result["achievement"]["pending_languages"], json!([]));
+    assert_eq!(view["pending_languages"], json!([]));
     let requests = ai.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].system.contains("to es"));
@@ -910,9 +947,14 @@ async fn failed_translation_uses_original_and_can_be_corrected_by_admin(pool: Pg
         "source_language":"zh-TW", "name":"新見解", "description":"完成一場對話"});
     let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
     assert_eq!(status, StatusCode::CREATED, "{result}");
-    assert_eq!(result["achievement"]["name"]["en"], "新見解");
-    assert_eq!(result["achievement"]["description"]["en"], "完成一場對話");
-    assert_eq!(result["achievement"]["pending_languages"], json!(["en"]));
+    let (job, view) = finish_translation(&app, &a.admin, &result, "pending_translation").await;
+    // 英文翻譯失敗：保留原文、仍待完成；西班牙文補上
+    assert_eq!(job["status"], "failed");
+    assert_eq!(job["error_code"], "ai_unavailable");
+    assert_eq!(view["name"]["en"], "新見解");
+    assert_eq!(view["description"]["en"], "完成一場對話");
+    assert_eq!(view["name"]["es"], "Nueva idea");
+    assert_eq!(view["pending_languages"], json!(["en"]));
     let (status, revised) = call(
         &app,
         "PATCH",
@@ -962,7 +1004,10 @@ async fn slow_translations_are_not_cut_off_by_the_standard_request_timeout(pool:
         "source_language":"zh-TW", "name":"新成就", "description":"說明"});
     let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
     assert_eq!(status, StatusCode::CREATED, "{result}");
-    assert_eq!(result["achievement"]["pending_languages"], json!([]));
+    // 翻譯在背景完成，不受一般請求逾時影響
+    let (job, view) = finish_translation(&app, &a.admin, &result, "slow_translation").await;
+    assert_eq!(job["status"], "ready");
+    assert_eq!(view["pending_languages"], json!([]));
 }
 
 #[sqlx::test]
@@ -981,9 +1026,8 @@ async fn translation_missing_a_placeholder_remains_pending(pool: PgPool) {
         "source_language":"zh-TW", "name":"思辨之路", "description":"累積完成 {n} 場對話"});
     let (status, result) = call(&app, "POST", LIST, &a.admin, body).await;
     assert_eq!(status, StatusCode::CREATED, "{result}");
-    assert_eq!(result["achievement"]["pending_languages"], json!(["en"]));
-    assert_eq!(
-        result["achievement"]["description"]["en"],
-        "累積完成 {n} 場對話"
-    );
+    let (job, view) = finish_translation(&app, &a.admin, &result, "placeholder_translation").await;
+    assert_eq!(job["status"], "failed");
+    assert_eq!(view["pending_languages"], json!(["en"]));
+    assert_eq!(view["description"]["en"], "累積完成 {n} 場對話");
 }

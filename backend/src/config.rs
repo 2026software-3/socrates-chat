@@ -18,9 +18,9 @@ pub struct Config {
     pub google_client_id: String,
     pub google_client_secret: String,
     pub google_redirect_url: String,
-    /// 選填的後端 Cloud Translation API 金鑰（與 Google 登入憑證分開）。
+    /// 選填的後端 Cloud Translation API 金鑰；預設讀 `GOOGLE_API_KEY`，可用 `GOOGLE_TRANSLATION_API_KEY` 個別覆寫（與 Google 登入憑證分開）。
     pub google_translation_api_key: Option<String>,
-    /// Google Books lookup key; unrelated to OAuth credentials.
+    /// 選填的 Google Books API 金鑰；預設讀 `GOOGLE_API_KEY`，可用 `GOOGLE_BOOKS_API_KEY` 個別覆寫（與 Google 登入憑證分開）。
     pub google_books_api_key: Option<String>,
     /// 首次登入即成為管理者的信箱（小寫）。
     pub admin_emails: Vec<String>,
@@ -96,6 +96,8 @@ pub struct Config {
     pub monitored_services: Vec<crate::service_monitor::MonitoredService>,
     /// 周邊服務背景探測間隔（`SERVICE_PROBE_INTERVAL_SECS`，10 至 300 秒，預設 30 秒，S-09.3）。
     pub service_probe_interval: Duration,
+    /// 資料庫連線池上限（`DATABASE_MAX_CONNECTIONS`，1 至 100，預設 10，S-08.3）。
+    pub database_max_connections: u32,
 }
 
 #[derive(Debug)]
@@ -148,6 +150,47 @@ fn parse_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, ConfigErr
             .map_err(|_| ConfigError(format!("invalid value for {name}"))),
         _ => Ok(default),
     }
+}
+
+/// 解析 Google API 金鑰：優先使用該服務專用變數，未設定或留白時改用共用的 `GOOGLE_API_KEY`。
+pub fn resolve_google_api_key(specific: Option<&str>, shared: Option<&str>) -> Option<String> {
+    [specific, shared]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|key| !key.is_empty())
+        .map(str::to_owned)
+}
+
+/// 資料庫連線池上限的預設值與可設定範圍（`DATABASE_MAX_CONNECTIONS`，S-08.3）。
+/// 上限取 PostgreSQL 預設的 `max_connections`，避免單一後端就用盡資料庫的連線。
+pub const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
+const MIN_DATABASE_MAX_CONNECTIONS: u32 = 1;
+const MAX_DATABASE_MAX_CONNECTIONS: u32 = 100;
+
+/// 解析 `DATABASE_MAX_CONNECTIONS`：未設定或空白用預設 10；
+/// 不是整數或不在 1 至 100 內時回錯誤，讓啟動失敗而不是悄悄改用別的值。
+pub fn parse_database_max_connections(raw: Option<&str>) -> Result<u32, ConfigError> {
+    parse_database_max_connections_or(raw, DEFAULT_DATABASE_MAX_CONNECTIONS)
+}
+
+/// 同上，但未設定或空白時用呼叫端指定的預設值（例如一次性工具要比服務更小的池）。
+pub fn parse_database_max_connections_or(
+    raw: Option<&str>,
+    default: u32,
+) -> Result<u32, ConfigError> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(default);
+    };
+    raw.parse::<u32>()
+        .ok()
+        .filter(|n| (MIN_DATABASE_MAX_CONNECTIONS..=MAX_DATABASE_MAX_CONNECTIONS).contains(n))
+        .ok_or_else(|| {
+            ConfigError(format!(
+                "DATABASE_MAX_CONNECTIONS must be a whole number between \
+                 {MIN_DATABASE_MAX_CONNECTIONS} and {MAX_DATABASE_MAX_CONNECTIONS}"
+            ))
+        })
 }
 
 /// 回合設定必須是 `1 <= 引導收尾 <= 上限 <= 1000`（S-03.3）；資料庫以 `i32` 計數，
@@ -286,6 +329,13 @@ impl Config {
                 ));
             }
         };
+        let database_max_connections = match env::var("DATABASE_MAX_CONNECTIONS") {
+            Ok(value) => parse_database_max_connections(Some(&value))?,
+            Err(env::VarError::NotPresent) => DEFAULT_DATABASE_MAX_CONNECTIONS,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError("DATABASE_MAX_CONNECTIONS must be UTF-8".into()));
+            }
+        };
         let app_base_url = required("APP_BASE_URL")?.trim_end_matches('/').to_string();
         let wrap_up_turn = parse_or("WRAP_UP_TURN", 15)?;
         let max_turns = parse_or("MAX_TURNS", 20)?;
@@ -317,18 +367,21 @@ impl Config {
                 "AI_USAGE_MAX and AI_USAGE_WINDOW_SECS must be at least 1".into(),
             ));
         }
+        let shared_google_api_key = env::var("GOOGLE_API_KEY").ok();
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             google_client_id: required("GOOGLE_CLIENT_ID")?,
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             google_redirect_url: env::var("GOOGLE_REDIRECT_URL")
                 .unwrap_or_else(|_| format!("{app_base_url}/api/auth/google/callback")),
-            google_books_api_key: env::var("GOOGLE_BOOKS_API_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
-            google_translation_api_key: env::var("GOOGLE_TRANSLATION_API_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
+            google_books_api_key: resolve_google_api_key(
+                env::var("GOOGLE_BOOKS_API_KEY").ok().as_deref(),
+                shared_google_api_key.as_deref(),
+            ),
+            google_translation_api_key: resolve_google_api_key(
+                env::var("GOOGLE_TRANSLATION_API_KEY").ok().as_deref(),
+                shared_google_api_key.as_deref(),
+            ),
             admin_emails: parse_admin_emails(&env::var("ADMIN_EMAILS").unwrap_or_default()),
             admin_initial_password: env::var("ADMIN_INITIAL_PASSWORD")
                 .ok()
@@ -399,6 +452,7 @@ impl Config {
             classroom_ai_routing: true,
             monitored_services,
             service_probe_interval,
+            database_max_connections,
             app_base_url,
         })
     }
@@ -486,6 +540,59 @@ mod tests {
     }
 
     #[test]
+    fn database_max_connections_defaults_when_unset_or_blank() {
+        for raw in [None, Some(""), Some("  \n")] {
+            assert_eq!(
+                parse_database_max_connections(raw).unwrap(),
+                DEFAULT_DATABASE_MAX_CONNECTIONS
+            );
+        }
+    }
+
+    #[test]
+    fn database_max_connections_accepts_the_whole_1_to_100_range() {
+        assert_eq!(parse_database_max_connections(Some("1")).unwrap(), 1);
+        assert_eq!(parse_database_max_connections(Some(" 25 ")).unwrap(), 25);
+        assert_eq!(parse_database_max_connections(Some("100")).unwrap(), 100);
+    }
+
+    #[test]
+    fn database_max_connections_outside_the_range_or_not_a_whole_number_fails_startup() {
+        for raw in ["0", "101", "100000", "-5", "10.5", "10x", "abc"] {
+            let error = parse_database_max_connections(Some(raw))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("DATABASE_MAX_CONNECTIONS"), "{raw}: {error}");
+            assert!(
+                error.contains('1') && error.contains("100"),
+                "{raw}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn database_max_connections_uses_the_callers_default_when_unset_or_blank() {
+        for raw in [None, Some(""), Some("  ")] {
+            assert_eq!(parse_database_max_connections_or(raw, 3).unwrap(), 3);
+        }
+    }
+
+    #[test]
+    fn database_max_connections_explicit_value_beats_the_callers_default() {
+        assert_eq!(
+            parse_database_max_connections_or(Some("25"), 3).unwrap(),
+            25
+        );
+    }
+
+    #[test]
+    fn database_max_connections_invalid_value_fails_even_with_a_custom_default() {
+        for raw in ["0", "101", "abc"] {
+            assert!(parse_database_max_connections_or(Some(raw), 3).is_err());
+        }
+    }
+
+    #[test]
     fn primary_admin_is_the_first_entry_in_admin_emails() {
         let emails = parse_admin_emails(" First@Example.com , second@example.com ");
         assert_eq!(
@@ -503,5 +610,32 @@ mod tests {
                 .is_some_and(|p| p.eq_ignore_ascii_case("second@example.com"))
         );
         assert!(parse_admin_emails(" , ").is_empty());
+    }
+
+    #[test]
+    fn google_api_key_resolves_specific_override_or_shared_fallback() {
+        for (specific, shared) in [
+            (None, None),
+            (Some(""), Some("")),
+            (Some("  "), Some("\t\n")),
+        ] {
+            assert_eq!(resolve_google_api_key(specific, shared), None);
+        }
+        assert_eq!(
+            resolve_google_api_key(None, Some("  shared-key  ")).as_deref(),
+            Some("shared-key")
+        );
+        assert_eq!(
+            resolve_google_api_key(Some(" specific-key "), None).as_deref(),
+            Some("specific-key")
+        );
+        assert_eq!(
+            resolve_google_api_key(Some("specific-key"), Some("shared-key")).as_deref(),
+            Some("specific-key")
+        );
+        assert_eq!(
+            resolve_google_api_key(Some("  "), Some("shared-key")).as_deref(),
+            Some("shared-key")
+        );
     }
 }

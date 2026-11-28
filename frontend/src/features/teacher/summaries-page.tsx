@@ -8,7 +8,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useClassroomsBase } from '@/features/classrooms/use-base'
+import { useWatchedJob } from '@/features/jobs/use-watched-job'
 import { api, isInvalidCursor } from '@/lib/api'
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
 import { translateInBrowser } from '@/lib/browser-translator'
 import { formatDate } from '@/lib/format'
 import { errorText, useI18n, useT } from '@/i18n'
@@ -34,22 +36,48 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
   const [showOriginal, setShowOriginal] = useState(false)
   const [translating, setTranslating] = useState(false)
   const [translationError, setTranslationError] = useState<unknown>(null)
+  // 後端翻譯是背景工作（S-20）：202 後看著工作；切頁回來時從全域進行中清單接回同一個工作
+  const { running: jobRunning, watch } = useWatchedJob(
+    'summary_translation_view',
+    (scope) => scope.conversation_id === row.conversation_id,
+    (outcome) => {
+      if (!outcome.ok) return setTranslationError(outcome.error)
+      // 譯文已保存；再問一次同一個端點會直接以 200 回傳，不會再翻譯
+      api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`).then(
+        (result) => {
+          setTranslation(result)
+          setShowOriginal(false)
+        },
+        setTranslationError,
+      )
+    },
+  )
   const saved = row.translation?.language === lang ? row.translation : null
   const current = saved ?? (translation?.language === lang ? translation : null)
   const shown = showOriginal ? null : current
   const visible = shown ?? row
   const masked = row.stance === 'message' && row.reasons === 'message'
 
+  const waiting = translating || jobRunning
+
   async function translate() {
     setTranslating(true)
     setTranslationError(null)
     try {
       const local = await translateInBrowser(row.language, lang, [row.stance ?? '', row.reasons ?? ''])
-      const result = local
-        ? { language: lang, stance: local[0], reasons: local[1] }
-        : await api.post<SummaryTranslation>(`/api/summaries/${row.conversation_id}/translation`)
-      setTranslation(result)
-      setShowOriginal(false)
+      if (local) {
+        setTranslation({ language: lang, stance: local[0], reasons: local[1] })
+        setShowOriginal(false)
+        return
+      }
+      const result = await api.post<SummaryTranslation | { job_id: string }>(`/api/summaries/${row.conversation_id}/translation`)
+      if ('job_id' in result) {
+        watch(result.job_id)
+        wakeAiJobs()
+      } else {
+        setTranslation(result)
+        setShowOriginal(false)
+      }
     } catch (error) {
       setTranslationError(error)
     } finally {
@@ -109,8 +137,8 @@ export function SummaryCard({ row, linkStudent = true }: { row: TeacherSummary; 
               {t('teacher.summaries.showOriginal')}
             </Button>
           ) : row.language !== lang && !masked ? (
-            <Button type="button" variant="outline" size="sm" disabled={translating} onClick={() => current ? setShowOriginal(false) : void translate()}>
-              {translating ? t('teacher.summaries.translating') : t('teacher.summaries.translate')}
+            <Button type="button" variant="outline" size="sm" disabled={waiting} onClick={() => current ? setShowOriginal(false) : void translate()}>
+              {waiting ? t('teacher.summaries.translating') : t('teacher.summaries.translate')}
             </Button>
           ) : null}
         </CardContent>

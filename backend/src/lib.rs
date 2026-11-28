@@ -46,6 +46,8 @@ pub mod admin_health;
 pub mod admin_teacher_keys;
 pub(crate) mod admin_voice_nodes;
 pub mod ai;
+pub mod ai_job_store;
+pub mod ai_jobs;
 pub mod ai_providers;
 mod ai_route;
 pub mod ai_usage;
@@ -121,18 +123,13 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 17] = [
-    "/api/topics/{id}/dimensions/retry",
+pub const LONG_RUNNING_ROUTES: [&str; 13] = [
     // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
     "/api/books/search",
     "/api/books/{id}/editions",
-    // 管理者新增成就時同步翻譯名稱與說明
-    "/api/admin/achievements",
     // 管理者新增、修改公告時同步翻譯內文
     "/api/admin/announcements",
     "/api/admin/announcements/{id}",
-    // 同步等 AI 重新分組
-    "/api/dashboard/class/regroup",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
     "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
@@ -143,8 +140,6 @@ pub const LONG_RUNNING_ROUTES: [&str; 17] = [
     "/api/classrooms/{id}/roster/import",
     // 同步等供應商回應 key 測試
     "/api/teacher/keys/{id}/test",
-    // 儲存教室 AI 設定前，對主模型與每個備援各送一次最小串流與 JSON 請求
-    "/api/classrooms/{id}/ai-settings",
     // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
     "/api/teacher/keys/models",
     // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
@@ -419,6 +414,7 @@ fn public_routes(state: &AppState) -> Router<AppState> {
         .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(ai_jobs::routes())
         .merge(teacher_keys::routes())
         .merge(admin_teacher_keys::routes())
         .merge(system_ai::routes())

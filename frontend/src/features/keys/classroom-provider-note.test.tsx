@@ -19,7 +19,7 @@ const activity: StudentActivity = {
   status: 'published',
   is_archived: false,
   created_at: '2026-01-01T00:00:00Z',
-  topics: [{ topic_id: 'A', title: 'Act A', conversation_id: null, conversation_status: null, summary_ready: false }],
+  topics: [{ topic_id: 'A', title: 'Act A', conversation_id: null, conversation_status: null, summary_ready: false, title_pending: false }],
   completed: false,
 }
 
