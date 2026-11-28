@@ -641,6 +641,7 @@ fn is_api_path(path: &str) -> bool {
 
 /// 維護模式中照常服務的路徑（S-15.2）：公告端點（登入頁據此顯示維護提示）、登入與登出
 /// （非管理者的登入在核發 session 前另行拒絕）、API 文件。`/health`、`/ready` 與前端檔案不在 `/api` 底下。
+/// 前端契約測試（`frontend/src/test/contract.ts` 的 `MAINTENANCE_EXEMPT`）有一份手動副本，這裡的清單變動時要一併更新。
 fn maintenance_exempt(path: &str) -> bool {
     matches!(
         path,

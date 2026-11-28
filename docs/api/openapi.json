@@ -4592,7 +4592,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StatusBody"
+                "$ref": "#/components/schemas/AccountStatusBody"
               }
             }
           },
@@ -14425,6 +14425,23 @@
   },
   "components": {
     "schemas": {
+      "AccountStatusBody": {
+        "type": "object",
+        "required": [
+          "disabled"
+        ],
+        "properties": {
+          "disabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AchievementPatch": {
         "type": "object",
         "properties": {
@@ -15972,7 +15989,7 @@
           "failure": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Failure"
+                "$ref": "#/components/schemas/ServiceFailure"
               },
               {
                 "type": "null"
@@ -16443,14 +16460,6 @@
         "enum": [
           "healthy",
           "unhealthy"
-        ]
-      },
-      "Failure": {
-        "type": "string",
-        "enum": [
-          "connection_failed",
-          "timeout",
-          "non_2xx"
         ]
       },
       "Health": {
@@ -18281,6 +18290,14 @@
           }
         }
       },
+      "ServiceFailure": {
+        "type": "string",
+        "enum": [
+          "connection_failed",
+          "timeout",
+          "non_2xx"
+        ]
+      },
       "ServiceSummary": {
         "type": "object",
         "description": "周邊服務的狀態摘要（不含資料庫）。",
@@ -18530,7 +18547,7 @@
           "failure": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Failure"
+                "$ref": "#/components/schemas/ServiceFailure"
               },
               {
                 "type": "null"
