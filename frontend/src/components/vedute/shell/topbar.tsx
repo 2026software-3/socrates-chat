@@ -107,7 +107,7 @@ export function Topbar({
               {area.numeral}
             </span>
             <CarvedInscription text={building.latin} animateKey={`${role}-${area.building}`} variant="topbar" />
-            <span className="type-note hidden whitespace-nowrap text-ink-soft lg:inline">{areaLabel}</span>
+            <span className="vedute-topbar-area-label type-note hidden whitespace-nowrap text-ink-soft lg:inline">{areaLabel}</span>
           </div>
         </div>
       )}
