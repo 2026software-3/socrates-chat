@@ -3,6 +3,7 @@
 export { AdminHome } from '@/features/admin/admin-home'
 export { ServicesPage } from '@/features/admin/services-page'
 export { DiagnosticsPage } from '@/features/admin/diagnostics-page'
+export { MetricsPage } from '@/features/admin/metrics-page'
 export { AdminsPage } from '@/features/admin/admins-page'
 export { TeachersPage } from '@/features/admin/teachers-page'
 export { TopicsPage } from '@/features/admin/topics-page'

@@ -476,7 +476,7 @@ impl Drop for UsageGuard {
             std::mem::take(&mut self.model),
         );
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
+            handle.spawn(crate::telemetry::inherit_trace(async move {
                 let recorded = match classroom {
                     Some(classroom) => {
                         teacher_key_usage::record(&pool, key, classroom, provider, &model, tokens)
@@ -489,7 +489,7 @@ impl Drop for UsageGuard {
                 if let Err(e) = recorded {
                     teacher_key_usage::log_record_failure(&e);
                 }
-            });
+            }));
         }
     }
 }

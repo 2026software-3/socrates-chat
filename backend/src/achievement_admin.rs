@@ -613,63 +613,74 @@ async fn spawn_translation(
 /// 背景補譯：各待補語言同時翻譯；成功的語言寫入並移出待補清單，失敗的保留原文與待補標記。
 /// 只更新仍在待補清單的語言，管理者期間手動改過的譯文不會被覆蓋。
 async fn run_translation(state: AppState, admin: Uuid, job: Uuid, task: TranslationTask) {
-    let _ = ai_job_store::mark_running(&state.pool, job).await;
-    let results = futures_util::future::join_all(task.languages.iter().map(|language| {
-        let state = &state;
-        let task = &task;
-        async move {
-            let translated = translate_achievement(
-                state,
-                admin,
-                &task.source,
-                language,
-                &task.name,
-                &task.description,
+    crate::telemetry::in_component_span("background_job", "achievement_translation", async {
+        let job_metric = state
+            .metrics
+            .track_background_job("achievement_translation");
+        let _ = ai_job_store::mark_running(&state.pool, job).await;
+        let results = futures_util::future::join_all(task.languages.iter().map(|language| {
+            let state = &state;
+            let task = &task;
+            async move {
+                let translated = translate_achievement(
+                    state,
+                    admin,
+                    &task.source,
+                    language,
+                    &task.name,
+                    &task.description,
+                )
+                .await;
+                (language.as_str(), translated)
+            }
+        }))
+        .await;
+        let mut failed = false;
+        let mut internal = false;
+        for (language, translated) in results {
+            let Some((name, description)) = translated else {
+                failed = true;
+                continue;
+            };
+            if sqlx::query(
+                "UPDATE achievements SET
+                    name_zh_tw = CASE WHEN $4 = 'zh-TW' THEN $2 ELSE name_zh_tw END,
+                    name_en = CASE WHEN $4 = 'en' THEN $2 ELSE name_en END,
+                    name_es = CASE WHEN $4 = 'es' THEN $2 ELSE name_es END,
+                    description_zh_tw = CASE WHEN $4 = 'zh-TW' THEN $3 ELSE description_zh_tw END,
+                    description_en = CASE WHEN $4 = 'en' THEN $3 ELSE description_en END,
+                    description_es = CASE WHEN $4 = 'es' THEN $3 ELSE description_es END,
+                    pending_languages = array_remove(pending_languages, $4)
+                 WHERE id = $1 AND $4 = ANY(pending_languages)",
             )
-            .await;
-            (language.as_str(), translated)
+            .bind(&task.id)
+            .bind(name)
+            .bind(description)
+            .bind(language)
+            .execute(&state.pool)
+            .await
+            .is_err()
+            {
+                internal = true;
+            }
         }
-    }))
-    .await;
-    let mut failed = false;
-    let mut internal = false;
-    for (language, translated) in results {
-        let Some((name, description)) = translated else {
-            failed = true;
-            continue;
+        let outcome = if internal || failed { "failed" } else { "ok" };
+        let finished = if internal {
+            ai_job_store::finish_failed(&state.pool, job, "internal").await
+        } else if failed {
+            ai_job_store::finish_failed(&state.pool, job, "ai_unavailable").await
+        } else {
+            ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await
         };
-        if sqlx::query(
-            "UPDATE achievements SET
-                name_zh_tw = CASE WHEN $4 = 'zh-TW' THEN $2 ELSE name_zh_tw END,
-                name_en = CASE WHEN $4 = 'en' THEN $2 ELSE name_en END,
-                name_es = CASE WHEN $4 = 'es' THEN $2 ELSE name_es END,
-                description_zh_tw = CASE WHEN $4 = 'zh-TW' THEN $3 ELSE description_zh_tw END,
-                description_en = CASE WHEN $4 = 'en' THEN $3 ELSE description_en END,
-                description_es = CASE WHEN $4 = 'es' THEN $3 ELSE description_es END,
-                pending_languages = array_remove(pending_languages, $4)
-             WHERE id = $1 AND $4 = ANY(pending_languages)",
-        )
-        .bind(&task.id)
-        .bind(name)
-        .bind(description)
-        .bind(language)
-        .execute(&state.pool)
-        .await
-        .is_err()
-        {
-            internal = true;
+        if let Err(error) = finished {
+            tracing::error!(
+                class = %crate::error::db_error_class(&error),
+                "achievement translation job bookkeeping failed"
+            );
         }
-    }
-    let finished = if internal {
-        ai_job_store::finish_failed(&state.pool, job, "internal").await
-    } else if failed {
-        ai_job_store::finish_failed(&state.pool, job, "ai_unavailable").await
-    } else {
-        ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await
-    };
-    if let Err(error) = finished {
-        tracing::error!(?error, "achievement translation job bookkeeping failed");
-    }
+        job_metric.finish(outcome);
+    })
+    .await;
 }
 
 /// 翻譯成就名稱及說明；失敗時由呼叫端保留原文並標記待完成。

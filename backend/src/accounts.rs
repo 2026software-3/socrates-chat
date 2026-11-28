@@ -130,6 +130,8 @@ pub(crate) async fn audit_counted(
     .bind(item_count.map(|n| n as i32))
     .execute(conn)
     .await?;
+    // 結構化稽核日誌：只記操作者 UUID、固定動作代碼與數量，絕不記 target（可能含電子郵件）或 reason（S-02.2）
+    tracing::info!(actor_id = %actor, action, item_count, "audit event recorded");
     Ok(())
 }
 

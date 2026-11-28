@@ -99,29 +99,45 @@ async fn process_next(state: &AppState, retry_delay: Duration) -> Result<bool, s
     let Some(job) = job else {
         return Ok(false);
     };
-    let [stance, reasons] = [job.stance, job.reasons].map(crate::pii::mask);
-    let fields = [&*stance, &*reasons];
-    let result = match via_google(state, &job.source_language, &job.language, fields).await {
-        Some(translation) => Some(translation),
-        None => via_ai(state, &job.language, fields).await.ok(),
-    };
-    let (stance, reasons) = result.map_or((None, None), |result| {
-        (Some(result.stance), Some(result.reasons))
-    });
-    sqlx::query(
-        "UPDATE summary_translations SET stance = $3, reasons = $4, attempt_token = NULL,
-                available_at = clock_timestamp() + make_interval(secs => $5)
-         WHERE conversation_id = $1 AND language = $2 AND attempt_token = $6 AND stance IS NULL",
-    )
-    .bind(job.conversation_id)
-    .bind(job.language)
-    .bind(stance)
-    .bind(reasons)
-    .bind(retry_delay.as_secs_f64())
-    .bind(token)
-    .execute(&state.pool)
-    .await?;
-    Ok(true)
+    crate::telemetry::in_component_span("background_job", "summary_translation_worker", async {
+        let job_metric = state
+            .metrics
+            .track_background_job("summary_translation_worker");
+        let [stance, reasons] = [job.stance, job.reasons].map(crate::pii::mask);
+        let fields = [&*stance, &*reasons];
+        let result = match via_google(state, &job.source_language, &job.language, fields).await {
+            Some(translation) => Some(translation),
+            None => via_ai(state, &job.language, fields).await.ok(),
+        };
+        let succeeded = result.is_some();
+        let (stance, reasons) = result.map_or((None, None), |result| {
+            (Some(result.stance), Some(result.reasons))
+        });
+        let updated = sqlx::query(
+            "UPDATE summary_translations SET stance = $3, reasons = $4, attempt_token = NULL,
+                    available_at = clock_timestamp() + make_interval(secs => $5)
+             WHERE conversation_id = $1 AND language = $2 AND attempt_token = $6 AND stance IS NULL",
+        )
+        .bind(job.conversation_id)
+        .bind(job.language)
+        .bind(stance)
+        .bind(reasons)
+        .bind(retry_delay.as_secs_f64())
+        .bind(token)
+        .execute(&state.pool)
+        .await;
+        match updated {
+            Ok(_) => {
+                job_metric.finish(if succeeded { "ok" } else { "failed" });
+                Ok(true)
+            }
+            Err(e) => {
+                job_metric.finish("failed");
+                Err(e)
+            }
+        }
+    })
+    .await
 }
 
 pub(crate) async fn via_google(
@@ -155,12 +171,23 @@ pub(crate) async fn via_ai(
             content: serde_json::json!({"stance": stance, "reasons": reasons}).to_string(),
         }],
     };
+    let started = std::time::Instant::now();
     let system = state.system_route().await;
-    let raw = collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
-    let result = parse_summary_translation(&raw).ok_or_else(AiError::invalid_output)?;
-    preserves_tokens(fields, &result)
-        .then_some(result)
-        .ok_or_else(AiError::invalid_output)
+    let outcome = crate::telemetry::in_component_span("ai", "summary_translation", async {
+        let raw =
+            collect_background(system.ai.as_ref(), req, state.config.ai_total_timeout).await?;
+        let result = parse_summary_translation(&raw).ok_or_else(AiError::invalid_output)?;
+        preserves_tokens(fields, &result)
+            .then_some(result)
+            .ok_or_else(AiError::invalid_output)
+    })
+    .await;
+    state.metrics.record_translation(
+        "ai",
+        if outcome.is_ok() { "ok" } else { "error" },
+        started.elapsed(),
+    );
+    outcome
 }
 
 fn preserves_tokens(fields: [&str; 2], result: &TranslatedSummary) -> bool {

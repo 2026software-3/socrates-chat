@@ -76,4 +76,36 @@ describe('api client', () => {
     const err = await api.get('/api/down').catch((e: unknown) => e)
     expect(err).toMatchObject({ status: 0, code: 'network' })
   })
+
+  it('captures the W3C traceparent header on ApiError when present', async () => {
+    const tp = '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01'
+    server.use(
+      http.get('/api/traced', () =>
+        HttpResponse.json(
+          { error: { code: 'internal', request_id: 'rid-2' } },
+          { status: 500, headers: { traceparent: tp } },
+        ),
+      ),
+    )
+    const err = await api.get('/api/traced').catch((e: unknown) => e)
+    expect(err).toMatchObject({ status: 500, code: 'internal', requestId: 'rid-2', traceparent: tp })
+  })
+
+  it('fetches plain text responses and turns text endpoint errors into ApiError', async () => {
+    server.use(
+      http.get('/api/metrics-ok', () =>
+        new HttpResponse('# TYPE demo gauge\ndemo 1\n', {
+          status: 200,
+          headers: { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' },
+        }),
+      ),
+      http.get('/api/metrics-denied', () =>
+        HttpResponse.json({ error: { code: 'forbidden', request_id: 'rid-m' } }, { status: 403 }),
+      ),
+    )
+    await expect(api.getText('/api/metrics-ok')).resolves.toBe('# TYPE demo gauge\ndemo 1\n')
+    const err = await api.getText('/api/metrics-denied').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 403, code: 'forbidden', requestId: 'rid-m' })
+  })
 })

@@ -343,7 +343,7 @@ pub(crate) async fn callback(
     }
     match finish_login(&state, p, preferred_language(&headers)).await {
         Ok((token, user)) => {
-            diagnostics::login_success(&state.pool, "google_login", user);
+            diagnostics::login_success(&state, "google_login", user);
             (
                 [(
                     header::SET_COOKIE,
@@ -358,7 +358,7 @@ pub(crate) async fn callback(
             // 暫時性錯誤不是憑證錯誤，記進 invalid_credentials 會灌水統計、也讓暴力破解排查失準。
             if error.code == "account_disabled" {
                 diagnostics::login_failure(
-                    &state.pool,
+                    &state,
                     "google_login",
                     error.user,
                     Failure::AccountDisabled,
@@ -843,7 +843,7 @@ pub(crate) async fn password_login(
         let locks =
             auth_store::record_login_failure(&state.pool, &login_account, &ip_key, now).await?;
         diagnostics::login_failure(
-            &state.pool,
+            &state,
             "password_login",
             user,
             Failure::InvalidCredentials,
@@ -853,7 +853,7 @@ pub(crate) async fn password_login(
         // 只有帳號層級的鎖定才記 account_lock；只觸發 IP 層級鎖定的不算針對帳號
         if locks.account {
             diagnostics::account_lock(
-                &state.pool,
+                &state,
                 user,
                 INVALID_CREDENTIALS.status,
                 INVALID_CREDENTIALS.code,
@@ -865,7 +865,7 @@ pub(crate) async fn password_login(
     // 密碼正確才揭露帳號已停用，不讓人用來探測帳號狀態
     if account.disabled {
         diagnostics::login_failure(
-            &state.pool,
+            &state,
             "password_login",
             Some(account.id),
             Failure::AccountDisabled,
@@ -889,7 +889,7 @@ pub(crate) async fn password_login(
         .clone()
         .unwrap_or_else(|| account.id.to_string());
     audit(&state.pool, account.id, "login", &target, None).await?;
-    diagnostics::login_success(&state.pool, "password_login", account.id);
+    diagnostics::login_success(&state, "password_login", account.id);
     Ok((
         [(
             header::SET_COOKIE,

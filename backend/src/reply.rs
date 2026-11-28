@@ -31,7 +31,6 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -124,6 +123,11 @@ impl LiveReply {
 }
 
 impl LiveReplies {
+    /// 目前進行中的串流回覆數（供指標使用）。
+    pub(crate) fn active_count(&self) -> usize {
+        lock(&self.0).len()
+    }
+
     /// 這場對話的回覆是否正在產生（可以接上）。
     pub fn is_live(&self, id: Uuid) -> bool {
         lock(&self.0).contains_key(&id)
@@ -375,9 +379,11 @@ fn spawn_stream(
     let id = conversation.id;
     let reply = state.live.start(id, tx, tap);
     tokio::spawn(diagnostics::inherit_request(
-        async move {
+        crate::telemetry::in_component_span("background_job", "reply", async move {
+            let job_metric = state.metrics.track_background_job("reply");
             // 每位使用者的 AI 用量上限：用完時學生訊息已保存，但不呼叫 AI，以 error 事件結束（之後可重試）
             let mut failed = true;
+            let mut job_outcome = "failed";
             // 保存回覆的語句已一併釋放 claim
             let mut released = false;
             let last = match state.charge_ai(user) {
@@ -396,6 +402,7 @@ fn spawn_stream(
                     match result {
                         Some(Ok(Ok(done))) => {
                             failed = false;
+                            job_outcome = "ok";
                             released = done.released;
                             done.event
                         }
@@ -406,11 +413,14 @@ fn spawn_stream(
                         }
                         Some(Err(_)) => {
                             state.refund_ai(user, slot);
+                            job_outcome = "panicked";
+                            tracing::error!(conversation_id = %id, "reply generation task panicked");
                             event("error", json!({"code": "internal"}))
                         }
                         // 收聽方在一個字都沒收到時放棄：學生已經接著說了，不必再等這次的回覆
                         None => {
                             state.refund_ai(user, slot);
+                            job_outcome = "abandoned";
                             event("error", json!({"code": "abandoned"}))
                         }
                     }
@@ -426,8 +436,8 @@ fn spawn_stream(
                 release_generation(&state, id).await;
             }
             state.live.finish(reply, last, failed);
-        }
-        .in_current_span(),
+            job_metric.finish(job_outcome);
+        }),
     ));
     event_stream(rx)
 }
@@ -551,8 +561,12 @@ async fn generate(
     let mut classroom_unavailable = false;
     for retry in 0..2 {
         let started = Instant::now();
-        let (result, trace) =
-            diagnostics::traced(attempt(route.ai.as_ref(), state, reply, &req)).await;
+        let (result, trace) = crate::telemetry::in_component_span(
+            "ai",
+            "chat_reply",
+            diagnostics::traced(attempt(route.ai.as_ref(), state, reply, &req)),
+        )
+        .await;
         activity.record(
             state,
             Some(&route.model),

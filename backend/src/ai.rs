@@ -1392,7 +1392,7 @@ impl OpenAiProvider {
         trace: Option<std::sync::Arc<crate::diagnostics::AiTrace>>,
     ) -> AiStream {
         let (tx, rx) = mpsc::channel(32);
-        tokio::spawn(async move {
+        tokio::spawn(crate::telemetry::inherit_trace(async move {
             let note = |attempts: i32, index: usize| {
                 if let Some(trace) = &trace {
                     trace.note(attempts, &self.targets[index].model);
@@ -1434,7 +1434,7 @@ impl OpenAiProvider {
                     }
                 }
             }
-        });
+        }));
         ReceiverStream::new(rx).boxed()
     }
 }
@@ -2957,6 +2957,145 @@ mod tests {
         let text =
             collect_background(&ai, any_request(), std::time::Duration::from_millis(200)).await;
         assert!(text.is_err());
+    }
+
+    #[tokio::test]
+    async fn into_stream_inherits_trace_context_and_parent_spans_on_fallback() {
+        use std::{io, sync::Mutex};
+
+        use axum::{Json, Router, http::header, response::IntoResponse, routing::post};
+        use serde_json::Value;
+        use tracing::Instrument;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Captured {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                Sink(self.0.clone())
+            }
+        }
+
+        let captured = Captured::default();
+        let subscriber = crate::logging::json_subscriber()
+            .with_env_filter(crate::logging::env_filter(Some("info")))
+            .with_writer(captured.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/chat/completions",
+            post(|Json(body): Json<Value>| async move {
+                let sse = if body["model"] == "primary-model" {
+                    "data: {\"choices\":[],\"error\":{\"code\":429,\"message\":\"ResourceExhausted\"}}\n\n"
+                } else {
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\ndata: [DONE]\n\n"
+                };
+                ([(header::CONTENT_TYPE, "text/event-stream")], sse).into_response()
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let keys = Arc::new(KeyPool::new(vec!["synthetic-ai-key".into()]).unwrap());
+        let provider = OpenAiProvider {
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            base_url,
+            targets: vec![
+                ModelTarget {
+                    model: "primary-model".into(),
+                    keys: keys.clone(),
+                },
+                ModelTarget {
+                    model: "fallback-model".into(),
+                    keys: Arc::new(keys.fork()),
+                },
+            ],
+            reasoning_effort: None,
+        };
+
+        let root_trace = crate::telemetry::TraceContext::new_root();
+        let expected_trace_id = root_trace.trace_id.clone();
+        let req_id = uuid::Uuid::new_v4().to_string();
+        let expected_req_id = req_id.clone();
+        let root_span = tracing::info_span!(
+            "http_request",
+            request_id = %req_id,
+            trace_id = %root_trace.trace_id,
+            span_id = %root_trace.span_id,
+            method = "POST",
+            route = "/api/conversations/{id}/messages"
+        );
+
+        let output = crate::error::REQUEST_ID
+            .scope(
+                req_id,
+                crate::telemetry::scope_trace(
+                    root_trace,
+                    async {
+                        crate::telemetry::in_component_span("ai", "reply_generation", async {
+                            let mut stream = provider
+                                .stream_chat(any_request())
+                                .await
+                                .expect("initial stream opens");
+                            let mut text = String::new();
+                            while let Some(chunk) = stream.next().await {
+                                text.push_str(&chunk.expect("fallback succeeds"));
+                            }
+                            text
+                        })
+                        .await
+                    }
+                    .instrument(root_span),
+                ),
+            )
+            .await;
+
+        server.abort();
+        assert_eq!(output, "ok");
+
+        let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let entries: Vec<Value> = out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let capacity_warn = entries
+            .iter()
+            .find(|e| {
+                e["fields"]["message"]
+                    == "AI model reported a capacity error before any content, trying the next model"
+            })
+            .expect("capacity fallback warning inside spawned pump");
+        let fallback_warn = entries
+            .iter()
+            .find(|e| e["fields"]["message"] == "AI request served by a fallback model")
+            .expect("fallback served warning inside spawned pump");
+
+        for entry in [capacity_warn, fallback_warn] {
+            assert_eq!(entry["level"], "WARN");
+            assert_eq!(entry["span"]["component"], "ai");
+            assert_eq!(entry["span"]["operation"], "reply_generation");
+            assert_eq!(entry["span"]["trace_id"], expected_trace_id);
+            assert_eq!(entry["span"]["request_id"], expected_req_id);
+            assert!(entry["span"]["span_id"].is_string());
+            let spans = entry["spans"].as_array().expect("inherited parent spans");
+            assert_eq!(spans.len(), 2);
+            assert_eq!(spans[0]["name"], "http_request");
+            assert_eq!(spans[1]["name"], "component");
+            assert_eq!(spans[1]["component"], "ai");
+        }
     }
 }
 

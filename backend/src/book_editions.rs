@@ -31,9 +31,18 @@ pub(crate) async fn related(
     let book = book_store::get(&state.pool, id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let mut candidates = state.book_source.related(&book).await.map_err(|err| {
+    let mut candidates = crate::telemetry::in_component_span(
+        "book_source",
+        "book_editions",
+        state.book_source.related(&book),
+    )
+    .await
+    .map_err(|err| {
+        state
+            .metrics
+            .record_book_source_lookup(err.provider.as_str(), err.class.code());
         crate::diagnostics::book_source_failure(
-            &state.pool,
+            &state,
             "book_editions",
             cu.user.id,
             err.class,
@@ -46,6 +55,9 @@ pub(crate) async fn related(
             "外部服務暫時無法使用",
         )
     })?;
+    state
+        .metrics
+        .record_book_source_lookup("open_library", "ok");
     let known = book_store::list(&state.pool, None, None, i64::MAX).await?;
     candidates.retain(|r| {
         !known.iter().any(|b| {

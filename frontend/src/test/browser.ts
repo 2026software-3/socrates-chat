@@ -38,6 +38,18 @@ function me(role: E2eRole): Me {
 
 const apiError = (status: number, code: string) => HttpResponse.json({ error: { code, request_id: 'e2e' } }, { status })
 
+const E2E_FAIL_ONCE_KEY = 'socrates:e2e-fail-once'
+const E2E_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+function consumeFailOnce(pathname: string) {
+  if (localStorage.getItem(E2E_FAIL_ONCE_KEY) !== pathname) return null
+  localStorage.removeItem(E2E_FAIL_ONCE_KEY)
+  return HttpResponse.json(
+    { error: { code: 'internal', request_id: 'e2e-err-id' } },
+    { status: 500, headers: { 'x-request-id': 'e2e-err-id', traceparent: E2E_TRACEPARENT } },
+  )
+}
+
 const CREATED = '2026-09-01T00:00:00Z'
 
 const CLASSROOMS: Classroom[] = [
@@ -149,6 +161,151 @@ const e2eHandlers = [
       statistics: { ai_status: 'ok', ai_calls: 0, ai_failures: 0, ai_invalid_outputs: 0, login_failures: 0, account_locks: 0 },
       recent_errors: [],
     }),
+  ),
+  http.get('/api/admin/diagnostics', ({ request }) => {
+    const failed = consumeFailOnce('/api/admin/diagnostics')
+    if (failed) return failed
+    const params = new URL(request.url).searchParams
+    const kind = params.get('kind')
+    const failureClass = params.get('failure_class')
+    const requestId = params.get('request_id')
+    const all = [
+      {
+        occurred_at: '2026-11-02T00:45:00Z',
+        request_id: '11111111-1111-4111-8111-111111111111',
+        kind: 'ai',
+        failure_class: 'rate_limited',
+        function: 'chat_reply',
+        route: '/api/conversations/{id}/messages',
+        status: 200,
+        error_code: 'ai_unavailable',
+        user_id: '22222222-2222-4222-8222-222222222222',
+        classroom_id: '33333333-3333-4333-8333-333333333333',
+        duration_ms: 420,
+        retry_count: 1,
+        model: 'synthetic-model',
+      },
+      {
+        occurred_at: '2026-11-02T00:30:00Z',
+        request_id: '44444444-4444-4444-8444-444444444444',
+        kind: 'login',
+        failure_class: 'invalid_credentials',
+        function: 'password_login',
+        route: '/api/auth/login',
+        status: 401,
+        error_code: 'invalid_credentials',
+        user_id: null,
+        classroom_id: null,
+        duration_ms: null,
+        retry_count: null,
+        model: null,
+      },
+    ]
+    const items = all.filter(
+      (item) =>
+        (!kind || item.kind === kind) &&
+        (!failureClass || item.failure_class === failureClass) &&
+        (!requestId || item.request_id === requestId),
+    )
+    return HttpResponse.json({ items, next_cursor: null })
+  }),
+  http.get('/api/admin/services', ({ request }) => {
+    const days = Number(new URL(request.url).searchParams.get('period_days') ?? '1')
+    return HttpResponse.json({
+      period_days: Number.isFinite(days) ? days : 1,
+      history_available: true,
+      services: [
+        {
+          name: 'database',
+          label: 'PostgreSQL',
+          impact: { 'zh-TW': '全站', en: 'Entire system' },
+          target: null,
+          status: 'healthy',
+          failure: null,
+          response_time_ms: 3,
+          checked_at: '2026-11-02T00:59:30Z',
+          last_healthy_at: '2026-11-02T00:59:30Z',
+          status_since: '2026-11-01T01:00:00Z',
+          availability: 1,
+          recent_events: [{ status: 'healthy', occurred_at: '2026-11-01T01:00:00Z', failure: null }],
+        },
+        {
+          name: 'tts',
+          label: { 'zh-TW': '語音合成', en: 'Speech synthesis' },
+          impact: { 'zh-TW': '語音回覆', en: 'Voice reply' },
+          target: 'cascade-tts:8100/health',
+          status: 'unhealthy',
+          failure: 'timeout',
+          response_time_ms: null,
+          checked_at: '2026-11-02T00:59:30Z',
+          last_healthy_at: '2026-11-02T00:30:00Z',
+          status_since: '2026-11-02T00:45:00Z',
+          availability: 0.96,
+          recent_events: [
+            { status: 'unhealthy', occurred_at: '2026-11-02T00:45:00Z', failure: 'timeout' },
+            { status: 'healthy', occurred_at: '2026-11-01T01:00:00Z', failure: null },
+          ],
+        },
+      ],
+      voice_nodes: [],
+    })
+  }),
+  http.post('/api/admin/services/check', async ({ request }) => {
+    const body = (await request.json()) as { name?: string }
+    return HttpResponse.json({
+      name: body.name ?? 'tts',
+      label: body.name === 'database' ? 'PostgreSQL' : { 'zh-TW': '語音合成', en: 'Speech synthesis' },
+      impact: body.name === 'database' ? { 'zh-TW': '全站' } : { 'zh-TW': '語音回覆' },
+      target: body.name === 'database' ? null : 'cascade-tts:8100/health',
+      status: 'healthy',
+      failure: null,
+      response_time_ms: 14,
+      checked_at: '2026-11-02T01:00:00Z',
+      last_healthy_at: '2026-11-02T01:00:00Z',
+      status_since: '2026-11-02T01:00:00Z',
+      availability: null,
+      recent_events: [],
+    })
+  }),
+  http.get('/api/admin/metrics', () =>
+    consumeFailOnce('/api/admin/metrics') ??
+    new HttpResponse(
+      [
+        '# TYPE socrates_build_info gauge',
+        'socrates_build_info{version="e2e-build"} 1',
+        '# TYPE socrates_process_uptime_seconds gauge',
+        'socrates_process_uptime_seconds 3600',
+        '# TYPE socrates_maintenance_mode gauge',
+        'socrates_maintenance_mode 0',
+        '# TYPE socrates_db_pool_connections gauge',
+        'socrates_db_pool_connections{state="active"} 2',
+        'socrates_db_pool_connections{state="idle"} 8',
+        'socrates_db_pool_connections{state="max"} 10',
+        'socrates_db_pool_connections{state="size"} 10',
+        '# TYPE socrates_http_requests_in_flight gauge',
+        'socrates_http_requests_in_flight 2',
+        '# TYPE socrates_live_replies_active gauge',
+        'socrates_live_replies_active 1',
+        '# TYPE socrates_voice_sessions_active gauge',
+        'socrates_voice_sessions_active 0',
+        '# TYPE socrates_service_up gauge',
+        'socrates_service_up{service="database"} 1',
+        'socrates_service_up{service="tts"} 0',
+        '# TYPE socrates_http_requests_total counter',
+        'socrates_http_requests_total{method="GET",route="/api/catalog",status_class="2xx"} 84',
+        'socrates_http_requests_total{method="POST",route="/api/conversations/{id}/messages",status_class="2xx"} 16',
+        '# TYPE socrates_http_request_duration_seconds histogram',
+        'socrates_http_request_duration_seconds_bucket{method="GET",route="/api/catalog",le="0.1"} 84',
+        'socrates_http_request_duration_seconds_bucket{method="GET",route="/api/catalog",le="+Inf"} 84',
+        'socrates_http_request_duration_seconds_sum{method="GET",route="/api/catalog"} 4.2',
+        'socrates_http_request_duration_seconds_count{method="GET",route="/api/catalog"} 84',
+        '# TYPE socrates_ai_requests_total counter',
+        'socrates_ai_requests_total{function="chat_reply",outcome="ok"} 16',
+        '# TYPE socrates_background_jobs_total counter',
+        'socrates_background_jobs_total{job="summary",outcome="ok"} 5',
+      ].join('\n'),
+      { status: 200, headers: { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' } },
+    ),
   ),
 ]
 

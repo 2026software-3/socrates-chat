@@ -98,6 +98,9 @@ pub struct Config {
     pub service_probe_interval: Duration,
     /// 資料庫連線池上限（`DATABASE_MAX_CONNECTIONS`，1 至 100，預設 10，S-08.3）。
     pub database_max_connections: u32,
+    /// Prometheus 指標端點（`GET /api/admin/metrics`）的選填 Bearer 密鑰（`METRICS_TOKEN`）；
+    /// 未設定時只能以系統管理者 session 存取。
+    pub metrics_token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -453,6 +456,10 @@ impl Config {
             monitored_services,
             service_probe_interval,
             database_max_connections,
+            metrics_token: env::var("METRICS_TOKEN")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             app_base_url,
         })
     }

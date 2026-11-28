@@ -1,10 +1,33 @@
-import { useMemo, useState } from 'react'
-import { ErrorBlock, LoadingBlock, PageHeader } from '@/components/page'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { PERIODS, type Period } from '@/features/admin/diagnostics-model'
+import { useMemo, useState, type ReactNode } from 'react'
+import {
+  Activity,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Gauge,
+  Globe,
+  RotateCw,
+  Server,
+  Timer,
+  Users,
+  type LucideIcon,
+} from 'lucide-react'
+import { cn } from 'cn'
+import { PageHeader } from '@/components/page'
+import { Alert } from '@/components/vedute/alert'
+import { Button } from '@/components/vedute/button'
+import { StackBar } from '@/components/vedute/stack-bar'
+import {
+  AdminCard,
+  AdminEmptyState,
+  AdminErrorAlert,
+  AdminSectionSkeleton,
+  AdminStatusBadge,
+  PeriodSelector,
+  type AdminTone,
+} from '@/features/admin/admin-ui'
+import type { Period } from '@/features/admin/diagnostics-model'
 import { formatDuration } from '@/features/admin/duration'
 import {
   PERIOD_DAYS,
@@ -40,15 +63,34 @@ const STATE_LABEL: Record<ServiceStatus, MessageKey> = {
   no_data: 'admin.services.state.no_data',
 }
 
-const FAILURE_LABEL = {
+const STATE_TONE: Record<ServiceStatus, AdminTone> = {
+  healthy: 'active',
+  unhealthy: 'error',
+  checking: 'inactive',
+  no_data: 'inactive',
+}
+
+const STATE_ACCENT: Record<ServiceStatus, string> = {
+  healthy: 'border-l-3 border-l-aerugo',
+  unhealthy: 'border-l-3 border-l-error',
+  checking: 'border-l-3 border-l-ink-soft',
+  no_data: 'border-l-3 border-l-ink-soft',
+}
+
+const FAILURE_LABEL: Record<string, MessageKey> = {
   connection_failed: 'admin.services.failure.connection_failed',
   timeout: 'admin.services.failure.timeout',
   non_2xx: 'admin.services.failure.non_2xx',
-} as const satisfies Record<string, MessageKey>
+}
+
+const failureText = (t: ReturnType<typeof useT>, code: string) =>
+  FAILURE_LABEL[code] ? t(FAILURE_LABEL[code]) : code
 
 const matches = (filter: Filter, status: ServiceStatus) =>
   filter === 'all' ||
   (filter === 'pending' ? status === 'checking' || status === 'no_data' : status === filter)
+
+const EMPTY_CHECKED: Record<string, ServiceRow> = {}
 
 /** 後台「服務」分頁（F-39.3）：各容器服務的狀態、可用率與最近的狀態變化，可立即檢查。 */
 export function ServicesPage() {
@@ -62,7 +104,7 @@ export function ServicesPage() {
     rows: {},
   })
   // 列表重新載入後，舊的立即檢查結果就不再適用
-  const fresh = checked.source === view.data ? checked.rows : {}
+  const fresh = checked.source === view.data ? checked.rows : EMPTY_CHECKED
 
   const rows = useMemo(() => {
     // 語音節點與其他服務同列：節點多帶 node_status 與場次，卡片再顯示出來
@@ -81,28 +123,15 @@ export function ServicesPage() {
   return (
     <div className="space-y-6">
       <PageHeader title={t('admin.services.title')} description={t('admin.services.intro')} />
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div role="group" aria-label={t('admin.overview.period')} className="flex gap-1">
-          {PERIODS.map((p) => (
-            <Button
-              key={p}
-              type="button"
-              size="sm"
-              variant={p === period ? 'default' : 'outline'}
-              aria-pressed={p === period}
-              onClick={() => setPeriod(p)}
-            >
-              {t(PERIOD_LABEL[p])}
-            </Button>
-          ))}
-        </div>
-        <div role="group" aria-label={t('admin.services.filter')} className="flex flex-wrap gap-1">
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-faint pb-4">
+        <PeriodSelector value={period} onChange={setPeriod} />
+        <div role="group" aria-label={t('admin.services.filter')} className="flex flex-wrap gap-2">
           {FILTERS.map((f) => (
             <Button
               key={f}
               type="button"
-              size="sm"
-              variant={f === filter ? 'default' : 'outline'}
+              variant={f === filter ? 'primary' : 'quiet'}
               aria-pressed={f === filter}
               onClick={() => setFilter(f)}
             >
@@ -112,25 +141,19 @@ export function ServicesPage() {
         </div>
       </div>
 
-      {view.loading && !view.data && !failed ? <LoadingBlock /> : null}
-      {failed ? <ErrorBlock error={view.error} onRetry={view.reload} /> : null}
+      {view.loading && !view.data && !failed ? <AdminSectionSkeleton rows={6} /> : null}
+      {failed ? <AdminErrorAlert error={view.error} onRetry={view.reload} /> : null}
 
       {view.data ? (
-        <>
+        <div className="space-y-4">
           {!view.data.history_available ? (
-            <Alert role="status">
-              <AlertDescription>{t('admin.services.historyUnavailable')}</AlertDescription>
-            </Alert>
+            <Alert kind="info">{t('admin.services.historyUnavailable')}</Alert>
           ) : null}
           {onlyDatabase ? (
-            <Alert role="status">
-              <AlertDescription>{t('admin.services.emptyConfig')}</AlertDescription>
-            </Alert>
+            <Alert kind="info">{t('admin.services.emptyConfig')}</Alert>
           ) : null}
           {shown.length === 0 ? (
-            <p className="text-muted-foreground rounded-md border border-dashed p-6 text-center text-sm">
-              {t('admin.services.filterEmpty')}
-            </p>
+            <AdminEmptyState>{t('admin.services.filterEmpty')}</AdminEmptyState>
           ) : (
             <ul className="space-y-4">
               {shown.map((row) => (
@@ -150,7 +173,7 @@ export function ServicesPage() {
               ))}
             </ul>
           )}
-        </>
+        </div>
       ) : null}
     </div>
   )
@@ -162,23 +185,39 @@ const NODE_STATUS_LABEL = {
   disabled: 'admin.services.voiceNodes.status.disabled',
 } as const satisfies Record<VoiceNodeRow['node_status'], MessageKey>
 
+function ServiceFact({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: LucideIcon
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="space-y-1">
+      <dt className="type-note flex items-center gap-1.5 text-ink-soft">
+        <Icon className="size-4 shrink-0 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+        <span>{label}</span>
+      </dt>
+      <dd className="type-body text-ink tabular-nums break-words">{children}</dd>
+    </div>
+  )
+}
+
 /** 語音節點才有的欄位：節點狀態與目前場次。 */
 function VoiceNodeFacts({ row }: { row: VoiceNodeRow }) {
   const t = useT()
   return (
     <>
-      <div>
-        <dt className="text-muted-foreground">{t('admin.services.voiceNodes.nodeStatus')}</dt>
-        <dd>{t(NODE_STATUS_LABEL[row.node_status])}</dd>
-      </div>
-      <div>
-        <dt className="text-muted-foreground">{t('admin.services.voiceNodes.sessions')}</dt>
-        <dd>
-          {row.max_sessions === null
-            ? t('admin.services.voiceNodes.sessionsUnlimited', { n: row.sessions })
-            : t('admin.services.voiceNodes.sessionsValue', { n: row.sessions, max: row.max_sessions })}
-        </dd>
-      </div>
+      <ServiceFact icon={Server} label={t('admin.services.voiceNodes.nodeStatus')}>
+        {t(NODE_STATUS_LABEL[row.node_status])}
+      </ServiceFact>
+      <ServiceFact icon={Users} label={t('admin.services.voiceNodes.sessions')}>
+        {row.max_sessions === null
+          ? t('admin.services.voiceNodes.sessionsUnlimited', { n: row.sessions })
+          : t('admin.services.voiceNodes.sessionsValue', { n: row.sessions, max: row.max_sessions })}
+      </ServiceFact>
     </>
   )
 }
@@ -222,114 +261,154 @@ function ServiceCard({
     }
   }
 
-  const time = (iso: string | null) => (iso ? <time dateTime={iso}>{date.format(new Date(iso))}</time> : t('admin.services.never'))
+  const time = (iso: string | null) =>
+    iso ? <time dateTime={iso}>{date.format(new Date(iso))}</time> : <span className="text-ink-soft">{t('admin.services.never')}</span>
+
   const since =
     row.status_since && (row.status === 'healthy' || row.status === 'unhealthy')
       ? t(row.status === 'healthy' ? 'admin.services.since.healthy' : 'admin.services.since.unhealthy', {
-          duration: formatDuration(t, (new Date(row.checked_at ?? row.status_since).getTime() - new Date(row.status_since).getTime()) / 1000),
+          duration: formatDuration(
+            t,
+            (new Date(row.checked_at ?? row.status_since).getTime() - new Date(row.status_since).getTime()) / 1000,
+          ),
         })
       : null
+
   const shownStatus = checking ? t('admin.services.checking') : t(STATE_LABEL[row.status])
+  const badgeText =
+    row.status === 'unhealthy' && row.failure
+      ? `${shownStatus} · ${failureText(t, row.failure)}`
+      : shownStatus
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-2">
-        <div className="space-y-1">
-          <CardTitle className="text-base">{name}</CardTitle>
-          <p className="text-muted-foreground text-sm">
+    <AdminCard className={cn('overflow-hidden', STATE_ACCENT[row.status])}>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-ink-faint bg-paper/35 px-5 py-4">
+        <div className="min-w-0 space-y-1">
+          <h2 data-slot="card-title" className="type-h3 text-ink">
+            {name}
+          </h2>
+          <p className="type-note text-ink-soft">
             {t('admin.services.impact')}：{serviceText(row.impact, lang)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge
-            variant={row.status === 'unhealthy' ? 'destructive' : row.status === 'healthy' ? 'secondary' : 'outline'}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <AdminStatusBadge
+            tone={checking ? 'inactive' : STATE_TONE[row.status]}
             role="status"
             aria-label={`${name}: ${shownStatus}`}
           >
-            {shownStatus}
-            {row.status === 'unhealthy' && row.failure ? ` · ${t(FAILURE_LABEL[row.failure])}` : ''}
-          </Badge>
+            {badgeText}
+          </AdminStatusBadge>
           <Button
             type="button"
-            size="sm"
-            variant="outline"
+            variant="quiet"
             disabled={checking}
             aria-label={t('admin.services.checkNowFor', { name })}
             onClick={() => void check()}
           >
+            <RotateCw className="size-4" strokeWidth={1.5} aria-hidden="true" />
             {checking ? t('admin.services.checking') : t('admin.services.checkNow')}
           </Button>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {message ? (
-          <Alert variant="destructive" role="alert">
-            <AlertDescription>{message}</AlertDescription>
-          </Alert>
-        ) : null}
-        <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+      </div>
+
+      <div className="space-y-4 px-5 py-4">
+        {message ? <Alert kind="error">{message}</Alert> : null}
+
+        <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {row.target ? (
-            <div>
-              <dt className="text-muted-foreground">{t('admin.services.target')}</dt>
-              <dd className="font-mono text-xs">{row.target}</dd>
-            </div>
+            <ServiceFact icon={Globe} label={t('admin.services.target')}>
+              <span className="break-all">{row.target}</span>
+            </ServiceFact>
           ) : null}
-          <div>
-            <dt className="text-muted-foreground">{t('admin.services.responseTime')}</dt>
-            <dd>
-              {row.response_time_ms === null ? '–' : t('admin.services.responseTimeValue', { ms: row.response_time_ms })}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">{t('admin.services.checkedAt')}</dt>
-            <dd>{time(row.checked_at)}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">{t('admin.services.lastHealthy')}</dt>
-            <dd>{time(row.last_healthy_at)}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">{t('admin.services.availability', { period: t(PERIOD_LABEL[period]) })}</dt>
-            <dd>{row.availability === null ? '–' : percent.format(row.availability)}</dd>
-          </div>
+
+          <ServiceFact icon={Gauge} label={t('admin.services.responseTime')}>
+            {row.response_time_ms === null ? '–' : t('admin.services.responseTimeValue', { ms: row.response_time_ms })}
+          </ServiceFact>
+
+          <ServiceFact icon={Clock} label={t('admin.services.checkedAt')}>
+            {time(row.checked_at)}
+          </ServiceFact>
+
+          <ServiceFact icon={CheckCircle2} label={t('admin.services.lastHealthy')}>
+            {time(row.last_healthy_at)}
+          </ServiceFact>
+
+          <ServiceFact
+            icon={Activity}
+            label={t('admin.services.availability', { period: t(PERIOD_LABEL[period]) })}
+          >
+            <span>{row.availability === null ? '–' : percent.format(row.availability)}</span>
+            {row.availability !== null ? (
+              <StackBar
+                className="mt-1.5"
+                size="sm"
+                showLegend={false}
+                ariaLabel={t('admin.services.availability', { period: t(PERIOD_LABEL[period]) })}
+                segments={[
+                  { label: t('admin.services.state.healthy'), value: row.availability, tone: 'aerugo' },
+                  { label: t('admin.services.state.unhealthy'), value: Math.max(0, 1 - row.availability), tone: 'neutral' },
+                ]}
+              />
+            ) : null}
+          </ServiceFact>
+
           {'node_status' in row ? <VoiceNodeFacts row={row} /> : null}
+
           {since ? (
-            <div>
+            <div className="space-y-1">
               <dt className="sr-only">{t(STATE_LABEL[row.status])}</dt>
-              <dd>{since}</dd>
+              <dd className="type-note flex items-center gap-1.5 text-ink-soft">
+                <Timer className="size-4 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                <span>{since}</span>
+              </dd>
             </div>
           ) : null}
         </dl>
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="px-0"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
-          {open ? t('admin.services.historyHide') : t('admin.services.history')}
-        </Button>
-        {open ? (
-          historyAvailable && row.recent_events.length > 0 ? (
-            <ul className="divide-y text-sm">
-              {row.recent_events.map((event, i) => (
-                <li key={`${event.occurred_at}-${i}`} className="flex flex-wrap items-center gap-x-3 py-2">
-                  <time dateTime={event.occurred_at} className="text-muted-foreground">
-                    {date.format(new Date(event.occurred_at))}
-                  </time>
-                  <span>{t(STATE_LABEL[event.status])}</span>
-                  {event.failure ? <Badge variant="outline">{t(FAILURE_LABEL[event.failure])}</Badge> : null}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-muted-foreground text-sm">
-              {historyAvailable ? t('admin.services.historyEmpty') : t('admin.services.historyUnavailable')}
-            </p>
-          )
-        ) : null}
-      </CardContent>
-    </Card>
+
+        <div className="border-t border-ink-faint pt-2">
+          <Button
+            type="button"
+            variant="link"
+            className="px-0"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            <span>{open ? t('admin.services.historyHide') : t('admin.services.history')}</span>
+            {open ? (
+              <ChevronUp className="size-4" strokeWidth={1.5} aria-hidden="true" />
+            ) : (
+              <ChevronDown className="size-4" strokeWidth={1.5} aria-hidden="true" />
+            )}
+          </Button>
+
+          {open ? (
+            <div className="mt-2">
+              {historyAvailable && row.recent_events.length > 0 ? (
+                <ul className="divide-y divide-ink-faint border-t border-ink-faint">
+                  {row.recent_events.map((event, i) => (
+                    <li key={`${event.occurred_at}-${i}`} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2.5">
+                      <time dateTime={event.occurred_at} className="type-note text-ink-soft">
+                        {date.format(new Date(event.occurred_at))}
+                      </time>
+                      <AdminStatusBadge tone={STATE_TONE[event.status]}>
+                        {t(STATE_LABEL[event.status])}
+                      </AdminStatusBadge>
+                      {event.failure ? (
+                        <AdminStatusBadge tone="error">{failureText(t, event.failure)}</AdminStatusBadge>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="type-note text-ink-soft">
+                  {historyAvailable ? t('admin.services.historyEmpty') : t('admin.services.historyUnavailable')}
+                </p>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </AdminCard>
   )
 }

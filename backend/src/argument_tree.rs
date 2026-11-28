@@ -171,17 +171,23 @@ pub(crate) async fn create(
     tx.commit().await?;
     let language = conversation.language;
     let classroom = conversation.classroom_id;
-    tokio::spawn(async move {
-        if let Err(error) =
-            generate(&state, id, attempt, input, language, classroom, &mut charge).await
-        {
-            charge.refund();
-            tracing::error!(class = %db_error_class(&error), "argument tree generation bookkeeping failed");
-            let _ = sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
-                                WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
-                .bind(id).bind(attempt).execute(&state.pool).await;
-        }
-    });
+    tokio::spawn(crate::diagnostics::inherit_request(
+        crate::telemetry::in_component_span("background_job", "argument_tree", async move {
+            let job_metric = state.metrics.track_background_job("argument_tree");
+            match generate(&state, id, attempt, input, language, classroom, &mut charge).await {
+                Ok(true) => job_metric.finish("ok"),
+                Ok(false) => job_metric.finish("failed"),
+                Err(error) => {
+                    charge.refund();
+                    tracing::error!(class = %db_error_class(&error), "argument tree generation bookkeeping failed");
+                    let _ = sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
+                                        WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
+                        .bind(id).bind(attempt).execute(&state.pool).await;
+                    job_metric.finish("failed");
+                }
+            }
+        }),
+    ));
     Ok((
         StatusCode::ACCEPTED,
         Json(ArgumentTreeView {
@@ -302,11 +308,15 @@ async fn generate(
     language: String,
     classroom: Option<Uuid>,
     charge: &mut AiCharge,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let activity = AiActivity::new("argument_tree", Some(charge.user), classroom);
     let started = Instant::now();
-    let (outcome, trace) =
-        diagnostics::traced(produce(state, id, &input, &language, classroom)).await;
+    let (outcome, trace) = crate::telemetry::in_component_span(
+        "ai",
+        "argument_tree",
+        diagnostics::traced(produce(state, id, &input, &language, classroom)),
+    )
+    .await;
     match outcome {
         Ok((model, tree)) => {
             activity.record(state, Some(&model), 0, started, None, &trace);
@@ -317,6 +327,7 @@ async fn generate(
             if updated.rows_affected() > 0 {
                 charge.slot = None;
             }
+            Ok(true)
         }
         Err(failure) => {
             // A visible failure must already have its quota returned for immediate retries.
@@ -338,7 +349,7 @@ async fn generate(
             sqlx::query("UPDATE conversation_argument_trees SET status = 'failed', updated_at = now(), completed_at = now()
                          WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'")
                 .bind(id).bind(attempt).execute(&state.pool).await?;
+            Ok(false)
         }
     }
-    Ok(())
 }

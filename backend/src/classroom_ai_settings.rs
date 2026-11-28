@@ -303,32 +303,44 @@ pub(crate) async fn put_settings(
     let task_state = state.clone();
     let classroom_id = classroom.id;
     let user = cu.user.id;
-    tokio::spawn(crate::diagnostics::inherit_request(async move {
-        let state = task_state;
-        let _ = ai_job_store::mark_running(&state.pool, job).await;
-        // 各模型同時驗證（最多四個，各自有逾時）；失敗時回報清單中第一個不通過的
-        let checks =
-            futures_util::future::join_all(entries.iter().zip(&secrets).map(|(e, key)| {
-                state
-                    .model_verifier
-                    .verify_model(e.provider, &e.model, key.secret())
-            }))
-            .await;
-        for (e, check) in entries.iter().zip(checks) {
-            if let Err(reason) = check {
-                let target = serde_json::json!({ "target": e.target });
-                let _ =
-                    ai_job_store::finish_failed_with(&state.pool, job, check_code(reason), &target)
-                        .await;
-                return;
+    tokio::spawn(crate::diagnostics::inherit_request(
+        crate::telemetry::in_component_span("background_job", "classroom_ai_verify", async move {
+            let state = task_state;
+            let job_metric = state.metrics.track_background_job("classroom_ai_verify");
+            let _ = ai_job_store::mark_running(&state.pool, job).await;
+            // 各模型同時驗證（最多四個，各自有逾時）；失敗時回報清單中第一個不通過的
+            let checks =
+                futures_util::future::join_all(entries.iter().zip(&secrets).map(|(e, key)| {
+                    state
+                        .model_verifier
+                        .verify_model(e.provider, &e.model, key.secret())
+                }))
+                .await;
+            for (e, check) in entries.iter().zip(checks) {
+                if let Err(reason) = check {
+                    let target = serde_json::json!({ "target": e.target });
+                    let _ = ai_job_store::finish_failed_with(
+                        &state.pool,
+                        job,
+                        check_code(reason),
+                        &target,
+                    )
+                    .await;
+                    job_metric.finish("failed");
+                    return;
+                }
             }
-        }
-        let outcome = apply_verified(&state, classroom_id, user, &entries).await;
-        let _ = match outcome {
-            Ok(()) => ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await,
-            Err(code) => ai_job_store::finish_failed(&state.pool, job, code).await,
-        };
-    }));
+            let outcome = apply_verified(&state, classroom_id, user, &entries).await;
+            let status = if outcome.is_ok() { "ok" } else { "failed" };
+            let _ = match outcome {
+                Ok(()) => {
+                    ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await
+                }
+                Err(code) => ai_job_store::finish_failed(&state.pool, job, code).await,
+            };
+            job_metric.finish(status);
+        }),
+    ));
     Ok((
         StatusCode::ACCEPTED,
         Json(crate::ai_jobs::JobAccepted::pending(job)),

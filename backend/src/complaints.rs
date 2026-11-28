@@ -146,7 +146,9 @@ pub(crate) async fn submit(
 
     // 背景寄信：不讓提交者等 SMTP，失敗也不回錯給提交者
     let state = state.clone();
-    tokio::spawn(async move { deliver(&state, id).await });
+    tokio::spawn(crate::diagnostics::inherit_request(async move {
+        deliver(&state, id).await;
+    }));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -301,7 +303,9 @@ pub(crate) async fn resend(
 ) -> Result<StatusCode, ApiError> {
     if claim_send(&state, id).await? {
         let state = state.clone();
-        tokio::spawn(async move { deliver(&state, id).await });
+        tokio::spawn(crate::diagnostics::inherit_request(async move {
+            deliver(&state, id).await;
+        }));
     } else {
         // 沒搶到：不是不存在，就是已經有寄信在進行（連點），這次不再寄第二封
         let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM complaints WHERE id = $1")
@@ -386,52 +390,67 @@ async fn set_mail_status(state: &AppState, id: Uuid, status: &str) {
 /// 寄出一則客訴的通知信並記下結果（`sent`／`failed`／`skipped`）。
 /// 日誌只有客訴編號與結果的類別：不記描述、收件信箱或 SMTP 憑證。
 pub async fn deliver(state: &AppState, id: Uuid) {
-    let Some(config) = state.config.smtp.as_ref() else {
-        set_mail_status(state, id, "skipped").await;
-        tracing::info!(complaint_id = %id, result = "skipped", "complaint mail not sent");
-        return;
-    };
-    let row: Option<MailRow> = match sqlx::query_as(concat!(
-        "SELECT c.id, c.category, c.description, c.created_at, c.conversation_id, ",
-        display_name_sql!("u"),
-        " AS submitter_name, c.submitter_role, cl.name AS classroom_name
-         FROM complaints c
-         JOIN users u ON u.id = c.user_id
-         LEFT JOIN conversations cv ON cv.id = c.conversation_id
-         LEFT JOIN classrooms cl ON cl.id = cv.classroom_id
-         WHERE c.id = $1"
-    ))
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::warn!(complaint_id = %id, class = %crate::error::db_error_class(&e), "failed to load complaint for mail");
-            set_mail_status(state, id, "failed").await;
+    crate::telemetry::in_component_span("mail", "complaint_deliver", async {
+        let job_metric = state.metrics.track_background_job("complaint_mail");
+        let Some(config) = state.config.smtp.as_ref() else {
+            set_mail_status(state, id, "skipped").await;
+            state.metrics.record_complaint_mail("skipped");
+            tracing::info!(complaint_id = %id, result = "skipped", "complaint mail not sent");
+            job_metric.finish("skipped");
             return;
+        };
+        let row: Option<MailRow> = match sqlx::query_as(concat!(
+            "SELECT c.id, c.category, c.description, c.created_at, c.conversation_id, ",
+            display_name_sql!("u"),
+            " AS submitter_name, c.submitter_role, cl.name AS classroom_name
+             FROM complaints c
+             JOIN users u ON u.id = c.user_id
+             LEFT JOIN conversations cv ON cv.id = c.conversation_id
+             LEFT JOIN classrooms cl ON cl.id = cv.classroom_id
+             WHERE c.id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(complaint_id = %id, class = %crate::error::db_error_class(&e), "failed to load complaint for mail");
+                set_mail_status(state, id, "failed").await;
+                state.metrics.record_complaint_mail("failed");
+                job_metric.finish("failed");
+                return;
+            }
+        };
+        // 客訴在寄出前已被刪除（帳號刪除）：沒有東西可寄
+        let Some(row) = row else {
+            job_metric.finish("skipped");
+            return;
+        };
+        let mail = ComplaintMail {
+            id: row.id,
+            category: row.category,
+            description: row.description,
+            created_at: row.created_at,
+            conversation_id: row.conversation_id,
+            submitter_name: row.submitter_name,
+            submitter_role: row.submitter_role,
+            classroom_name: row.classroom_name,
+        };
+        match mail::send(config, &mail).await {
+            Ok(()) => {
+                set_mail_status(state, id, "sent").await;
+                state.metrics.record_complaint_mail("sent");
+                tracing::info!(complaint_id = %id, result = "sent", "complaint mail sent");
+                job_metric.finish("ok");
+            }
+            Err(failure) => {
+                set_mail_status(state, id, "failed").await;
+                state.metrics.record_complaint_mail("failed");
+                tracing::warn!(complaint_id = %id, result = "failed", class = failure.class(), "complaint mail failed");
+                job_metric.finish("failed");
+            }
         }
-    };
-    // 客訴在寄出前已被刪除（帳號刪除）：沒有東西可寄
-    let Some(row) = row else { return };
-    let mail = ComplaintMail {
-        id: row.id,
-        category: row.category,
-        description: row.description,
-        created_at: row.created_at,
-        conversation_id: row.conversation_id,
-        submitter_name: row.submitter_name,
-        submitter_role: row.submitter_role,
-        classroom_name: row.classroom_name,
-    };
-    match mail::send(config, &mail).await {
-        Ok(()) => {
-            set_mail_status(state, id, "sent").await;
-            tracing::info!(complaint_id = %id, result = "sent", "complaint mail sent");
-        }
-        Err(failure) => {
-            set_mail_status(state, id, "failed").await;
-            tracing::warn!(complaint_id = %id, result = "failed", class = failure.class(), "complaint mail failed");
-        }
-    }
+    })
+    .await;
 }

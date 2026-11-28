@@ -260,20 +260,38 @@ impl VoiceNodes {
 
     /// 探測一次所有 `active` 與 `draining` 節點。
     pub async fn probe_all(&self, state: &AppState) {
-        let probes = self
+        let nodes: Vec<_> = self
             .all(state)
             .await
             .into_iter()
             .filter(|n| n.status != NodeStatus::Disabled)
-            .map(|node| async move {
-                let ok = probe(&node.realtime_url).await;
+            .collect();
+        if nodes.is_empty() {
+            return;
+        }
+        crate::telemetry::in_component_span("background_job", "voice_nodes_probe", async {
+            let job_metric = state.metrics.track_background_job("voice_nodes_probe");
+            let results = join_all(nodes.into_iter().map(|node| async move {
+                let target = node.id.to_string();
+                let ok = crate::telemetry::in_component_span_with_target(
+                    "voice_node_probe",
+                    "health_check",
+                    Some(&target),
+                    probe(&node.realtime_url),
+                )
+                .await;
                 if !ok {
                     // 只記節點識別與原因類別，不記網址
                     tracing::warn!(node = %node.id, "voice node health probe failed");
                 }
                 self.record_probe(node.id, ok);
-            });
-        join_all(probes).await;
+                ok
+            }))
+            .await;
+            let all_ok = results.into_iter().all(std::convert::identity);
+            job_metric.finish(if all_ok { "ok" } else { "degraded" });
+        })
+        .await;
     }
 }
 
@@ -291,11 +309,11 @@ async fn probe(realtime_url: &str) -> bool {
     let Some(url) = health_url(realtime_url) else {
         return false;
     };
-    PROBE_CLIENT
-        .get(url)
-        .send()
-        .await
-        .is_ok_and(|res| res.status().is_success())
+    let mut req = PROBE_CLIENT.get(url);
+    if let Some(tp) = crate::telemetry::current_traceparent() {
+        req = req.header(crate::telemetry::TRACEPARENT_HEADER, tp);
+    }
+    req.send().await.is_ok_and(|res| res.status().is_success())
 }
 
 /// 背景探測：每 10 秒一輪。

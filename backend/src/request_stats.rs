@@ -79,8 +79,8 @@ impl RequestStats {
             .add(&counts);
     }
 
-    /// 把累加的合計寫入資料庫。失敗時放回去，下一輪再寫；只以 tracing 記錄。
-    pub(crate) async fn flush(&self, pool: &PgPool) {
+    /// 把累加的合計寫入資料庫。失敗時放回去，下一輪再寫；只以 tracing 記錄。回傳這輪是否全數寫入成功。
+    pub(crate) async fn flush(&self, pool: &PgPool) -> bool {
         let taken = std::mem::take(&mut *lock(&self.pending));
         let mut failed = BTreeMap::new();
         for (hour, counts) in taken {
@@ -96,7 +96,8 @@ impl RequestStats {
                 }
             }
         }
-        if !failed.is_empty() {
+        let all_ok = failed.is_empty();
+        if !all_ok {
             let mut pending = lock(&self.pending);
             for (hour, counts) in failed {
                 pending.entry(hour).or_default().add(&counts);
@@ -106,6 +107,7 @@ impl RequestStats {
                 pending.pop_first();
             }
         }
+        all_ok
     }
 }
 
@@ -203,7 +205,12 @@ pub(crate) fn spawn(state: &crate::AppState) {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            state.flush_request_stats().await;
+            crate::telemetry::in_component_span("background_job", "request_stats_flush", async {
+                let job_metric = state.metrics.track_background_job("request_stats_flush");
+                let ok = state.request_stats.flush(&state.pool).await;
+                job_metric.finish(if ok { "ok" } else { "failed" });
+            })
+            .await;
         }
     });
 }

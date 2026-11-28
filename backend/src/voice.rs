@@ -199,6 +199,8 @@ impl VoiceProvider for OpenAiVoice {
             .multipart(form);
         if let Some(lease) = &lease {
             req = req.bearer_auth(&lease.key);
+        } else if let Some(tp) = crate::telemetry::current_traceparent() {
+            req = req.header(crate::telemetry::TRACEPARENT_HEADER, tp);
         }
         let res = req
             .send()
@@ -240,6 +242,8 @@ impl VoiceProvider for OpenAiVoice {
             }));
         if let Some(lease) = &lease {
             req = req.bearer_auth(&lease.key);
+        } else if let Some(tp) = crate::telemetry::current_traceparent() {
+            req = req.header(crate::telemetry::TRACEPARENT_HEADER, tp);
         }
         let res = req
             .send()
@@ -285,25 +289,28 @@ async fn observe_voice<T>(
     model: Option<&str>,
     call: impl std::future::Future<Output = Result<T, VoiceError>>,
 ) -> Result<T, VoiceError> {
-    let started = std::time::Instant::now();
-    let result = call.await;
-    let error = match result.as_ref().err() {
-        Some(VoiceError::Unavailable) => return result,
-        Some(VoiceError::Failed) => Some(crate::ai::AiError::unclassified()),
-        Some(VoiceError::Classified(class)) => Some(crate::ai::AiError::classified(*class)),
-        None => None,
-    };
-    crate::diagnostics::AiActivity::new(function, Some(user), None)
-        .failure_code("voice_failed")
-        .record(
-            state,
-            model,
-            0,
-            started,
-            error.as_ref(),
-            &crate::diagnostics::AiSnapshot::default(),
-        );
-    result
+    crate::telemetry::in_component_span("voice", function, async {
+        let started = std::time::Instant::now();
+        let result = call.await;
+        let error = match result.as_ref().err() {
+            Some(VoiceError::Unavailable) => return result,
+            Some(VoiceError::Failed) => Some(crate::ai::AiError::unclassified()),
+            Some(VoiceError::Classified(class)) => Some(crate::ai::AiError::classified(*class)),
+            None => None,
+        };
+        crate::diagnostics::AiActivity::new(function, Some(user), None)
+            .failure_code("voice_failed")
+            .record(
+                state,
+                model,
+                0,
+                started,
+                error.as_ref(),
+                &crate::diagnostics::AiSnapshot::default(),
+            );
+        result
+    })
+    .await
 }
 
 /// 對話語言（S-12.1）對應的 ISO 639-1 代碼。
