@@ -21,7 +21,7 @@ use socrates_chat_backend::{
 const CASES: &str = include_str!("../eval/f24_1_cases.json");
 const EVALUATOR_VERSION: &str = "f24.1-eval-v1";
 /// S-04.2: scoring the same conversation again may move each dimension by at most 1.
-const MAX_SPREAD: u8 = 1;
+const MAX_SPREAD: i16 = 1;
 
 #[derive(Deserialize)]
 struct Suite {
@@ -44,7 +44,7 @@ struct Case {
     covers: Vec<String>,
     turns: Vec<Turn>,
     /// Dimension id to the inclusive `[min, max]` a reviewer expects; unlisted ones are open.
-    expected: BTreeMap<String, [u8; 2]>,
+    expected: BTreeMap<String, [i16; 2]>,
 }
 
 #[derive(Deserialize)]
@@ -75,8 +75,8 @@ fn request(suite: &Suite, case: &Case) -> (AiRequest, Rubric) {
 }
 
 /// Highest minus lowest score per dimension across the valid runs.
-fn spread(runs: &[Scores]) -> BTreeMap<String, u8> {
-    let mut range: BTreeMap<String, (u8, u8)> = BTreeMap::new();
+fn spread(runs: &[Scores]) -> BTreeMap<String, i16> {
+    let mut range: BTreeMap<String, (i16, i16)> = BTreeMap::new();
     for scores in runs {
         for (id, score) in scores {
             let entry = range.entry(id.clone()).or_insert((*score, *score));
@@ -90,7 +90,7 @@ fn spread(runs: &[Scores]) -> BTreeMap<String, u8> {
 }
 
 /// Dimensions where any valid run fell outside the reviewer's expected range.
-fn outside_expected(expected: &BTreeMap<String, [u8; 2]>, runs: &[Scores]) -> Vec<String> {
+fn outside_expected(expected: &BTreeMap<String, [i16; 2]>, runs: &[Scores]) -> Vec<String> {
     expected
         .iter()
         .filter(|(id, [low, high])| {
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn stability_and_range_checks_follow_the_spec() {
-        let run = |d1: u8, d2: u8| Scores::from([("d1".to_owned(), d1), ("d2".to_owned(), d2)]);
+        let run = |d1: i16, d2: i16| Scores::from([("d1".to_owned(), d1), ("d2".to_owned(), d2)]);
         let runs = [run(3, 0), run(4, 0), run(3, 2)];
         let gaps = spread(&runs);
         assert_eq!(gaps["d1"], 1);

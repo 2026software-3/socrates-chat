@@ -1,3 +1,4 @@
+import { StanceRadar } from './stance-radar'
 import { useI18n, useT } from '@/i18n'
 import type { Lang } from '@/i18n/define'
 import type { LocalizedText, RadarView } from '@/lib/types'
@@ -89,6 +90,7 @@ export function RadarResult({ radar }: { radar: RadarView }) {
   const t = useT()
   const { lang } = useI18n()
   const axes = toAxes(radar, lang)
+  if (radar.scale === 'stance') return <StanceRadar radar={radar} />
 
   if (!axes) {
     return (

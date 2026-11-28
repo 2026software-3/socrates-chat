@@ -57,7 +57,7 @@ describe('teacher topic bank', () => {
   })
 
   it('retries pending dimensions and edits one language on a locked topic', async () => {
-    const empty = { dimensions: null, locked: false, prompt_version: null, pending_languages: [] }
+    const empty = { scale: 'legacy', dimensions: null, locked: false, prompt_version: null, pending_languages: [] }
     const dimension = {
       id: 'd1',
       name: { zh_tw: '謹慎', en: 'Caution', es: 'Cautela' },
@@ -65,6 +65,7 @@ describe('teacher topic bank', () => {
       rubric: ['一', '二', '三', '四', '五'],
     }
     const ready = {
+      scale: 'legacy',
       dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
       locked: true, prompt_version: 'topic-dimensions-v1', pending_languages: [],
     }
@@ -114,6 +115,7 @@ describe('teacher topic bank', () => {
       rubric: ['一', '二', '三', '四', '五'],
     }
     const view = {
+      scale: 'legacy',
       dimensions: Array.from({ length: 6 }, (_, index) => ({ ...dimension, id: `d${index + 1}` })),
       locked: false, prompt_version: 'topic-dimensions-v1', rubric_language: 'zh-TW', pending_languages: [],
     }
@@ -148,7 +150,7 @@ describe('teacher topic bank', () => {
         attempts += 1
         return attempts === 1
           ? apiError(500, 'internal')
-          : HttpResponse.json({ dimensions: null, locked: false, pending_languages: [] })
+          : HttpResponse.json({ scale: 'legacy', dimensions: null, locked: false, pending_languages: [] })
       }),
     )
     renderTeacherPage(<TopicsPage />)
@@ -157,4 +159,25 @@ describe('teacher topic bank', () => {
     await userEvent.click(await within(dialog).findByRole('button', { name: '重試' }))
     expect(await within(dialog).findByText('維度尚未完成。題目仍可用於對話。')).toBeInTheDocument()
   })
+})
+
+it('labels new topic rubric entries from -2 to 2 instead of 1 to 5', async () => {
+  const dimension = {
+    id: 'd1', name: { zh_tw: '公開理由', en: 'Public reasons', es: 'Razones públicas' },
+    description: { zh_tw: '是否贊成公開理由', en: 'Whether reasons should be public', es: 'Si las razones deben ser públicas' },
+    rubric: ['強烈反對', '稍微反對', '無感', '稍微贊成', '強烈贊成'],
+  }
+  server.use(
+    http.get('/api/topics', () => HttpResponse.json([trolley])),
+    http.get('/api/topics/t1/dimensions', () => HttpResponse.json({
+      scale: 'stance', dimensions: Array.from({ length: 6 }, (_, i) => ({ ...dimension, id: `d${i + 1}` })),
+      locked: false, rubric_language: 'zh-TW', prompt_version: 'topic-stance-dimensions-v1', pending_languages: [],
+    })),
+  )
+  renderTeacherPage(<TopicsPage />)
+  await userEvent.click(await screen.findByRole('button', { name: '雷達維度' }))
+  const dialog = await screen.findByRole('dialog')
+  expect(await within(dialog).findAllByLabelText('-2 分')).toHaveLength(6)
+  expect(within(dialog).getAllByLabelText('0 分')).toHaveLength(6)
+  expect(within(dialog).queryByLabelText('5 分')).not.toBeInTheDocument()
 })

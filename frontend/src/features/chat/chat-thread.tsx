@@ -45,6 +45,7 @@ export function ChatThread({
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ThreadPrimitive.Viewport
         role="log"
+        tabIndex={0}
         aria-live="polite"
         aria-relevant="additions text"
         aria-label={t('chat.thread.label')}

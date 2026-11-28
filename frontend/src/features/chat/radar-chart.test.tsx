@@ -106,3 +106,52 @@ describe('RadarResult', () => {
     expect(screen.queryByRole('listitem')).not.toBeInTheDocument()
   })
 })
+
+it('shows signed stance scores and keeps an unknown dimension distinct from zero', async () => {
+  const radar = makeRadar({ scores: { d1: -2, d2: -1, d3: 0, d4: 1, d5: 2 } })
+  Object.assign(radar, { scale: 'stance' })
+  mockMe(makeMe({ student: true }))
+  renderApp(<RadarResult radar={radar} />)
+  expect(await screen.findByText('-2：強烈反對')).toBeInTheDocument()
+  expect(screen.getByText('0：無感／不在乎')).toBeInTheDocument()
+  expect(screen.getByText('證據不足')).toBeInTheDocument()
+  expect(screen.getAllByRole('listitem')).toHaveLength(6)
+  expect(screen.getByTestId('radar-chart')).toBeInTheDocument()
+  expect(screen.queryByTestId('radar-shape')).not.toBeInTheDocument()
+  expect(screen.getAllByTestId('stance-point')).toHaveLength(5)
+})
+
+it('places stance zero on the middle ring and draws the complete signed chart', async () => {
+  const radar = makeRadar({ scores: { d1: -2, d2: -1, d3: 0, d4: 1, d5: 2, d6: 0 } })
+  Object.assign(radar, { scale: 'stance' })
+  mockMe(makeMe({ student: true }))
+  renderApp(<RadarResult radar={radar} />)
+  expect(await screen.findByText('-2：強烈反對')).toBeInTheDocument()
+  const points = screen.getByTestId('radar-shape').getAttribute('points')!.split(' ')
+  expect(points[0]).toBe('220.0,160.0')
+  expect(points[2]).toBe('263.3,185.0')
+  expect(screen.getAllByText('0：無感／不在乎')).toHaveLength(2)
+  expect(screen.queryByText(/所以每個維度都是 0 分/)).not.toBeInTheDocument()
+})
+it.each([
+  ['en', '-2: Strongly disagree', '0: Indifferent / does not care', 'Insufficient evidence'],
+  ['es', '-2: Muy en desacuerdo', '0: Indiferente / no le importa', 'Evidencia insuficiente'],
+] as const)('localizes signed positions and unknown evidence (%s)', async (lang, negative, zero, unknown) => {
+  const radar = makeRadar({ scores: { d1: -2, d2: 0 } })
+  Object.assign(radar, { scale: 'stance' })
+  mockMe(makeMe({ student: true }, { language: lang }))
+  renderApp(<RadarResult radar={radar} />)
+  expect(await screen.findByText(negative)).toBeInTheDocument()
+  expect(screen.getByText(zero)).toBeInTheDocument()
+  expect(screen.getAllByText(unknown)).toHaveLength(4)
+})
+
+it('keeps all unknown positions blank and does not invent a zero polygon', async () => {
+  const radar = makeRadar({ scores: {} })
+  Object.assign(radar, { scale: 'stance' })
+  mockMe(makeMe({ student: true }))
+  renderApp(<RadarResult radar={radar} />)
+  expect(await screen.findAllByText('證據不足')).toHaveLength(6)
+  expect(screen.queryByTestId('radar-shape')).not.toBeInTheDocument()
+  expect(screen.queryByTestId('stance-point')).not.toBeInTheDocument()
+})

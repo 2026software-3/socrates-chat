@@ -64,6 +64,64 @@ fn extract_json<T: DeserializeOwned>(raw: &str) -> Option<T> {
     serde_json::from_str(&raw[start..=end]).ok()
 }
 
+/// META 欄位名稱；只有這些名稱會出現在解析失敗的日誌裡，其他鍵只計數。
+const META_KEYS: [&str; 6] = [
+    "advance",
+    "answered_dimensions",
+    "question_dimensions",
+    "question_type",
+    "reason",
+    "response_kind",
+];
+
+/// 一回合結束時 META 的形狀：整段沒有分隔標記時是 `no_delimiter`（模型漏寫），其餘同 [`meta_shape`]。
+pub(crate) fn turn_meta_shape(delimited: bool, raw: &str) -> String {
+    if delimited {
+        meta_shape(raw)
+    } else {
+        "no_delimiter".into()
+    }
+}
+
+/// 描述 META 的形狀供日誌使用：已知欄位名稱與 JSON 型別，不含任何值（值可能轉述學生原文）。
+pub(crate) fn meta_shape(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return "empty".into();
+    }
+    let Some(start) = raw.find('{') else {
+        return "no_json".into();
+    };
+    let end = raw
+        .rfind('}')
+        .filter(|&e| e > start)
+        .map_or(raw.len(), |e| e + 1);
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&raw[start..end]) else {
+        return "invalid_json".into();
+    };
+    let mut parts: Vec<String> = META_KEYS
+        .iter()
+        .filter_map(|key| {
+            let kind = match map.get(*key)? {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "bool",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::String(_) => "string",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+            };
+            Some(format!("{key}={kind}"))
+        })
+        .collect();
+    let other = map
+        .keys()
+        .filter(|k| !META_KEYS.contains(&k.as_str()))
+        .count();
+    if other > 0 {
+        parts.push(format!("other_keys={other}"));
+    }
+    parts.join(",")
+}
+
 /// 去掉前後空白並截到 `max` 個字元；結果為空時回傳 `None`。
 fn clip(s: &str, max: usize) -> Option<String> {
     let s: String = s.trim().chars().take(max).collect();
@@ -316,6 +374,11 @@ impl MetaSplitter {
         std::mem::replace(&mut self.held, rest)
     }
 
+    /// 是否已經看到分隔標記（後面即使是空的也算）；用來在日誌分辨模型漏寫還是串流斷在 META。
+    pub fn has_meta(&self) -> bool {
+        self.in_meta
+    }
+
     /// 串流結束：回傳尚未送出的文字與結構化段落。
     pub fn finish(self) -> (String, String) {
         if self.in_meta {
@@ -332,6 +395,7 @@ pub struct TurnMeta {
     pub advance: bool,
     /// 模型對階段判斷的理由（S-03.2）；只供稽核與評估，不回傳給學生。
     pub reason: Option<String>,
+    pub dimensions: crate::dimension_dialogue::Progress,
 }
 
 /// 判斷理由的長度上限（字元）。
@@ -348,12 +412,19 @@ const QUESTION_TYPES: [&str; 6] = [
 
 /// 解析結構化段落；格式不符時保守地當作「不晉級、未知類型」。
 pub fn parse_meta(raw: &str) -> TurnMeta {
+    parse_turn_meta(true, raw, 0)
+}
+
+/// 同 [`parse_meta`]；`delimited` 與 `reply_chars`（給學生看的文字長度）只用在解析失敗的日誌。
+pub fn parse_turn_meta(delimited: bool, raw: &str, reply_chars: usize) -> TurnMeta {
     #[derive(Deserialize)]
     struct Raw {
         question_type: Option<String>,
         #[serde(default)]
         advance: bool,
         reason: Option<String>,
+        #[serde(flatten)]
+        dimensions: crate::dimension_dialogue::Progress,
     }
     match extract_json::<Raw>(raw) {
         Some(r) => TurnMeta {
@@ -362,12 +433,22 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
                 .filter(|q| QUESTION_TYPES.contains(&q.as_str())),
             advance: r.advance,
             reason: r.reason.and_then(|s| clip(&s, MAX_REASON_CHARS)),
+            dimensions: r.dimensions,
         },
-        None => TurnMeta {
-            question_type: None,
-            advance: false,
-            reason: None,
-        },
+        None => {
+            // 只記形狀（有無 META、欄位型別），不記內容；用來分辨模型漏掉 META 還是欄位型別不符
+            tracing::warn!(
+                shape = %turn_meta_shape(delimited, raw),
+                reply_chars,
+                "turn META could not be parsed"
+            );
+            TurnMeta {
+                question_type: None,
+                advance: false,
+                reason: None,
+                dimensions: Default::default(),
+            }
+        }
     }
 }
 
@@ -2125,9 +2206,43 @@ mod tests {
             TurnMeta {
                 question_type: None,
                 advance: false,
-                reason: None
+                reason: None,
+                dimensions: Default::default(),
             }
         );
+    }
+
+    #[test]
+    fn meta_shape_lists_known_field_types_without_values() {
+        let shape = meta_shape(
+            r#"{"question_type":"秘密內容","answered_dimensions":null,"advance":"yes","學生原文":"不該出現"}"#,
+        );
+        assert_eq!(
+            shape,
+            "advance=string,answered_dimensions=null,question_type=string,other_keys=1"
+        );
+        assert!(!shape.contains("秘密"));
+        assert!(!shape.contains("學生原文"));
+        assert_eq!(meta_shape(""), "empty");
+        assert_eq!(meta_shape("沒有 JSON 的文字"), "no_json");
+        assert_eq!(meta_shape("{\"question_type\":"), "invalid_json");
+        assert_eq!(meta_shape("[1,2]"), "no_json");
+    }
+
+    /// 日誌要分得出「模型整段沒寫分隔標記」和「寫了分隔標記但後面是空的（串流在這裡斷掉）」。
+    #[test]
+    fn splitter_reports_whether_the_delimiter_appeared() {
+        let mut plain = MetaSplitter::default();
+        plain.push("你怎麼看？");
+        assert!(!plain.has_meta());
+        let mut cut = MetaSplitter::default();
+        cut.push("你怎麼看？\n<<<ME");
+        cut.push("TA>>>");
+        assert!(cut.has_meta());
+        assert_eq!(cut.finish().1, "");
+        assert_eq!(turn_meta_shape(false, ""), "no_delimiter");
+        assert_eq!(turn_meta_shape(true, ""), "empty");
+        assert_eq!(turn_meta_shape(true, "[1]"), "no_json");
     }
 
     #[test]

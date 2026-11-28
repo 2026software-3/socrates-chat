@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { setupWorker } from 'msw/browser'
 import { E2E_ACCOUNTS, E2E_PASSWORD, E2E_SESSION_KEY, type E2eRole } from '@/test/e2e-accounts'
 import { defaultHandlers } from '@/test/handlers'
+import { stanceRadarHandlers } from '@/test/radar-stance-handlers'
 import type { Available, Classroom, Me, Roles } from '@/lib/types'
 
 /**
@@ -151,7 +152,7 @@ const e2eHandlers = [
   ),
 ]
 
-export const worker = setupWorker(...e2eHandlers, ...defaultHandlers)
+export const worker = setupWorker(...stanceRadarHandlers, ...e2eHandlers, ...defaultHandlers)
 
 /** 啟動 worker；沒有假資料的 /api 請求在 console 報錯，tests/e2e/fixtures.ts 會讓測試失敗。 */
 export function startWorker() {
