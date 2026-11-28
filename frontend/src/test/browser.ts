@@ -64,7 +64,16 @@ const CATALOG: Available = {
       ],
     },
   ],
-  topics: [{ id: 'topic-virtue', title: '美德可以教嗎？', description: '美諾篇的老問題：美德能不能像算術一樣被教會。', is_active: true }],
+  topics: [
+    {
+      id: 'topic-justice',
+      title: '正義是強者的利益嗎？',
+      description: '從《理想國》第一卷色拉敘馬霍斯的論點出發，探討正義的本質。',
+      guiding_questions: ['如果統治者制定對自己有利的法律，服從這些法律就是正義嗎？', '強者有沒有可能看錯自己的真正利益？'],
+      is_active: true,
+    },
+    { id: 'topic-virtue', title: '美德可以教嗎？', description: '美諾篇的老問題：美德能不能像算術一樣被教會。', is_active: true },
+  ],
 }
 
 /** Playwright 的假後端：先比對這裡的端點，再落到 Vitest 共用的預設端點。 */
@@ -139,6 +148,29 @@ const e2eHandlers = [
     HttpResponse.json({ masked: true, students_total: 1, students_participating: 0, completed: 0, activities: [] }),
   ),
   http.get('/api/topics', () => HttpResponse.json(CATALOG.topics)),
+  http.get('/api/topics/:id', ({ params }) =>
+    HttpResponse.json({
+      id: String(params.id),
+      title: '正義是強者的利益嗎？',
+      description: '從《理想國》第一卷色拉敘馬霍斯的論點出發，探討正義的本質。',
+      guiding_questions: ['如果統治者制定對自己有利的法律，服從這些法律就是正義嗎？', '強者有沒有可能看錯自己的真正利益？'],
+      is_active: true,
+    }),
+  ),
+  http.get('/api/dashboard/me', () =>
+    HttpResponse.json({
+      total_conversations: 4,
+      completed: 2,
+      total_turns: 18,
+      recent: [
+        {
+          conversation_id: 'e2e-conv-1',
+          title: '正義是強者的利益嗎？',
+          ended_at: CREATED,
+        },
+      ],
+    }),
+  ),
   http.get('/api/admin/status', ({ request }) =>
     HttpResponse.json({
       service: 'ok',
