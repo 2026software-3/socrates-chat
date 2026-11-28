@@ -65,10 +65,11 @@ async fn new_rules_neither_force_closure_at_old_limit_nor_trust_unasked_dimensio
     let request = ai.requests.lock().unwrap()[0].clone();
     assert!(request.system.contains("d6"));
     assert!(!request.system.contains("第 15 回合"));
-    assert_eq!(
-        request.messages.last().unwrap().content,
-        "我認為如此，因為這是我的理由。"
-    );
+    // 舊規則的收尾指令不附；維度規則每回合只附格式提醒（v4）
+    let last = &request.messages.last().unwrap().content;
+    assert!(last.starts_with("我認為如此，因為這是我的理由。"), "{last}");
+    assert!(!last.contains("wrap_up"), "{last}");
+    assert!(last.contains("Format reminder"), "{last}");
 }
 
 #[sqlx::test]
@@ -417,13 +418,25 @@ async fn converged_but_uncovered_turn_reminds_the_model_which_dimensions_are_mis
 async fn fully_covered_turn_gets_no_coverage_reminder(pool: PgPool) {
     let (system, last) =
         last_message_sent(&pool, true, &["d1", "d2", "d3", "d4", "d5", "d6"]).await;
-    assert_eq!(last, STUDENT_TEXT);
-    assert!(!system.contains("system-note-"), "{system}");
+    assert_format_only(&system, &last);
 }
 
 #[sqlx::test]
 async fn not_yet_converged_turn_gets_no_coverage_reminder(pool: PgPool) {
     let (system, last) = last_message_sent(&pool, false, &["d2", "d3", "d4", "d5"]).await;
-    assert_eq!(last, STUDENT_TEXT);
-    assert!(!system.contains("system-note-"), "{system}");
+    assert_format_only(&system, &last);
+}
+
+/// 每回合都有格式提醒（包在這次請求的標籤裡），但沒有覆蓋提醒。
+fn assert_format_only(system: &str, last: &str) {
+    assert!(!last.contains("不要收尾"), "{last}");
+    assert!(last.contains("<<<META>>>"), "{last}");
+    let tag = note_tag(last);
+    assert!(last.trim_end().ends_with(&format!("[/{tag}]")), "{last}");
+    assert!(system.contains(&format!("[{tag}]")), "{system}");
+}
+
+fn note_tag(last: &str) -> String {
+    let start = last.find("[system-note-").expect(last) + 1;
+    last[start..start + last[start..].find(']').unwrap()].to_string()
 }
