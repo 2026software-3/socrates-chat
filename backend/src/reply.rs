@@ -504,6 +504,17 @@ async fn generate(
         last.content.push_str("\n\n");
         last.content.push_str(closing_instruction(&conv.language));
     }
+    // 維度規則：已收斂但覆蓋未完成時，模型常直接收尾而被擋下（學生看到收尾卻無法結束）。
+    // 同樣放在模型最後讀到的地方，列出缺少的維度並要求改問；只在請求裡，不寫進紀錄
+    if let Some((dimensions, covered, _)) = &dimension_context
+        && conv.converge_ready
+        && let Some(reminder) =
+            crate::dimension_dialogue::coverage_reminder(&conv.language, dimensions, covered)
+        && let Some(last) = req.messages.last_mut()
+    {
+        last.content.push_str("\n\n");
+        last.content.push_str(&reminder);
+    }
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）
     let mut outcome = None;
