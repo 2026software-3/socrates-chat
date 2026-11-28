@@ -64,6 +64,55 @@ fn extract_json<T: DeserializeOwned>(raw: &str) -> Option<T> {
     serde_json::from_str(&raw[start..=end]).ok()
 }
 
+/// META 欄位名稱；只有這些名稱會出現在解析失敗的日誌裡，其他鍵只計數。
+const META_KEYS: [&str; 6] = [
+    "advance",
+    "answered_dimensions",
+    "question_dimensions",
+    "question_type",
+    "reason",
+    "response_kind",
+];
+
+/// 描述 META 的形狀供日誌使用：已知欄位名稱與 JSON 型別，不含任何值（值可能轉述學生原文）。
+pub(crate) fn meta_shape(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return "empty".into();
+    }
+    let Some(start) = raw.find('{') else {
+        return "no_json".into();
+    };
+    let end = raw
+        .rfind('}')
+        .filter(|&e| e > start)
+        .map_or(raw.len(), |e| e + 1);
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&raw[start..end]) else {
+        return "invalid_json".into();
+    };
+    let mut parts: Vec<String> = META_KEYS
+        .iter()
+        .filter_map(|key| {
+            let kind = match map.get(*key)? {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "bool",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::String(_) => "string",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+            };
+            Some(format!("{key}={kind}"))
+        })
+        .collect();
+    let other = map
+        .keys()
+        .filter(|k| !META_KEYS.contains(&k.as_str()))
+        .count();
+    if other > 0 {
+        parts.push(format!("other_keys={other}"));
+    }
+    parts.join(",")
+}
+
 /// 去掉前後空白並截到 `max` 個字元；結果為空時回傳 `None`。
 fn clip(s: &str, max: usize) -> Option<String> {
     let s: String = s.trim().chars().take(max).collect();
@@ -328,12 +377,16 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
             reason: r.reason.and_then(|s| clip(&s, MAX_REASON_CHARS)),
             dimensions: r.dimensions,
         },
-        None => TurnMeta {
-            question_type: None,
-            advance: false,
-            reason: None,
-            dimensions: Default::default(),
-        },
+        None => {
+            // 只記形狀（有無 META、欄位型別），不記內容；用來分辨模型漏掉 META 還是欄位型別不符
+            tracing::warn!(shape = %meta_shape(raw), "turn META could not be parsed");
+            TurnMeta {
+                question_type: None,
+                advance: false,
+                reason: None,
+                dimensions: Default::default(),
+            }
+        }
     }
 }
 
@@ -2095,6 +2148,23 @@ mod tests {
                 dimensions: Default::default(),
             }
         );
+    }
+
+    #[test]
+    fn meta_shape_lists_known_field_types_without_values() {
+        let shape = meta_shape(
+            r#"{"question_type":"秘密內容","answered_dimensions":null,"advance":"yes","學生原文":"不該出現"}"#,
+        );
+        assert_eq!(
+            shape,
+            "advance=string,answered_dimensions=null,question_type=string,other_keys=1"
+        );
+        assert!(!shape.contains("秘密"));
+        assert!(!shape.contains("學生原文"));
+        assert_eq!(meta_shape(""), "empty");
+        assert_eq!(meta_shape("沒有 JSON 的文字"), "no_json");
+        assert_eq!(meta_shape("{\"question_type\":"), "invalid_json");
+        assert_eq!(meta_shape("[1,2]"), "no_json");
     }
 
     #[test]
