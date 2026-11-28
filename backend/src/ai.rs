@@ -154,11 +154,35 @@ pub struct AiError {
     /// `x-ratelimit-remaining-requests`／`-tokens`：供應商回報的剩餘額度（只有數字）。
     pub(crate) ratelimit_remaining_requests: Option<u64>,
     pub(crate) ratelimit_remaining_tokens: Option<u64>,
-    /// 錯誤種類，只給日誌用（一個位元組，不讓 `AiError` 變大）。
+    /// 錯誤種類，只給日誌用。
     pub(crate) kind: Option<ErrorKind>,
-    /// 串流中途錯誤事件的代碼；很少出現，放在 `Box` 裡讓 `AiError` 保持小（clippy `result_large_err`）。
-    pub(crate) error_event: Option<Box<ErrorEvent>>,
+    /// 串流中途錯誤事件的狀態代碼，是 [`RPC_STATUSES`] 的索引（例如 Gemini 的 `UNAVAILABLE`）。
+    pub(crate) event_status: Option<u8>,
+    /// 串流中途錯誤事件的數字代碼（例如 503）；不是 HTTP 狀態，是事件本文裡的代碼。
+    pub(crate) event_code: Option<u16>,
 }
+
+/// Google API 的固定狀態代碼（google.rpc.Code）；錯誤事件只認這些，其他字串一律不留。
+/// 用索引存，三個診斷欄位共只佔幾個位元組，`AiError` 不會因此變大（clippy `result_large_err`）。
+pub const RPC_STATUSES: [&str; 17] = [
+    "OK",
+    "CANCELLED",
+    "UNKNOWN",
+    "INVALID_ARGUMENT",
+    "DEADLINE_EXCEEDED",
+    "NOT_FOUND",
+    "ALREADY_EXISTS",
+    "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED",
+    "FAILED_PRECONDITION",
+    "ABORTED",
+    "OUT_OF_RANGE",
+    "UNIMPLEMENTED",
+    "INTERNAL",
+    "UNAVAILABLE",
+    "DATA_LOSS",
+    "UNAUTHENTICATED",
+];
 
 /// 錯誤種類；日誌裡是固定的蛇形字串。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,15 +222,6 @@ impl ErrorKind {
     }
 }
 
-/// 串流中途錯誤事件的代碼（例如 Gemini 的 `{"error":{"code":503,"status":"UNAVAILABLE"}}`）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ErrorEvent {
-    /// 只留 1–40 字的大寫英文與底線（例如 `UNAVAILABLE`）。
-    status: Option<String>,
-    /// 事件本文裡的數字代碼（不是 HTTP 狀態）。
-    code: Option<u16>,
-}
-
 impl AiError {
     /// 沒有更具體原因的失敗；呼叫端應盡量用 `classified` 明確選擇分類。
     pub const fn unclassified() -> Self {
@@ -229,7 +244,8 @@ impl AiError {
             ratelimit_remaining_requests: None,
             ratelimit_remaining_tokens: None,
             kind: None,
-            error_event: None,
+            event_status: None,
+            event_code: None,
         }
     }
 
@@ -336,12 +352,12 @@ impl AiError {
         self.kind.map(ErrorKind::as_str)
     }
 
-    pub fn provider_status(&self) -> Option<&str> {
-        self.error_event.as_ref()?.status.as_deref()
+    pub fn provider_status(&self) -> Option<&'static str> {
+        RPC_STATUSES.get(usize::from(self.event_status?)).copied()
     }
 
     pub fn event_code(&self) -> Option<u16> {
-        self.error_event.as_ref()?.code
+        self.event_code
     }
 
     pub(crate) fn with_kind(mut self, kind: ErrorKind) -> Self {
@@ -350,15 +366,12 @@ impl AiError {
     }
 
     /// 錯誤事件的代碼：狀態代碼只留 1–40 字的大寫英文與底線（例如 `UNAVAILABLE`），其餘丟掉。
+    /// 錯誤事件的代碼：狀態代碼只認 [`RPC_STATUSES`] 裡的固定值，其餘（含自由文字）丟掉。
     pub(crate) fn with_error_event(mut self, status: Option<&str>, code: Option<u64>) -> Self {
-        let status = status
-            .filter(|s| {
-                (1..=40).contains(&s.len())
-                    && s.bytes().all(|c| c.is_ascii_uppercase() || c == b'_')
-            })
-            .map(str::to_owned);
-        let code = code.and_then(|c| u16::try_from(c).ok());
-        self.error_event = Some(Box::new(ErrorEvent { status, code }));
+        self.event_status = status
+            .and_then(|s| RPC_STATUSES.iter().position(|known| *known == s))
+            .and_then(|i| u8::try_from(i).ok());
+        self.event_code = code.and_then(|c| u16::try_from(c).ok());
         self
     }
 
