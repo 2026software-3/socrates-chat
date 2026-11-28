@@ -160,7 +160,8 @@ export function Layout({ me, children }: { me: Me; nav?: NavItem[]; children: Re
     return (
       <WorkspaceContext.Provider value={workspace}>
         <ShellHeaderContext.Provider value={shellHeaderValue}>
-          <div className="flex min-h-svh flex-col bg-surface">
+          {/* 對話頁高度鎖定為視窗高，讓輸入列留在底部、只有對話串捲動 */}
+          <div className={isConversation ? 'flex h-svh flex-col overflow-hidden bg-surface' : 'flex min-h-svh flex-col bg-surface'}>
             <BackHeader
               backTo={focusConfig.backTo}
               backLabel={t(focusConfig.backLabelKey)}
