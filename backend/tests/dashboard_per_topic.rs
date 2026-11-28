@@ -139,7 +139,13 @@ async fn groups_regroup_and_deletion_are_scoped_to_one_activity_topic(pool: PgPo
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    // 重新分組在背景完成（S-20）
+    let job = json_body(res).await["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        wait_for_job(&app, &a.teacher, &job).await["status"],
+        "ready"
+    );
     let d = json_body(send(&app, get("/api/dashboard/class", Some(&a.teacher))).await).await;
     let topics = &d["activities"][0]["topics"];
     assert_eq!(topics[0]["claims"][0]["name"], "新甲群");
@@ -201,8 +207,14 @@ async fn migration_splits_existing_groups_without_losing_summaries_or_membership
     };
     let t1 = raw_topic("甲題").await;
     let t2 = raw_topic("乙題").await;
-    let act = publish_activity(&app, &a, "舊活動", &t1).await;
+    // 發布 API 會讀 activities.translations（舊結構沒有），所以發布以 raw SQL 進行。
+    let act = create_activity(&app, &a, "舊活動", &t1).await;
     let act_id: uuid::Uuid = act.parse().unwrap();
+    sqlx::query("UPDATE activities SET status = 'published' WHERE id = $1")
+        .bind(act_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO activity_topics (activity_id, topic_id, position) VALUES ($1,$2,1)")
         .bind(act_id)
         .bind(t2.parse::<uuid::Uuid>().unwrap())

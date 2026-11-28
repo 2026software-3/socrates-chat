@@ -8,7 +8,7 @@ import { makeDetail, makeMessage } from '@/features/chat/test-data'
 import { createRealtimeSession, type RealtimeCallbacks } from '@/features/chat/voice/realtime/realtime-session'
 import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import type { ConversationDetail } from '@/lib/types'
-import { makeMe, mockMe, renderApp } from '@/test/render'
+import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 vi.mock('@/features/chat/voice/realtime/realtime-session', async (original) => ({
@@ -24,7 +24,7 @@ function renderPage(detail: ConversationDetail) {
     http.get('/api/conversations/c1', () => HttpResponse.json(detail)),
     http.post('/api/conversations/c1/messages', async ({ request }) => {
       posts.push(await request.json())
-      return HttpResponse.json({}, { status: 500 })
+      return apiError(500, 'internal')
     }),
   )
   mockMe(makeMe({ student: true }, { language: 'zh-TW' }))
@@ -73,7 +73,7 @@ describe('server voice conversation', () => {
 
   it('tells the student where the voice goes and locks typing while connected', async () => {
     await startLive()
-    expect(createRealtimeSession).toHaveBeenCalledWith('c1', expect.anything(), false)
+    expect(createRealtimeSession).toHaveBeenCalledWith('c1', expect.anything(), true)
     expect(screen.getByText(/即時傳到本系統的伺服器/)).toBeInTheDocument()
     expect(screen.getByRole('textbox')).toBeDisabled()
     expect(screen.getByRole('button', { name: '送出' })).toBeDisabled()
@@ -165,7 +165,7 @@ describe('server voice conversation', () => {
   it('takes stage and ending from the server after a turn', async () => {
     const { cb } = await startLive()
     server.use(http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: 'ended', voice_realtime: true }))))
-    server.use(http.get('/api/conversations/c1/summary', () => HttpResponse.json({ status: 'generating' })))
+    server.use(http.get('/api/conversations/c1/summary', () => HttpResponse.json({ status: 'generating', translation_pending: false })))
     act(() => cb.onSettled())
     await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument())
     expect(session.close).toHaveBeenCalled()
@@ -194,10 +194,9 @@ describe('server voice conversation', () => {
     expect(session.interrupt).toHaveBeenCalled()
   })
 
-  it('passes the barge-in switch to the session', async () => {
-    const { user } = await startLive()
-    await user.click(screen.getByRole('switch', { name: /打斷/ }))
-    expect(session.setInterruptible).toHaveBeenLastCalledWith(true)
+  it('has no barge-in switch and always starts interruptible', async () => {
+    await startLive()
+    expect(screen.queryByRole('switch', { name: /打斷/ })).not.toBeInTheDocument()
   })
 
   it('ends with the button and frees the input', async () => {

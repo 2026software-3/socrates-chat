@@ -39,7 +39,6 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
   const [resetting, setResetting] = useState(false)
   const [error, setError] = useState<unknown>()
   const [issued, setIssued] = useState<{ label: string; password: string }>()
-  const { isCopied, copyToClipboard } = useCopyToClipboard()
 
   async function onReset() {
     if (!target || resetting) return
@@ -93,35 +92,55 @@ export function ResetPasswordDialog({ target, onClose }: { target: ResetTarget |
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* 臨時密碼只出現這一次：不能點空白處或按 Esc 關閉，要按按鈕確認已記下 */}
-      <AlertDialog open={issued !== undefined}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('admin.reset.tempTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t('admin.reset.tempDesc', { who: issued?.label ?? '' })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="space-y-1.5">
-            <Label htmlFor="temp-password">{t('admin.reset.tempLabel')}</Label>
-            <div className="flex gap-2">
-              <Input
-                id="temp-password"
-                readOnly
-                className="font-mono"
-                value={issued?.password ?? ''}
-                onFocus={(e) => e.target.select()}
-              />
-              <Button type="button" variant="outline" onClick={() => copyToClipboard(issued?.password ?? '')}>
-                {isCopied ? t('admin.reset.copied') : t('admin.reset.copy')}
-              </Button>
-            </div>
-          </div>
-          <AlertDialogFooter>
-            <Button onClick={close}>{t('admin.reset.tempClose')}</Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <TemporaryPasswordDialog
+        issued={issued}
+        title={t('admin.reset.tempTitle')}
+        description={(who) => t('admin.reset.tempDesc', { who })}
+        onClose={close}
+      />
     </>
+  )
+}
+
+export function TemporaryPasswordDialog({
+  issued,
+  title,
+  description,
+  onClose,
+}: {
+  issued: { label: string; password: string } | undefined
+  title: string
+  description: (who: string) => string
+  onClose: () => void
+}) {
+  const t = useT()
+  const { isCopied, copyToClipboard } = useCopyToClipboard()
+  return (
+    <AlertDialog open={issued !== undefined}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description(issued?.label ?? '')}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="space-y-1.5">
+          <Label htmlFor="temp-password">{t('admin.reset.tempLabel')}</Label>
+          <div className="flex gap-2">
+            <Input
+              id="temp-password"
+              readOnly
+              className="font-mono"
+              value={issued?.password ?? ''}
+              onFocus={(e) => e.target.select()}
+            />
+            <Button type="button" variant="outline" onClick={() => copyToClipboard(issued?.password ?? '')}>
+              {isCopied ? t('admin.reset.copied') : t('admin.reset.copy')}
+            </Button>
+          </div>
+        </div>
+        <AlertDialogFooter>
+          <Button onClick={onClose}>{t('admin.reset.tempClose')}</Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

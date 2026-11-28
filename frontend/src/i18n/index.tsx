@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { bookMessages } from '@/features/books/messages'
 import { accountMessages } from '@/features/account/messages'
 import { adminMessages } from '@/features/admin/messages'
 import { announcementsMessages } from '@/features/announcements/messages'
@@ -21,6 +22,7 @@ import { isApiError } from '@/lib/api'
 // 新增功能時：在該功能目錄建立 messages.ts，再加進這裡。
 const bundles = [
   common,
+  bookMessages,
   authMessages,
   studentMessages,
   taskMessages,

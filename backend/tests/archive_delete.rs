@@ -620,7 +620,8 @@ async fn a_conversation_started_while_deleting_is_still_counted(pool: PgPool) {
             .await
         }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // 確認刪除真的卡在 FOR SHARE 的鎖上，再讓對話寫入並提交
+    wait_until_blocked_on_lock(&pool).await;
     sqlx::query(
         "INSERT INTO conversations (user_id, activity_id, classroom_id, title)
          SELECT $1, id, classroom_id, 't' FROM activities WHERE id = $2",

@@ -49,7 +49,7 @@ function mockStatus(build: (period: string) => SystemStatus | Response = () => s
   const periods: string[] = []
   server.use(
     http.get('/api/admin/teachers', () => HttpResponse.json({ emails: [] })),
-    http.get('/api/dashboard/class', () => HttpResponse.json({ students_total: 0 })),
+    http.get('/api/dashboard/class', () => HttpResponse.json({ masked: false, students_total: 0, students_participating: 0, completed: 0, activities: [] })),
     http.get('/api/topics', () => HttpResponse.json([])),
     http.get('/api/admin/status', ({ request }) => {
       const period = new URL(request.url).searchParams.get('period') ?? ''
@@ -73,9 +73,9 @@ it('shows the number of active topics on the admin home page', async () => {
   server.use(
     http.get('/api/topics', () =>
       HttpResponse.json([
-        { id: '1', title: 'Active one', is_active: true },
-        { id: '2', title: 'Active two', is_active: true },
-        { id: '3', title: 'Inactive', is_active: false },
+        { id: '1', title: 'Active one', description: '', is_active: true, title_pending: false, pending_questions: [] },
+        { id: '2', title: 'Active two', description: '', is_active: true, title_pending: false, pending_questions: [] },
+        { id: '3', title: 'Inactive', description: '', is_active: false, title_pending: false, pending_questions: [] },
       ]),
     ),
   )

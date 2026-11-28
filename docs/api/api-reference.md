@@ -52,12 +52,13 @@
 
 ### 帳號管理
 
-- 重設密碼：`POST /api/admin/users/reset-password`，請求的 `email` 與 `student_number` **恰好擇一**（都有或都沒有回 `400 invalid_target`）。
-  - `{ email }`：有帳號就更新，沒有就建立；`email` 格式錯誤回 `400 invalid_email`。
+- 重設密碼：`POST /api/admin/users/reset-password`，請求的 `email` 與 `student_number` **恰好擇一**（都有或都沒有回 `400 invalid_target`）。環境變數 `ADMIN_EMAILS` 的第一個管理者帳號受保護，只有本人可重設自己的密碼，其他管理者呼叫回 `403 protected_admin`。
+  - `{ email }`：有帳號就更新，沒有就建立；`email` 格式錯誤回 `400 invalid_email`（目標為 `ADMIN_EMAILS` 第一個管理者且操作者非本人時，直接回 `403 protected_admin`，不建立也不更動帳號）。
   - `{ student_number }`（#413，沒有電子郵件的學生）：學號不分大小寫、轉大寫比對；格式錯誤回 `400 invalid_student_number`；學號不屬於任何已有帳號的學生回 `404`，**不建立帳號**。稽核對象用信箱，沒有信箱時用帳號的內部識別碼，日誌與錯誤回應都不含學號。
   - 回應 `{ email, temporary_password }`：`email` 為帳號的信箱，沒有信箱的學生為 `null`；臨時密碼**只出現在這次回應**。
   - 兩種方式都清除該使用者所有 session 與登入鎖定（含學號與信箱兩種登入帳號輸入的計數），並要求下次登入先改密碼；寫入稽核日誌。
 - `PUT /api/admin/users/{id}/status` 接受 `{ disabled, reason? }`，id 為使用者 UUID（學生列表的 `id`，沒有帳號時為 null）；舊 disable／enable POST 已移除。同值重送回 204 且不重複稽核。停用帳號：立即清除該帳號所有 session，資料保留；不能停用自己（`cannot_disable_self`），系統至少保留 1 位啟用中的管理者（`last_admin`）；停用與復原都寫入稽核日誌。
+- 管理者管理：`GET /api/admin/admins` 回傳 `{ emails, primary_email }`（`primary_email` 為 `ADMIN_EMAILS` 第一個信箱，未設定時為 `null`）；`POST /api/admin/admins` 接受 `{ email }`，沒有帳號就建立並回臨時密碼，既有非學生帳號則升為管理者不動密碼（學生帳號回 `409 is_student`）。
 - 新增教師重複送出也回 204（冪等）。
 
 ## 題庫與活動
@@ -139,6 +140,7 @@
   - `dimensions`：題目的六個維度 `{ id, name, description }`，`name` 與 `description` 各含 `zh_tw`、`en`、`es`，前端依介面語言顯示；不含評分準則。題目沒有維度時為 `null`。
   - `rules_version`（評分提示版本）與 `completed_at` 只有 `ready` 時有值。
 - `POST /api/conversations/{id}/radar/retry`：開始或重新計算，成功回 `202` 與目前的雷達圖狀態（`pending`）。`409 dimensions_pending`＝題目維度尚未完成；`409 radar_not_retryable`＝計算中、已成功、總結尚未成功或題目已不存在；`409 classroom_archived`＝教室已封存。失敗時後端已自動重試一次（S-03.5），之後才需要學生手動重試。
+- `GET /api/ai-jobs/active`（S-20）：目前登入者自己的進行中與剛結束（10 分鐘內）的 AI 工作，最新的在前，最多 50 筆，回 `{ jobs: [{ id, kind, status, label_key, scope: { conversation_id }, started_at, finished_at, retryable }] }`。`kind` 為 `reply`（AI 回覆中）、`summary`、`radar`、`argument_tree`、`summary_translation`；`status` 為 `pending`／`ready`／`failed`；`id` 是 `{kind}:{conversation_id}`；`retryable` 只在失敗時為 `true`。只含識別碼與狀態，不含題目、訊息或總結內容；他人與管理者的工作不會出現。前端在重新整理後用它還原進度顯示。
 - 刪除對話會一併刪除訊息與總結。
 
 ## 儀表板

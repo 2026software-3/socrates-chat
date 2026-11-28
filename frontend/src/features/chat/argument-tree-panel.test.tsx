@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
@@ -14,10 +14,10 @@ const root = { id: 'TREE-C0', kind: 'claim', label: '支持使用工具', source
 const ready = { status: 'ready', tree: { topic_id: 'TREE', title: '合成題目', node_count: 2, review_status: 'unreviewed', root }, prompt_version: 'v2.1.1', completed_at: '2026-11-10T00:00:00Z' }
 const state = (status: string) => ({ status, tree: null, prompt_version: null, completed_at: null })
 
-function renderPage(ended = true) {
+function renderPage(ended = true, title?: string) {
   mockMe(makeMe({ student: true }))
   server.use(
-    http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: ended ? 'ended' : 'active' }))),
+    http.get('/api/conversations/c1', () => HttpResponse.json(makeDetail({ status: ended ? 'ended' : 'active', ...(title ? { title } : {}) }))),
     http.get('/api/conversations/c1/summary', () => HttpResponse.json(makeSummary())),
   )
   return renderApp(<Routes><Route path="/conversations/:id" element={<ConversationPage />} /></Routes>, { route: '/conversations/c1' })
@@ -44,6 +44,15 @@ describe('saved argument tree button', () => {
     expect(dialog.querySelector('img')).toBeNull()
     await userEvent.click(within(dialog).getByText('檢視 JSON'))
     expect(within(dialog).getByTestId('argument-tree-json')).toHaveTextContent('"node_count": 2')
+  })
+
+  it('uses the current conversation title for a saved tree', async () => {
+    server.use(http.get('/api/conversations/c1/argument-tree', () => HttpResponse.json(ready)))
+    renderPage(true, 'Localized topic')
+    await userEvent.click(await screen.findByRole('button', { name: '總結論證樹' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText(/Localized topic/)).toBeInTheDocument()
+    expect(within(dialog).getByText('支持使用工具')).toBeInTheDocument()
   })
 
   it('reads a saved tree after remount without another model request', async () => {
@@ -95,15 +104,18 @@ describe('saved argument tree button', () => {
     expect(screen.queryByRole('button', { name: '總結論證樹' })).not.toBeInTheDocument()
   })
 
-  it('stops polling when the dialog is closed', async () => {
+  it('keeps polling after the dialog is closed and shows the finished tree on reopen (S-20)', async () => {
     let reads = 0
-    server.use(http.get('/api/conversations/c1/argument-tree', () => { reads++; return HttpResponse.json(state('pending')) }))
+    server.use(
+      http.get('/api/conversations/c1/argument-tree', () => HttpResponse.json(++reads < 3 ? state('pending') : ready)),
+      http.post('/api/conversations/c1/argument-tree', () => HttpResponse.json(state('pending'), { status: 202 })),
+    )
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: '總結論證樹' }))
     await screen.findByText('正在產生論證樹…')
     await userEvent.keyboard('{Escape}')
-    const before = reads
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)) })
-    expect(reads).toBe(before)
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3), { timeout: 5000 })
+    await userEvent.click(await screen.findByRole('button', { name: '總結論證樹' }))
+    expect(await screen.findByText('支持使用工具')).toBeInTheDocument()
   })
 })

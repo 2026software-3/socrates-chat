@@ -1,9 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { delay, http, HttpResponse } from 'msw'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { ServicesPage } from '@/features/admin/services-page'
-import type { ServiceRow, ServicesView } from '@/features/admin/service-health-model'
+import type { ServiceRow, ServicesView, VoiceNodeRow } from '@/features/admin/service-health-model'
 import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -50,6 +50,7 @@ const view = (services: ServiceRow[], extra: Partial<ServicesView> = {}): Servic
   services,
   history_available: true,
   period_days: 1,
+  voice_nodes: [],
   ...extra,
 })
 
@@ -67,6 +68,76 @@ function mockServices(build: (days: string) => ServicesView | Response) {
 }
 
 const card = (name: string) => screen.getByText(name).closest('[data-slot="card"]') as HTMLElement
+
+const node = (overrides: Partial<VoiceNodeRow>): VoiceNodeRow => ({
+  ...row({
+    name: 'voice-node:1',
+    label: 'raynb',
+    impact: { 'zh-TW': '即時語音', en: 'Real-time voice' },
+    target: '100.64.0.1:8110/health',
+  }),
+  node_status: 'active',
+  healthy: true,
+  sessions: 1,
+  max_sessions: 2,
+  ...overrides,
+})
+
+describe('voice nodes on the services page', () => {
+  it('lists nodes as ordinary services, with node status and sessions on the card', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockServices(() =>
+      view([DATABASE], {
+        voice_nodes: [
+          node({}),
+          node({ name: 'voice-node:2', label: 'env', sessions: 3, max_sessions: null }),
+          node({ name: 'voice-node:3', label: 'old', node_status: 'draining', status: 'unhealthy', failure: 'timeout' }),
+        ],
+      }),
+    )
+    renderApp(<ServicesPage />)
+    await screen.findByText('raynb')
+    const inCard = (label: string) => within(screen.getByText(label).closest('[data-slot="card"]') as HTMLElement)
+    const raynb = inCard('raynb')
+    expect(raynb.getByText('1 / 2')).toBeInTheDocument()
+    expect(raynb.getByText('運作中')).toBeInTheDocument()
+    expect(raynb.getByText('100.64.0.1:8110/health')).toBeInTheDocument()
+    expect(raynb.getByText('99.87%')).toBeInTheDocument()
+    expect(raynb.getByRole('button', { name: '立即檢查 raynb' })).toBeInTheDocument()
+    expect(inCard('env').getByText('3（無上限）')).toBeInTheDocument()
+    const old = inCard('old')
+    expect(old.getByText('排空中（不接新場次）')).toBeInTheDocument()
+    expect(old.getByRole('status', { name: 'old: 異常' })).toBeInTheDocument()
+  })
+
+  it('checks a node now through the same endpoint as other services', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockServices(() => view([DATABASE], { voice_nodes: [node({ status: 'unhealthy', failure: 'timeout' })] }))
+    let asked: unknown
+    server.use(
+      http.post('/api/admin/services/check', async ({ request }) => {
+        asked = await request.json()
+        return HttpResponse.json(row({ name: 'voice-node:1', label: 'raynb', status: 'healthy' }))
+      }),
+    )
+    renderApp(<ServicesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '立即檢查 raynb' }))
+    await waitFor(() => expect(asked).toEqual({ name: 'voice-node:1' }))
+    expect(await screen.findByRole('status', { name: 'raynb: 正常' })).toBeInTheDocument()
+  })
+
+  it('filters nodes together with other services', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockServices(() =>
+      view([DATABASE], { voice_nodes: [node({}), node({ name: 'voice-node:3', label: 'old', status: 'unhealthy', failure: 'timeout' })] }),
+    )
+    renderApp(<ServicesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '異常' }))
+    expect(screen.getByText('old')).toBeInTheDocument()
+    expect(screen.queryByText('raynb')).not.toBeInTheDocument()
+    expect(screen.queryByText('PostgreSQL')).not.toBeInTheDocument()
+  })
+})
 
 describe('services page', () => {
   it('lists unhealthy services first with their details, in the viewer language order', async () => {
@@ -136,11 +207,13 @@ describe('services page', () => {
     mockMe(makeMe({ admin: true }))
     mockServices(() => view([TTS]))
     let calls = 0
+    let release!: () => void
+    const responseReady = new Promise<void>((resolve) => (release = resolve))
     server.use(
       http.post('/api/admin/services/check', async ({ request }) => {
         calls += 1
         expect(await request.json()).toEqual({ name: 'tts' })
-        await delay(50)
+        await responseReady
         return HttpResponse.json(
           row({ ...TTS, status: 'healthy', failure: null, response_time_ms: 7, availability: null, recent_events: [] }),
         )
@@ -151,10 +224,15 @@ describe('services page', () => {
     await screen.findByText('語音合成')
     const button = screen.getByRole('button', { name: '立即檢查 語音合成' })
     await user.click(button)
-    expect(await screen.findByRole('button', { name: '立即檢查 語音合成' })).toBeDisabled()
-    expect(within(card('語音合成')).getAllByText('檢查中…').length).toBeGreaterThan(0)
+    try {
+      expect(screen.getByRole('button', { name: '立即檢查 語音合成' })).toBeDisabled()
+      expect(within(card('語音合成')).getAllByText('檢查中…').length).toBeGreaterThan(0)
+    } finally {
+      release()
+    }
     await waitFor(() => expect(within(card('語音合成')).getByText('7 毫秒')).toBeInTheDocument())
     expect(within(card('語音合成')).getByText('50%')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '立即檢查 語音合成' })).toBeEnabled()
     expect(calls).toBe(1)
   })
 

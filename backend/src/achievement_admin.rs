@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::{
     AppState, achievements,
     ai::{AiError, AiRequest, ChatRole, ChatTurn, collect_background},
+    ai_job_store,
     auth::RequireAdmin,
     diagnostics::AiActivity,
     error::ApiError,
@@ -108,6 +109,9 @@ pub(crate) struct AchievementResult {
     achievement: AchievementView,
     /// 這次異動追溯解鎖的筆數（新增、降低門檻、重新啟用時才可能大於 0）
     retroactive_unlocks: i64,
+    /// 有待補譯的語言時，背景補譯工作的 ID（`GET /api/ai-jobs/{id}`，S-20）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_id: Option<Uuid>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -409,6 +413,7 @@ pub(crate) async fn create(
             "同一成就各級門檻必須嚴格遞增",
         ));
     }
+    let mut deferred: Option<(String, String, String)> = None;
     let (name_zh_tw, name_en, name_es, desc_zh_tw, desc_en, desc_es, pending_languages) =
         match (b.name, b.description, b.source_language.as_deref()) {
             (NewText::Localized(name), NewText::Localized(description), None)
@@ -450,58 +455,29 @@ pub(crate) async fn create(
                         "瀏覽器譯文必須使用其他支援的語言",
                     ));
                 }
-                let translate = |language| {
-                    let state = &state;
-                    let name = &name;
-                    let description = &description;
-                    let browser = b.browser_translations.get(language);
-                    let user = cu.user.id;
-                    async move {
-                        if language == source {
-                            Some((name.clone(), description.clone()))
-                        } else {
-                            let browser = browser.and_then(|text| {
-                                validate_translation(
-                                    name,
-                                    description,
-                                    &text.name,
-                                    &text.description,
-                                )
-                            });
-                            match browser {
-                                Some(text) => Some(text),
-                                None => {
-                                    translate_achievement(
-                                        state,
-                                        user,
-                                        source,
-                                        language,
-                                        name,
-                                        description,
-                                    )
-                                    .await
-                                }
-                            }
-                        }
-                    }
-                };
-                let (zh, en, es) =
-                    tokio::join!(translate("zh-TW"), translate("en"), translate("es"));
+                // 其他語言不在請求內等 AI：先存瀏覽器譯文或原文，沒有譯文的語言標為待補譯，
+                // 儲存後由背景工作補上（S-20）
                 let mut pending = Vec::new();
                 let texts: Vec<_> = ["zh-TW", "en", "es"]
                     .into_iter()
-                    .zip([zh, en, es])
-                    .map(|(language, translated)| {
-                        translated.unwrap_or_else(|| {
+                    .map(|language| {
+                        if language == source {
+                            return (name.clone(), description.clone());
+                        }
+                        let browser = b.browser_translations.get(language).and_then(|text| {
+                            validate_translation(&name, &description, &text.name, &text.description)
+                        });
+                        browser.unwrap_or_else(|| {
                             pending.push(language.to_owned());
                             (name.clone(), description.clone())
                         })
                     })
                     .collect();
+                deferred = Some((source.to_owned(), name.clone(), description.clone()));
                 let mut texts = texts.into_iter();
-                let (zh_name, zh_desc) = texts.next().unwrap();
-                let (en_name, en_desc) = texts.next().unwrap();
-                let (es_name, es_desc) = texts.next().unwrap();
+                let (zh_name, zh_desc) = texts.next().expect("texts has one entry per language");
+                let (en_name, en_desc) = texts.next().expect("texts has one entry per language");
+                let (es_name, es_desc) = texts.next().expect("texts has one entry per language");
                 (
                     zh_name, en_name, es_name, zh_desc, en_desc, es_desc, pending,
                 )
@@ -573,13 +549,127 @@ pub(crate) async fn create(
     )
     .await?;
     tx.commit().await?;
+    let job_id = match deferred {
+        Some((source, name, description)) if !pending_languages.is_empty() => {
+            spawn_translation(
+                &state,
+                cu.user.id,
+                TranslationTask {
+                    id: b.id.clone(),
+                    source,
+                    name,
+                    description,
+                    languages: pending_languages.clone(),
+                },
+            )
+            .await?
+        }
+        _ => None,
+    };
     Ok((
         StatusCode::CREATED,
         Json(AchievementResult {
             achievement: view,
             retroactive_unlocks: unlocked,
+            job_id,
         }),
     ))
+}
+
+struct TranslationTask {
+    id: String,
+    source: String,
+    name: String,
+    description: String,
+    languages: Vec<String>,
+}
+
+/// 登記並啟動背景補譯（S-20）。已存成就不會因此回滾；登記失敗時成就仍保留待補譯標記，由管理者手動補。
+async fn spawn_translation(
+    state: &AppState,
+    admin: Uuid,
+    task: TranslationTask,
+) -> Result<Option<Uuid>, ApiError> {
+    let scope = serde_json::json!({ "achievement_id": task.id });
+    let registered = ai_job_store::register(
+        &state.pool,
+        admin,
+        "achievement_translation",
+        &format!("achievement_translation:{}", task.id),
+        &scope,
+        state.config.generation_stale_secs(),
+    )
+    .await?;
+    let ai_job_store::Registered::New(job) = registered else {
+        return Ok(None);
+    };
+    let state = state.clone();
+    tokio::spawn(crate::diagnostics::inherit_request(async move {
+        run_translation(state, admin, job, task).await;
+    }));
+    Ok(Some(job))
+}
+
+/// 背景補譯：各待補語言同時翻譯；成功的語言寫入並移出待補清單，失敗的保留原文與待補標記。
+/// 只更新仍在待補清單的語言，管理者期間手動改過的譯文不會被覆蓋。
+async fn run_translation(state: AppState, admin: Uuid, job: Uuid, task: TranslationTask) {
+    let _ = ai_job_store::mark_running(&state.pool, job).await;
+    let results = futures_util::future::join_all(task.languages.iter().map(|language| {
+        let state = &state;
+        let task = &task;
+        async move {
+            let translated = translate_achievement(
+                state,
+                admin,
+                &task.source,
+                language,
+                &task.name,
+                &task.description,
+            )
+            .await;
+            (language.as_str(), translated)
+        }
+    }))
+    .await;
+    let mut failed = false;
+    let mut internal = false;
+    for (language, translated) in results {
+        let Some((name, description)) = translated else {
+            failed = true;
+            continue;
+        };
+        if sqlx::query(
+            "UPDATE achievements SET
+                name_zh_tw = CASE WHEN $4 = 'zh-TW' THEN $2 ELSE name_zh_tw END,
+                name_en = CASE WHEN $4 = 'en' THEN $2 ELSE name_en END,
+                name_es = CASE WHEN $4 = 'es' THEN $2 ELSE name_es END,
+                description_zh_tw = CASE WHEN $4 = 'zh-TW' THEN $3 ELSE description_zh_tw END,
+                description_en = CASE WHEN $4 = 'en' THEN $3 ELSE description_en END,
+                description_es = CASE WHEN $4 = 'es' THEN $3 ELSE description_es END,
+                pending_languages = array_remove(pending_languages, $4)
+             WHERE id = $1 AND $4 = ANY(pending_languages)",
+        )
+        .bind(&task.id)
+        .bind(name)
+        .bind(description)
+        .bind(language)
+        .execute(&state.pool)
+        .await
+        .is_err()
+        {
+            internal = true;
+        }
+    }
+    let finished = if internal {
+        ai_job_store::finish_failed(&state.pool, job, "internal").await
+    } else if failed {
+        ai_job_store::finish_failed(&state.pool, job, "ai_unavailable").await
+    } else {
+        ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await
+    };
+    if let Err(error) = finished {
+        tracing::error!(?error, "achievement translation job bookkeeping failed");
+    }
 }
 
 /// 翻譯成就名稱及說明；失敗時由呼叫端保留原文並標記待完成。
@@ -841,5 +931,6 @@ pub(crate) async fn update(
     Ok(Json(AchievementResult {
         achievement: after,
         retroactive_unlocks: unlocked,
+        job_id: None,
     }))
 }

@@ -29,6 +29,20 @@ use tower::ServiceExt;
 
 pub const APP_URL: &str = "https://app.test";
 
+/// `dir` 底下所有 `.rs` 檔（遞迴）；原始碼掃描型的守衛測試共用。
+pub fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(rust_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// 假的 Google：授權碼格式為 `ok:<sub>:<email>`、`unverified:<sub>:<email>`，其他一律失敗。
 pub struct FakeIdentity;
 
@@ -74,6 +88,7 @@ pub fn test_config() -> Config {
         google_client_secret: "test-secret".to_string(),
         google_redirect_url: format!("{APP_URL}/api/auth/google/callback"),
         google_translation_api_key: None,
+        google_books_api_key: None,
         admin_emails: vec!["admin@example.com".to_string()],
         admin_initial_password: None,
         cookie_secure: true,
@@ -91,6 +106,8 @@ pub fn test_config() -> Config {
         openai_tts_base_url: None,
         cascade_realtime_url: None,
         cascade_llm_token: None,
+        cascade_max_sessions: None,
+        internal_listen_addr: None,
         openai_fallback_models: vec![],
         openai_reasoning_effort: None,
         openai_stt_model: None,
@@ -109,6 +126,7 @@ pub fn test_config() -> Config {
         classroom_ai_routing: false,
         monitored_services: vec![],
         service_probe_interval: socrates_chat_backend::service_monitor::DEFAULT_PROBE_INTERVAL,
+        database_max_connections: socrates_chat_backend::config::DEFAULT_DATABASE_MAX_CONNECTIONS,
     }
 }
 
@@ -124,6 +142,8 @@ pub enum Script {
     Hang,
     /// 每個片段前都先等一段時間，模擬回覆產生到一半
     Paced(Vec<&'static str>, std::time::Duration),
+    /// 閘門打開（`watch` 的值變成 `true`，或發送端被丟棄）之後才給出這些片段；用來讓測試以事件而不是時間決定誰先誰後
+    Gated(Vec<&'static str>, tokio::sync::watch::Receiver<bool>),
 }
 
 /// 假的 AI：依序執行腳本（用完後一律失敗），並記錄收到的請求。
@@ -196,6 +216,16 @@ impl AiProvider for FakeAi {
                     Ok(c.to_string())
                 })
                 .boxed()),
+            Some(Script::Gated(chunks, mut gate)) => Ok(stream::once(async move {
+                let _ = gate.wait_for(|open| *open).await;
+                stream::iter(
+                    chunks
+                        .into_iter()
+                        .map(|c| Ok::<String, AiError>(c.to_string())),
+                )
+            })
+            .flatten()
+            .boxed()),
             Some(Script::Fail) | None => Err(AiError::unclassified()),
         }
     }
@@ -233,7 +263,77 @@ pub fn register_fixture_pool(pool: &PgPool) {
 
 pub fn test_app_with_config(pool: PgPool, ai: Arc<FakeAi>, config: Config) -> Router {
     register_fixture_pool(&pool);
-    app(AppState::new(pool, config, Arc::new(FakeIdentity), ai))
+    let router = app(AppState::new(pool, config, Arc::new(FakeIdentity), ai));
+    TASKS_AT_START.with(|c| c.set(alive_tasks()));
+    router
+}
+
+thread_local! {
+    /// 建好 app 之後（常駐的背景迴圈都已啟動）存活的 task 數。
+    /// 之後多出來的 task 就是請求觸發的背景工作；回到這個數字代表它們都跑完了。
+    static TASKS_AT_START: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn alive_tasks() -> usize {
+    tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks()
+}
+
+/// 等到有一個資料庫連線正卡在鎖上（`pg_stat_activity` 的 `wait_event_type = 'Lock'`），最多 10 秒。
+/// 測「請求被另一個尚未提交的交易擋住」時用它確認請求真的卡住了，再提交；
+/// 比「睡一段時間假設它已經卡住」可靠：睡不夠時請求還沒到鎖，測試就沒測到競態。
+pub async fn wait_until_blocked_on_lock(pool: &PgPool) {
+    for _ in 0..1000 {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if blocked > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("沒有任何連線卡在鎖上");
+}
+
+/// 等一個背景 AI 工作（`ai_jobs`，S-20）離開 pending／running，回傳它的最終狀態；最多 10 秒，逾時就失敗。
+/// 看的是這個工作本身，比「等所有背景工作結束」穩：後者的基準會受別的背景工作影響。
+pub async fn wait_for_job(app: &Router, cookie: &str, id: &str) -> Value {
+    for _ in 0..1000 {
+        let job =
+            json_body(send(app, get(&format!("/api/ai-jobs/{id}"), Some(cookie))).await).await;
+        if job["status"] != "pending" {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("背景工作 {id} 沒有在時限內結束");
+}
+
+/// 等請求觸發的背景工作全部結束（最多 10 秒，逾時就失敗）。比「固定睡一段時間等它寫完」可靠：
+/// 看的是工作有沒有結束，不是時間夠不夠。要用 `test_app*` 建立的 app。
+pub async fn wait_until_background_idle() {
+    wait_until_background_tasks_at_most(0).await;
+}
+
+/// 等請求觸發的背景工作剩下不超過 `remaining` 個（最多 10 秒，逾時就失敗）。
+/// 用在「一個背景工作已經結束、另一個故意卡住（例如 `Hang`）」的測試：`remaining` 就是還卡著的個數。
+pub async fn wait_until_background_tasks_at_most(remaining: usize) {
+    let baseline = TASKS_AT_START.with(|c| c.get());
+    for _ in 0..1000 {
+        if alive_tasks() <= baseline + remaining {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "背景工作沒有在時限內降到 {remaining} 個以內：存活 {}，基準 {baseline}",
+        alive_tasks()
+    );
 }
 
 /// 解析 SSE 回應內容為 (event 名稱, data) 清單。
@@ -658,6 +758,18 @@ pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("summary stayed pending");
+}
+
+/// 等假 AI 至少收到 `n` 個題目翻譯請求（累計，含先前的）；逾時就讓測試失敗，而不是卡住。
+/// `wait_until_ai_called` 只數對話與其他 AI 呼叫，不含題目翻譯。
+pub async fn wait_until_topic_translations_requested(ai: &FakeAi, n: usize) {
+    for _ in 0..500 {
+        if ai.topic_translation_requests.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("topic translation was not requested {n} times");
 }
 
 /// 等假 AI 至少被呼叫 `n` 次；逾時就讓測試失敗，而不是卡住。

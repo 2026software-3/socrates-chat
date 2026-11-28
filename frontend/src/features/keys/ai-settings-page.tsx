@@ -10,6 +10,8 @@ import { Label } from '@/components/ui/label'
 import { UsagePanel } from '@/features/keys/usage-panel'
 import { errorText, useT } from '@/i18n'
 import { api, isApiError } from '@/lib/api'
+import { useWatchedJob } from '@/features/jobs/use-watched-job'
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
 import type { AiProvider, Classroom, ClassroomAiSettings, ModelList, ModelRef, TeacherKey } from '@/lib/types'
 import { useFetch } from '@/lib/use-fetch'
 
@@ -92,9 +94,21 @@ function SettingsForm({
   const [primary, setPrimary] = useState<ModelRef>(settings.primary ?? EMPTY)
   const [fallbacks, setFallbacks] = useState<ModelRef[]>(settings.fallbacks)
   const [confirmed, setConfirmed] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<unknown>()
   const [saved, setSaved] = useState(false)
+  // 驗證是背景工作（S-20）：通過才套用；可離開此頁，回來時從全域進行中清單接回同一個工作
+  const { running: verifying, watch } = useWatchedJob(
+    'classroom_ai_verify',
+    (scope) => scope.classroom_id === classroomId,
+    (outcome) => {
+      if (!outcome.ok) return setError(outcome.error)
+      setSaved(true)
+      setConfirmed(false)
+      onSaved()
+    },
+  )
+  const saving = submitting || verifying
 
   const names = useMemo(() => new Map(providers.map((p) => [p.id, p.name])), [providers])
   const nameOf = (id: string) => names.get(id) ?? id
@@ -118,23 +132,28 @@ function SettingsForm({
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (!canSave) return
-    setSaving(true)
+    setSubmitting(true)
     setError(undefined)
     setSaved(false)
     try {
-      await api.put(`/api/classrooms/${encodeURIComponent(classroomId)}/ai-settings`, {
+      const result = await api.put<{ job_id?: string }>(`/api/classrooms/${encodeURIComponent(classroomId)}/ai-settings`, {
         provider: primary.provider,
         model: primary.model.trim(),
         fallbacks: fallbacks.map((m) => ({ provider: m.provider, model: m.model.trim() })),
         data_flow_confirmed: needConfirm.length === 0 || confirmed,
       })
-      setSaved(true)
-      setConfirmed(false)
-      onSaved()
+      if (result?.job_id) {
+        watch(result.job_id)
+        wakeAiJobs()
+      } else {
+        setSaved(true)
+        setConfirmed(false)
+        onSaved()
+      }
     } catch (err) {
       setError(err)
     } finally {
-      setSaving(false)
+      setSubmitting(false)
     }
   }
 
@@ -257,6 +276,9 @@ function SettingsForm({
           </p>
         ) : null}
       </div>
+      {verifying ? (
+        <p role="status" className="text-muted-foreground text-sm">{t('aiSettings.verifyHint')}</p>
+      ) : null}
       <Button type="submit" disabled={!canSave}>
         {saving ? t('aiSettings.saving') : t('aiSettings.save')}
       </Button>

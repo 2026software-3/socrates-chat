@@ -3,6 +3,7 @@
 export { AdminHome } from '@/features/admin/admin-home'
 export { ServicesPage } from '@/features/admin/services-page'
 export { DiagnosticsPage } from '@/features/admin/diagnostics-page'
+export { AdminsPage } from '@/features/admin/admins-page'
 export { TeachersPage } from '@/features/admin/teachers-page'
 export { TopicsPage } from '@/features/admin/topics-page'
 export { AdminAnnouncementsPage } from '@/features/announcements/admin-announcements-page'
@@ -23,3 +24,5 @@ export { ClassroomAiSettingsPage } from '@/features/keys/ai-settings-page'
 export { KeysPage } from '@/features/keys/keys-page'
 export { RosterPage } from '@/features/teacher/roster-page'
 export { SummariesPage } from '@/features/teacher/summaries-page'
+
+export { BooksPage } from '@/features/books/books-page'

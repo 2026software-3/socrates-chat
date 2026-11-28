@@ -67,6 +67,7 @@ const summary: TeacherSummary = {
   language: 'zh-TW',
   stance: '應該拉桿',
   reasons: '拯救較多人',
+  translation_pending: false,
 }
 
 const seen: URL[] = []
@@ -202,8 +203,8 @@ describe('classroom → activity → student navigation', () => {
       http.get(`/api/classrooms/${ROOM_A}/students`, () =>
         pageOf(
           [
-            { id: STUDENT, email: 'ming@example.com', display_name: '王小明', has_account: true, disabled: false, completed_conversations: 1 },
-            { id: null, email: 'new@example.com', display_name: null, has_account: false, disabled: false, completed_conversations: 0 },
+            { id: STUDENT, email: 'ming@example.com', student_number: '12345678A', display_name: '王小明', has_account: true, disabled: false, completed_conversations: 1 },
+            { id: '22222222-2222-4222-8222-222222222222', email: 'new@example.com', student_number: '12345679B', display_name: null, has_account: false, disabled: false, completed_conversations: 0 },
           ],
           null,
           { total: 2 },
@@ -312,6 +313,39 @@ describe('activity claim distribution', () => {
     expect(screen.getByText('甲')).toBeInTheDocument()
   })
 
+  it('regroups as a background job: shows it running until the job ends, then reloads (S-20)', async () => {
+    let loads = 0
+    let polls = 0
+    let registered = false
+    const job = (status: string) => ({
+      id: 'j1', kind: 'regroup', status, label_key: 'jobs.regroup',
+      scope: { classroom_id: ROOM_A, activity_id: ACT, topic_id: 't1' },
+      started_at: new Date().toISOString(), finished_at: status === 'pending' ? null : new Date().toISOString(), retryable: false,
+    })
+    mockApi()
+    server.use(
+      http.get('/api/dashboard/class', () => {
+        loads += 1
+        return HttpResponse.json({ ...dashboard, activities: [distribution({ ungrouped: loads < 3 ? 2 : 0 })] })
+      }),
+      http.post('/api/dashboard/class/regroup', () => {
+        registered = true
+        return HttpResponse.json({ job_id: 'j1', status: 'pending' }, { status: 202 })
+      }),
+      // 登記之前沒有工作；登記之後的前兩次查詢是進行中，之後結束
+      http.get('/api/ai-jobs/active', () => HttpResponse.json({ jobs: !registered ? [] : polls++ < 2 ? [job('pending')] : [job('ready')] })),
+    )
+    renderAt(path)
+    expect(await screen.findByText('2 場的主張還沒有歸群。')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重新分組' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '重新分組' }))
+    expect(await screen.findByRole('button', { name: '分組中…' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: /AI 工作中/ })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('2 場的主張還沒有歸群。')).not.toBeInTheDocument(), { timeout: 8000 })
+    // 結束後全域指示消失（這個題目已全部歸群，所以重新分組按鈕也不再出現）
+    await waitFor(() => expect(screen.queryByRole('button', { name: /AI 工作中/ })).toBeNull())
+  }, 15_000)
+
   it('regroups by activity_id and topic_id on request and reloads', async () => {
     let body: unknown
     let loads = 0
@@ -338,13 +372,13 @@ describe('activity claim distribution', () => {
     expect(body).toEqual({ activity_id: ACT, topic_id: 't1' })
   })
 
-  it('keeps the groups and shows a translated message when regrouping fails', async () => {
+  it('keeps the groups and shows a translated message when regrouping is refused', async () => {
     mockApi()
-    server.use(http.post('/api/dashboard/class/regroup', () => apiError(502, 'ai_unavailable')))
+    server.use(http.post('/api/dashboard/class/regroup', () => apiError(429, 'ai_usage_exceeded')))
     renderAt(path)
     await userEvent.click(await screen.findByRole('button', { name: '重新分組' }))
     await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '重新分組' }))
-    expect(await screen.findByText('AI 暫時無法回覆。')).toBeInTheDocument()
+    expect(await screen.findByText('AI 用量已達上限，請稍後再試。')).toBeInTheDocument()
     expect(screen.getAllByTestId('claim-group')).toHaveLength(3)
   })
 

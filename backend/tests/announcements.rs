@@ -858,6 +858,7 @@ async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
     let counter = acquires.clone();
     let counting = sqlx::postgres::PgPoolOptions::new()
         .min_connections(8)
+        // flaky-ok: 計數會被背景任務污染，所以下面每組重複量測取最小值（見 acquires_of_one_request）
         .before_acquire(move |_, _| {
             let counter = counter.clone();
             Box::pin(async move {
@@ -871,13 +872,19 @@ async fn maintenance_gate_and_extractor_share_one_session_lookup(pool: PgPool) {
     let app = test_app(counting);
     let a = seed_actors(&app).await;
 
+    // 背景任務（例如 request_stats 定期寫入）也會取用連線池，剛好落在量測期間就會多算。
+    // 背景取用只會讓計數變大，所以重複量測取最小值，就是這個請求自己的取用次數。
     let acquires_of_one_request = || async {
         // 先暖身，讓維護旗標的快取在量測期間仍有效
         send(&app, get("/api/me", Some(&a.admin))).await;
-        let before = acquires.load(Ordering::SeqCst);
-        let res = send(&app, get("/api/me", Some(&a.admin))).await;
-        assert_eq!(res.status(), StatusCode::OK);
-        acquires.load(Ordering::SeqCst) - before
+        let mut fewest = usize::MAX;
+        for _ in 0..7 {
+            let before = acquires.load(Ordering::SeqCst);
+            let res = send(&app, get("/api/me", Some(&a.admin))).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            fewest = fewest.min(acquires.load(Ordering::SeqCst) - before);
+        }
+        fewest
     };
 
     let normal = acquires_of_one_request().await;
@@ -951,4 +958,264 @@ async fn a_late_retry_does_not_overwrite_a_manual_translation(pool: PgPool) {
     assert_eq!(list[0]["text_en"], "Manual", "手動譯文被重試蓋掉");
     assert_eq!(list[0]["text_es"], "AI es");
     assert_eq!(list[0]["pending_languages"], json!([]));
+}
+
+// ---------- 公告翻譯（#528） ----------
+
+/// AI 逾時設得很長的設定：en 的翻譯卡住（Hang）時，依序翻譯就永遠送不出 es 的請求，
+/// 同時翻譯則會立刻送出。用來不靠時間判斷 en、es 是否同時翻譯。
+fn patient_config() -> socrates_chat_backend::config::Config {
+    let mut config = test_config();
+    config.ai_total_timeout = Duration::from_secs(600);
+    config
+}
+
+/// en 的翻譯卡住期間，es 的請求也送出了（依序翻譯的話 wait_for_ai_requests 會逾時 panic）。
+async fn assert_es_requested_while_en_hangs(ai: &FakeAi, n: usize) {
+    wait_for_ai_requests(ai, n).await;
+    let requests = ai.requests.lock().unwrap();
+    assert!(requests[n - 2].system.contains("English"));
+    assert!(requests[n - 1].system.contains("Spanish"));
+}
+
+fn state_for(pool: &PgPool, ai: std::sync::Arc<FakeAi>) -> socrates_chat_backend::AppState {
+    socrates_chat_backend::AppState::new(
+        pool.clone(),
+        test_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai,
+    )
+}
+
+/// 直接寫入一則有待完成翻譯的公告（模擬重啟前留下的資料），回傳 ID。
+async fn insert_pending(pool: &PgPool, pending: &[&str]) -> uuid::Uuid {
+    let pending: Vec<String> = pending.iter().map(|p| p.to_string()).collect();
+    sqlx::query_scalar(
+        "INSERT INTO announcements (kind, text_zh_tw, pending_languages, starts_at, enabled)
+         VALUES ('general', '待翻譯', $1, now(), true) RETURNING id",
+    )
+    .bind(&pending)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+async fn creating_translates_en_and_es_concurrently(pool: PgPool) {
+    let ai = FakeAi::with(vec![Hang, Reply(vec!["Hola"])]);
+    let app = test_app_with_config(pool, ai.clone(), patient_config());
+    let a = seed_actors(&app).await;
+    let (app2, admin) = (app.clone(), a.admin.clone());
+    let made = tokio::spawn(async move {
+        create(
+            &app2,
+            &admin,
+            json!({"kind": "general", "text_zh_tw": "你好"}),
+        )
+        .await
+    });
+    assert_es_requested_while_en_hangs(&ai, 2).await;
+    made.abort();
+}
+
+#[sqlx::test]
+async fn editing_zh_tw_translates_en_and_es_concurrently(pool: PgPool) {
+    let ai = FakeAi::with(vec![
+        Reply(vec!["Hello"]),
+        Reply(vec!["Hola"]),
+        Hang,
+        Reply(vec!["Adiós"]),
+    ]);
+    let app = test_app_with_config(pool, ai.clone(), patient_config());
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "你好"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+    let (app2, admin) = (app.clone(), a.admin.clone());
+    let edited = tokio::spawn(async move {
+        call(
+            &app2,
+            "PATCH",
+            &path,
+            Some(&admin),
+            Some(json!({"text_zh_tw": "再見"})),
+        )
+        .await
+    });
+    assert_es_requested_while_en_hangs(&ai, 4).await;
+    edited.abort();
+}
+
+#[sqlx::test]
+async fn retrying_translates_pending_languages_concurrently(pool: PgPool) {
+    let ai = FakeAi::with(vec![Hang, Reply(vec!["Hola"])]);
+    let id = insert_pending(&pool, &["en", "es"]).await;
+    let state = socrates_chat_backend::AppState::new(
+        pool.clone(),
+        patient_config(),
+        std::sync::Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    let retry = tokio::spawn(async move {
+        socrates_chat_backend::announcements::retry_pending_translation(&state, id).await;
+    });
+    assert_es_requested_while_en_hangs(&ai, 2).await;
+    retry.abort();
+}
+
+/// 機器譯文最多放行到內文上限的兩倍；管理者手動修正同一段譯文時不能比它更嚴。
+#[sqlx::test]
+async fn manual_translations_share_the_machine_translation_limit(pool: PgPool) {
+    let app = test_app_with_ai(pool, FakeAi::with(translated()));
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "長公告"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}", made["id"].as_str().unwrap());
+
+    let long = "a".repeat(1500);
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"text_en": long, "text_es": long})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text_en"].as_str().unwrap().chars().count(), 1500);
+
+    let too_long = "a".repeat(2001);
+    let (s, v) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"text_en": too_long})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["code"], "invalid_text");
+
+    // zh-TW 內文本身的上限不變
+    let (s, _) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&a.admin),
+        Some(json!({"text_zh_tw": "字".repeat(1001)})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// 重啟後記憶體裡的重試都不見了：啟動時把仍有待完成翻譯的公告重新排入重試。
+#[sqlx::test]
+async fn pending_translations_are_rescheduled_on_startup(pool: PgPool) {
+    let pending = insert_pending(&pool, &["es"]).await;
+    let _done = insert_pending(&pool, &[]).await;
+    let state = state_for(&pool, FakeAi::with(vec![]));
+
+    let scheduled = socrates_chat_backend::announcements::resume_pending_translations(&state).await;
+    assert_eq!(scheduled, 1);
+    // 已排入的公告不會再排一次
+    assert!(!socrates_chat_backend::announcements::schedule_retry(
+        &state, pending
+    ));
+    assert_eq!(
+        socrates_chat_backend::announcements::resume_pending_translations(&state).await,
+        0
+    );
+}
+
+/// 每次修改（連只切換啟用也算）都會檢查待完成翻譯；同一則公告同時只能有一個重試在排程。
+#[sqlx::test]
+async fn one_announcement_has_at_most_one_scheduled_retry(pool: PgPool) {
+    let id = insert_pending(&pool, &["en"]).await;
+    let state = state_for(&pool, FakeAi::with(vec![]));
+    assert!(socrates_chat_backend::announcements::schedule_retry(
+        &state, id
+    ));
+    assert!(!socrates_chat_backend::announcements::schedule_retry(
+        &state, id
+    ));
+    // 其他公告不受影響
+    let other = insert_pending(&pool, &["en"]).await;
+    assert!(socrates_chat_backend::announcements::schedule_retry(
+        &state, other
+    ));
+}
+
+#[sqlx::test]
+async fn admins_can_retranslate_pending_languages(pool: PgPool) {
+    let ai = FakeAi::with(vec![Fail, Fail, Reply(vec!["Hello"]), Reply(vec!["Hola"])]);
+    let app = test_app_with_ai(pool.clone(), ai);
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "稍後翻譯"}),
+    )
+    .await;
+    assert_eq!(made["pending_languages"], json!(["en", "es"]));
+    let id = made["id"].as_str().unwrap().to_string();
+    let path = format!("{ADMIN_LIST}/{id}/retranslate");
+
+    let (s, v) = call(&app, "POST", &path, Some(&a.admin), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text_en"], "Hello");
+    assert_eq!(v["text_es"], "Hola");
+    assert_eq!(v["pending_languages"], json!([]));
+
+    let rows = audit_actions(&pool, "announcement_retranslated").await;
+    assert_eq!(rows, [("announcement_retranslated".to_string(), id)]);
+}
+
+#[sqlx::test]
+async fn retranslating_keeps_pending_when_translation_fails_again(pool: PgPool) {
+    let ai = FakeAi::with(vec![Fail, Fail, Reply(vec!["Hello"]), Fail]);
+    let app = test_app_with_ai(pool, ai);
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "稍後翻譯"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}/retranslate", made["id"].as_str().unwrap());
+
+    let (s, v) = call(&app, "POST", &path, Some(&a.admin), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["text_en"], "Hello");
+    assert_eq!(v["pending_languages"], json!(["es"]));
+}
+
+#[sqlx::test]
+async fn only_admins_can_retranslate(pool: PgPool) {
+    let app = test_app_with_ai(pool, FakeAi::with(vec![Fail, Fail]));
+    let a = seed_actors(&app).await;
+    let made = create(
+        &app,
+        &a.admin,
+        json!({"kind": "general", "text_zh_tw": "稍後翻譯"}),
+    )
+    .await;
+    let path = format!("{ADMIN_LIST}/{}/retranslate", made["id"].as_str().unwrap());
+
+    let (s, _) = call(&app, "POST", &path, None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    for who in [&a.student, &a.teacher, &a.outsider] {
+        let (s, _) = call(&app, "POST", &path, Some(who), None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    let missing = format!("{ADMIN_LIST}/{}/retranslate", uuid::Uuid::new_v4());
+    let (s, _) = call(&app, "POST", &missing, Some(&a.admin), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

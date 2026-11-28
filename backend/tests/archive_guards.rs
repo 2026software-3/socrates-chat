@@ -169,7 +169,8 @@ async fn roster_writes_wait_for_an_in_flight_archive_and_then_refuse(pool: PgPoo
             (res.status(), code(res).await)
         }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // 確認匯入真的卡在封存交易的鎖上再提交，才是在測「等它再拒絕」
+    wait_until_blocked_on_lock(&pool).await;
     archiving.commit().await.unwrap();
     let (status, error) = importing.await.unwrap();
     assert_eq!(

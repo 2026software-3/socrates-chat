@@ -1,0 +1,9 @@
+# clippy 設定。lint 等級寫在 Cargo.toml 的 [lints.clippy]（所有 target）
+# 與 src/lib.rs、src/main.rs 開頭（只限伺服器程式碼）；這裡只放各 lint 的參數。
+
+# src/ 裡 #[cfg(test)] 的單元測試可以 unwrap；正式程式碼改用 expect 寫明不變條件。
+allow-unwrap-in-tests = true
+
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "會卡住 tokio worker；async 程式用 tokio::time::sleep，測試改等明確事件（見 scripts/test-flake-lint/README.md）" },
+]

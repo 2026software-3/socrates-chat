@@ -10,13 +10,15 @@ import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 function progress(id: string, overrides: Partial<TopicProgress> = {}): TopicProgress {
-  return { topic_id: id, title: `Act ${id}`, conversation_id: null, conversation_status: null, summary_ready: false, ...overrides }
+  return { topic_id: id, title: `Act ${id}`, conversation_id: null, conversation_status: null, summary_ready: false, title_pending: false, ...overrides }
 }
 
 function makeActivity(topics: TopicProgress[], overrides: Partial<StudentActivity> = {}): StudentActivity {
   return {
     id: 'act-1',
     title: 'Activity One',
+    title_pending: false,
+    description_pending: false,
     description: 'Activity desc',
     topic_ids: topics.map((t) => t.topic_id),
     opens_at: null,
@@ -40,6 +42,8 @@ const AVAILABLE: Available = {
       title: 'Topic One',
       description: 'Topic desc',
       is_active: true,
+      title_pending: false,
+      pending_questions: [],
     },
   ],
 }
@@ -132,7 +136,7 @@ describe('student available page', () => {
     server.use(
       http.post('/api/conversations', async ({ request }) => {
         body = await request.json()
-        return HttpResponse.json({ id: 'c-1' }, { status: 201 })
+        return HttpResponse.json(makeConversation({ id: 'c-1' }), { status: 201 })
       }),
     )
     renderPage()
@@ -147,7 +151,7 @@ describe('student available page', () => {
     server.use(
       http.post('/api/conversations', async ({ request }) => {
         body = await request.json()
-        return HttpResponse.json({ id: 'c-2' }, { status: 201 })
+        return HttpResponse.json(makeConversation({ id: 'c-2' }), { status: 201 })
       }),
     )
     renderPage()
@@ -163,7 +167,7 @@ describe('student available page', () => {
       http.post('/api/conversations', async () => {
         calls += 1
         await new Promise((r) => setTimeout(r, 50))
-        return HttpResponse.json({ id: 'c-3' }, { status: 201 })
+        return HttpResponse.json(makeConversation({ id: 'c-3' }), { status: 201 })
       }),
     )
     renderPage()
@@ -325,7 +329,7 @@ describe('student available page', () => {
       server.use(
         http.post('/api/conversations', async ({ request }) => {
           body = await request.json()
-          return HttpResponse.json({ id: 'c-new' }, { status: 201 })
+          return HttpResponse.json(makeConversation({ id: 'c-new' }), { status: 201 })
         }),
       )
       renderPage()

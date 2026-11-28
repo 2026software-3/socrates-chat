@@ -182,6 +182,139 @@ for (const [route, file, what] of routesWithoutFigma) {
 }
 out('')
 
+/** 從 idx 起找第一個 open 字元，跳過註解與字串，回傳配對 close 之間的內容。 */
+function blockAfter(src, idx, open, close) {
+  let depth = 0
+  for (let i = idx; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '/' && src[i + 1] === '/') {
+      i = src.indexOf('\n', i + 2)
+      if (i === -1) return null
+      continue
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      i = src.indexOf('*/', i + 2)
+      if (i === -1) return null
+      i += 1
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      for (i++; i < src.length && src[i] !== ch; i++) if (src[i] === '\\') i++
+      continue
+    }
+    if (ch === open) {
+      if (depth++ === 0) idx = i + 1
+    } else if (ch === close && depth > 0 && --depth === 0) {
+      return src.slice(idx, i)
+    }
+  }
+  return null
+}
+
+function resolveFeatureFile(spec) {
+  const rel = spec.startsWith('@/') ? spec.slice(2) : spec.startsWith('.') ? join('app', spec) : null
+  if (!rel) return null
+  for (const candidate of [`${rel}.tsx`, `${rel}.ts`, join(rel, 'index.tsx'), join(rel, 'index.ts')]) {
+    if (existsSync(join(srcRoot, candidate))) return candidate
+  }
+  return null
+}
+
+const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\/|(?<!:)\/\/.*/g, '')
+
+/**
+ * 從前端原始碼讀出實際註冊的路由：app/routes.tsx 的 <Route path>（導向舊網址的 Navigate 不算）與 index route、
+ * app/routes.tsx 的 features 陣列所註冊各功能模組的 `path: '...'`，以及 classroomRoutes(prefix) 展開的教室路由。
+ */
+function frontendRoutes() {
+  const read = (p) => readFileSync(join(srcRoot, p), 'utf8')
+  const routes = new Set()
+  const app = read('app/routes.tsx')
+  const cleanApp = stripComments(app)
+  for (const m of cleanApp.matchAll(/<Route\b/g)) {
+    let depth = 0
+    let end = m.index + m[0].length
+    for (; end < cleanApp.length; end++) {
+      if (cleanApp[end] === '{') depth++
+      else if (cleanApp[end] === '}') depth--
+      else if (cleanApp[end] === '>' && depth === 0) break
+    }
+    const tag = cleanApp.slice(m.index, end + 1)
+    const elem = tag.match(/\belement=\{\s*<(\w+)/)?.[1]
+    if (/\bindex\b/.test(tag) && elem !== 'Navigate') routes.add('/')
+    const path = tag.match(/\bpath=["']([^"'*]+)["']/)?.[1]
+    if (path && elem !== 'Navigate') routes.add(path)
+  }
+  const classrooms = stripComments(read('features/classrooms/routes.tsx'))
+  const base = classrooms.match(/const base = `\$\{prefix\}([^`]*)`/)?.[1]
+  const suffixes = [...classrooms.matchAll(/path:\s*(?:base\b|`\$\{base\}([^`]*)`)/g)].map((m) => m[1] ?? '')
+  if (!base || suffixes.length === 0) problems.push('讀不到 features/classrooms/routes.tsx 的教室路由，請更新 build.mjs 的 frontendRoutes()')
+
+  const imports = new Map()
+  for (const m of app.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+    for (const raw of stripComments(m[1]).split(',')) {
+      const clean = raw.trim()
+      if (!clean || /^type\s/.test(clean)) continue
+      const [exportName, localName = exportName] = clean.split(/\s+as\s+/).map((s) => s.trim())
+      imports.set(localName, { spec: m[2], exportName })
+    }
+  }
+  const featuresDecl = app.match(/\bconst\s+features\b[^=]*=/)
+  const featuresBody = featuresDecl ? blockAfter(app, featuresDecl.index + featuresDecl[0].length, '[', ']') : null
+  const featureIds = featuresBody ? stripComments(featuresBody).match(/[A-Za-z_$][\w$]*/g) ?? [] : []
+  if (featureIds.length === 0) problems.push('讀不到 app/routes.tsx 的 features 陣列，請更新 build.mjs 的 frontendRoutes()')
+
+  for (const id of featureIds) {
+    const imp = imports.get(id)
+    const file = imp ? resolveFeatureFile(imp.spec) : 'app/routes.tsx'
+    const exportName = imp ? imp.exportName : id
+    if (!file) {
+      problems.push(`找不到 app/routes.tsx 註冊的 ${id}（${imp.spec}）對應檔案，請更新 build.mjs 的 frontendRoutes()`)
+      continue
+    }
+    const src = read(file)
+    const decl = src.match(new RegExp(`\\bconst\\s+${exportName}\\b[^=]*=`))
+    const obj = decl ? blockAfter(src, decl.index + decl[0].length, '{', '}') : null
+    const routesField = obj?.match(/\broutes\s*:/)
+    const routesArr = routesField ? blockAfter(obj, routesField.index + routesField[0].length, '[', ']') : null
+    if (routesArr === null) {
+      problems.push(`讀不到 ${file} 中 ${exportName}.routes，請更新 build.mjs 的 frontendRoutes()`)
+      continue
+    }
+    const cleanRoutes = stripComments(routesArr)
+    for (const m of cleanRoutes.matchAll(/path:\s*['"]([^'"]+)['"]/g)) routes.add(m[1])
+    for (const m of cleanRoutes.matchAll(/classroomRoutes\(\s*['"]([^'"]+)['"]/g)) {
+      for (const s of suffixes) routes.add(`${m[1]}${base}${s}`)
+    }
+    for (const m of cleanRoutes.matchAll(/\.\.\.([A-Za-z_$][\w$]*)/g)) {
+      if (m[1] !== 'classroomRoutes') {
+        problems.push(`${file} 的 ${exportName}.routes 使用了未支援的展開 ...${m[1]}，請更新 build.mjs 的 frontendRoutes()`)
+      }
+    }
+  }
+  return routes
+}
+
+/** 從路由欄位文字取出路徑（例如「`/teacher/classrooms`、`/admin/classrooms`（對話框）」）。 */
+const pathsIn = (text) => (text ?? '').match(/\/[A-Za-z0-9_/:.-]*/g) ?? []
+
+const actualRoutes = frontendRoutes()
+if (actualRoutes.size < 10) problems.push(`只讀到 ${actualRoutes.size} 條前端路由，路由定義的寫法可能變了，請更新 build.mjs 的 frontendRoutes()`)
+const mapped = new Set()
+const mappedRoutes = [
+  ...pages.flatMap((p) => p.screens.map((s) => [`${p.title}「${s.name}」`, s.route])),
+  ...routesWithoutFigma.map(([route]) => ['沒有 Figma 畫面的路由', route]),
+]
+for (const [where, route] of mappedRoutes) {
+  for (const path of pathsIn(route)) {
+    mapped.add(path)
+    if (!actualRoutes.has(path)) problems.push(`${where}：路由 ${path} 不在前端路由定義裡（改名或移除了？）`)
+  }
+}
+for (const path of actualRoutes) {
+  if (!mapped.has(path)) problems.push(`前端路由 ${path} 沒有出現在對照表；請加到 screens.mjs 的畫面或 routesWithoutFigma`)
+}
+
 const doc = lines.join('\n')
 if (process.argv.includes('--check')) {
   const current = existsSync(outPath) ? readFileSync(outPath, 'utf8') : ''

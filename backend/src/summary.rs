@@ -27,6 +27,7 @@ use crate::{
         AiError, AiRequest, ChatRole, ChatTurn, build_summary_prompt, collect_background,
         format_transcript, parse_summary, rules_version,
     },
+    ai_job_store,
     auth::{RequireStudent, RequireTeacher},
     auth_store::display_name_sql,
     chat::{Message, load_messages, owned_conversation},
@@ -112,7 +113,7 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 }
 
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
-const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
+const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).expect("10 is non-zero");
 
 /// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
 ///
@@ -453,16 +454,20 @@ pub struct SummaryTranslation {
 
 /// 教師明確要求時，僅把自己教室內既有總結的兩個欄位翻成教師目前的介面語言。
 /// 不讀取也不送出對話原文、學生姓名或電子郵件；管理者介面維持敏感欄位遮蔽，不提供翻譯。
+///
+/// 翻譯是背景工作（S-20）：同語言與已保存的譯文立即回 200；否則登記工作回 202，翻譯與保存在背景完成，
+/// 切頁不會中斷。完成後再呼叫一次同一個端點，就會以 200 拿到保存的譯文。
+/// 已有進行中的同一翻譯時回 202 與那一筆工作（此端點的 200 是譯文，所以不用 200）。
 #[utoipa::path(
     post,
     path = "/api/summaries/{id}/translation",
     tag = "summaries",
-    summary = "按需翻譯一筆學生總結（不含對話原文）",
+    summary = "按需翻譯一筆學生總結（不含對話原文，背景工作）",
     params(("id" = Uuid, Path, description = "對話 ID")),
     responses(
-        (status = 200, description = "翻譯結果", body = SummaryTranslation),
+        (status = 200, description = "翻譯結果（同語言或已保存）", body = SummaryTranslation),
+        (status = 202, description = "已開始背景翻譯；用 `GET /api/ai-jobs/{id}` 查詢", body = crate::ai_jobs::JobAccepted),
         (status = 429, description = "翻譯太頻繁（too_many_translations）", body = crate::error::ErrorBody),
-        (status = 502, description = "AI 無法翻譯，或譯文過長（ai_unavailable）", body = crate::error::ErrorBody),
         crate::error::CommonErrors
     )
 )]
@@ -470,7 +475,8 @@ pub(crate) async fn translate(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<SummaryTranslation>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
     if cu.roles.admin {
         return Err(ApiError::no_permission());
     }
@@ -494,7 +500,12 @@ pub(crate) async fn translate(
             language,
             stance,
             reasons,
-        }));
+        })
+        .into_response());
+    }
+    // 已經保存的譯文直接回，不再翻譯、不扣額度
+    if let Some(stored) = stored_translation(&state.pool, id, &language).await? {
+        return Ok(Json(stored).into_response());
     }
     // 只有教師明確觸發的翻譯才扣使用者額度。
     let Some(slot) = state.translation_limit.try_acquire(cu.user.id) else {
@@ -504,61 +515,139 @@ pub(crate) async fn translate(
             "翻譯太頻繁，請稍後再試",
         ));
     };
-    let [stance, reasons] = [stance, reasons].map(crate::pii::mask);
-    let fields = [&*stance, &*reasons];
-    let translated = if let Some(translation) =
-        via_google(&state, &source_language, &language, fields).await
-    {
-        translation
-    } else {
-        let usage_slot = state.charge_ai(cu.user.id).inspect_err(|_| {
-            state.translation_limit.refund(cu.user.id, slot);
-        })?;
-        let translation = AiActivity::new("summary_translation", Some(cu.user.id), Some(classroom))
-            .run(&state, Some(&state.config.openai_model), 0, async {
-                via_ai(&state, &language, fields).await
-            })
-            .await;
-        let Ok(translation) = translation else {
-            state.translation_limit.refund(cu.user.id, slot);
-            state.refund_ai(cu.user.id, usage_slot);
-            return Err(ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "ai_unavailable",
-                "暫時無法完成翻譯",
-            ));
-        };
-        translation
-    };
-    let stored: Option<SummaryTranslation> = sqlx::query_as(
-        "INSERT INTO summary_translations (conversation_id, language, stance, reasons)
-         SELECT conversation_id, $2, $3, $4 FROM summaries
-         WHERE conversation_id = $1 AND status = 'ready'
-         ON CONFLICT (conversation_id, language) DO UPDATE
-         SET stance = EXCLUDED.stance, reasons = EXCLUDED.reasons, attempt_token = NULL
-         WHERE summary_translations.stance IS NULL
-         RETURNING language, stance, reasons",
+    let scope_key = format!("summary_translation_view:{}:{id}:{language}", cu.user.id);
+    let scope = serde_json::json!({ "conversation_id": id, "classroom_id": classroom });
+    let registered = ai_job_store::register(
+        &state.pool,
+        cu.user.id,
+        "summary_translation_view",
+        &scope_key,
+        &scope,
+        state.config.generation_stale_secs(),
     )
-    .bind(id)
-    .bind(&language)
-    .bind(translated.stance)
-    .bind(translated.reasons)
-    .fetch_optional(&state.pool)
-    .await?;
-    if let Some(stored) = stored {
-        return Ok(Json(stored));
-    }
-    // A concurrent job may already have saved this version, or the summary was deleted.
-    let existing = sqlx::query_as(
+    .await;
+    let job = match registered {
+        Ok(ai_job_store::Registered::New(job)) => job,
+        Ok(ai_job_store::Registered::Existing(job)) => {
+            state.translation_limit.refund(cu.user.id, slot);
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(crate::ai_jobs::JobAccepted::pending(job)),
+            )
+                .into_response());
+        }
+        Err(e) => {
+            state.translation_limit.refund(cu.user.id, slot);
+            return Err(e.into());
+        }
+    };
+    let task = TranslateTask {
+        job,
+        user: cu.user.id,
+        classroom,
+        conversation: id,
+        source_language,
+        language,
+        stance,
+        reasons,
+        slot,
+    };
+    tokio::spawn(diagnostics::inherit_request(
+        run_translation(state, task).in_current_span(),
+    ));
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(crate::ai_jobs::JobAccepted::pending(job)),
+    )
+        .into_response())
+}
+
+async fn stored_translation(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+    language: &str,
+) -> Result<Option<SummaryTranslation>, sqlx::Error> {
+    sqlx::query_as(
         "SELECT language, stance, reasons FROM summary_translations
          WHERE conversation_id = $1 AND language = $2 AND stance IS NOT NULL",
     )
     .bind(id)
     .bind(language)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(ApiError::not_found)?;
-    Ok(Json(existing))
+    .fetch_optional(pool)
+    .await
+}
+
+struct TranslateTask {
+    job: Uuid,
+    user: Uuid,
+    classroom: Uuid,
+    conversation: Uuid,
+    source_language: String,
+    language: String,
+    stance: String,
+    reasons: String,
+    slot: std::time::Instant,
+}
+
+/// 背景翻譯並保存；結果在 `summary_translations`，工作本身只記成功或固定錯誤代碼。失敗時退回兩種額度。
+async fn run_translation(state: AppState, task: TranslateTask) {
+    let _ = ai_job_store::mark_running(&state.pool, task.job).await;
+    let outcome = translate_and_store(&state, &task).await;
+    let finished = match outcome {
+        Ok(()) => ai_job_store::finish_ready(&state.pool, task.job, &serde_json::json!({})).await,
+        Err(code) => {
+            state.translation_limit.refund(task.user, task.slot);
+            ai_job_store::finish_failed(&state.pool, task.job, code).await
+        }
+    };
+    if let Err(e) = finished {
+        tracing::error!(class = %db_error_class(&e), "translation job bookkeeping failed");
+    }
+}
+
+async fn translate_and_store(state: &AppState, task: &TranslateTask) -> Result<(), &'static str> {
+    let [stance, reasons] = [task.stance.clone(), task.reasons.clone()].map(crate::pii::mask);
+    let fields = [&*stance, &*reasons];
+    let language = task.language.as_str();
+    let translated = if let Some(translation) =
+        via_google(state, &task.source_language, language, fields).await
+    {
+        translation
+    } else {
+        let usage_slot = state
+            .charge_ai(task.user)
+            .map_err(|_| "ai_usage_exceeded")?;
+        let translation =
+            AiActivity::new("summary_translation", Some(task.user), Some(task.classroom))
+                .run(state, Some(&state.config.openai_model), 0, async {
+                    via_ai(state, language, fields).await
+                })
+                .await;
+        let Ok(translation) = translation else {
+            state.refund_ai(task.user, usage_slot);
+            return Err("ai_unavailable");
+        };
+        translation
+    };
+    sqlx::query(
+        "INSERT INTO summary_translations (conversation_id, language, stance, reasons)
+         SELECT conversation_id, $2, $3, $4 FROM summaries
+         WHERE conversation_id = $1 AND status = 'ready'
+         ON CONFLICT (conversation_id, language) DO UPDATE
+         SET stance = EXCLUDED.stance, reasons = EXCLUDED.reasons, attempt_token = NULL
+         WHERE summary_translations.stance IS NULL",
+    )
+    .bind(task.conversation)
+    .bind(language)
+    .bind(translated.stance)
+    .bind(translated.reasons)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(class = %db_error_class(&e), "translation write failed");
+        "internal"
+    })?;
+    Ok(())
 }
 
 /// 教師唯讀檢視的對話原文：對話本身的識別資訊加上全部訊息。
@@ -593,28 +682,34 @@ struct TranscriptHead {
     path = "/api/summaries/{id}/messages",
     tag = "summaries",
     summary = "教室內學生已結束對話的完整訊息（唯讀；不含個人練習）",
-    params(("id" = Uuid, Path, description = "對話 ID")),
+    params(("id" = Uuid, Path, description = "對話 ID"), ("language" = Option<String>, Query, description = "題名顯示語言")),
     responses((status = 200, description = "對話與全部訊息；管理者的 content 一律是 message", body = ConversationTranscript), crate::error::CommonErrors)
 )]
 pub(crate) async fn transcript(
     RequireTeacher(cu): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    Query(query): Query<crate::catalog::CatalogLanguage>,
 ) -> Result<Json<ConversationTranscript>, ApiError> {
+    let language = crate::catalog::display_language(query.language.as_deref(), &cu.user.language)?;
     // 內連接教室：classroom_id 為空的個人練習無法被比對到
     let head: TranscriptHead = sqlx::query_as(concat!(
-        "SELECT c.classroom_id, c.title, c.language, c.ended_at,
+        "SELECT c.classroom_id,
+                COALESCE(topic.translations -> ($4::text) ->> 'title', c.title) AS title,
+                c.language, c.ended_at,
                 u.id AS student_user_id, ",
         display_name_sql!("u"),
         " AS student_name
          FROM conversations c
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($2 OR cl.created_by = $3)
          JOIN users u ON u.id = c.user_id
+         LEFT JOIN topics topic ON topic.id = c.topic_id
          WHERE c.id = $1 AND c.ended_at IS NOT NULL"
     ))
     .bind(id)
     .bind(cu.roles.admin)
     .bind(cu.user.id)
+    .bind(language)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(ApiError::not_found)?;
@@ -648,6 +743,8 @@ pub(crate) struct SummaryPage {
 /// 分頁參數加上選用篩選與搜尋。
 #[derive(Deserialize)]
 pub(crate) struct SummaryQuery {
+    /// 題名顯示語言。省略時保留既有呼叫端使用的快照題名。
+    language: Option<String>,
     #[serde(flatten)]
     page: Pagination,
     #[serde(flatten)]
@@ -759,7 +856,8 @@ impl SummaryQuery {
         ("student" = Option<Uuid>, Query, description = "只看這位學生（使用者 UUID，即列表項目的 student_user_id；不是學號）"),
         ("activity" = Option<Uuid>, Query, description = "只看這個討論活動的對話（活動 ID）"),
         ("topic" = Option<String>, Query, description = "只看這個題目標題（完全相符，不分大小寫）"),
-        ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+        ("q" = Option<String>, Query, description = "搜尋學生姓名、電子郵件或題目標題與譯名（不分大小寫的子字串，最多 100 字元），涵蓋所有頁"),
+        ("language" = Option<String>, Query, description = "題名顯示語言，省略時使用保存的題名"),
     ),
     responses((status = 200, description = "總結分頁，依總結完成時間新到舊（completed_at DESC, conversation_id ASC）", body = SummaryPage), (status = 400, description = "invalid_limit / invalid_cursor / invalid_filter", body = crate::error::ErrorBody), crate::error::CommonErrors)
 )]
@@ -768,6 +866,7 @@ pub(crate) async fn list(
     State(state): State<AppState>,
     Query(query): Query<SummaryQuery>,
 ) -> Result<Json<Page<SummaryRow>>, ApiError> {
+    let language = crate::catalog::display_language(query.language.as_deref(), "zh-TW")?;
     let limit = query.page.limit()?;
     let classroom = filtered_classroom(&state, &cu, &query.classroom).await?;
     let Filters {
@@ -808,7 +907,7 @@ pub(crate) async fn list(
                           )
                     )
                 ) AS activity_completed,
-                c.title, c.ended_at, s.completed_at,
+                COALESCE(topic.translations -> ($12::text) ->> 'title', c.title) AS title, c.ended_at, s.completed_at,
                 u.id AS student_user_id, u.student_id AS student_number, ",
         display_name_sql!("u"),
         " AS student_name, u.email AS student_email,
@@ -822,6 +921,7 @@ pub(crate) async fn list(
          JOIN conversations c ON c.id = s.conversation_id
          JOIN classrooms cl ON cl.id = c.classroom_id AND ($1 OR cl.created_by = $2)
          JOIN users u ON u.id = c.user_id
+         LEFT JOIN topics topic ON topic.id = c.topic_id
          LEFT JOIN summary_translations t ON NOT $1 AND t.conversation_id = s.conversation_id
                                          AND t.language = $11
          WHERE s.status = 'ready' AND c.ended_at IS NOT NULL
@@ -833,7 +933,11 @@ pub(crate) async fn list(
         display_name_sql!("u"),
         " ILIKE $6 ESCAPE '\\'
                 OR u.email ILIKE $6 ESCAPE '\\'
-                OR c.title ILIKE $6 ESCAPE '\\')
+                OR c.title ILIKE $6 ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_each(topic.translations) AS translation(lang, fields)
+                    WHERE fields ->> 'title' ILIKE $6 ESCAPE '\\'
+                ))
            AND ($7::timestamptz IS NULL
                 OR s.completed_at < $7 OR (s.completed_at = $7 AND s.conversation_id > $8))
            AND ($9::uuid IS NULL OR c.activity_id = $9)
@@ -851,6 +955,7 @@ pub(crate) async fn list(
     .bind(activity)
     .bind((limit + 1) as i64)
     .bind(&cu.user.language)
+    .bind(language)
     .fetch_all(&state.pool)
     .await?;
     // 管理者身分優先：總結屬敏感欄位，管理者一律看到遮蔽內容（S-02.2），

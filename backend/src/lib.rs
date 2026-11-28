@@ -1,3 +1,7 @@
+// 伺服器程式碼：輸出一律走 tracing，不用 print；不 unwrap，改用 expect 寫明為何不會失敗。
+// tests/ 的壓測輸出與 bin/import-books 的命令列輸出不受此限。
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::unwrap_used)]
+
 use std::{
     sync::{Arc, LazyLock},
     time::{Duration, Instant},
@@ -44,7 +48,10 @@ pub mod achievements;
 pub mod activity_store;
 pub mod admin_health;
 pub mod admin_teacher_keys;
+pub(crate) mod admin_voice_nodes;
 pub mod ai;
+pub mod ai_job_store;
+pub mod ai_jobs;
 pub mod ai_providers;
 mod ai_route;
 pub mod ai_usage;
@@ -52,6 +59,12 @@ pub mod announcements;
 pub mod argument_tree;
 pub mod auth;
 pub mod auth_store;
+pub mod book_editions;
+pub mod book_import;
+pub mod book_sources;
+pub mod book_store;
+pub mod book_works;
+pub mod books;
 pub mod cascade;
 pub mod catalog;
 pub mod chat;
@@ -101,10 +114,11 @@ pub mod teacher_key_store;
 pub mod teacher_key_usage;
 pub mod teacher_keys;
 pub mod topic_dimensions;
-mod topic_translations;
+pub mod topic_translations;
 pub mod usage_api;
 pub(crate) mod user_limit;
 pub mod voice;
+pub mod voice_nodes;
 
 /// 全域請求 body 上限（#324）。最大的合法 JSON body 是修課名單匯入（每行一個信箱，
 /// 約 40 bytes／行；1 MiB 可容納超過兩萬筆）；訊息上限 4000 字元，UTF-8 加上 JSON 跳脫也不到 30 KB。
@@ -113,15 +127,14 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// 改用 `Config::long_request_timeout` 的路由（#325）。SSE 路由不在此列：AI 回覆在背景工作產生，
 /// 標頭之前只有讀取 JSON body 與資料庫查詢，標頭送出後串流不受逾時影響（S-03.5）。
-pub const LONG_RUNNING_ROUTES: [&str; 15] = [
-    "/api/topics/{id}/dimensions/retry",
-    // 管理者新增成就時同步翻譯名稱與說明
-    "/api/admin/achievements",
-    // 管理者新增、修改公告時同步翻譯內文
+pub const LONG_RUNNING_ROUTES: [&str; 14] = [
+    // 書目搜尋每個外部來源各有 10 秒逾時，正常無結果時可能接續查備援來源。
+    "/api/books/search",
+    "/api/books/{id}/editions",
+    // 管理者新增、修改公告與重新翻譯時同步翻譯內文
     "/api/admin/announcements",
     "/api/admin/announcements/{id}",
-    // 同步等 AI 重新分組
-    "/api/dashboard/class/regroup",
+    "/api/admin/announcements/{id}/retranslate",
     // 同步等 AI 翻譯總結；推理模型常比一般逾時慢得多
     "/api/summaries/{id}/translation",
     // 上傳最多 10 MB 音訊，並同步等語音服務
@@ -132,8 +145,6 @@ pub const LONG_RUNNING_ROUTES: [&str; 15] = [
     "/api/classrooms/{id}/roster/import",
     // 同步等供應商回應 key 測試
     "/api/teacher/keys/{id}/test",
-    // 儲存教室 AI 設定前，對主模型與每個備援各送一次最小串流與 JSON 請求
-    "/api/classrooms/{id}/ai-settings",
     // 同步向供應商取模型清單（最多逐把 key 試，每次有自己的逾時）
     "/api/teacher/keys/models",
     // 儲存系統模型前送一次最小串流與 JSON 請求；測試 key 同步等供應商回應
@@ -149,6 +160,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub identity: Arc<dyn IdentityProvider>,
     pub ai: Arc<dyn AiProvider>,
+    /// 教師外部書目搜尋；可替換為測試來源，不讓測試呼叫真實服務。
+    pub book_source: Arc<dyn book_sources::BookSource>,
     pub(crate) google_translation: Option<google_translation::GoogleTranslation>,
     /// 正在產生維度的題目，避免同一題目重複呼叫 AI（F-03.4）。
     pub(crate) dimension_jobs: Arc<topic_dimensions::Jobs>,
@@ -158,6 +171,8 @@ pub struct AppState {
     pub(crate) speech_slots: Arc<voice::SpeechSlots>,
     /// 進行中的語音對話（實驗，見 `cascade`）。
     pub voice_sessions: Arc<cascade::VoiceSessions>,
+    /// 語音節點登錄的快取與健康狀態（S-19）。
+    pub voice_nodes: Arc<voice_nodes::VoiceNodes>,
     /// 正在產生的 AI 回覆，讓離開又回到對話頁的學生接上同一個回覆。
     pub live: Arc<reply::LiveReplies>,
     /// 教師按需翻譯總結的每人頻率限制。
@@ -167,6 +182,8 @@ pub struct AppState {
     pub(crate) ai_usage: Arc<user_limit::UserLimiter>,
     /// 維護模式旗標的快取（S-15.2）；真相在資料庫。
     pub(crate) maintenance: Arc<announcements::MaintenanceFlag>,
+    /// 已排入背景重試翻譯的公告，同一則只排一個（#528）。
+    pub(crate) announcement_retries: Arc<announcements::RetryJobs>,
     /// 教師 key 認證測試的對外探測；測試時以 `with_key_verifier` 換成假的。
     pub(crate) key_verifier: Arc<dyn ai_providers::KeyVerifier>,
     /// 教室模型設定的模型驗證；測試時以 `with_model_verifier` 換成假的。
@@ -199,6 +216,9 @@ impl AppState {
         ai: Arc<dyn AiProvider>,
     ) -> Self {
         let voice = Arc::new(OpenAiVoice::from_config(&config));
+        let book_source = Arc::new(book_sources::HttpBookSource::new(
+            config.google_books_api_key.clone(),
+        ));
         let google_translation = config
             .google_translation_api_key
             .as_deref()
@@ -221,13 +241,16 @@ impl AppState {
             google_translation,
             dimension_jobs: Arc::default(),
             voice,
+            book_source,
             speech_slots: Arc::default(),
             voice_sessions: Arc::default(),
+            voice_nodes: Arc::default(),
             live: Arc::default(),
             translation_limit: Arc::default(),
             summary_translation_wake: Arc::default(),
             ai_usage,
             maintenance: Arc::default(),
+            announcement_retries: Arc::default(),
             key_verifier: Arc::new(ai_providers::HttpKeyVerifier),
             model_verifier: Arc::new(ai_providers::HttpModelVerifier),
             key_test_limit: Arc::new(user_limit::UserLimiter::new(
@@ -242,6 +265,11 @@ impl AppState {
             key_rotation: Arc::default(),
             route_endpoint: None,
         }
+    }
+
+    pub fn with_book_source(mut self, source: Arc<dyn book_sources::BookSource>) -> Self {
+        self.book_source = source;
+        self
     }
 
     /// 啟動每日清理與請求統計的每分鐘寫入（F-39.2）。
@@ -342,6 +370,20 @@ const READY_DB_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Builds the application router.
 pub fn app(state: AppState) -> Router {
+    let mut router = public_routes(&state);
+    // 設了 INTERNAL_LISTEN_ADDR 時內部端點只在獨立的監聽器上（S-19 7.4），公開埠回 404
+    if state.config.internal_listen_addr.is_none() {
+        router = router.merge(cascade::internal_routes());
+    }
+    with_layers(router, state)
+}
+
+/// 內部端點專用的 router（`INTERNAL_LISTEN_ADDR` 的監聽器）：同樣的中介層，只有 `/internal/cascade/*`。
+pub fn internal_app(state: AppState) -> Router {
+    with_layers(cascade::internal_routes(), state)
+}
+
+fn public_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -358,6 +400,9 @@ pub fn app(state: AppState) -> Router {
         .merge(dashboard::routes())
         .merge(claims::routes())
         .merge(catalog::routes())
+        .merge(books::routes())
+        .merge(book_editions::routes())
+        .merge(book_works::routes())
         .merge(topic_dimensions::routes())
         .merge(radar::routes())
         .merge(chat::routes())
@@ -365,6 +410,7 @@ pub fn app(state: AppState) -> Router {
         .merge(diagnostics::routes())
         .merge(service_monitor::routes())
         .merge(admin_health::routes())
+        .merge(admin_voice_nodes::routes())
         .merge(summary::routes())
         .merge(argument_tree::routes())
         .merge(voice::routes())
@@ -376,6 +422,7 @@ pub fn app(state: AppState) -> Router {
         .merge(complaints::routes())
         .merge(demo::routes())
         .merge(ai_usage::routes())
+        .merge(ai_jobs::routes())
         .merge(teacher_keys::routes())
         .merge(admin_teacher_keys::routes())
         .merge(system_ai::routes())
@@ -388,6 +435,10 @@ pub fn app(state: AppState) -> Router {
             Redoc::with_url("/api/docs", openapi::document())
                 .custom_html(include_str!("redoc.html")),
         )
+}
+
+fn with_layers(router: Router<AppState>, state: AppState) -> Router {
+    router
         .fallback(fallback)
         // 最內層：維護模式開啟時擋下非管理者（S-15.2）；其餘層（CSRF、逾時、request ID、安全標頭）照常包住它
         .layer(middleware::from_fn_with_state(
@@ -598,6 +649,7 @@ fn is_api_path(path: &str) -> bool {
 
 /// 維護模式中照常服務的路徑（S-15.2）：公告端點（登入頁據此顯示維護提示）、登入與登出
 /// （非管理者的登入在核發 session 前另行拒絕）、API 文件。`/health`、`/ready` 與前端檔案不在 `/api` 底下。
+/// 前端契約測試（`frontend/src/test/contract.ts` 的 `MAINTENANCE_EXEMPT`）有一份手動副本，這裡的清單變動時要一併更新。
 fn maintenance_exempt(path: &str) -> bool {
     matches!(
         path,

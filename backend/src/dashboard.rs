@@ -40,6 +40,7 @@ pub fn routes() -> Router<AppState> {
 pub(crate) struct RecentRow {
     conversation_id: Uuid,
     title: String,
+    title_pending: bool,
     ended_at: Option<DateTime<Utc>>,
     stage: i16,
     turn_count: i32,
@@ -63,12 +64,15 @@ pub(crate) struct Personal {
     path = "/api/dashboard/me",
     tag = "dashboard",
     summary = "個人儀表板",
+    params(("language" = Option<String>, Query, description = "題名顯示語言")),
     responses((status = 200, description = "個人統計", body = Personal))
 )]
 pub(crate) async fn personal(
     RequireStudent(cu): RequireStudent,
     State(state): State<AppState>,
+    Query(query): Query<crate::catalog::CatalogLanguage>,
 ) -> Result<Json<Personal>, ApiError> {
+    let language = crate::catalog::display_language(query.language.as_deref(), &cu.user.language)?;
     // 已完成的總數在資料庫算，只取最近 10 筆的內容
     let ((total_conversations, total_turns, completed), recent): ((i64, i64, i64), Vec<RecentRow>) =
         tokio::try_join!(
@@ -82,14 +86,19 @@ pub(crate) async fn personal(
             .bind(cu.user.id)
             .fetch_one(&state.pool),
             sqlx::query_as(
-                "SELECT c.id AS conversation_id, c.title, c.ended_at, c.stage, c.turn_count,
+                "SELECT c.id AS conversation_id,
+                        COALESCE(t.translations -> ($2::text) ->> 'title', c.title) AS title,
+                        ($2 <> 'zh-TW' AND t.id IS NOT NULL AND t.translations -> ($2::text) ->> 'title' IS NULL) AS title_pending,
+                        c.ended_at, c.stage, c.turn_count,
                         s.stance, s.claim
                  FROM summaries s JOIN conversations c ON c.id = s.conversation_id
+                 LEFT JOIN topics t ON t.id = c.topic_id
                  WHERE c.user_id = $1 AND s.status = 'ready'
                  ORDER BY c.ended_at DESC NULLS LAST, c.id
                  LIMIT 10",
             )
             .bind(cu.user.id)
+            .bind(language)
             .fetch_all(&state.pool),
         )?;
     Ok(Json(Personal {

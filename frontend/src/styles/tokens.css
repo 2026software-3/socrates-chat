@@ -36,6 +36,8 @@
   --font-latin: 'IM FELL English SC', 'Times New Roman', serif;
   --font-chalk: 'IM FELL English', 'Times New Roman', serif;
 
+  --container-toast: 22.5rem;
+
   /* 圓角只有 0、2px 與圓形（rounded-full） */
   --radius-xs: 2px;
   --radius-sm: 2px;
@@ -54,6 +56,12 @@
   --shadow-lg: 0 0 #0000;
   --shadow-xl: 0 0 #0000;
   --shadow-2xl: 0 0 #0000;
+}
+
+:root {
+  --stroke-emphasis: 1.5px;
+  --stroke-icon-hover: 2.5;
+  --size-bottom-nav: 63px;
 }
 
 /* 文字樣式：對應 Figma 的 Display、Title、Text、Latin。用 type- 前綴，避免和 text- 顏色 class 混在一起。 */
@@ -104,6 +112,23 @@
   font-weight: 400;
 }
 
+@utility type-control {
+  font-size: 17px;
+  line-height: 26px;
+  font-weight: 400;
+}
+@utility type-control-strong {
+  font-size: 17px;
+  line-height: 26px;
+  font-weight: 700;
+}
+
+@utility type-switch-label {
+  font-size: 14px;
+  line-height: 14px;
+  font-weight: 500;
+}
+
 /* 拉丁字只用在「版上刻的字」：版題、地名、編號、發言標記（DESIGN.md The Latin Is Engraved Rule） */
 @utility type-latin-plate-title {
   font-family: var(--font-latin);
@@ -146,6 +171,57 @@
   font-size: 15px;
   line-height: 20px;
   font-weight: 400;
+}
+
+/* 版號印章與教室小牌（DESIGN.md 版號目錄列統一規格：64 用 11／9／22，48 用 10／8／18） */
+@utility type-stamp-label-md {
+  font-family: var(--font-latin);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-label-sm {
+  font-family: var(--font-latin);
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-label-compact-md {
+  font-family: var(--font-latin);
+  font-size: 9px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-label-compact-sm {
+  font-family: var(--font-latin);
+  font-size: 8px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-numeral-md {
+  font-family: var(--font-latin);
+  font-size: 22px;
+  line-height: 1.1;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-stamp-numeral-sm {
+  font-family: var(--font-latin);
+  font-size: 18px;
+  line-height: 1.1;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+@utility type-plate-tag {
+  font-family: var(--font-latin);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: 0.06em;
 }
 
 /* 紙張質感（DESIGN.md Elevation）：兩層極淡黃斑、每 47px 一條鏈紋、每 3px 一條簾紋 */

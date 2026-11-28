@@ -1,3 +1,4 @@
+import { TopicBooksDialog } from '@/features/books/book-list'
 import { Pencil } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
@@ -158,6 +159,7 @@ export function TopicsPage() {
   const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set())
   const [actionError, setActionError] = useState<unknown>()
   const [notice, setNotice] = useState<string>()
+  const [bookTopic, setBookTopic] = useState<Topic>()
   const [editing, setEditing] = useState<Topic>()
   const [reviewing, setReviewing] = useState<Topic>()
   const [creating, setCreating] = useState(false)
@@ -165,9 +167,10 @@ export function TopicsPage() {
   const [query, setQuery] = useState('')
 
   const topics = useMemo(() => (data ?? []).map((x) => ({ ...x, ...patched[x.id] })), [data, patched])
+  const displayTitle = (topic: Topic) => topic.translations?.[lang]?.title ?? topic.title
   const q = query.trim().toLowerCase()
   const shown = topics.filter(
-    (x) => !q || [x.title, ...(x.guiding_questions ?? [])].some((s) => s.toLowerCase().includes(q)),
+    (x) => !q || [displayTitle(x), x.title, ...(x.guiding_questions ?? [])].some((s) => s.toLowerCase().includes(q)),
   )
   const num = useMemo(() => new Intl.NumberFormat(lang), [lang])
   const filtered = q !== ''
@@ -279,7 +282,7 @@ export function TopicsPage() {
                 <TableBody>
                   {shown.map((x) => (
                     <TableRow key={x.id} className={x.is_active ? '' : 'text-muted-foreground'}>
-                      <TableCell className="max-w-96 font-medium whitespace-normal break-words">{x.title}</TableCell>
+                      <TableCell className="max-w-96 font-medium whitespace-normal break-words">{displayTitle(x)}</TableCell>
                       <TableCell>
                         <Badge variant={x.is_active ? 'default' : 'secondary'}>
                           {x.is_active ? t('admin.topics.active') : t('admin.topics.inactive')}
@@ -287,16 +290,17 @@ export function TopicsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-2">
-                          <Button variant="ghost" size="icon" aria-label={t('admin.topics.edit', { title: x.title })} onClick={() => setEditing(x)}>
+                          <Button variant="ghost" size="icon" aria-label={t('admin.topics.edit', { title: displayTitle(x) })} onClick={() => setEditing(x)}>
                             <Pencil aria-hidden />
                           </Button>
-                          <Button variant="outline" onClick={() => setReviewing(x)}>
+                          <Button variant="outline" aria-label={t('books.openList', { title: displayTitle(x) })} onClick={() => setBookTopic(x)}>{t('books.topicList')}</Button>
+                          <Button variant="outline" onClick={() => setReviewing({ ...x, title: displayTitle(x) })}>
                             {t('admin.dimensions.open')}
                           </Button>
                           <Button
                             variant="outline"
                             disabled={toggling.has(x.id)}
-                            aria-label={t(x.is_active ? 'admin.topics.deactivateAria' : 'admin.topics.activateAria', { title: x.title })}
+                            aria-label={t(x.is_active ? 'admin.topics.deactivateAria' : 'admin.topics.activateAria', { title: displayTitle(x) })}
                             onClick={() => setConfirming({ topic: x, next: !x.is_active })}
                           >
                             {x.is_active ? t('admin.topics.deactivate') : t('admin.topics.activate')}
@@ -340,9 +344,11 @@ export function TopicsPage() {
           pending={toggling.has(confirming.topic.id)}
           onConfirm={() => void toggle(confirming.topic, confirming.next)}
         >
-          <ConfirmFact label={t('admin.topics.fact.topic')}>{confirming.topic.title}</ConfirmFact>
+          <ConfirmFact label={t('admin.topics.fact.topic')}>{displayTitle(confirming.topic)}</ConfirmFact>
         </ConfirmDialog>
       ) : null}
+
+      {bookTopic ? <TopicBooksDialog key={bookTopic.id} topic={bookTopic} close={() => setBookTopic(undefined)} /> : null}
 
       {reviewing ? <TopicDimensionsDialog key={reviewing.id} topic={reviewing} close={() => setReviewing(undefined)} /> : null}
 

@@ -382,6 +382,14 @@ NTNU 試用環境自 **2026-11-07** 起視為正式環境，裡面的資料要�
 
 這只決定資料保留與 migration 規則，不代表正式環境的部署方式已定案（S-09.1 仍待決定）。
 
+## API 契約快照
+
+後端的 OpenAPI 文件（`GET /api/openapi.json`）有一份進版控的快照 `docs/api/openapi.json`。後端測試比對兩者，前端測試用它驗證 MSW 假後端（見 [`docs/specs/decisions.md`](docs/specs/decisions.md) 的測試重心決策）。
+
+- 改了 API（路徑、請求或回應格式、`#[utoipa::path]` 的狀態碼、`ToSchema` 型別）時，後端的 `snapshot` 測試會失敗。確認變動符合預期後，用 `UPDATE_OPENAPI_SNAPSHOT=1 cargo test --test openapi_contract snapshot` 更新快照，與程式一起提交。`info.version` 不納入比對。
+- 快照變了，前端 MSW 假回應與請求若不符會在前端測試失敗，一併修正。CI 在 `docs/api/openapi.json` 變動時兩邊都會跑。
+- `ToSchema` 型別名稱在整個後端不可重複（utoipa 以名稱註冊 schema，同名會互相覆蓋）。
+
 ## 規格決策流程
 
 `docs/specs/` 是專案規則的唯一來源。Issue 負責討論與追蹤，不重複規則細節。
@@ -406,7 +414,8 @@ NTNU 試用環境自 **2026-11-07** 起視為正式環境，裡面的資料要�
 1. **SDD：先固定規格。** Issue 需連結來源需求，描述使用者情境、成功與失敗流程、資料／權限邊界、錯誤或等待狀態，以及可觀察的驗收條件。未定義事項標為待確認，不自行補成產品決策。
 2. **TDD：先寫會失敗的測試**，再做最小實作，最後在本 Issue 範圍內整理程式。
 3. **AI 功能**：以固定情境與行為評分準則驗收，不要求生成文字逐字相同，並記錄提示／規則版本。
-4. **完成條件**：
+4. **測試不能靠時間**：後端整合測試不要「睡一段時間再斷言」、不要用耗時當斷言、不要數連線池取用次數，機器一慢就會偶發失敗。改成等明確的事件或輪詢實際結果（`backend/tests/common/mod.rs` 有 `wait_until_ai_called`、`wait_until_background_idle`、`wait_until_blocked_on_lock`）。CI 的 `Test flake lint` 會擋，規則與 `flaky-ok` 的用法見 [`scripts/test-flake-lint/README.md`](scripts/test-flake-lint/README.md)。
+5. **完成條件**：
    - 規格、測試與實作一致，新增測試通過
    - 權限與個資條件有測試證據
    - 必要文件已同步更新

@@ -211,6 +211,8 @@ function ActivityRow({
 }) {
   const t = useT()
   const { lang } = useI18n()
+  const title = activity.translations?.[lang]?.title ?? activity.title
+  const description = activity.translations?.[lang]?.description ?? activity.description
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     // Refresh on the exact next boundary, then schedule the following one.
@@ -236,18 +238,18 @@ function ActivityRow({
           <p className="font-medium break-words">
             {href ? (
               <Link to={href} className="underline underline-offset-2">
-                {activity.title}
+                {title}
               </Link>
             ) : (
-              activity.title
+              title
             )}
           </p>
           <p className="text-muted-foreground text-xs">
             {t('teacher.activities.opensAt')}: {activity.opens_at ? dateTime(activity.opens_at) : t('teacher.activities.noLimit')}
             {' · '}{t('teacher.activities.closesAt')}: {activity.closes_at ? dateTime(activity.closes_at) : t('teacher.activities.noLimit')}
           </p>
-          {activity.description ? (
-            <p className="text-muted-foreground text-xs break-words whitespace-pre-line">{activity.description}</p>
+          {description ? (
+            <p className="text-muted-foreground text-xs break-words whitespace-pre-line">{description}</p>
           ) : null}
         </div>
       </TableCell>
@@ -307,6 +309,7 @@ function ActivityRow({
  */
 export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: string; detailBase?: string }) {
   const t = useT()
+  const { lang } = useI18n()
   const classrooms = useFetch<Classroom[]>('/api/classrooms')
   const [roomId, setRoomId] = useState(classroomId ?? '')
   const writableRooms = useMemo(() => (classrooms.data ?? []).filter((r) => !r.is_archived), [classrooms.data])
@@ -330,7 +333,10 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
   // /api/topics 列出全部題目；只提供啟用中的題目，與學生端目錄一致
   const available = useFetch<Topic[]>('/api/topics')
   const topics = useMemo(() => (available.data ?? []).filter((tp) => tp.is_active), [available.data])
-  const topicById = useMemo(() => new Map(topics.map((tp) => [tp.id, tp])), [topics])
+  const topicById = useMemo(() => new Map(topics.map((topic) => [
+    topic.id, { ...topic, title: topic.translations?.[lang]?.title ?? topic.title },
+  ])), [topics, lang])
+  const [topicConfirmation, setTopicConfirmation] = useState<{ resolve: (confirmed: boolean) => void }>()
   const [editing, setEditing] = useState<Activity | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const busyRef = useRef(new Set<string>())
@@ -365,6 +371,10 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
   }
 
   async function update(a: Activity, v: Values) {
+    if (a.topic_ids.some((id) => !v.topicIds.includes(id))) {
+      const accepted = await new Promise<boolean>((resolve) => setTopicConfirmation({ resolve }))
+      if (!accepted) return
+    }
     // 只在題目清單有變動時才送 topic_ids：已有學生開始的活動不能動既有題目（409 activity_topic_locked），沒改就不該碰到它
     const topicChanged = v.topicIds.length !== a.topic_ids.length || v.topicIds.some((id, i) => id !== a.topic_ids[i])
     await api.patch<Activity>(`/api/activities/${a.id}`, {
@@ -474,7 +484,7 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
           onOpenChange={(o) => !o && setConfirming(undefined)}
           title={
             confirming.kind === 'archive'
-              ? t('teacher.activities.confirm.archive.title', { title: confirming.activity.title })
+              ? t('teacher.activities.confirm.archive.title', { title: confirming.activity.translations?.[lang]?.title ?? confirming.activity.title })
               : t(`teacher.activities.confirm.${confirming.kind}.title`)
           }
           description={t(`teacher.activities.confirm.${confirming.kind}.body`)}
@@ -488,14 +498,14 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
         >
           {confirming.kind === 'publish' ? (
             <>
-              <ConfirmFact label={t('teacher.activities.fact.title')}>{confirming.activity.title}</ConfirmFact>
+              <ConfirmFact label={t('teacher.activities.fact.title')}>{confirming.activity.translations?.[lang]?.title ?? confirming.activity.title}</ConfirmFact>
               <ConfirmFact label={t('teacher.activities.fact.classroom')}>
                 {classrooms.data?.find((r) => r.id === confirming.activity.classroom_id)?.name ?? '—'}
               </ConfirmFact>
             </>
           ) : confirming.kind === 'archive' ? null : (
             <ConfirmFact label={t('teacher.activities.fact.state')}>
-              {t(confirming.kind === 'close' ? 'teacher.activities.fact.open' : 'teacher.activities.fact.stopped', { title: confirming.activity.title })}
+              {t(confirming.kind === 'close' ? 'teacher.activities.fact.open' : 'teacher.activities.fact.stopped', { title: confirming.activity.translations?.[lang]?.title ?? confirming.activity.title })}
             </ConfirmFact>
           )}
         </ConfirmDialog>
@@ -538,6 +548,14 @@ export function ActivitiesPanel({ classroomId, detailBase }: { classroomId?: str
         </DialogContent>
       </Dialog>
 
+      <ConfirmDialog
+        open={!!topicConfirmation}
+        title={t('books.replaceTopicTitle')}
+        description={t('books.replaceTopicWarning')}
+        confirmLabel={t('common.save')}
+        onOpenChange={(open) => { if (!open) { topicConfirmation?.resolve(false); setTopicConfirmation(undefined) } }}
+        onConfirm={() => { topicConfirmation?.resolve(true); setTopicConfirmation(undefined) }}
+      />
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
           <DialogHeader>

@@ -29,6 +29,7 @@ export const classroom = (id: string, name: string): Classroom => ({
   created_at: '2026-01-01T00:00:00Z',
   is_archived: false,
   updated_at: '2026-01-01T00:00:00Z',
+  ai_model_missing: false,
 })
 
 /** 教師看得到的教室；預設兩間，第一間會是名單頁預設選取的教室。 */

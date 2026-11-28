@@ -8,6 +8,7 @@ use std::{
 use axum::{
     Json, Router,
     extract::{Path, State, rejection::JsonRejection},
+    http::StatusCode,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     ai::{AiRequest, ChatRole, ChatTurn, collect},
+    ai_job_store,
     auth::RequireTeacher,
     error::ApiError,
 };
@@ -171,18 +173,80 @@ pub(crate) async fn read(
     Ok(Json(load(&mut conn, id).await?.view()))
 }
 
+/// 重新產生維度是背景工作（S-20）：登記後回 `202`，產生與翻譯在背景完成，切頁不中斷；
+/// 這個題目已有進行中的工作時回 `200` 與那一筆。完成後讀 `GET /api/topics/{id}/dimensions`。
 #[utoipa::path(post, path = "/api/topics/{id}/dimensions/retry", tag = "topics",
     params(("id" = Uuid, Path, description = "題目 ID")),
-    responses((status = 200, body = DimensionsView), (status = 401, body = crate::error::ErrorBody),
+    responses((status = 202, description = "已開始背景產生；用 `GET /api/ai-jobs/{id}` 查詢", body = crate::ai_jobs::JobAccepted),
+              (status = 200, description = "這個題目已有進行中的工作", body = crate::ai_jobs::JobAccepted),
+              (status = 401, body = crate::error::ErrorBody),
               (status = 403, body = crate::error::ErrorBody), (status = 404, body = crate::error::ErrorBody)))]
 pub(crate) async fn retry(
     RequireTeacher(user): RequireTeacher,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<DimensionsView>, ApiError> {
-    generate(&state, id, &user.user.language).await?;
-    let mut conn = state.pool.acquire().await?;
-    Ok(Json(load(&mut conn, id).await?.view()))
+) -> Result<(StatusCode, Json<crate::ai_jobs::JobAccepted>), ApiError> {
+    {
+        let mut conn = state.pool.acquire().await?;
+        load(&mut conn, id).await?;
+    }
+    let scope = serde_json::json!({ "topic_id": id });
+    let registered = ai_job_store::register(
+        &state.pool,
+        user.user.id,
+        "topic_dimensions",
+        &format!("topic_dimensions:{id}"),
+        &scope,
+        state.config.generation_stale_secs(),
+    )
+    .await?;
+    match registered {
+        ai_job_store::Registered::Existing(job) => Ok((
+            StatusCode::OK,
+            Json(crate::ai_jobs::JobAccepted::pending(job)),
+        )),
+        ai_job_store::Registered::New(job) => {
+            let language = user.user.language;
+            tokio::spawn(crate::diagnostics::inherit_request(run_generation(
+                state, job, id, language,
+            )));
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(crate::ai_jobs::JobAccepted::pending(job)),
+            ))
+        }
+    }
+}
+
+/// 背景產生；結果在 `topics.dimensions`，工作本身只記成功或固定錯誤代碼。
+async fn run_generation(state: AppState, job: Uuid, id: Uuid, language: String) {
+    let _ = ai_job_store::mark_running(&state.pool, job).await;
+    let outcome = match generate(&state, id, &language).await {
+        Err(error) => {
+            tracing::warn!(topic_id = %id, ?error, "topic dimensions job failed");
+            Err("internal")
+        }
+        Ok(()) => {
+            let done: Result<bool, sqlx::Error> =
+                sqlx::query_scalar("SELECT dimensions IS NOT NULL FROM topics WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map(|v| v.unwrap_or(false));
+            match done {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("ai_unavailable"),
+                Err(_) => Err("internal"),
+            }
+        }
+    };
+    let finished = match outcome {
+        Ok(()) => ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await,
+        Err(code) => ai_job_store::finish_failed(&state.pool, job, code).await,
+    };
+    if let Err(error) = finished {
+        tracing::error!(?error, "topic dimensions job bookkeeping failed");
+    }
 }
 
 #[utoipa::path(patch, path = "/api/topics/{id}/dimensions", tag = "topics",
@@ -417,16 +481,16 @@ async fn prepare(
     let dimensions = IDS.map(|id| Dimension {
         id: id.to_owned(),
         name: Localized {
-            zh_tw: zh.next().unwrap(),
-            en: en.next().unwrap(),
-            es: es.next().unwrap(),
+            zh_tw: zh.next().expect("translation has 12 strings"),
+            en: en.next().expect("translation has 12 strings"),
+            es: es.next().expect("translation has 12 strings"),
         },
         description: Localized {
-            zh_tw: zh.next().unwrap(),
-            en: en.next().unwrap(),
-            es: es.next().unwrap(),
+            zh_tw: zh.next().expect("translation has 12 strings"),
+            en: en.next().expect("translation has 12 strings"),
+            es: es.next().expect("translation has 12 strings"),
         },
-        rubric: drafts.next().unwrap().rubric,
+        rubric: drafts.next().expect("one draft per dimension").rubric,
     });
     Some((dimensions, pending))
 }

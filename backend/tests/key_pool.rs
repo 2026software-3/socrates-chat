@@ -8,6 +8,26 @@ fn pool(n: usize) -> KeyPool {
     KeyPool::new((1..=n).map(|i| format!("k{i}")).collect()).unwrap()
 }
 
+/// 冷卻是真實時間，所以「冷卻中」的斷言一律用很長的冷卻（不靠 sleep），
+/// 「冷卻後恢復」改成輪詢到條件成立，有上限、逾時就失敗：機器再慢也只是等久一點。
+#[expect(
+    clippy::disallowed_methods,
+    reason = "KeyPool 是同步 API，這裡沒有 tokio runtime"
+)]
+fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "等不到：{what}");
+        // flaky-ok: 輪詢間隔，總等待有 10 秒上限且逾時會失敗
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// 長到不可能在測試期間結束的冷卻。
+const LONG: Duration = Duration::from_secs(30);
+/// 短到輪詢很快就看到恢復的冷卻。
+const SHORT: Duration = Duration::from_millis(20);
+
 #[test]
 fn empty_pool_is_rejected() {
     assert!(KeyPool::new(vec![]).is_none());
@@ -21,14 +41,21 @@ fn acquire_rotates_round_robin() {
 }
 
 #[test]
-fn rate_limited_key_is_skipped_until_cooldown_ends() {
+fn rate_limited_key_is_skipped_while_cooling() {
     let p = pool(2);
     let first = p.acquire().unwrap();
-    p.mark_rate_limited(first.index, Some(Duration::from_millis(80)));
+    p.mark_rate_limited(first.index, Some(LONG));
     for _ in 0..4 {
         assert_eq!(p.acquire().unwrap().key, "k2");
     }
-    std::thread::sleep(Duration::from_millis(120));
+}
+
+#[test]
+fn rate_limited_key_comes_back_when_cooldown_ends() {
+    let p = pool(2);
+    let first = p.acquire().unwrap();
+    p.mark_rate_limited(first.index, Some(SHORT));
+    wait_until("k1 恢復", || p.usable_count() == 2);
     let keys: Vec<String> = (0..2).map(|_| p.acquire().unwrap().key).collect();
     assert!(keys.contains(&"k1".to_string()), "{keys:?}");
 }
@@ -37,12 +64,20 @@ fn rate_limited_key_is_skipped_until_cooldown_ends() {
 fn missing_retry_after_uses_default_cooldown() {
     let p = KeyPool::new(vec!["a".into()])
         .unwrap()
-        .with_default_cooldown(Duration::from_millis(60));
+        .with_default_cooldown(LONG);
     let l = p.acquire().unwrap();
     p.mark_rate_limited(l.index, None);
     assert!(p.acquire().is_none());
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(p.acquire().is_some());
+}
+
+#[test]
+fn default_cooldown_ends_by_itself() {
+    let p = KeyPool::new(vec!["a".into()])
+        .unwrap()
+        .with_default_cooldown(SHORT);
+    let l = p.acquire().unwrap();
+    p.mark_rate_limited(l.index, None);
+    wait_until("預設冷卻結束", || p.acquire().is_some());
 }
 
 #[test]
@@ -55,16 +90,22 @@ fn default_cooldown_is_sixty_seconds() {
 }
 
 #[test]
-fn rejected_key_cools_down_then_recovers() {
-    let p = pool(2).with_auth_cooldown(Duration::from_millis(80));
+fn rejected_key_is_skipped_while_cooling() {
+    let p = pool(2).with_auth_cooldown(LONG);
     let first = p.acquire().unwrap();
     p.mark_rejected(first.index);
     for _ in 0..4 {
         assert_eq!(p.acquire().unwrap().key, "k2");
     }
     assert_eq!(p.usable_count(), 1);
-    std::thread::sleep(Duration::from_millis(120));
-    assert_eq!(p.usable_count(), 2);
+}
+
+#[test]
+fn rejected_key_recovers_after_cooldown() {
+    let p = pool(2).with_auth_cooldown(SHORT);
+    let first = p.acquire().unwrap();
+    p.mark_rejected(first.index);
+    wait_until("被拒的 key 恢復", || p.usable_count() == 2);
     let keys: Vec<String> = (0..2).map(|_| p.acquire().unwrap().key).collect();
     assert!(keys.contains(&"k1".to_string()), "{keys:?}");
 }
@@ -75,14 +116,21 @@ fn default_auth_cooldown_is_ten_minutes() {
 }
 
 #[test]
+fn single_rejected_key_is_unavailable_while_cooling() {
+    let p = KeyPool::new(vec!["only".into()])
+        .unwrap()
+        .with_auth_cooldown(LONG);
+    p.mark_rejected(0);
+    assert!(p.acquire().is_none());
+}
+
+#[test]
 fn single_rejected_key_recovers_instead_of_staying_dead() {
     let p = KeyPool::new(vec!["only".into()])
         .unwrap()
-        .with_auth_cooldown(Duration::from_millis(60));
+        .with_auth_cooldown(SHORT);
     p.mark_rejected(0);
-    assert!(p.acquire().is_none());
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(p.acquire().unwrap().key, "only");
+    wait_until("唯一的 key 恢復", || p.acquire().is_some());
 }
 
 #[test]
@@ -98,7 +146,9 @@ fn rate_limit_never_shortens_a_longer_cooldown() {
     let p = pool(1);
     p.mark_rejected(0);
     p.mark_rate_limited(0, Some(Duration::from_millis(1)));
-    std::thread::sleep(Duration::from_millis(10));
+    // 被拒的冷卻是 600 秒；若被縮短成 1 毫秒，剩餘時間會遠小於這個值（不必等時間過去）
+    let wait = p.next_available_in().unwrap();
+    assert!(wait > Duration::from_secs(300), "{wait:?}");
     assert!(p.acquire().is_none());
 }
 

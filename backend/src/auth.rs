@@ -814,7 +814,7 @@ pub(crate) struct LoginResponse {
     summary = "內建帳號登入（學號或電子郵件加密碼）",
     request_body = LoginBody,
     security(()),
-    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody))
+    responses((status = 200, description = "成功並設定 sid cookie", body = LoginResponse), (status = 401, description = "invalid_credentials", body = crate::error::ErrorBody), (status = 403, description = "account_disabled", body = crate::error::ErrorBody), (status = 429, description = "too_many_attempts", body = crate::error::ErrorBody), (status = 503, description = "maintenance：維護模式中只有管理者能登入", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn password_login(
     State(state): State<AppState>,
@@ -1023,16 +1023,34 @@ pub(crate) struct ResetResponse {
     temporary_password: String,
 }
 
+fn ensure_can_reset_email(
+    primary_admin: Option<&str>,
+    actor_email: Option<&str>,
+    target_email: &str,
+) -> Result<(), ApiError> {
+    if primary_admin.is_some_and(|primary| primary.eq_ignore_ascii_case(target_email))
+        && !actor_email.is_some_and(|actor| actor.eq_ignore_ascii_case(target_email))
+    {
+        return Err(ApiError::forbidden(
+            "protected_admin",
+            "無法重設主要管理者的密碼，只能由本人重設",
+        ));
+    }
+    Ok(())
+}
+
 /// 管理者重設密碼（產生臨時密碼）。以 `email` 指定時信箱沒有帳號就建立；以 `student_number` 指定時只能是已有帳號的學生，找不到回 404。
+/// 環境變數 `ADMIN_EMAILS` 的第一個管理者帳號受保護，只有本人可重設自己的密碼，其他管理者呼叫回 403 `protected_admin`。
 #[utoipa::path(
     post,
     path = "/api/admin/users/reset-password",
     tag = "admin",
-    summary = "重設密碼（僅管理者；以信箱沒有帳號就建立，以學號只重設既有學生）",
+    summary = "重設密碼（僅管理者；以信箱沒有帳號就建立，以學號只重設既有學生；第一個管理者只能由本人重設）",
     request_body = ResetBody,
     responses(
         (status = 200, description = "臨時密碼只出現這一次", body = ResetResponse),
         (status = 400, description = "invalid_target（email 與 student_number 必須恰好一個）、invalid_email、invalid_student_number", body = crate::error::ErrorBody),
+        (status = 403, description = "角色不符、帳號停用、須先改密碼、CSRF 或試圖重設主要管理者密碼（`protected_admin`）", body = crate::error::ErrorBody),
         (status = 404, description = "學號不屬於任何已有帳號的學生", body = crate::error::ErrorBody)
     )
 )]
@@ -1042,6 +1060,10 @@ pub(crate) async fn reset_password(
     Json(body): Json<ResetBody>,
 ) -> Result<Json<ResetResponse>, ApiError> {
     let target = body.into_target()?;
+    let primary_admin = state.config.primary_admin_email();
+    if let ResetTarget::Email(ref email) = target {
+        ensure_can_reset_email(primary_admin, cu.user.email.as_deref(), email)?;
+    }
     let temporary_password = password::generate_temporary();
     let hash = hash_blocking(temporary_password.clone()).await?;
     let mut tx = state.pool.begin().await?;
@@ -1056,6 +1078,9 @@ pub(crate) async fn reset_password(
                 auth_store::reset_password_by_student_number(&mut tx, &student_number, &hash)
                     .await?
                     .ok_or(ApiError::not_found())?;
+            if let Some(ref resolved_email) = email {
+                ensure_can_reset_email(primary_admin, cu.user.email.as_deref(), resolved_email)?;
+            }
             let audit_target = email.clone().unwrap_or_else(|| user_id.to_string());
             (email, audit_target)
         }
@@ -1130,5 +1155,32 @@ mod tests {
         let second = cached_maintenance_user(&parts).unwrap();
         assert!(first.0.roles.admin);
         assert!(second.0.roles.admin);
+    }
+
+    #[test]
+    fn ensure_can_reset_email_protects_only_first_env_admin_from_others() {
+        let primary = Some("first@example.com");
+
+        assert!(
+            ensure_can_reset_email(primary, Some("first@example.com"), "first@example.com").is_ok()
+        );
+        assert!(
+            ensure_can_reset_email(primary, Some("FIRST@example.com"), "first@example.com").is_ok()
+        );
+        let err = ensure_can_reset_email(primary, Some("second@example.com"), "first@example.com")
+            .unwrap_err();
+        assert_eq!(err.code, "protected_admin");
+        let err = ensure_can_reset_email(primary, Some("third@example.com"), "FIRST@example.com")
+            .unwrap_err();
+        assert_eq!(err.code, "protected_admin");
+        let err = ensure_can_reset_email(primary, None, "first@example.com").unwrap_err();
+        assert_eq!(err.code, "protected_admin");
+        assert!(
+            ensure_can_reset_email(primary, Some("third@example.com"), "second@example.com")
+                .is_ok()
+        );
+        assert!(
+            ensure_can_reset_email(None, Some("second@example.com"), "first@example.com").is_ok()
+        );
     }
 }

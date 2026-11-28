@@ -125,8 +125,8 @@ async fn a_superseded_generation_awards_nothing(pool: PgPool) {
         StatusCode::ACCEPTED
     );
 
-    // 等第一代的結果回來並被丟棄
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // 等第一代的結果回來並被丟棄：第一代的背景工作結束，只剩卡住的第二代（不賭睡眠時間）
+    wait_until_background_tasks_at_most(1).await;
     let res = send(
         &app,
         get(

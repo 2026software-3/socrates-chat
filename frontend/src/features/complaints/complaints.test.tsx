@@ -100,12 +100,12 @@ describe('complaint form', () => {
     expect(screen.getByLabelText('問題描述')).toHaveValue('很多問題')
   })
 
-  it('lets a teacher report a problem too, from the navigation', async () => {
+  it('lets a teacher report a problem too, from the footer colophon', async () => {
     mockMe(makeMe({ teacher: true }))
     server.use(http.get('/api/classrooms', () => HttpResponse.json([])))
     renderApp(null, { route: '/' })
-    const nav = await screen.findByRole('navigation', { name: 'main' })
-    await userEvent.click(within(nav).getByRole('link', { name: '回報問題' }))
+    const footer = await screen.findByRole('contentinfo')
+    await userEvent.click(within(footer).getByRole('link', { name: '回報問題' }))
     expect(await screen.findByLabelText('問題描述')).toBeInTheDocument()
   })
 
@@ -116,9 +116,9 @@ describe('complaint form', () => {
       http.get('/api/admin/teachers', () => HttpResponse.json({ emails: [] })),
     )
     renderApp(null, { route: '/complaint' })
-    await screen.findByRole('navigation', { name: 'main' })
+    await screen.findByRole('navigation', { name: '主導覽' })
     expect(screen.queryByLabelText('問題描述')).not.toBeInTheDocument()
-    expect(within(screen.getByRole('navigation', { name: 'main' })).queryByRole('link', { name: '回報問題' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '回報問題' })).not.toBeInTheDocument()
   })
 
   it('does not show a pending (no role) account the form', async () => {

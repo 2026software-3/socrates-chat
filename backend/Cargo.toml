@@ -1,5 +1,6 @@
 [package]
 name = "socrates-chat-backend"
+default-run = "socrates-chat-backend"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -45,3 +46,10 @@ tower = { version = "0.5.3", features = ["util"] }
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+
+# 所有 target（含 tests/）都適用；只限伺服器程式碼的規則寫在 src/lib.rs、src/main.rs 開頭。
+# 參數在 clippy.toml。CI 以 -D warnings 執行，warn 即擋。
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

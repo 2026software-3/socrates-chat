@@ -339,7 +339,22 @@ async fn teachers_and_admins_cannot_take_part_in_discussions(pool: PgPool) {
 
 #[sqlx::test]
 async fn personal_dashboard_counts_only_my_own_conversations(pool: PgPool) {
-    let Seeded { app, a, .. } = seeded(pool).await;
+    let Seeded { app, a, .. } = seeded(pool.clone()).await;
+    sqlx::query(
+        r#"UPDATE topics SET translations = '{"en":{"title":"Localized dashboard title"}}'"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let localized =
+        json_body(send(&app, get("/api/dashboard/me?language=en", Some(&a.student))).await).await;
+    assert!(
+        localized["recent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["title"] == "Localized dashboard title")
+    );
     let d = json_body(send(&app, get("/api/dashboard/me", Some(&a.student))).await).await;
     // 學生本人 3 場（含個人練習），另一位學生的不算
     assert_eq!(d["total_conversations"], 3);

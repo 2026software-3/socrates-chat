@@ -166,7 +166,7 @@ async fn list_topics(state: &AppState) -> Result<Json<Vec<Topic>>, ApiError> {
     tag = "topics",
     summary = "新增題目",
     request_body = NewTopic,
-    responses((status = 201, description = "已建立", body = Topic))
+    responses((status = 201, description = "已建立", body = Topic), (status = 400, description = "invalid_title / invalid_guiding_questions", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn create_topic_for_teacher(
     RequireTeacher(user): RequireTeacher,
@@ -214,7 +214,7 @@ async fn insert_topic(
     summary = "修改題目（merge-patch）",
     params(("id" = Uuid, Path, description = "題目 ID")),
     request_body = TopicPatch,
-    responses((status = 200, description = "更新後的題目", body = Topic))
+    responses((status = 200, description = "更新後的題目", body = Topic), (status = 400, description = "invalid_title / invalid_guiding_questions", body = crate::error::ErrorBody))
 )]
 pub(crate) async fn update_topic_for_teacher(
     RequireTeacher(user): RequireTeacher,
@@ -573,6 +573,7 @@ pub(crate) async fn create_activity(
     validate_not_past((b.opens_at, b.closes_at), (None, None))?;
     validate_schedule(b.opens_at, b.closes_at)?;
     let mut tx = state.pool.begin().await?;
+    crate::book_store::lock_catalog(&mut tx).await?;
     crate::classrooms::ensure_writable(&mut *tx, classroom.id).await?;
     let a = activity_store::create_with_schedule(
         &mut *tx,
@@ -622,6 +623,7 @@ pub(crate) async fn update_activity(
     // 鎖住活動列再檢查對話：開始對話時會以 FOR SHARE 鎖同一列，
     // 所以「檢查沒有對話」與「更換題目」之間不會有新對話插進來。
     let mut tx = state.pool.begin().await?;
+    crate::book_store::lock_catalog(&mut tx).await?;
     type CurrentSchedule = (Uuid, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
     let current: Option<CurrentSchedule> = sqlx::query_as(
         "SELECT a.classroom_id, a.opens_at, a.closes_at FROM activities a JOIN classrooms cl ON cl.id = a.classroom_id
@@ -684,25 +686,23 @@ pub(crate) async fn update_activity(
                 ));
             }
 
-            // 更新題目關聯
-            sqlx::query("DELETE FROM activity_topics WHERE activity_id = $1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query(
-                "INSERT INTO activity_topics (activity_id, topic_id, position)
-                 SELECT $1, t.topic_id, (t.ord - 1)::integer
-                 FROM unnest($2::uuid[]) WITH ORDINALITY AS t(topic_id, ord)",
-            )
-            .bind(id)
-            .bind(&new_ids)
-            .execute(&mut *tx)
-            .await?;
+            // 保留未移除的題目列及其獨立書單；新增題目由資料庫 trigger 複製預設書單。
+            crate::book_store::sync_activity_topics(&mut tx, id, &new_ids).await?;
         }
     }
 
     sqlx::query(
         "UPDATE activities SET title = COALESCE($2, title), description = COALESCE($3, description),
+                translations = CASE
+                    WHEN ($2::text IS NOT NULL AND $2 <> title)
+                      OR ($3::text IS NOT NULL AND $3 <> description)
+                    THEN (
+                        SELECT COALESCE(jsonb_object_agg(lang, fields
+                            - CASE WHEN $2 IS NOT NULL AND $2 <> title THEN 'title' ELSE '' END
+                            - CASE WHEN $3 IS NOT NULL AND $3 <> description THEN 'description' ELSE '' END), '{}')
+                        FROM jsonb_each(translations) AS entries(lang, fields)
+                    )
+                    ELSE translations END,
                 opens_at = $4, closes_at = $5, updated_at = now()
          WHERE id = $1",
     )
@@ -913,7 +913,7 @@ pub(crate) struct Available {
 
 #[derive(Deserialize)]
 pub(crate) struct CatalogLanguage {
-    language: Option<String>,
+    pub(crate) language: Option<String>,
 }
 
 pub(crate) fn display_language<'a>(
@@ -969,6 +969,23 @@ pub(crate) async fn available(
     }
     let by_id: std::collections::HashMap<_, _> = topics.iter().map(|t| (t.id, t)).collect();
     for activity in &mut activities {
+        let all = std::mem::take(&mut activity.activity.translations);
+        if language != "zh-TW" {
+            let translations = all.get(language);
+            if let Some(title) = translations.and_then(|fields| fields.get("title")) {
+                activity.activity.title.clone_from(title);
+            } else {
+                activity.title_pending = true;
+            }
+            if !activity.activity.description.trim().is_empty() {
+                if let Some(description) = translations.and_then(|fields| fields.get("description"))
+                {
+                    activity.activity.description.clone_from(description);
+                } else {
+                    activity.description_pending = true;
+                }
+            }
+        }
         for progress in &mut activity.topics {
             if let Some(topic) = by_id.get(&progress.topic_id) {
                 progress.title.clone_from(&topic.title);

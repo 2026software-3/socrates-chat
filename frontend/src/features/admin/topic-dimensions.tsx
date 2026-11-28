@@ -1,4 +1,6 @@
 import { useState, type FormEvent } from 'react'
+import { useWatchedJob } from '@/features/jobs/use-watched-job'
+import { wakeAiJobs } from '@/lib/ai-jobs-events'
 import { ErrorBlock, LoadingBlock } from '@/components/page'
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -37,11 +39,23 @@ export function TopicDimensionsDialog({ topic, close }: { topic: Topic; close: (
   const [actionError, setActionError] = useState<unknown>()
   const view = latest ?? data
 
+  // 重新產生是背景工作（S-20）：可以關掉對話框，進度由全域追蹤器顯示；回來時接回同一個工作
+  const { running: generating, watch } = useWatchedJob(
+    'topic_dimensions',
+    (scope) => scope.topic_id === topic.id,
+    (outcome) => {
+      if (!outcome.ok) return setActionError(outcome.error)
+      api.get<Dimensions>(path).then(setLatest, setActionError)
+    },
+  )
+
   async function retry() {
     setPending(true)
     setActionError(undefined)
     try {
-      setLatest(await api.post<Dimensions>(`${path}/retry`))
+      const accepted = await api.post<{ job_id: string }>(`${path}/retry`)
+      watch(accepted.job_id)
+      wakeAiJobs()
     } catch (err) {
       setActionError(err)
     } finally {
@@ -61,8 +75,8 @@ export function TopicDimensionsDialog({ topic, close }: { topic: Topic; close: (
         {view && !view.dimensions ? (
           <div className="space-y-3">
             <p role="status">{t('admin.dimensions.pending')}</p>
-            <Button disabled={pending} onClick={() => void retry()}>
-              {t(pending ? 'admin.dimensions.generating' : 'admin.dimensions.retry')}
+            <Button disabled={pending || generating} onClick={() => void retry()}>
+              {t(pending || generating ? 'admin.dimensions.generating' : 'admin.dimensions.retry')}
             </Button>
           </div>
         ) : null}

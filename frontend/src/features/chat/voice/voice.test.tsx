@@ -13,7 +13,7 @@ import {
 import { createSpeaker } from '@/features/chat/voice/speaker'
 import { AI_USAGE_STALE_EVENT } from '@/lib/ai-usage-events'
 import { FakeAudioContext, FakeWorkletNode, feed, installAudioGraph, installMediaDevices, noiseSource, removeMediaDevices, voicedSource } from '@/test/fake-audio'
-import { makeMe, mockMe, renderApp } from '@/test/render'
+import { apiError, makeMe, mockMe, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 // 把靜音與倒數縮短，讓自動送出的流程在測試裡很快跑完
@@ -316,7 +316,7 @@ describe('speech synthesis (S-05.3)', () => {
   it('refreshes the AI usage display after backend speech, even when it fails (S-03)', async () => {
     const stale = vi.fn()
     window.addEventListener(AI_USAGE_STALE_EVENT, stale)
-    server.use(http.post('/api/voice/speech', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
+    server.use(http.post('/api/voice/speech', () => apiError(503, 'voice_unavailable')))
     await expect(createSpeaker('zh-TW', 'zh-TW').speak('你好')).rejects.toThrow()
     window.removeEventListener(AI_USAGE_STALE_EVENT, stale)
     expect(stale).toHaveBeenCalledTimes(1)
@@ -513,7 +513,7 @@ describe('speech synthesis (S-05.3)', () => {
   })
 
   it('rejects when neither the browser nor the backend can speak', async () => {
-    server.use(http.post('/api/voice/speech', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
+    server.use(http.post('/api/voice/speech', () => apiError(503, 'voice_unavailable')))
     await expect(createSpeaker('zh-TW', 'zh-TW').speak('你好')).rejects.toThrow()
   })
 })
@@ -690,7 +690,7 @@ describe('voice input (S-05.1: confirm before sending)', () => {
 
   it('tells the student to type when the fallback service is not enabled', async () => {
     mockChat()
-    server.use(http.post('/api/voice/transcribe', () => HttpResponse.json({ error: { code: 'voice_unavailable' } }, { status: 503 })))
+    server.use(http.post('/api/voice/transcribe', () => apiError(503, 'voice_unavailable')))
     installMediaDevices()
     class FakeRecorder {
       static isTypeSupported = () => true
@@ -952,7 +952,7 @@ describe('speaking the reply while it is generated (S-05.2)', () => {
   it('keeps the playback failure visible while it listens, and offers replay once the reply is done', async () => {
     installRecognition()
     installSynthesis([])
-    server.use(http.post('/api/voice/speech', () => HttpResponse.json({ error: { code: 'ai_usage_exceeded' } }, { status: 429 })))
+    server.use(http.post('/api/voice/speech', () => apiError(429, 'ai_usage_exceeded')))
     const chat = mockStreamingChat()
     renderChat()
     await input()
@@ -1126,8 +1126,6 @@ describe('barge-in during AI playback (S-05.5)', () => {
     installAudioGraph()
     installRecognition()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // 預設關閉，這組測試都是學生自己開啟之後的行為
-    localStorage.setItem('voice.bargeIn', 'true')
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -1223,55 +1221,6 @@ describe('barge-in during AI playback (S-05.5)', () => {
     chat.finish()
     await new Promise((r) => setTimeout(r, 20))
     expect(spoken).toHaveLength(1)
-  })
-
-  it('stays off until the student turns it on', async () => {
-    const { getUserMedia } = installMediaDevices()
-    localStorage.removeItem('voice.bargeIn')
-    await untilSpeaking()
-    await new Promise((r) => setTimeout(r, 20))
-    expect(getUserMedia).not.toHaveBeenCalled()
-    expect(screen.getByRole('switch', { name: '開口打斷 AI' })).not.toBeChecked()
-    expect(screen.queryByTestId('voice-audio-diagnostics')).not.toBeInTheDocument()
-  })
-
-  it('remembers that the student turned it on', async () => {
-    const { getUserMedia } = installMediaDevices()
-    localStorage.removeItem('voice.bargeIn')
-    await untilSpeaking()
-    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
-    expect(localStorage.getItem('voice.bargeIn')).toBe('true')
-    expect(getUserMedia).not.toHaveBeenCalled() // 這一輪已開始播放，下一輪才生效
-  })
-
-  it('turning the switch off during playback releases the microphone at once', async () => {
-    const { tracks } = installMediaDevices()
-    await untilSpeaking()
-    await waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1))
-    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
-    expect(tracks[0].readyState).toBe('ended')
-    expect(FakeAudioContext.last.close).toHaveBeenCalled()
-    expect(localStorage.getItem('voice.bargeIn')).toBe('false')
-  })
-
-  it('does not reopen anything when the switch goes off before the AI starts speaking', async () => {
-    const { getUserMedia } = installMediaDevices()
-    const { synth } = installSynthesis([{ lang: 'zh-TW', name: 'tw' }], { autoEnd: false })
-    let utterance: FakeUtterance | undefined
-    synth.speak = (u: FakeUtterance) => {
-      utterance = u
-    }
-    mockChat()
-    renderChat()
-    await input()
-    await userEvent.click(screen.getByRole('button', { name: '語音對話' }))
-    FakeRecognition.last.say('開始', true)
-    await waitFor(() => expect(utterance).toBeDefined())
-    await userEvent.click(screen.getByRole('switch', { name: '開口打斷 AI' }))
-    utterance?.onstart?.()
-    await new Promise((r) => setTimeout(r, 20))
-    expect(getUserMedia).not.toHaveBeenCalled()
-    expect(FakeAudioContext.instances.filter((c) => c.state !== 'closed')).toEqual([])
   })
 
   it('keeps playing and offers the button when the microphone is denied', async () => {

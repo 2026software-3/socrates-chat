@@ -1,9 +1,13 @@
+// 伺服器程式碼：輸出一律走 tracing，不用 print；不 unwrap，改用 expect 寫明為何不會失敗。
+// tests/ 的壓測輸出與 bin/import-books 的命令列輸出不受此限。
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::unwrap_used)]
+
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
-    AppState, ai::OpenAiProvider, app, auth_store, catalog, complaints, config::Config, demo,
-    identity::GoogleIdentity, logging, password, radar_store, service_monitor, summary,
-    summary_translation,
+    AppState, ai::OpenAiProvider, ai_job_store, app, auth_store, catalog, complaints,
+    config::Config, demo, identity::GoogleIdentity, logging, password, radar_store,
+    service_monitor, summary, summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
 
@@ -26,7 +30,7 @@ async fn main() {
         );
     }
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(config.database_max_connections)
         .connect(&config.database_url)
         .await
         .expect("failed to connect to database");
@@ -48,6 +52,12 @@ async fn main() {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned radar results as failed"),
         Err(_) => tracing::error!("failed to recover orphaned radar results"),
+    }
+    // 重啟前卡住的背景 AI 工作（S-20）同樣標記為失敗，使用者可以重試
+    match ai_job_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "marked orphaned AI jobs as failed"),
+        Err(_) => tracing::error!("failed to recover orphaned AI jobs"),
     }
     // 內建題目（電車難題）：已存在時不動它
     if catalog::seed_builtin_topics(&pool).await.is_err() {
@@ -86,11 +96,17 @@ async fn main() {
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     state.spawn_housekeeping();
+    socrates_chat_backend::topic_translations::spawn_worker(&state);
     service_monitor::spawn(&state);
     // 重啟前寄到一半的客訴通知信：把逾時仍是 pending 的重新排入寄信
     match complaints::requeue_stale(&state).await {
         0 => {}
         n => tracing::warn!(count = n, "requeued stale complaint mails"),
+    }
+    // 重啟前排在記憶體的公告翻譯重試都不見了：仍有待完成翻譯的重新排入（#528）
+    match socrates_chat_backend::announcements::resume_pending_translations(&state).await {
+        0 => {}
+        n => tracing::info!(count = n, "rescheduled pending announcement translations"),
     }
     if let Ok(seconds) = std::env::var("SUMMARY_TRANSLATION_RETRY_SECS")
         && !seconds.trim().is_empty()
@@ -109,6 +125,21 @@ async fn main() {
         .await
         .expect("failed to bind listener");
     tracing::info!("listening on {addr}");
+
+    // 內部端點的獨立監聽器（S-19 7.4）：部署方只把這個埠開在私網
+    if let Some(internal) = state.config.internal_listen_addr {
+        let listener = tokio::net::TcpListener::bind(internal)
+            .await
+            .expect("failed to bind internal listener");
+        tracing::info!("internal listener on {internal}");
+        let router = socrates_chat_backend::internal_app(state.clone());
+        tokio::spawn(async move {
+            if axum::serve(listener, router).await.is_err() {
+                tracing::error!("internal listener stopped");
+            }
+        });
+    }
+    socrates_chat_backend::voice_nodes::spawn(&state);
 
     // ConnectInfo 提供 TCP 對端位址，登入的 IP 限流要用（S-08.2）
     axum::serve(

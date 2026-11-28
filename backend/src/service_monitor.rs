@@ -145,7 +145,7 @@ enum Status {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
-enum Failure {
+enum ServiceFailure {
     ConnectionFailed,
     Timeout,
     #[serde(rename = "non_2xx")]
@@ -167,13 +167,13 @@ struct StatusEvent {
     service_name: String,
     status: EventStatus,
     occurred_at: DateTime<Utc>,
-    failure: Option<Failure>,
+    failure: Option<ServiceFailure>,
 }
 
 #[derive(Clone, Default, Serialize, ToSchema)]
 struct CurrentStatus {
     status: Status,
-    failure: Option<Failure>,
+    failure: Option<ServiceFailure>,
     response_time_ms: Option<u64>,
     checked_at: Option<DateTime<Utc>>,
     last_healthy_at: Option<DateTime<Utc>>,
@@ -194,7 +194,7 @@ enum Trigger {
 }
 
 struct ProbeResult {
-    failure: Option<Failure>,
+    failure: Option<ServiceFailure>,
     response_time_ms: Option<u64>,
 }
 
@@ -295,6 +295,8 @@ impl Service {
 pub(crate) struct Monitor {
     http: Client,
     services: Vec<Service>,
+    /// 即時語音節點（S-19）：隨登錄表增減，由 `sync_voice_nodes` 維護。
+    voice: std::sync::Mutex<Vec<std::sync::Arc<Service>>>,
 }
 
 impl Monitor {
@@ -327,7 +329,11 @@ impl Monitor {
             .timeout(READY_DB_TIMEOUT)
             .build()
             .expect("failed to construct service probe HTTP client");
-        Self { http, services }
+        Self {
+            http,
+            services,
+            voice: std::sync::Mutex::default(),
+        }
     }
 
     async fn probe(&self, service: &Service, pool: &PgPool) -> ProbeResult {
@@ -337,12 +343,13 @@ impl Monitor {
             match self.http.get(url.clone()).send().await {
                 Ok(response) => {
                     return ProbeResult {
-                        failure: (!response.status().is_success()).then_some(Failure::Non2xx),
+                        failure: (!response.status().is_success())
+                            .then_some(ServiceFailure::Non2xx),
                         response_time_ms: Some(elapsed()),
                     };
                 }
-                Err(error) if error.is_timeout() => Failure::Timeout,
-                Err(_) => Failure::ConnectionFailed,
+                Err(error) if error.is_timeout() => ServiceFailure::Timeout,
+                Err(_) => ServiceFailure::ConnectionFailed,
             }
         } else {
             match crate::probe_database(pool).await {
@@ -352,8 +359,8 @@ impl Monitor {
                         response_time_ms: Some(elapsed()),
                     };
                 }
-                Err(_) | Ok(Err(sqlx::Error::PoolTimedOut)) => Failure::Timeout,
-                Ok(Err(_)) => Failure::ConnectionFailed,
+                Err(_) | Ok(Err(sqlx::Error::PoolTimedOut)) => ServiceFailure::Timeout,
+                Ok(Err(_)) => ServiceFailure::ConnectionFailed,
             }
         };
         ProbeResult {
@@ -411,47 +418,118 @@ impl Monitor {
     }
 
     async fn view(&self, pool: &PgPool, period_days: i64) -> ServicesView {
-        let now = Utc::now();
-        let names: Vec<_> = self
-            .services
-            .iter()
-            .map(|service| service.name.as_str())
-            .collect();
-        let history = tokio::time::timeout(HISTORY_TIMEOUT, load_history(pool, &names, now)).await;
-        let mut history = match history {
-            Ok(Ok(events)) => Some(events),
-            Ok(Err(error)) => {
-                tracing::warn!(class = %crate::error::db_error_class(&error), "service status history read failed");
-                None
-            }
-            Err(_) => {
-                tracing::warn!("service status history read timed out");
-                None
-            }
-        };
-        let mut services: Vec<_> = self
-            .services
-            .iter()
-            .map(|service| {
-                let mut row = service.view();
-                if let Some(events) = history
-                    .as_mut()
-                    .and_then(|history| history.remove(&service.name))
-                {
-                    row.availability =
-                        availability(&events, now - TimeDelta::days(period_days), now);
-                    row.recent_events = events.into_iter().rev().take(RECENT_EVENTS).collect();
-                }
-                row
-            })
-            .collect();
-        services.sort_by_key(|service| service.current.status != Status::Unhealthy);
+        let services: Vec<_> = self.services.iter().collect();
+        let (services, history_available) = rows(&services, pool, period_days).await;
         ServicesView {
             services,
-            history_available: history.is_some(),
+            history_available,
             period_days,
+            voice_nodes: Vec::new(),
         }
     }
+
+    /// 讓語音節點的監控項目與登錄表一致：新增的加入、消失的移除、網址或名稱變了就重建。
+    pub(crate) fn sync_voice_nodes(&self, nodes: &[crate::voice_nodes::Node]) {
+        let mut voice = lock(&self.voice);
+        let wanted: Vec<_> = nodes
+            .iter()
+            .filter_map(|node| {
+                let endpoint = crate::voice_nodes::health_url(&node.realtime_url)?;
+                Some((voice_service_name(node.id), node.name.clone(), endpoint))
+            })
+            .collect();
+        voice.retain(|service| {
+            wanted.iter().any(|(name, label, endpoint)| {
+                *name == service.name
+                    && service.endpoint.as_ref() == Some(endpoint)
+                    && matches!(&service.label, ServiceText::Text(text) if text == label)
+            })
+        });
+        for (name, label, endpoint) in wanted {
+            if voice.iter().all(|service| service.name != name) {
+                let target = endpoint_target(&endpoint);
+                voice.push(std::sync::Arc::new(Service::new(
+                    name,
+                    ServiceText::Text(label),
+                    ServiceText::Translations(BTreeMap::from([
+                        ("zh-TW".into(), "即時語音".into()),
+                        ("en".into(), "Real-time voice".into()),
+                        ("es".into(), "Voz en tiempo real".into()),
+                    ])),
+                    Some(endpoint),
+                    Some(target),
+                )));
+            }
+        }
+    }
+
+    fn voice_services(&self) -> Vec<std::sync::Arc<Service>> {
+        lock(&self.voice).clone()
+    }
+
+    /// 各語音節點的監控資料，鍵為 `voice_service_name`。
+    async fn voice_views(
+        &self,
+        pool: &PgPool,
+        period_days: i64,
+    ) -> std::collections::HashMap<String, ServiceView> {
+        let owned = self.voice_services();
+        let services: Vec<_> = owned.iter().map(|service| &**service).collect();
+        let (views, _) = rows(&services, pool, period_days).await;
+        views
+            .into_iter()
+            .map(|view| (view.name.clone(), view))
+            .collect()
+    }
+}
+
+pub(crate) fn voice_service_name(id: crate::voice_nodes::NodeId) -> String {
+    format!("voice-node:{id}")
+}
+
+fn endpoint_target(url: &Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{host}:{port}{}", url.path()),
+        None => format!("{host}{}", url.path()),
+    }
+}
+
+/// 各服務的目前狀態加上可用率與最近的狀態變化；回傳值的第二項表示歷史是否讀得到。
+async fn rows(services: &[&Service], pool: &PgPool, period_days: i64) -> (Vec<ServiceView>, bool) {
+    let now = Utc::now();
+    let names: Vec<_> = services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect();
+    let history = tokio::time::timeout(HISTORY_TIMEOUT, load_history(pool, &names, now)).await;
+    let mut history = match history {
+        Ok(Ok(events)) => Some(events),
+        Ok(Err(error)) => {
+            tracing::warn!(class = %crate::error::db_error_class(&error), "service status history read failed");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("service status history read timed out");
+            None
+        }
+    };
+    let mut views: Vec<_> = services
+        .iter()
+        .map(|service| {
+            let mut row = service.view();
+            if let Some(events) = history
+                .as_mut()
+                .and_then(|history| history.remove(&service.name))
+            {
+                row.availability = availability(&events, now - TimeDelta::days(period_days), now);
+                row.recent_events = events.into_iter().rev().take(RECENT_EVENTS).collect();
+            }
+            row
+        })
+        .collect();
+    views.sort_by_key(|service| service.current.status != Status::Unhealthy);
+    (views, history.is_some())
 }
 
 /// 解析 `SERVICE_PROBE_INTERVAL_SECS`：未設定或空白用預設 30 秒；
@@ -473,15 +551,22 @@ pub fn parse_probe_interval(raw: Option<&str>) -> Result<Duration, ConfigError> 
 }
 
 pub fn spawn(state: &AppState) {
-    let monitor = state.service_monitor.clone();
-    let pool = state.pool.clone();
+    let state = state.clone();
     let probe_interval = state.config.service_probe_interval;
     tokio::spawn(async move {
+        let monitor = state.service_monitor.clone();
+        let pool = state.pool.clone();
         let mut interval = tokio::time::interval(probe_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            join_all(monitor.services.iter().map(|service| async {
+            monitor.sync_voice_nodes(&state.voice_nodes.all(&state).await);
+            let voice = monitor.voice_services();
+            let all = monitor
+                .services
+                .iter()
+                .chain(voice.iter().map(|service| &**service));
+            join_all(all.map(|service| async {
                 if let Ok(_guard) = service.in_flight.try_lock() {
                     monitor.check(service, &pool, Trigger::Scheduled).await;
                 }
@@ -579,11 +664,26 @@ pub(crate) struct ServiceSummary {
     pub unknown: u32,
 }
 
+/// 即時語音節點（S-19）：監控資料與周邊服務相同（狀態、回應時間、可用率、歷史），另加節點自己的欄位。
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ServiceVoiceNode {
+    #[serde(flatten)]
+    service: ServiceView,
+    /// `active`、`draining` 或 `disabled`
+    node_status: String,
+    /// 是否接新場次的路由判斷（連續 3 次探測失敗為 false），與 `status` 的判斷規則不同
+    healthy: bool,
+    sessions: usize,
+    /// 環境節點預設不設上限
+    max_sessions: Option<usize>,
+}
+
 #[derive(Serialize, ToSchema)]
 pub(crate) struct ServicesView {
     services: Vec<ServiceView>,
     history_available: bool,
     period_days: i64,
+    voice_nodes: Vec<ServiceVoiceNode>,
 }
 
 #[derive(Deserialize)]
@@ -624,9 +724,32 @@ pub(crate) async fn list(
         .map(|Query(query)| query.period_days.unwrap_or(RETENTION_DAYS))
         .filter(|days| (1..=RETENTION_DAYS).contains(days))
         .ok_or_else(|| ApiError::bad_request("invalid_service_period", "期間須介於 1 至 30 天"))?;
-    Ok(Json(
-        state.service_monitor.view(&state.pool, period_days).await,
-    ))
+    let monitor = &state.service_monitor;
+    let nodes = state.voice_nodes.all(&state).await;
+    monitor.sync_voice_nodes(&nodes);
+    let (mut view, mut voice) = tokio::join!(
+        monitor.view(&state.pool, period_days),
+        monitor.voice_views(&state.pool, period_days)
+    );
+    // 部署預設的 MONITORED_SERVICES 已有檢查 cascade /health 的項目；語音節點探測同一個位址時，
+    // 只留節點那一列（資訊較完整），避免同一個目標列兩次。
+    let voice_targets: Vec<_> = voice.values().filter_map(|v| v.target.clone()).collect();
+    view.services
+        .retain(|s| s.target.as_ref().is_none_or(|t| !voice_targets.contains(t)));
+    let counts = state.voice_sessions.counts();
+    view.voice_nodes = nodes
+        .into_iter()
+        .filter_map(|node| {
+            Some(ServiceVoiceNode {
+                service: voice.remove(&voice_service_name(node.id))?,
+                healthy: state.voice_nodes.is_healthy(node.id),
+                sessions: counts.get(&node.id).copied().unwrap_or(0),
+                node_status: node.status.as_str().into(),
+                max_sessions: node.max_sessions,
+            })
+        })
+        .collect();
+    Ok(Json(view))
 }
 
 #[utoipa::path(post, path = "/api/admin/services/check", tag = "admin", request_body = CheckBody,
@@ -639,9 +762,12 @@ pub(crate) async fn check(
     Json(body): Json<CheckBody>,
 ) -> Result<Json<ServiceView>, ApiError> {
     let monitor = &state.service_monitor;
+    monitor.sync_voice_nodes(&state.voice_nodes.all(&state).await);
+    let voice = monitor.voice_services();
     let service = monitor
         .services
         .iter()
+        .chain(voice.iter().map(|service| &**service))
         .find(|service| service.name == body.name)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "service_not_found", "找不到服務"))?;
     {
@@ -723,8 +849,8 @@ mod tests {
         let results = [
             (Status::Healthy, None, 1),
             (Status::Healthy, None, 1),
-            (Status::Unhealthy, Some(Failure::Timeout), 2),
-            (Status::Unhealthy, Some(Failure::Non2xx), 2),
+            (Status::Unhealthy, Some(ServiceFailure::Timeout), 2),
+            (Status::Unhealthy, Some(ServiceFailure::Non2xx), 2),
             (Status::Healthy, None, 3),
             (Status::Healthy, None, 3),
         ];
@@ -750,7 +876,7 @@ mod tests {
             .await;
         let history = load_history(&pool, &["asr"], Utc::now()).await.unwrap();
         assert_eq!(history["asr"].len(), 3);
-        assert_eq!(history["asr"][1].failure, Some(Failure::Timeout));
+        assert_eq!(history["asr"][1].failure, Some(ServiceFailure::Timeout));
         let closed = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://127.0.0.1:1/unused")
             .unwrap();
@@ -807,7 +933,7 @@ mod tests {
 
     fn failed() -> ProbeResult {
         ProbeResult {
-            failure: Some(Failure::Timeout),
+            failure: Some(ServiceFailure::Timeout),
             response_time_ms: None,
         }
     }

@@ -83,8 +83,7 @@ describe('the account page', () => {
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
     expect(patches).toEqual([{ display_name: '王老師' }])
-    expect(within(screen.getByRole('complementary')).getByText('王老師')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '王老師' })).toHaveAttribute('href', '/account')
+    expect(within(screen.getByRole('banner')).getByRole('button', { name: '王老師' })).toBeInTheDocument()
   })
 
   it('clearing a teacher name sends null and the header falls back to the email', async () => {
@@ -94,7 +93,7 @@ describe('the account page', () => {
     await userEvent.click(screen.getByRole('button', { name: '儲存' }))
     expect(await screen.findByRole('status')).toHaveTextContent('已儲存')
     expect(patches).toEqual([{ display_name: null }])
-    expect(screen.getByRole('link', { name: 'user@example.com' })).toBeInTheDocument()
+    expect(within(screen.getByRole('banner')).getByRole('button', { name: 'user@example.com' })).toBeInTheDocument()
     expect(screen.getByLabelText('顯示名稱')).toHaveValue('')
   })
 
@@ -198,55 +197,51 @@ describe('the account page', () => {
     expect(screen.queryByLabelText('目前密碼')).not.toBeInTheDocument()
   })
 
-  it('is not in the navigation list: it is reached from the avatar at the top right', async () => {
+  it('is not in the navigation list for teachers: it is reached from the account menu at the top right', async () => {
     await open({ teacher: true })
-    const nav = screen.getByRole('navigation', { name: 'main' })
+    const nav = screen.getByRole('navigation', { name: '主導覽' })
     expect(within(nav).queryByRole('link', { name: '帳號' })).not.toBeInTheDocument()
   })
 })
 
-describe('the avatar at the top right', () => {
+describe('the avatar account menu at the top right', () => {
   it.each<[string, Partial<Roles>]>([
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
     ['a teacher who is also an admin', { teacher: true, admin: true }],
-  ])('links %s with a built-in password to /account', async (_label, roles) => {
+  ])('links %s with a built-in password to /account from the account menu', async (_label, roles) => {
     await open(roles)
-    const avatar = screen.getByRole('link', { name: 'Test User' })
-    expect(avatar).toHaveAttribute('href', '/account')
-    expect(avatar).toHaveTextContent('T')
-    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Test User' })).toBe(avatar)
+    const trigger = within(screen.getByRole('banner')).getByRole('button', { name: 'Test User' })
+    expect(trigger).toHaveTextContent('T')
+    await userEvent.click(trigger)
+    expect(screen.getByRole('link', { name: '個人設定' })).toHaveAttribute('href', '/account')
   })
 
   it.each<[string, Partial<Roles>]>([
     ['a teacher', { teacher: true }],
     ['an admin-only account', { admin: true }],
-  ])('does not link the avatar of %s when the account cannot change its password', async (_label, roles) => {
+  ])('does not link account settings for %s when the account cannot change its password', async (_label, roles) => {
     await open(roles, { can_change_password: false })
-    expect(within(screen.getByRole('complementary')).getByText('Test User')).toBeInTheDocument()
-    expect(screen.getByRole('img', { name: 'Test User' })).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Test User' })).not.toBeInTheDocument()
-  })
-
-  it('keeps the name in the sidebar as plain text: the avatar is the only way in', async () => {
-    await open({ teacher: true })
-    expect(screen.getAllByRole('link', { name: 'Test User' })).toHaveLength(1)
-    expect(within(screen.getByRole('complementary')).getByText('Test User')).not.toHaveAttribute('href')
+    const trigger = within(screen.getByRole('banner')).getByRole('button', { name: 'Test User' })
+    await userEvent.click(trigger)
+    expect(screen.queryByRole('link', { name: '個人設定' })).not.toBeInTheDocument()
   })
 
   it.each<[string, Partial<Roles>]>([
     ['a student', { student: true }],
     ['a student who is also a teacher', { student: true, teacher: true }],
-  ])('shows %s an avatar at the top right that links to their account page', async (_label, roles) => {
+  ])('reaches /account via the student legend (VI 個人檔案) for %s', async (_label, roles) => {
     mockDashboard()
     await open(roles)
-    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+    const nav = screen.getByRole('navigation', { name: '主導覽' })
+    expect(within(nav).getByRole('link', { name: /個人檔案/ })).toHaveAttribute('href', '/account')
   })
 
-  it('keeps the avatar of a student linked even without a built-in password (the page still has their settings)', async () => {
+  it('keeps /account reachable for a student even without a built-in password', async () => {
     mockDashboard()
     await open({ student: true }, { can_change_password: false })
-    expect(screen.getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+    const nav = screen.getByRole('navigation', { name: '主導覽' })
+    expect(within(nav).getByRole('link', { name: /個人檔案/ })).toHaveAttribute('href', '/account')
   })
 })
 
@@ -255,6 +250,7 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     {
       conversation_id: '11111111-1111-4111-8111-111111111111',
       title: '電車難題',
+      title_pending: false,
       claim: '不應該扳動',
       stance: '義務論',
       stage: 3,
@@ -310,13 +306,13 @@ describe('the account page for students (the former personal dashboard, S-18)', 
     expect(changeButton()).toBeInTheDocument()
   })
 
-  it('has neither 「帳號」 nor 「我的儀表板」 in the sidebar: it is reached from the avatar', async () => {
+  it('reaches /account via VI 個人檔案 in the sidebar without old 帳號 or 我的儀表板 links', async () => {
     mockDashboard()
     await open({ student: true })
-    const nav = screen.getByRole('navigation', { name: 'main' })
+    const nav = screen.getByRole('navigation', { name: '主導覽' })
     expect(within(nav).queryByRole('link', { name: '帳號' })).not.toBeInTheDocument()
     expect(within(nav).queryByRole('link', { name: '我的儀表板' })).not.toBeInTheDocument()
-    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Test User' })).toHaveAttribute('href', '/account')
+    expect(within(nav).getByRole('link', { name: /個人檔案/ })).toHaveAttribute('href', '/account')
   })
 
   it('does not ask for the dashboard data when a teacher or an admin opens the page', async () => {
