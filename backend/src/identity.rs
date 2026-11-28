@@ -203,12 +203,12 @@ mod tests {
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        const SECRET_CODE: &str = "synthetic-oauth-auth-code-12345";
-        const SECRET_NONCE: &str = "synthetic-oauth-nonce-67890";
-        const SECRET_VERIFIER: &str = "synthetic-pkce-verifier-abcdef";
-        const SECRET_CLIENT_SECRET: &str = "synthetic-client-secret-xyz";
+        let auth_code = format!("synthetic-code-{}", uuid::Uuid::new_v4());
+        let nonce = format!("synthetic-nonce-{}", uuid::Uuid::new_v4());
+        let pkce_verifier = format!("synthetic-verifier-{}", uuid::Uuid::new_v4());
+        let client_secret = format!("synthetic-client-secret-{}", uuid::Uuid::new_v4());
         const SECRET_UPSTREAM_ERROR: &str = "SENSITIVE-UPSTREAM-OIDC-ERROR-BODY";
-        const SECRET_ACCESS_TOKEN: &str = "SENSITIVE-OAUTH-ACCESS-TOKEN-777";
+        let access_token = format!("synthetic-access-token-{}", uuid::Uuid::new_v4());
         const SECRET_EMAIL: &str = "secret-oidc-student@example.com";
         const SECRET_SUB: &str = "secret-oidc-subject-888";
 
@@ -222,13 +222,15 @@ mod tests {
                 "aud": "synthetic-client-id",
                 "exp": 9_999_999_999u64,
                 "iat": 1_700_000_000u64,
-                "nonce": SECRET_NONCE,
+                "nonce": nonce.as_str(),
                 "email": SECRET_EMAIL,
                 "email_verified": true
             })
             .to_string(),
         );
         let fake_id_token = format!("{fake_header}.{fake_claims}.AAAA");
+        let no_id_token = access_token.clone();
+        let bad_id_access_token = access_token.clone();
         let app = Router::new()
             .route(
                 "/token-error",
@@ -236,12 +238,15 @@ mod tests {
             )
             .route(
                 "/token-no-id",
-                post(|| async {
-                    Json(json!({
-                        "access_token": SECRET_ACCESS_TOKEN,
-                        "token_type": "Bearer"
-                    }))
-                    .into_response()
+                post(move || {
+                    let access_token = no_id_token.clone();
+                    async move {
+                        Json(json!({
+                            "access_token": access_token,
+                            "token_type": "Bearer"
+                        }))
+                        .into_response()
+                    }
                 }),
             )
             .route(
@@ -250,9 +255,10 @@ mod tests {
                     let fake_id_token = fake_id_token.clone();
                     move || {
                         let fake_id_token = fake_id_token.clone();
+                        let access_token = bad_id_access_token.clone();
                         async move {
                             Json(json!({
-                                "access_token": SECRET_ACCESS_TOKEN,
+                                "access_token": access_token,
                                 "token_type": "Bearer",
                                 "id_token": fake_id_token
                             }))
@@ -279,7 +285,7 @@ mod tests {
             let client = CoreClient::from_provider_metadata(
                 metadata,
                 ClientId::new("synthetic-client-id".to_string()),
-                Some(ClientSecret::new(SECRET_CLIENT_SECRET.to_string())),
+                Some(ClientSecret::new(client_secret.clone())),
             )
             .set_redirect_uri(
                 RedirectUrl::new("https://app.test/api/auth/google/callback".into()).unwrap(),
@@ -322,7 +328,7 @@ mod tests {
                         for provider in &providers {
                             assert!(
                                 provider
-                                    .finish(SECRET_CODE, SECRET_NONCE, SECRET_VERIFIER)
+                                    .finish(&auth_code, &nonce, &pkce_verifier)
                                     .await
                                     .is_err()
                             );
@@ -336,18 +342,18 @@ mod tests {
         server.abort();
 
         let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-        for secret in [
-            SECRET_CODE,
-            SECRET_NONCE,
-            SECRET_VERIFIER,
-            SECRET_CLIENT_SECRET,
-            SECRET_UPSTREAM_ERROR,
-            SECRET_ACCESS_TOKEN,
-            SECRET_EMAIL,
-            SECRET_SUB,
-            &fake_id_token,
+        for (label, value) in [
+            ("authorization code", auth_code.as_str()),
+            ("nonce", nonce.as_str()),
+            ("PKCE verifier", pkce_verifier.as_str()),
+            ("client secret", client_secret.as_str()),
+            ("upstream error body", SECRET_UPSTREAM_ERROR),
+            ("access token", access_token.as_str()),
+            ("email", SECRET_EMAIL),
+            ("subject", SECRET_SUB),
+            ("id_token", fake_id_token.as_str()),
         ] {
-            assert!(!out.contains(secret), "secret leaked into logs: {secret}");
+            assert!(!out.contains(value), "OIDC {label} leaked into logs");
         }
 
         let entries: Vec<Value> = out
