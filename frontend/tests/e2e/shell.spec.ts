@@ -126,6 +126,33 @@ test.describe('Vedute work shell across roles and viewports', () => {
     await expectScreenshot(page, 'shell-admin.png')
   })
 
+  test('topbar location: pointer cursor on the phone trigger and no trailing letter-spacing after the inscription', async ({
+    page,
+    loginAs,
+  }, testInfo) => {
+    await loginAs('student')
+    const banner = page.getByRole('banner')
+    const inscription = banner.locator('[data-vedute-inscription]').filter({ visible: true })
+    await expect(inscription).toHaveCount(1)
+    // letter-spacing is added after every glyph, including the last one; cancel it so the inscription's box
+    // ends at its ink and the gaps to the pin and to the area label (or ⌄) match Figma Page/Topbar 2269:1573.
+    const tracking = await inscription.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      return { letterSpacing: parseFloat(cs.letterSpacing), marginRight: parseFloat(cs.marginRight) }
+    })
+    expect(tracking.letterSpacing).toBeGreaterThan(0)
+    expect(tracking.marginRight).toBeCloseTo(-tracking.letterSpacing, 2)
+
+    if (testInfo.project.name === 'mobile') {
+      await expect(banner.getByRole('button', { name: /目前位置/ })).toHaveCSS('cursor', 'pointer')
+    } else {
+      await expect(banner.getByRole('button', { name: /合成學生/ })).toHaveCSS('cursor', 'pointer')
+    }
+    if (testInfo.project.name === 'tablet') {
+      await expect(banner.getByRole('button', { name: '開啟導覽' })).toHaveCSS('cursor', 'pointer')
+    }
+  })
+
   test('focus shell on conversation page shows BackHeader with title and round count without sidebar, tab bar, or colophon', async ({
     page,
     loginAs,

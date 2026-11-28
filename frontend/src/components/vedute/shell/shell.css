@@ -83,43 +83,49 @@
   }
 }
 
+/*
+ * letter-spacing 會加在每個字後面，連最後一個字也有，銘文的框會比墨跡多出一段字距，
+ * 跟後面的中文區名（或 ⌄）間距變大、整組也不再置中。用等量的負右邊界抵掉（Figma Page/Topbar 2269:1573 兩側都是 12）。
+ */
 .vedute-inscription {
   font-family: var(--font-latin);
   white-space: nowrap;
+  letter-spacing: var(--vedute-insc-tracking);
+  margin-inline-end: calc(var(--vedute-insc-tracking) * -1);
 }
 
 .vedute-inscription-topbar {
+  --vedute-insc-tracking: 0.26em;
   font-size: 19px;
   line-height: 1.2;
-  letter-spacing: 0.26em;
   color: var(--color-ink);
 }
 
 .vedute-inscription-header {
+  --vedute-insc-tracking: 0.14em;
   font-size: 14px;
   line-height: 1.2;
-  letter-spacing: 0.14em;
   color: var(--color-ink-soft);
 }
 
 .vedute-inscription-back {
+  --vedute-insc-tracking: 0.2em;
   font-size: 15px;
   line-height: 1.2;
-  letter-spacing: 0.2em;
   color: var(--color-chalk-deep);
 }
 
 @media (width < 64rem) {
   .vedute-inscription-topbar {
+    --vedute-insc-tracking: 0.2em;
     font-size: 17px;
-    letter-spacing: 0.2em;
   }
 }
 
 @media (width < 48rem) {
   .vedute-inscription-topbar {
+    --vedute-insc-tracking: 0.16em;
     font-size: 15px;
-    letter-spacing: 0.16em;
   }
 }
 
