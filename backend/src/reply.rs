@@ -516,20 +516,30 @@ async fn generate(
             Some(&route.model),
             retry,
             started.into_std(),
-            result.as_ref().err().map(|(error, _)| error),
+            result.as_ref().err().map(|(error, ..)| error),
             &trace,
         );
+        if let Err((error, emitted, stage)) = &result {
+            log_attempt_failure(
+                error,
+                &route.model,
+                retry,
+                *emitted,
+                *stage,
+                started.elapsed(),
+            );
+        }
         match result {
             Ok(r) => {
                 outcome = Some(r);
                 break;
             }
             // 沒有可用的教師 key：重試沒有意義
-            Err((error, _)) if error.class == Failure::ClassroomUnavailable => {
+            Err((error, ..)) if error.class == Failure::ClassroomUnavailable => {
                 classroom_unavailable = true;
                 break;
             }
-            Err((_, true)) => break,
+            Err((_, true, _)) => break,
             Err(_) => {}
         }
     }
@@ -565,13 +575,15 @@ async fn generate(
     }
 }
 
-/// 一次 AI 呼叫。失敗時回傳「是否已經送出內容給學生」，決定能不能自動重試。
+/// 一次 AI 呼叫。失敗時回傳「是否已經送出內容給學生」（決定能不能自動重試）與失敗的階段：
+/// `request`（還沒開始串流）、`first_chunk`（等第一段時）、`mid_stream`（收到片段之後）、
+/// `empty_reply`（串流正常結束但沒有文字）。
 async fn attempt(
     ai: &dyn AiProvider,
     state: &AppState,
     reply: &LiveReply,
     req: &AiRequest,
-) -> Result<(String, TurnMeta), (AiError, bool)> {
+) -> Result<(String, TurnMeta), (AiError, bool, Stage)> {
     let start = Instant::now();
     // 建立連線與等待第一個片段共用同一個首 token 期限（S-03.5）
     let first_token_deadline = start + state.config.ai_first_token_timeout;
@@ -579,8 +591,8 @@ async fn attempt(
 
     let mut stream = match timeout_at(first_token_deadline, ai.stream_chat(req.clone())).await {
         Ok(Ok(s)) => s,
-        Ok(Err(error)) => return Err((error, false)),
-        Err(_) => return Err((AiError::classified(Failure::Timeout), false)),
+        Ok(Err(error)) => return Err((error, false, Stage::Request)),
+        Err(_) => return Err((deadline(), false, Stage::Request)),
     };
     let mut got_chunk = false;
     let mut emitted = false;
@@ -593,8 +605,8 @@ async fn attempt(
             first_token_deadline.min(total_deadline)
         };
         match timeout_at(limit, stream.next()).await {
-            Err(_) => return Err((AiError::classified(Failure::Timeout), emitted)),
-            Ok(Some(Err(error))) => return Err((error, emitted)),
+            Err(_) => return Err((deadline(), emitted, stream_stage(got_chunk))),
+            Ok(Some(Err(error))) => return Err((error, emitted, stream_stage(got_chunk))),
             Ok(None) => break,
             Ok(Some(Ok(chunk))) => {
                 // 空片段（模型開始推理）也算首個 token，但沒有文字可送
@@ -615,9 +627,67 @@ async fn attempt(
         reply.delta(&rest);
     }
     if text.trim().is_empty() {
-        return Err((AiError::invalid_output(), emitted));
+        return Err((AiError::invalid_output(), emitted, Stage::EmptyReply));
     }
     Ok((text.trim().to_string(), parse_meta(&meta_raw)))
+}
+
+/// 我們自己的期限到了（首 token 或總時間，S-03.5），不是供應商回報的逾時。
+fn deadline() -> AiError {
+    AiError::classified(Failure::Timeout).with_kind(crate::ai::ErrorKind::Deadline)
+}
+
+/// 一次 AI 呼叫失敗在哪個階段；用列舉（一個位元組），失敗結果才不會超過 clippy `result_large_err`。
+#[derive(Clone, Copy)]
+enum Stage {
+    Request,
+    FirstChunk,
+    MidStream,
+    EmptyReply,
+}
+
+impl Stage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::FirstChunk => "first_chunk",
+            Self::MidStream => "mid_stream",
+            Self::EmptyReply => "empty_reply",
+        }
+    }
+}
+
+fn stream_stage(got_chunk: bool) -> Stage {
+    if got_chunk {
+        Stage::MidStream
+    } else {
+        Stage::FirstChunk
+    }
+}
+
+/// 對話回覆的一次 AI 呼叫失敗：只記分類、HTTP 狀態、錯誤種類與代碼、階段與時間，
+/// 不含 key、提示或對話原文；用來分辨供應商是一開始就回錯誤，還是串流中途出錯。
+fn log_attempt_failure(
+    error: &AiError,
+    model: &str,
+    retry: i32,
+    emitted: bool,
+    stage: Stage,
+    elapsed: std::time::Duration,
+) {
+    tracing::warn!(
+        class = error.class.code(),
+        model,
+        retry,
+        stage = stage.as_str(),
+        emitted,
+        http_status = error.http_status(),
+        error_kind = error.kind(),
+        provider_status = error.provider_status(),
+        event_code = error.event_code(),
+        elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        "chat reply attempt failed"
+    );
 }
 
 struct Saved {
