@@ -744,19 +744,23 @@ async fn missing_translation_is_retried_on_later_patch(pool: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
+    // 慢的那次 PATCH 的翻譯被閘門擋住，直到快的那次完全寫入才放行：先後順序由事件決定，不靠時間。
+    // AI 總逾時拉長，閘門等多久都不會被逾時截斷。
     let ai = FakeAi::with(vec![]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let mut config = test_config();
+    config.ai_total_timeout = std::time::Duration::from_secs(60);
+    let app = test_app_with_config(pool, ai.clone(), config);
     let a = seed_actors(&app).await;
     let id = create_topic(&app, &a, "選擇").await;
+    let (release, gate) = tokio::sync::watch::channel(false);
+    // 標題只有一欄，英文與西班牙文各一次翻譯請求，兩個腳本剛好都給慢的那次
     for _ in 0..2 {
         ai.topic_translation_scripts
             .lock()
             .unwrap()
-            .push_back(Script::Paced(
-                vec![r#""New""#],
-                std::time::Duration::from_millis(600),
-            ));
+            .push_back(Script::Gated(vec![r#""New""#], gate.clone()));
     }
+    let already_requested = ai.topic_translation_requests.lock().unwrap().len();
     let path = format!("/api/topics/{id}");
     let slow = send(
         &app,
@@ -768,9 +772,9 @@ async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
         ),
     );
     let fast = async {
-        // 等慢的那次已讀完快照並開始翻譯（AI 收到請求）再送，不靠固定睡眠決定誰先誰後
-        wait_until_ai_called(&ai, 1).await;
-        send(
+        // 慢的那次已讀完快照並送出兩個翻譯請求（都卡在閘門），才送快的那次
+        wait_until_topic_translations_requested(&ai, already_requested + 2).await;
+        let response = send(
             &app,
             json_req(
                 "PATCH",
@@ -779,12 +783,16 @@ async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
                 Some(json!({"guiding_questions": ["為什麼？"]})),
             ),
         )
-        .await
+        .await;
+        // 快的那次已經寫入，慢的那次才繼續
+        release.send(true).unwrap();
+        response
     };
     let (slow, fast) = tokio::join!(slow, fast);
     assert_eq!(fast.status(), StatusCode::OK);
     assert_eq!(slow.status(), StatusCode::OK);
     let topic = json_body(slow).await;
     assert_eq!(topic["title"], "新題名");
+    // 慢的那次寫入前發現題目已被快的那次改過，要保留快的那次的問題
     assert_eq!(topic["guiding_questions"], json!(["為什麼？"]));
 }
