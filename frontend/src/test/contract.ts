@@ -1,16 +1,17 @@
 import { Ajv2020 } from 'ajv/dist/2020'
-import type { ValidateFunction } from 'ajv'
+import type { ErrorObject, ValidateFunction } from 'ajv'
 import openapi from '../../../docs/api/openapi.json'
 
 /**
  * 前後端契約：用後端產生並進版控的 OpenAPI 快照（`docs/api/openapi.json`，
- * 由 `backend/tests/openapi_contract.rs` 的 snapshot 測試保證與程式一致）驗證 MSW 假後端的回應。
+ * 由 `backend/tests/openapi_contract.rs` 的 snapshot 測試保證與程式一致）驗證 MSW 假後端的回應與請求。
  */
 
+type Content = Record<string, unknown>
 type Operation = {
-  requestBody?: { content?: Record<string, unknown> }
+  requestBody?: { content?: Content }
   parameters?: { name: string; in: string; required?: boolean }[]
-  responses?: Record<string, { content?: Record<string, unknown> }>
+  responses?: Record<string, { content?: Content }>
 }
 const paths = openapi.paths as unknown as Record<string, Record<string, Operation>>
 
@@ -23,23 +24,22 @@ const pointer = (...segments: string[]) =>
 /** `/api/books/:id` 與 `/api/books/{book_id}` 視為同一個路徑。 */
 const normalize = (path: string) => path.replace(/:[A-Za-z_]+/g, '{}').replace(/\{[^}]+\}/g, '{}')
 
+const specPathsByTemplate = new Map(Object.keys(paths).map((p) => [normalize(p), p]))
 const specPathPatterns = Object.keys(paths)
   .filter((p) => p.includes('{'))
   .map((p) => ({ specPath: p, pattern: new RegExp('^' + p.split(/\{[^}]+\}/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]+') + '$') }))
 
 /** 路徑可以是 handler 的樣板（`/api/books/:id`）或實際請求路徑（`/api/books/12`）。 */
 export function findOperation(method: string, path: string) {
-  const wanted = normalize(path)
   const specPath =
-    Object.keys(paths).find((p) => normalize(p) === wanted) ??
+    specPathsByTemplate.get(normalize(path)) ??
     specPathPatterns.find(({ pattern }) => pattern.test(path.replace(/:[A-Za-z_]+/g, 'x')))?.specPath
   const operation = specPath ? paths[specPath][method.toLowerCase()] : undefined
   return specPath && operation ? { specPath, operation } : undefined
 }
 
-/** 維護模式的閘門（backend/src/lib.rs `maintenance_gate`）放行的路徑；其餘 `/api` 路徑在維護中一律回 503 `maintenance`。 */
+/** 維護模式的閘門（backend/src/lib.rs `maintenance_exempt`）放行的路徑；其餘 `/api` 路徑在維護中一律回 503 `maintenance`。 */
 const MAINTENANCE_EXEMPT = /^\/api\/(announcements|openapi\.json|auth\/(login|logout|google\/.+)|docs.*)$/
-
 
 /** 同一個 schema 只編譯一次（每個回應與請求都會驗證，不快取會重複編譯）。 */
 const validators = new Map<string, ValidateFunction>()
@@ -52,7 +52,20 @@ function validatorFor(ref: string) {
   return validate
 }
 
-const errorBody = validatorFor('openapi#/components/schemas/ErrorBody')
+const formatErrors = (label: string, errors: ErrorObject[] | null | undefined) =>
+  (errors ?? []).map((e) => `${label}：${e.instancePath || '/'} ${e.message}`)
+
+/**
+ * `base`（例如 `['paths', '/api/me', 'get', 'responses', '200']`）底下的 JSON 內容是否容得下 `body`。
+ * 沒有 JSON 內容就不檢查；契約寫了 JSON 卻沒有 schema 時無法驗證，當成契約缺漏而不是悄悄通過。
+ */
+function jsonViolations(label: string, content: Content | undefined, base: string[], body: unknown): string[] {
+  const json = content?.['application/json'] as { schema?: unknown } | undefined
+  if (!json) return []
+  if (!json.schema) return [`${label}：契約的 JSON 內容沒有 schema`]
+  const validate = validatorFor(`openapi#${pointer(...base, 'content', 'application/json', 'schema')}`)
+  return validate(body) ? [] : formatErrors(label, validate.errors)
+}
 
 /** OpenAPI 的狀態碼可以是確切的 `200`、範圍 `2XX` 或 `default`。 */
 function responseFor(operation: Operation, status: number) {
@@ -70,19 +83,12 @@ export function contractViolations(method: string, path: string, status: number,
   if (!matched && status === 503 && !MAINTENANCE_EXEMPT.test(found.specPath)) {
     const code = (body as { error?: { code?: unknown } } | null)?.error?.code
     if (code !== 'maintenance') return [`${method.toUpperCase()} ${found.specPath} 的 503 沒有記載，且 code 不是 maintenance（是 ${String(code)}）`]
-    return errorBody(body) ? [] : [`維護中的 503：${errorBody.errors?.map((e) => `${e.instancePath || '/'} ${e.message}`).join('、')}`]
+    const validate = validatorFor('openapi#/components/schemas/ErrorBody')
+    return validate(body) ? [] : formatErrors('維護中的 503', validate.errors)
   }
   if (!matched) return [`契約沒有記載 ${method.toUpperCase()} ${found.specPath} 的 ${status} 回應`]
-  const json = matched.response.content?.['application/json'] as { schema?: unknown } | undefined
-  if (!json) return []
-  // 契約寫了 JSON 回應卻沒有 schema：無法驗證，當成契約缺漏而不是悄悄通過
-  if (!json.schema) return [`${method.toUpperCase()} ${found.specPath} ${matched.key}：契約的 JSON 回應沒有 schema`]
-  const validate = validatorFor(
-    `openapi#${pointer('paths', found.specPath, method.toLowerCase(), 'responses', matched.key, 'content', 'application/json', 'schema')}`,
-  )
-  return validate(body)
-    ? []
-    : (validate.errors ?? []).map((e) => `${method.toUpperCase()} ${found.specPath} ${matched.key}：${e.instancePath || '/'} ${e.message}`)
+  const base = ['paths', found.specPath, method.toLowerCase(), 'responses', matched.key]
+  return jsonViolations(`${method.toUpperCase()} ${found.specPath} ${matched.key}`, matched.response.content, base, body)
 }
 
 /**
@@ -93,22 +99,7 @@ export function requestViolations(method: string, path: string, body: unknown): 
   const found = findOperation(method, path)
   if (!found) return []
   const label = `${method.toUpperCase()} ${found.specPath} 的請求`
-  const content = found.operation.requestBody?.content
-  if (!content) return [`${label}：契約沒有記載 requestBody，但送出了本文`]
-  const json = content['application/json'] as { schema?: unknown } | undefined
-  if (!json) return []
-  if (!json.schema) return [`${label}：契約的 JSON requestBody 沒有 schema`]
-  const validate = validatorFor(
-    `openapi#${pointer('paths', found.specPath, method.toLowerCase(), 'requestBody', 'content', 'application/json', 'schema')}`,
-  )
-  return validate(body) ? [] : (validate.errors ?? []).map((e) => `${label}：${e.instancePath || '/'} ${e.message}`)
+  const requestBody = found.operation.requestBody
+  if (!requestBody?.content) return [`${label}：契約沒有記載 requestBody，但送出了本文`]
+  return jsonViolations(label, requestBody.content, ['paths', found.specPath, method.toLowerCase(), 'requestBody'], body)
 }
-
-/**
- * 所有測試的 MSW 假回應都要符合契約（以測試檔路徑比對）；新目錄自動納入。
- * 確實不該檢查的測試檔放進 `CONTRACT_EXEMPT_FILES`，並寫明理由。
- */
-export const CONTRACT_ENFORCED = ['src/']
-
-/** 不檢查的測試檔：用虛構端點（`/api/x`、`/api/ok`…）測 HTTP 客戶端本身，不是真實 API。 */
-export const CONTRACT_EXEMPT_FILES = ['src/lib/api.test.ts']

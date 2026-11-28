@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { TopicsPage } from '@/features/admin/topics-page'
 import { renderTeacherPage } from '@/features/teacher/test-helpers'
 import type { Topic } from '@/lib/types'
+import { apiError } from '@/test/render'
 import { server } from '@/test/server'
 
 const trolley: Topic = {
@@ -146,7 +147,7 @@ describe('teacher topic bank', () => {
       http.get('/api/topics/t1/dimensions', () => {
         attempts += 1
         return attempts === 1
-          ? HttpResponse.json({ error: { code: 'internal', request_id: 'synthetic' } }, { status: 500 })
+          ? apiError(500, 'internal')
           : HttpResponse.json({ dimensions: null, locked: false, pending_languages: [] })
       }),
     )

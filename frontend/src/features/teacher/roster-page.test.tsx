@@ -8,6 +8,9 @@ import type { StudentRow } from '@/lib/types'
 import { apiError, makeMe, mockMe, pageOf, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
+/** 匯入名單成功的回應（新增 1 位）。 */
+const IMPORTED = { added: 1, existing: 0, errors: 0, invalid: [], credentials: [] }
+
 const emails = ['alice@example.com', 'bob@example.com', 'carol@example.org']
 
 /** 名單上的學生（已有帳號、使用中）。 */
@@ -260,7 +263,7 @@ describe('RosterPage', () => {
     server.use(
       http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => {
         calls += 1
-        return calls === 1 ? HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] }) : apiError(403, 'forbidden')
+        return calls === 1 ? HttpResponse.json(IMPORTED) : apiError(403, 'forbidden')
       }),
     )
     setup()
@@ -282,7 +285,7 @@ describe('RosterPage', () => {
         calls += 1
         return calls === 2 ? apiError(500, 'internal') : studentPage(emails)
       }),
-      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] })),
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json(IMPORTED)),
     )
     setup()
     await screen.findByText('alice@example.com')
@@ -440,7 +443,7 @@ describe('RosterPage', () => {
       http.get(students(ROOM_B), () => studentPage(['zoe@example.com'])),
       http.post('/api/classrooms/:id/roster/import', ({ params }) => {
         target = String(params.id)
-        return HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] })
+        return HttpResponse.json(IMPORTED)
       }),
     )
     setup()
@@ -459,7 +462,7 @@ describe('RosterPage', () => {
     mockRoster()
     server.use(
       http.get(students(ROOM_B), () => studentPage([])),
-      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json({ added: 1, existing: 0, errors: 0, invalid: [], credentials: [] })),
+      http.post(`/api/classrooms/${ROOM_A}/roster/import`, () => HttpResponse.json(IMPORTED)),
     )
     setup()
     await screen.findByText('alice@example.com')

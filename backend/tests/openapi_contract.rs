@@ -1,5 +1,7 @@
 //! OpenAPI 契約測試：各功能的路徑、請求與回應格式（原本分散在四個測試檔，合併以減少編譯與連結單位）。
 
+mod common;
+
 mod classroom {
     //! F-28.1 classroom API contract coverage.
 
@@ -492,17 +494,6 @@ mod schema_names {
     /// 形狀完全相同、覆蓋也無妨的同名型別。
     const IDENTICAL: &[&str] = &["Localized"];
 
-    fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
     /// 一段原始碼裡，`ToSchema` 型別在 OpenAPI 裡註冊的名稱（`#[schema(as = path::Name)]` 會改名）。
     /// 逐行掃描：認得多行 `#[derive(…)]`、`pub(crate)`／`pub(super)`／`pub(in …)`，不需要額外的解析套件。
     fn schema_names_in(text: &str) -> Vec<String> {
@@ -579,11 +570,7 @@ pub(in crate::x) enum D { One }
 
     #[test]
     fn to_schema_type_names_are_unique() {
-        let mut files = Vec::new();
-        rust_files(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut files,
-        );
+        let files = super::common::rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
         let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for file in files {
             let text = fs::read_to_string(&file).unwrap();
@@ -616,7 +603,7 @@ mod snapshot {
     #[test]
     fn openapi_document_matches_committed_snapshot() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/api/openapi.json");
-        let actual = serde_json::to_value(openapi::document()).unwrap();
+        let mut actual = serde_json::to_value(openapi::document()).unwrap();
 
         if std::env::var_os("UPDATE_OPENAPI_SNAPSHOT").is_some() {
             let mut text = serde_json::to_string_pretty(&actual).unwrap();
@@ -630,9 +617,9 @@ mod snapshot {
         )
         .expect("快照不是合法 JSON");
         // `info.version` 來自 Cargo.toml；改版本號不是 API 變動，不該讓這個測試失敗
-        let mut actual = actual;
-        committed["info"]["version"] = serde_json::Value::Null;
-        actual["info"]["version"] = serde_json::Value::Null;
+        for document in [&mut committed, &mut actual] {
+            document["info"]["version"] = serde_json::Value::Null;
+        }
         assert!(
             committed == actual,
             "API 契約與 docs/api/openapi.json 不一致；確認變動符合預期後，\
