@@ -10,6 +10,10 @@ fn pool(n: usize) -> KeyPool {
 
 /// 冷卻是真實時間，所以「冷卻中」的斷言一律用很長的冷卻（不靠 sleep），
 /// 「冷卻後恢復」改成輪詢到條件成立，有上限、逾時就失敗：機器再慢也只是等久一點。
+#[expect(
+    clippy::disallowed_methods,
+    reason = "KeyPool 是同步 API，這裡沒有 tokio runtime"
+)]
 fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !condition() {

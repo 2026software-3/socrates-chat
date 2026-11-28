@@ -1,3 +1,7 @@
+// 伺服器程式碼：輸出一律走 tracing，不用 print；不 unwrap，改用 expect 寫明為何不會失敗。
+// tests/ 的壓測輸出與 bin/import-books 的命令列輸出不受此限。
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::unwrap_used)]
+
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
@@ -92,11 +96,17 @@ async fn main() {
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     state.spawn_housekeeping();
+    socrates_chat_backend::topic_translations::spawn_worker(&state);
     service_monitor::spawn(&state);
     // 重啟前寄到一半的客訴通知信：把逾時仍是 pending 的重新排入寄信
     match complaints::requeue_stale(&state).await {
         0 => {}
         n => tracing::warn!(count = n, "requeued stale complaint mails"),
+    }
+    // 重啟前排在記憶體的公告翻譯重試都不見了：仍有待完成翻譯的重新排入（#528）
+    match socrates_chat_backend::announcements::resume_pending_translations(&state).await {
+        0 => {}
+        n => tracing::info!(count = n, "rescheduled pending announcement translations"),
     }
     if let Ok(seconds) = std::env::var("SUMMARY_TRANSLATION_RETRY_SECS")
         && !seconds.trim().is_empty()

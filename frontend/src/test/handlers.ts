@@ -19,7 +19,7 @@ export const defaultHandlers = [
   http.get('/api/classrooms/:id/ai-provider', () => HttpResponse.json({ provider: null })),
   // 沒有特別要測單場雷達圖的測試：總結尚未成功，雷達圖面板不顯示
   http.get('/api/conversations/:id/radar', () =>
-    HttpResponse.json({ status: 'summary_not_ready', retryable: false, scores: null, dimensions: null, rules_version: null, completed_at: null }),
+    HttpResponse.json({ scale: 'legacy', status: 'summary_not_ready', retryable: false, scores: null, dimensions: null, rules_version: null, completed_at: null }),
   ),
   // 教室 AI 設定的模型欄位：沒有特別要測模型清單的測試，視為沒有 key（純文字輸入）
   http.get('/api/teacher/keys/models', ({ request }) =>

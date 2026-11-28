@@ -29,6 +29,20 @@ use tower::ServiceExt;
 
 pub const APP_URL: &str = "https://app.test";
 
+/// `dir` 底下所有 `.rs` 檔（遞迴）；原始碼掃描型的守衛測試共用。
+pub fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(rust_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// 假的 Google：授權碼格式為 `ok:<sub>:<email>`、`unverified:<sub>:<email>`，其他一律失敗。
 pub struct FakeIdentity;
 
@@ -128,6 +142,8 @@ pub enum Script {
     Hang,
     /// 每個片段前都先等一段時間，模擬回覆產生到一半
     Paced(Vec<&'static str>, std::time::Duration),
+    /// 閘門打開（`watch` 的值變成 `true`，或發送端被丟棄）之後才給出這些片段；用來讓測試以事件而不是時間決定誰先誰後
+    Gated(Vec<&'static str>, tokio::sync::watch::Receiver<bool>),
 }
 
 /// 假的 AI：依序執行腳本（用完後一律失敗），並記錄收到的請求。
@@ -200,6 +216,16 @@ impl AiProvider for FakeAi {
                     Ok(c.to_string())
                 })
                 .boxed()),
+            Some(Script::Gated(chunks, mut gate)) => Ok(stream::once(async move {
+                let _ = gate.wait_for(|open| *open).await;
+                stream::iter(
+                    chunks
+                        .into_iter()
+                        .map(|c| Ok::<String, AiError>(c.to_string())),
+                )
+            })
+            .flatten()
+            .boxed()),
             Some(Script::Fail) | None => Err(AiError::unclassified()),
         }
     }
@@ -732,6 +758,18 @@ pub async fn settled_summary(app: &Router, cookie: &str, conv: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("summary stayed pending");
+}
+
+/// 等假 AI 至少收到 `n` 個題目翻譯請求（累計，含先前的）；逾時就讓測試失敗，而不是卡住。
+/// `wait_until_ai_called` 只數對話與其他 AI 呼叫，不含題目翻譯。
+pub async fn wait_until_topic_translations_requested(ai: &FakeAi, n: usize) {
+    for _ in 0..500 {
+        if ai.topic_translation_requests.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("topic translation was not requested {n} times");
 }
 
 /// 等假 AI 至少被呼叫 `n` 次；逾時就讓測試失敗，而不是卡住。

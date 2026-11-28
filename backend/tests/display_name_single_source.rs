@@ -2,16 +2,7 @@
 
 use std::{fs, path::Path};
 
-fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
+mod common;
 
 /// SQL 字串內的 `<別名>.display_name`（Rust 結構欄位存取不在引號內，不受影響）。
 fn raw_reads(line: &str) -> bool {
@@ -27,11 +18,7 @@ fn raw_reads(line: &str) -> bool {
 
 #[test]
 fn no_query_reads_the_raw_display_name_column() {
-    let mut files = Vec::new();
-    rust_files(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut files,
-    );
+    let files = common::rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
     let mut offenders = Vec::new();
     for file in files {
         let text = fs::read_to_string(&file).unwrap();

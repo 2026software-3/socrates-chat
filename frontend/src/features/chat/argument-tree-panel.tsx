@@ -70,7 +70,7 @@ function treeSpec(conversationId: string, postFirst: boolean): PollSpec<TreeView
  * Only explicit opening starts requests. 輪詢由全域登記處持有（S-20）：關閉視窗或離頁後，
  * 後端工作與輪詢都繼續，再打開時直接接上。
  */
-export function ArgumentTreePanel({ conversationId }: { conversationId: string }) {
+export function ArgumentTreePanel({ conversationId, topicTitle }: { conversationId: string; topicTitle: string }) {
   const t = useT()
   const [open, setOpen] = useState(false)
   const [started, setStarted] = useState(false)
@@ -122,7 +122,7 @@ export function ArgumentTreePanel({ conversationId }: { conversationId: string }
         ) : null}
         {state.kind === 'ready' ? (
           <div className="min-w-0 space-y-4">
-            <p className="text-sm font-medium">{state.tree.title} · {t('chat.tree.count', { count: state.tree.node_count })}</p>
+            <p className="text-sm font-medium">{topicTitle} · {t('chat.tree.count', { count: state.tree.node_count })}</p>
             <ul className="min-w-0" aria-label={t('chat.tree.title')}><TreeNode node={state.tree.root} root /></ul>
             <details className="rounded-lg border p-3">
               <summary className="cursor-pointer text-sm font-medium">{t('chat.tree.json')}</summary>

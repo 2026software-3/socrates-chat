@@ -11,8 +11,8 @@ const personal: PersonalDashboard = {
   total_turns: 17,
   completed: 3,
   recent: [
-    { conversation_id: 'c1', title: '電車難題', ended_at: '2026-10-02T10:00:00Z', stage: 3, turn_count: 6, stance: '傾向拉桿', claim: '該拉桿' },
-    { conversation_id: 'c2', title: '說謊可以嗎', ended_at: '2026-10-01T10:00:00Z', stage: 2, turn_count: 5, stance: '不可以', claim: null },
+    { conversation_id: 'c1', title: '電車難題', ended_at: '2026-10-02T10:00:00Z', stage: 3, turn_count: 6, stance: '傾向拉桿', claim: '該拉桿', title_pending: false },
+    { conversation_id: 'c2', title: '說謊可以嗎', ended_at: '2026-10-01T10:00:00Z', stage: 2, turn_count: 5, stance: '不可以', claim: null, title_pending: false },
   ],
 }
 

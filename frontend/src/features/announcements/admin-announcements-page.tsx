@@ -136,6 +136,7 @@ export function AdminAnnouncementsPage() {
   const [saving, setSaving] = useState(false)
   const [toDelete, setToDelete] = useState<Announcement>()
   const [deleting, setDeleting] = useState(false)
+  const [retranslating, setRetranslating] = useState<string>()
 
   const when = (iso: string) => new Date(iso).toLocaleString(lang, { dateStyle: 'medium', timeStyle: 'short' })
 
@@ -171,6 +172,21 @@ export function AdminAnnouncementsPage() {
     } catch (err) {
       setActionError(err)
       return false
+    }
+  }
+
+  /** 立即重試待完成的譯文（自動重試用完或後端重啟後沒排到時用）；仍失敗的語言會繼續標示待完成。 */
+  async function retranslate(id: string) {
+    if (retranslating) return
+    setRetranslating(id)
+    setActionError(undefined)
+    try {
+      await api.post(`/api/admin/announcements/${id}/retranslate`)
+      reload()
+    } catch (err) {
+      setActionError(err)
+    } finally {
+      setRetranslating(undefined)
     }
   }
 
@@ -295,7 +311,18 @@ export function AdminAnnouncementsPage() {
                           : t('admin.announcements.period', { from: when(a.starts_at) })}
                       </p>
                       {a.pending_languages.length > 0 ? (
-                        <p className="text-xs text-amber-700 dark:text-amber-400">{t('admin.announcements.pending', { languages: pending })}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-xs text-amber-700 dark:text-amber-400">{t('admin.announcements.pending', { languages: pending })}</p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-label={t('admin.announcements.retranslate', { text: label })}
+                            disabled={retranslating !== undefined}
+                            onClick={() => void retranslate(a.id)}
+                          >
+                            {retranslating === a.id ? t('admin.announcements.retranslating') : t('admin.announcements.retranslateAction')}
+                          </Button>
+                        </div>
                       ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">

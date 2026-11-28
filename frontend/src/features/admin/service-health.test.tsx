@@ -25,7 +25,7 @@ function mockHealth(build: (days: string) => HealthView | Response = () => healt
   const periods: string[] = []
   server.use(
     http.get('/api/admin/teachers', () => HttpResponse.json({ emails: [] })),
-    http.get('/api/dashboard/class', () => HttpResponse.json({ students_total: 0 })),
+    http.get('/api/dashboard/class', () => HttpResponse.json({ masked: false, students_total: 0, students_participating: 0, completed: 0, activities: [] })),
     http.get('/api/topics', () => HttpResponse.json([])),
     http.get('/api/admin/status', () =>
       HttpResponse.json({
@@ -114,7 +114,7 @@ describe('service health block on the admin home page', () => {
   it('shows a recoverable error with the public health fallback when the request fails', async () => {
     mockMe(makeMe({ admin: true }))
     let calls = 0
-    mockHealth(() => (++calls === 1 ? apiError(503, 'database_unavailable') : health()))
+    mockHealth(() => (++calls === 1 ? apiError(400, 'invalid_health_period') : health()))
     server.use(
       http.get('/health', () => HttpResponse.json({ status: 'ok' })),
       http.get('/ready', () => HttpResponse.json({ error: { code: 'database_unavailable' } }, { status: 503 })),

@@ -741,19 +741,23 @@ async fn missing_translation_is_retried_on_later_patch(pool: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
+    // 慢的那次 PATCH 的翻譯被閘門擋住，直到快的那次完全寫入才放行：先後順序由事件決定，不靠時間。
+    // AI 總逾時拉長，閘門等多久都不會被逾時截斷。
     let ai = FakeAi::with(vec![]);
-    let app = test_app_with_ai(pool, ai.clone());
+    let mut config = test_config();
+    config.ai_total_timeout = std::time::Duration::from_secs(60);
+    let app = test_app_with_config(pool, ai.clone(), config);
     let a = seed_actors(&app).await;
     let id = create_topic(&app, &a, "選擇").await;
+    let (release, gate) = tokio::sync::watch::channel(false);
+    // 標題只有一欄，英文與西班牙文各一次翻譯請求，兩個腳本剛好都給慢的那次
     for _ in 0..2 {
         ai.topic_translation_scripts
             .lock()
             .unwrap()
-            .push_back(Script::Paced(
-                vec![r#""New""#],
-                std::time::Duration::from_millis(600),
-            ));
+            .push_back(Script::Gated(vec![r#""New""#], gate.clone()));
     }
+    let already_requested = ai.topic_translation_requests.lock().unwrap().len();
     let path = format!("/api/topics/{id}");
     let slow = send(
         &app,
@@ -765,9 +769,9 @@ async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
         ),
     );
     let fast = async {
-        // 等慢的那次已讀完快照並開始翻譯（AI 收到請求）再送，不靠固定睡眠決定誰先誰後
-        wait_until_ai_called(&ai, 1).await;
-        send(
+        // 慢的那次已讀完快照並送出兩個翻譯請求（都卡在閘門），才送快的那次
+        wait_until_topic_translations_requested(&ai, already_requested + 2).await;
+        let response = send(
             &app,
             json_req(
                 "PATCH",
@@ -776,12 +780,217 @@ async fn concurrent_patch_during_translation_is_not_rejected(pool: PgPool) {
                 Some(json!({"guiding_questions": ["為什麼？"]})),
             ),
         )
-        .await
+        .await;
+        // 快的那次已經寫入，慢的那次才繼續
+        release.send(true).unwrap();
+        response
     };
     let (slow, fast) = tokio::join!(slow, fast);
     assert_eq!(fast.status(), StatusCode::OK);
     assert_eq!(slow.status(), StatusCode::OK);
     let topic = json_body(slow).await;
     assert_eq!(topic["title"], "新題名");
+    // 慢的那次寫入前發現題目已被快的那次改過，要保留快的那次的問題
     assert_eq!(topic["guiding_questions"], json!(["為什麼？"]));
+}
+
+#[sqlx::test]
+async fn conversation_detail_localizes_title_without_switching_conversation_language(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let conversation = start_conversation(&app, &actors).await;
+    sqlx::query(
+        "UPDATE topics SET translations = '{\"en\":{\"title\":\"A translated topic\"}}'
+                 WHERE id = (SELECT topic_id FROM conversations WHERE id = $1::uuid)",
+    )
+    .bind(&conversation)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let result = json_body(
+        send(
+            &app,
+            get(
+                &format!("/api/conversations/{conversation}?language=en"),
+                Some(&actors.student),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(result["title"], "A translated topic");
+    assert_eq!(result["language"], "zh-TW");
+}
+
+#[sqlx::test]
+async fn backfills_existing_learning_content_and_preserves_manual_translation(pool: PgPool) {
+    use socrates_chat_backend::{AppState, app, topic_translations::fill_missing};
+    use std::sync::Arc;
+
+    let ai = FakeAi::with(
+        (0..4)
+            .map(|_| Script::Reply(vec![r#""Translated activity text""#]))
+            .collect(),
+    );
+    ai.topic_translation_scripts
+        .lock()
+        .unwrap()
+        .extend((0..3).map(|_| Script::Reply(vec![r#""Translated topic text""#])));
+    register_fixture_pool(&pool);
+    let state = AppState::new(
+        pool.clone(),
+        test_config(),
+        Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    let app = app(state.clone());
+    let actors = seed_actors(&app).await;
+    let topic: uuid::Uuid = sqlx::query_scalar(
+        r#"INSERT INTO topics (title, guiding_questions, translations)
+           VALUES ('舊題名', ARRAY['舊問題？'], '{"en":{"title":"Teacher title"}}') RETURNING id"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let activity = publish_activity(&app, &actors, "舊活動", &topic.to_string()).await;
+    sqlx::query("UPDATE activities SET description = '舊活動說明' WHERE id = $1::uuid")
+        .bind(&activity)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    fill_missing(&state).await.unwrap();
+    let staff_list =
+        json_body(send(&app, get("/api/activities", Some(&actors.teacher))).await).await;
+    assert_eq!(staff_list["items"][0]["title"], "舊活動");
+    assert_eq!(
+        staff_list["items"][0]["translations"]["en"]["title"],
+        "Translated activity text"
+    );
+    assert_eq!(
+        staff_list["items"][0]["translations"]["en"]["description"],
+        "Translated activity text"
+    );
+    let catalog =
+        json_body(send(&app, get("/api/catalog?language=en", Some(&actors.student))).await).await;
+    assert_eq!(catalog["topics"][0]["title"], "Teacher title");
+    assert_eq!(
+        catalog["topics"][0]["guiding_questions"],
+        json!(["Translated topic text"])
+    );
+    assert_eq!(
+        catalog["activities"][0]["title"],
+        "Translated activity text"
+    );
+    assert_eq!(
+        catalog["activities"][0]["description"],
+        "Translated activity text"
+    );
+    assert_eq!(catalog["activities"][0]["description_pending"], false);
+
+    let count = ai.request_count();
+    let topic_count = ai.topic_translation_requests.lock().unwrap().len();
+    fill_missing(&state).await.unwrap();
+    assert_eq!(ai.request_count(), count);
+    assert_eq!(
+        ai.topic_translation_requests.lock().unwrap().len(),
+        topic_count
+    );
+
+    let response = send(
+        &app,
+        json_req(
+            "PATCH",
+            &format!("/api/activities/{activity}"),
+            Some(&actors.teacher),
+            Some(json!({ "description": "更新說明" })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let catalog =
+        json_body(send(&app, get("/api/catalog?language=es", Some(&actors.student))).await).await;
+    assert_eq!(
+        catalog["activities"][0]["title"],
+        "Translated activity text"
+    );
+    assert_eq!(catalog["activities"][0]["description"], "更新說明");
+    assert_eq!(catalog["activities"][0]["description_pending"], true);
+}
+
+fn failing_translation_state(
+    pool: &PgPool,
+) -> (socrates_chat_backend::AppState, std::sync::Arc<FakeAi>) {
+    use socrates_chat_backend::AppState;
+    use std::sync::Arc;
+
+    let ai = FakeAi::with(Vec::new());
+    ai.topic_translation_scripts
+        .lock()
+        .unwrap()
+        .extend((0..200).map(|_| Script::Fail));
+    register_fixture_pool(pool);
+    let state = AppState::new(
+        pool.clone(),
+        test_config(),
+        Arc::new(FakeIdentity),
+        ai.clone(),
+    );
+    (state, ai)
+}
+
+#[sqlx::test]
+async fn rows_whose_translation_keeps_failing_are_not_retried_on_the_next_pass(pool: PgPool) {
+    use socrates_chat_backend::topic_translations::{TranslationRetries, fill_missing_with};
+
+    let (state, ai) = failing_translation_state(&pool);
+    sqlx::query(
+        "INSERT INTO topics (title, guiding_questions) VALUES ('舊題名', ARRAY['舊問題？'])",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut retries = TranslationRetries::default();
+    fill_missing_with(&state, &mut retries).await.unwrap();
+    let attempted = ai.topic_translation_requests.lock().unwrap().len();
+    assert!(
+        attempted > 0,
+        "the first pass tries the missing translations"
+    );
+
+    fill_missing_with(&state, &mut retries).await.unwrap();
+    assert_eq!(
+        ai.topic_translation_requests.lock().unwrap().len(),
+        attempted,
+        "a row that just failed waits out its backoff"
+    );
+}
+
+#[sqlx::test]
+async fn failed_language_does_not_rewrite_the_row_with_an_empty_entry(pool: PgPool) {
+    use socrates_chat_backend::topic_translations::fill_missing;
+
+    let (state, _ai) = failing_translation_state(&pool);
+    let stored = r#"{"en":{"title":"T","q:舊問題？":"Q"}}"#;
+    let topic: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO topics (title, guiding_questions, translations)
+         VALUES ('舊題名', ARRAY['舊問題？'], $1::jsonb) RETURNING id",
+    )
+    .bind(stored)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    fill_missing(&state).await.unwrap();
+    let after: serde_json::Value =
+        sqlx::query_scalar("SELECT translations FROM topics WHERE id = $1")
+            .bind(topic)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        after,
+        serde_json::from_str::<serde_json::Value>(stored).unwrap()
+    );
 }

@@ -35,7 +35,7 @@ export function TranscriptPage() {
   const { lang } = useI18n()
   const base = useClassroomsBase()
   const { classroomId, conversationId } = useParams()
-  const transcript = useFetch<Transcript>(`/api/summaries/${encodeURIComponent(conversationId ?? '')}/messages`)
+  const transcript = useFetch<Transcript>(`/api/summaries/${encodeURIComponent(conversationId ?? '')}/messages?language=${lang}`)
   const data = transcript.data
   if (transcript.error) return <ErrorBlock error={transcript.error} onRetry={transcript.reload} />
   if (!data) return <LoadingBlock />
