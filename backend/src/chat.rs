@@ -54,6 +54,10 @@ pub struct Conversation {
     pub stage: i16,
     pub turn_count: i32,
     pub converge_ready: bool,
+    #[serde(skip)]
+    #[schema(ignore)]
+    #[sqlx(default)]
+    pub dimension_rules: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
@@ -87,7 +91,7 @@ macro_rules! conversation_columns {
         "SELECT id, activity_id, topic_id, classroom_id,
                 (SELECT a.title FROM activities a WHERE a.id = conversations.activity_id) AS activity_title,
                 ", $title, ", description, language, status, stage,
-                turn_count, converge_ready, created_at,
+                turn_count, converge_ready, dimension_rules, created_at,
                 COALESCE((SELECT MAX(created_at) FROM messages WHERE conversation_id = conversations.id), conversations.created_at) AS updated_at,
                 ended_at,
                 archived_at IS NOT NULL AS is_archived,
@@ -229,8 +233,8 @@ pub(crate) async fn create(
     // 新列經由與列表、單場相同的 SELECT 讀回，輸出欄位只有一份定義。
     let created = sqlx::query_as(concat!(
         "WITH conversations AS (
-            INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO conversations (user_id, activity_id, topic_id, classroom_id, title, description, language, dimension_rules)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE((SELECT radar_scale = 'stance' FROM topics WHERE id=$3),false))
             RETURNING *
          ) ",
         conversation_select!("")
@@ -535,20 +539,20 @@ async fn claim_turn(
     sqlx::query_as(concat!(
         "WITH c AS (
              UPDATE conversations SET turn_count = turn_count + 1,
-                    generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END,
-                    status = CASE WHEN turn_count + 1 >= $3 THEN 'ended' ELSE status END,
-                    ended_at = CASE WHEN turn_count + 1 >= $3 THEN now() ELSE ended_at END
+                    generating_since = CASE WHEN NOT dimension_rules AND turn_count + 1 >= $3 THEN NULL ELSE now() END,
+                    status = CASE WHEN NOT dimension_rules AND turn_count + 1 >= $3 THEN 'ended' ELSE status END,
+                    ended_at = CASE WHEN NOT dimension_rules AND turn_count + 1 >= $3 THEN now() ELSE ended_at END
              WHERE id = $1 AND status = 'active' AND ",
         generation_unclaimed!(),
-        "    RETURNING turn_count, stage
+        "    RETURNING turn_count, stage, dimension_rules
          ), s AS (
-             INSERT INTO summaries (conversation_id) SELECT $1 FROM c WHERE c.turn_count >= $3
+             INSERT INTO summaries (conversation_id) SELECT $1 FROM c WHERE NOT c.dimension_rules AND c.turn_count >= $3
          ), m AS (
              INSERT INTO messages (conversation_id, role, content, source)
              SELECT $1, 'student', $4, $5 FROM c
              RETURNING id, role, content, source, question_type, created_at
          )
-         SELECT c.turn_count, c.stage, c.turn_count >= $3 AS auto_ended,
+         SELECT c.turn_count, c.stage, NOT c.dimension_rules AND c.turn_count >= $3 AS auto_ended,
                 m.id, m.role, m.content, m.source, m.question_type, m.created_at
          FROM c, m",
     ))
@@ -571,19 +575,19 @@ async fn claim_answered_turn(
     source: &str,
 ) -> Result<Option<Claimed>, ApiError> {
     // 達回合上限時不產生回覆，所以不 claim，讓後面的結束對話可以進行
-    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
+    let turn: Option<(i32, i16, bool)> = sqlx::query_as(concat!(
         "UPDATE conversations SET turn_count = turn_count + 1,
-                generating_since = CASE WHEN turn_count + 1 >= $3 THEN NULL ELSE now() END
+                generating_since = CASE WHEN NOT dimension_rules AND turn_count + 1 >= $3 THEN NULL ELSE now() END
          WHERE id = $1 AND status = 'active' AND ",
         generation_unclaimed!(),
-        " RETURNING turn_count, stage",
+        " RETURNING turn_count, stage, dimension_rules",
     ))
     .bind(id)
     .bind(state.config.generation_stale_secs())
     .bind(state.config.max_turns as i32)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((turn, stage)) = turn else {
+    let Some((turn, stage, dimension_rules)) = turn else {
         return Ok(None);
     };
     // 上面的 UPDATE 鎖住對話列，檢查與寫入之間不會有別的訊息。沒被聽到的回覆也算回覆過
@@ -610,7 +614,8 @@ async fn claim_answered_turn(
     .fetch_one(&mut *conn)
     .await?;
     // 到達回合上限：不再追問，直接產生總結並結束（S-03.3）
-    let auto_ended = turn >= state.config.max_turns as i32
+    let auto_ended = !dimension_rules
+        && turn >= state.config.max_turns as i32
         && summary::end_conversation(conn, id, state.config.generation_stale_secs()).await?;
     Ok(Some(Claimed {
         turn_count: turn,
@@ -635,17 +640,17 @@ pub(crate) async fn rejoin_message(
     if conversation.status != "active" {
         return Err(ApiError::conversation_ended());
     }
-    let turn: Option<(i32, i16)> = sqlx::query_as(concat!(
+    let turn: Option<(i32, i16, bool)> = sqlx::query_as(concat!(
         "UPDATE conversations SET generating_since = now()
          WHERE id = $1 AND status = 'active' AND ",
         generation_unclaimed!(),
-        " RETURNING turn_count, stage",
+        " RETURNING turn_count, stage, dimension_rules",
     ))
     .bind(id)
     .bind(state.config.generation_stale_secs())
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((turn, stage)) = turn else {
+    let Some((turn, stage, _dimension_rules)) = turn else {
         return Err(ApiError::reply_in_progress());
     };
     let last: Option<(String, Option<i32>)> = sqlx::query_as(

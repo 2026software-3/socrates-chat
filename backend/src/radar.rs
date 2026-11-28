@@ -63,11 +63,12 @@ pub(crate) struct RadarDimension {
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct RadarView {
+    scale: String,
     status: RadarStatus,
     /// 現在是否可以呼叫 `radar/retry`（失敗、尚未開始，或計算已超過逾時上限）
     retryable: bool,
-    /// 以維度識別碼為 key 的 0 到 5 整數分；只有 `ready` 時有值，且六個維度齊全
-    scores: Option<BTreeMap<String, u8>>,
+    /// Only ready: legacy has all six scores 0..5; stance has -2..2 and omits unknown keys.
+    scores: Option<BTreeMap<String, i16>>,
     /// 題目的六個維度；題目維度尚未完成或題目已不存在時為 null
     dimensions: Option<Vec<RadarDimension>>,
     /// 評分提示版本；只有 `ready` 時有值
@@ -78,6 +79,7 @@ pub(crate) struct RadarView {
 
 #[derive(FromRow)]
 struct Row {
+    radar_scale: String,
     owner: Uuid,
     classroom: Option<Uuid>,
     title: String,
@@ -109,6 +111,7 @@ fn public_dimensions(dimensions: [Dimension; 6]) -> Vec<RadarDimension> {
 
 /// 一次計算需要的輸入：只有這場對話自己的題目文字與題目維度。
 struct Job {
+    stance: bool,
     owner: Uuid,
     classroom: Option<Uuid>,
     title: String,
@@ -138,6 +141,7 @@ impl Row {
         let status = self.status();
         let ready = status == RadarStatus::Ready;
         RadarView {
+            scale: self.radar_scale,
             status,
             // 封存教室的重試一定回 409 classroom_archived，所以不讓畫面顯示重試
             retryable: !self.archived
@@ -156,6 +160,7 @@ impl Row {
     /// 直接從已讀到的資料組出來，不必在提交後再查一次資料庫。
     fn pending_view(&self) -> RadarView {
         RadarView {
+            scale: self.radar_scale.clone(),
             status: RadarStatus::Pending,
             retryable: false,
             scores: None,
@@ -183,6 +188,7 @@ impl Row {
             })
             .collect();
         Some(Job {
+            stance: self.radar_scale == "stance",
             owner: self.owner,
             classroom: self.classroom,
             title: self.title,
@@ -201,7 +207,7 @@ async fn fetch<'e>(
         "SELECT c.user_id AS owner, c.classroom_id AS classroom, c.title, COALESCE(t.guiding_questions, '{}') AS guiding_questions,
                 t.id IS NOT NULL AS has_topic,
                 COALESCE(s.status = 'ready', false) AS summary_ready,
-                t.dimensions, t.dimensions_language,
+                t.dimensions, t.dimensions_language, COALESCE(t.radar_scale, 'legacy') AS radar_scale,
                 r.status AS radar_status, r.scores, r.rules_version, r.completed_at,
                 COALESCE(r.status = 'pending'
                          AND r.started_at < now() - make_interval(secs => $2), false) AS stale,
@@ -281,9 +287,26 @@ async fn run_claimed(state: &AppState, id: Uuid, attempt: i32, job: Job) {
 
 async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), sqlx::Error> {
     let turns = crate::summary::load_messages_for(state, id).await?;
-    let rubric = radar_scoring::rubric_for(&job.dimensions);
-    let request =
-        radar_scoring::build_request(&job.title, &job.guiding_questions, &job.dimensions, &turns);
+    let rubric = if job.stance {
+        crate::radar_store::Rubric::stance(job.dimensions.iter().map(|d| d.id.clone()).collect())
+    } else {
+        radar_scoring::rubric_for(&job.dimensions)
+    };
+    let request = if job.stance {
+        radar_scoring::build_stance_request(
+            &job.title,
+            &job.guiding_questions,
+            &job.dimensions,
+            &turns,
+        )
+    } else {
+        radar_scoring::build_request(&job.title, &job.guiding_questions, &job.dimensions, &turns)
+    };
+    let version = if job.stance {
+        radar_scoring::STANCE_VERSION
+    } else {
+        PROMPT_VERSION
+    };
     // 逾時、失敗或結果無效時自動重試 1 次（S-03.5）；仍失敗就標記 failed
     let mut scores = None;
     // 教室內的對話只用教室建立者的 key（F-40.5）
@@ -320,10 +343,13 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
     };
     // 分數與成就判定在同一個交易內（S-07.3：雷達圖分數寫入後判定）
     let mut tx = state.pool.begin().await?;
-    match radar_store::complete(&mut *tx, id, attempt, &scores, &rubric, PROMPT_VERSION).await {
+    match radar_store::complete(&mut *tx, id, attempt, &scores, &rubric, version).await {
         Ok(true) => {
             let values: Vec<i32> = scores.values().map(|score| i32::from(*score)).collect();
-            crate::achievements::record_dimension_score_in_tx(&mut tx, job.owner, &values).await?;
+            if !job.stance {
+                crate::achievements::record_dimension_score_in_tx(&mut tx, job.owner, &values)
+                    .await?;
+            }
             tx.commit().await?;
         }
         // 這一代已被新的嘗試取代，或總結已不是 ready：不寫入

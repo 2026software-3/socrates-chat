@@ -623,19 +623,16 @@ async fn existing_topic_and_conversation_survive_translation_migration(pool: PgP
     let id: uuid::Uuid = sqlx::query_scalar("INSERT INTO topics(title, guiding_questions) VALUES ('選擇', ARRAY['為什麼？']) RETURNING id").fetch_one(&pool).await.unwrap();
     let app = test_app(pool.clone());
     let actors = seed_actors(&app).await;
-    let conversation = json_body(
-        send(
-            &app,
-            json_req(
-                "POST",
-                "/api/conversations",
-                Some(&actors.student),
-                Some(json!({"topic_id":id})),
-            ),
-        )
-        .await,
+    // Create pre-migration data with the pre-migration schema. The current API requires
+    // current columns; calling it here would not represent an existing conversation.
+    let conversation: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO conversations(user_id, topic_id, title)
+         SELECT id, $1, '選擇' FROM users WHERE email='student@example.com' RETURNING id",
     )
-    .await;
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     all.run(&pool).await.unwrap();
     let list = json_body(
         send(
@@ -645,7 +642,7 @@ async fn existing_topic_and_conversation_survive_translation_migration(pool: PgP
         .await,
     )
     .await;
-    assert_eq!(list["items"][0]["id"], conversation["id"]);
+    assert_eq!(list["items"][0]["id"], conversation.to_string());
     assert_eq!(list["items"][0]["title"], "選擇");
     assert_eq!(list["items"][0]["title_pending"], true);
     let catalog =

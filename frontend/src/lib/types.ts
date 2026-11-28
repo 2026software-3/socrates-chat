@@ -145,10 +145,12 @@ export type LocalizedText = { zh_tw: string; en: string; es: string }
 export type RadarDimension = { id: string; name: LocalizedText; description: LocalizedText }
 
 export type RadarView = {
+  /** Absent only for older servers; stance allows unknown (omitted) dimension scores. */
+  scale?: 'legacy' | 'stance'
   status: RadarStatus
   /** 現在能否呼叫 `radar/retry` */
   retryable: boolean
-  /** 以維度識別碼為 key 的 0 到 5 整數分；只有 `ready` 時有值，且六個維度齊全 */
+  /** Ready only: legacy has six 0..5 scores; stance uses -2..2 and omits unknown keys. */
   scores: Record<string, number> | null
   dimensions: RadarDimension[] | null
   rules_version: string | null
