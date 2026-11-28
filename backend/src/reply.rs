@@ -679,7 +679,7 @@ async fn attempt(
 
 /// 我們自己的期限到了（首 token 或總時間，S-03.5），不是供應商回報的逾時。
 fn deadline() -> AiError {
-    AiError::classified(Failure::Timeout).with_kind("deadline")
+    AiError::classified(Failure::Timeout).with_kind(crate::ai::ErrorKind::Deadline)
 }
 
 fn stream_stage(got_chunk: bool) -> &'static str {

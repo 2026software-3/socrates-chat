@@ -154,12 +154,57 @@ pub struct AiError {
     /// `x-ratelimit-remaining-requests`／`-tokens`：供應商回報的剩餘額度（只有數字）。
     pub(crate) ratelimit_remaining_requests: Option<u64>,
     pub(crate) ratelimit_remaining_tokens: Option<u64>,
-    /// 錯誤種類（固定字串，例如 `http_status`、`stream_error_event`、`stream_transport`），只給日誌用。
-    pub(crate) kind: Option<&'static str>,
-    /// 串流中途錯誤事件的狀態代碼（例如 Gemini 的 `UNAVAILABLE`）；只留固定格式的大寫代碼。
-    pub(crate) provider_status: Option<String>,
-    /// 串流中途錯誤事件的數字代碼（例如 503）；不是 HTTP 狀態，是事件本文裡的代碼。
-    pub(crate) event_code: Option<u16>,
+    /// 錯誤種類，只給日誌用（一個位元組，不讓 `AiError` 變大）。
+    pub(crate) kind: Option<ErrorKind>,
+    /// 串流中途錯誤事件的代碼；很少出現，放在 `Box` 裡讓 `AiError` 保持小（clippy `result_large_err`）。
+    pub(crate) error_event: Option<Box<ErrorEvent>>,
+}
+
+/// 錯誤種類；日誌裡是固定的蛇形字串。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    HttpStatus,
+    StreamErrorEvent,
+    StreamNoContent,
+    StreamTransport,
+    StreamParse,
+    Timeout,
+    Connect,
+    WebCall,
+    InvalidJsonResponse,
+    NoResponse,
+    ResponseFormat,
+    Deadline,
+    Other,
+}
+
+impl ErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HttpStatus => "http_status",
+            Self::StreamErrorEvent => "stream_error_event",
+            Self::StreamNoContent => "stream_no_content",
+            Self::StreamTransport => "stream_transport",
+            Self::StreamParse => "stream_parse",
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::WebCall => "web_call",
+            Self::InvalidJsonResponse => "invalid_json_response",
+            Self::NoResponse => "no_response",
+            Self::ResponseFormat => "response_format",
+            Self::Deadline => "deadline",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// 串流中途錯誤事件的代碼（例如 Gemini 的 `{"error":{"code":503,"status":"UNAVAILABLE"}}`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorEvent {
+    /// 只留 1–40 字的大寫英文與底線（例如 `UNAVAILABLE`）。
+    status: Option<String>,
+    /// 事件本文裡的數字代碼（不是 HTTP 狀態）。
+    code: Option<u16>,
 }
 
 impl AiError {
@@ -184,8 +229,7 @@ impl AiError {
             ratelimit_remaining_requests: None,
             ratelimit_remaining_tokens: None,
             kind: None,
-            provider_status: None,
-            event_code: None,
+            error_event: None,
         }
     }
 
@@ -289,31 +333,32 @@ impl AiError {
     }
 
     pub fn kind(&self) -> Option<&'static str> {
-        self.kind
+        self.kind.map(ErrorKind::as_str)
     }
 
     pub fn provider_status(&self) -> Option<&str> {
-        self.provider_status.as_deref()
+        self.error_event.as_ref()?.status.as_deref()
     }
 
     pub fn event_code(&self) -> Option<u16> {
-        self.event_code
+        self.error_event.as_ref()?.code
     }
 
-    pub(crate) fn with_kind(mut self, kind: &'static str) -> Self {
+    pub(crate) fn with_kind(mut self, kind: ErrorKind) -> Self {
         self.kind = Some(kind);
         self
     }
 
     /// 錯誤事件的代碼：狀態代碼只留 1–40 字的大寫英文與底線（例如 `UNAVAILABLE`），其餘丟掉。
     pub(crate) fn with_error_event(mut self, status: Option<&str>, code: Option<u64>) -> Self {
-        self.provider_status = status
+        let status = status
             .filter(|s| {
                 (1..=40).contains(&s.len())
                     && s.bytes().all(|c| c.is_ascii_uppercase() || c == b'_')
             })
             .map(str::to_owned);
-        self.event_code = code.and_then(|c| u16::try_from(c).ok());
+        let code = code.and_then(|c| u16::try_from(c).ok());
+        self.error_event = Some(Box::new(ErrorEvent { status, code }));
         self
     }
 
