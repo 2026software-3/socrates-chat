@@ -74,6 +74,15 @@ const META_KEYS: [&str; 6] = [
     "response_kind",
 ];
 
+/// 一回合結束時 META 的形狀：整段沒有分隔標記時是 `no_delimiter`（模型漏寫），其餘同 [`meta_shape`]。
+pub(crate) fn turn_meta_shape(delimited: bool, raw: &str) -> String {
+    if delimited {
+        meta_shape(raw)
+    } else {
+        "no_delimiter".into()
+    }
+}
+
 /// 描述 META 的形狀供日誌使用：已知欄位名稱與 JSON 型別，不含任何值（值可能轉述學生原文）。
 pub(crate) fn meta_shape(raw: &str) -> String {
     if raw.trim().is_empty() {
@@ -326,6 +335,11 @@ impl MetaSplitter {
         std::mem::replace(&mut self.held, rest)
     }
 
+    /// 是否已經看到分隔標記（後面即使是空的也算）；用來在日誌分辨模型漏寫還是串流斷在 META。
+    pub fn has_meta(&self) -> bool {
+        self.in_meta
+    }
+
     /// 串流結束：回傳尚未送出的文字與結構化段落。
     pub fn finish(self) -> (String, String) {
         if self.in_meta {
@@ -359,6 +373,11 @@ const QUESTION_TYPES: [&str; 6] = [
 
 /// 解析結構化段落；格式不符時保守地當作「不晉級、未知類型」。
 pub fn parse_meta(raw: &str) -> TurnMeta {
+    parse_turn_meta(true, raw, 0)
+}
+
+/// 同 [`parse_meta`]；`delimited` 與 `reply_chars`（給學生看的文字長度）只用在解析失敗的日誌。
+pub fn parse_turn_meta(delimited: bool, raw: &str, reply_chars: usize) -> TurnMeta {
     #[derive(Deserialize)]
     struct Raw {
         question_type: Option<String>,
@@ -379,7 +398,11 @@ pub fn parse_meta(raw: &str) -> TurnMeta {
         },
         None => {
             // 只記形狀（有無 META、欄位型別），不記內容；用來分辨模型漏掉 META 還是欄位型別不符
-            tracing::warn!(shape = %meta_shape(raw), "turn META could not be parsed");
+            tracing::warn!(
+                shape = %turn_meta_shape(delimited, raw),
+                reply_chars,
+                "turn META could not be parsed"
+            );
             TurnMeta {
                 question_type: None,
                 advance: false,
@@ -2165,6 +2188,22 @@ mod tests {
         assert_eq!(meta_shape("沒有 JSON 的文字"), "no_json");
         assert_eq!(meta_shape("{\"question_type\":"), "invalid_json");
         assert_eq!(meta_shape("[1,2]"), "no_json");
+    }
+
+    /// 日誌要分得出「模型整段沒寫分隔標記」和「寫了分隔標記但後面是空的（串流在這裡斷掉）」。
+    #[test]
+    fn splitter_reports_whether_the_delimiter_appeared() {
+        let mut plain = MetaSplitter::default();
+        plain.push("你怎麼看？");
+        assert!(!plain.has_meta());
+        let mut cut = MetaSplitter::default();
+        cut.push("你怎麼看？\n<<<ME");
+        cut.push("TA>>>");
+        assert!(cut.has_meta());
+        assert_eq!(cut.finish().1, "");
+        assert_eq!(turn_meta_shape(false, ""), "no_delimiter");
+        assert_eq!(turn_meta_shape(true, ""), "empty");
+        assert_eq!(turn_meta_shape(true, "[1]"), "no_json");
     }
 
     #[test]

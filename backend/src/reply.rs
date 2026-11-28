@@ -38,7 +38,7 @@ use crate::{
     AppState,
     ai::{
         AiError, AiProvider, AiRequest, ChatRole, ChatTurn, MetaSplitter, PromptContext, TurnMeta,
-        build_system_prompt, closing_instruction, parse_meta, rules_version,
+        build_system_prompt, closing_instruction, rules_version,
     },
     auth::RequireStudent,
     chat::{Conversation, Message, heard_only, load_messages},
@@ -475,16 +475,21 @@ async fn generate(
     } else {
         None
     };
-    // 維度規則：已收斂但覆蓋未完成時，模型常直接收尾而被擋下（學生看到收尾卻無法結束），
-    // 所以在模型最後讀到的地方列出缺少的維度並要求改問。提醒包在這次請求的隨機標籤裡，
-    // 系統提示只信任這個標籤，學生無法在自己的訊息裡假冒；只在請求裡，不寫進紀錄
-    let coverage_note = dimension_context
-        .as_ref()
-        .filter(|_| conv.converge_ready)
-        .and_then(|(dimensions, covered, _)| {
-            crate::dimension_dialogue::coverage_reminder(&conv.language, dimensions, covered)
-        })
-        .map(|reminder| (crate::dimension_dialogue::new_note_tag(), reminder));
+    // 維度規則：每回合在模型最後讀到的地方提醒 META 格式（歷史裡的 AI 訊息都沒有 META，模型會跟著
+    // 不寫）；已收斂但覆蓋未完成時再列出缺少的維度並要求改問（否則模型直接收尾而被擋下）。
+    // 提醒包在這次請求的隨機標籤裡，系統提示只信任這個標籤，學生無法在自己的訊息裡假冒；
+    // 只在請求裡，不寫進紀錄
+    let turn_note = dimension_context.as_ref().map(|(dimensions, covered, _)| {
+        (
+            crate::dimension_dialogue::new_note_tag(),
+            crate::dimension_dialogue::turn_note(
+                &conv.language,
+                dimensions,
+                covered,
+                conv.converge_ready,
+            ),
+        )
+    });
     let mut req = AiRequest {
         system: if let Some((dimensions, covered, asked)) = &dimension_context {
             crate::dimension_dialogue::prompt_with_note(
@@ -492,7 +497,7 @@ async fn generate(
                 dimensions,
                 covered,
                 asked,
-                coverage_note.as_ref().map(|(tag, _)| tag.as_str()),
+                turn_note.as_ref().map(|(tag, _)| tag.as_str()),
             )
         } else {
             build_system_prompt(&PromptContext {
@@ -520,7 +525,7 @@ async fn generate(
         last.content.push_str("\n\n");
         last.content.push_str(closing_instruction(&conv.language));
     }
-    if let Some((tag, reminder)) = &coverage_note
+    if let Some((tag, reminder)) = &turn_note
         && let Some(last) = req.messages.last_mut()
     {
         last.content.push_str("\n\n");
@@ -645,6 +650,7 @@ async fn attempt(
             }
         }
     }
+    let delimited = splitter.has_meta();
     let (rest, meta_raw) = splitter.finish();
     if !rest.is_empty() {
         emitted = true;
@@ -654,7 +660,9 @@ async fn attempt(
     if text.trim().is_empty() {
         return Err((AiError::invalid_output(), emitted));
     }
-    Ok((text.trim().to_string(), parse_meta(&meta_raw)))
+    let text = text.trim().to_string();
+    let meta = crate::ai::parse_turn_meta(delimited, &meta_raw, text.chars().count());
+    Ok((text, meta))
 }
 
 struct Saved {

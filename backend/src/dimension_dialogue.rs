@@ -7,7 +7,8 @@ use crate::ai::META_DELIM;
 
 /// v2：補回 META 格式防呆（歷史不含 META 仍須輸出、完整範例、不用 null）。
 /// v3：已收斂但覆蓋未完成時，在最後一則學生訊息後附上缺少的維度（`coverage_reminder`）。
-pub const VERSION: &str = "dialogue-dimensions-v3";
+/// v4：每回合在最後一則學生訊息後提醒 META 格式（`turn_note`）。
+pub const VERSION: &str = "dialogue-dimensions-v4";
 pub const IDS: [&str; 6] = ["d1", "d2", "d3", "d4", "d5", "d6"];
 
 /// 模型常把「沒有」寫成 null；當成空值，不讓單一欄位讓整段 META 解析失敗。
@@ -209,6 +210,26 @@ reconoce la respuesta del estudiante y pregunta de forma natural por una de ella
     })
 }
 
+/// 每回合附在最後一則學生訊息後的系統提醒（包進 [`wrap_note`]）。歷史裡的 AI 訊息都不含 META，
+/// 模型會跟著歷史不寫（49934f4b 連續 4 輪），所以把格式要求放在模型最後讀到的地方；已收斂但覆蓋
+/// 未完成時再加上 [`coverage_reminder`]。只在請求裡，不寫進紀錄。
+pub fn turn_note(
+    language: &str,
+    dimensions: &serde_json::Value,
+    covered: &[String],
+    converged: bool,
+) -> String {
+    let mut note = format!(
+        "Format reminder: after your reply, output the line {META_DELIM} and then the JSON object, \
+exactly as the system prompt requires, even though earlier assistant messages in the history do not show it."
+    );
+    if converged && let Some(reminder) = coverage_reminder(language, dimensions, covered) {
+        note.push('\n');
+        note.push_str(&reminder);
+    }
+    note
+}
+
 /// 每次請求一個新的系統提醒標籤（128 位元隨機），學生無法預先在訊息裡寫出。
 pub fn new_note_tag() -> String {
     format!("system-note-{}", uuid::Uuid::new_v4().simple())
@@ -260,8 +281,33 @@ mod tests {
     }
 
     #[test]
-    fn version_is_bumped_for_the_coverage_reminder() {
-        assert_eq!(VERSION, "dialogue-dimensions-v3");
+    fn version_is_bumped_for_the_per_turn_format_reminder() {
+        assert_eq!(VERSION, "dialogue-dimensions-v4");
+    }
+
+    /// 49934f4b：歷史裡的 AI 訊息都沒有 META，gpt-5.4-mini 連續 4 輪跟著不寫；每回合在模型最後讀到的
+    /// 地方提醒格式，已收斂但覆蓋未完成時同一則提醒再加上缺少的維度。
+    #[test]
+    fn every_turn_note_repeats_the_meta_format_and_adds_coverage_only_when_needed() {
+        let partial = covered(&["d2", "d3", "d4", "d5"]);
+        let all = covered(&["d1", "d2", "d3", "d4", "d5", "d6"]);
+        for (converged, done, expect_coverage) in [
+            (true, &partial, true),
+            (true, &all, false),
+            (false, &partial, false),
+        ] {
+            let note = turn_note("zh-TW", &six_dimensions(), done, converged);
+            assert!(note.contains(META_DELIM), "{note}");
+            assert!(
+                note.contains(
+                    "even though earlier assistant messages in the history do not show it"
+                ),
+                "{note}"
+            );
+            assert_eq!(note.contains("不要收尾"), expect_coverage, "{note}");
+        }
+        // 沒有維度的題目也要提醒格式
+        assert!(turn_note("en", &serde_json::Value::Null, &[], true).contains(META_DELIM));
     }
 
     fn six_dimensions() -> serde_json::Value {
