@@ -299,6 +299,34 @@ async fn q_searches_name_email_and_title_across_all_pages(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn summary_titles_use_saved_translations_and_can_be_found_by_them(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let (_, _, expected) = seed_many(&pool, &actors.classroom).await;
+    let id = expected[0].0;
+    sqlx::query(
+        r#"WITH topic AS (
+            INSERT INTO topics (title, translations)
+            VALUES ('中文原題', '{"en":{"title":"Translated summary title"}}')
+            RETURNING id
+        )
+        UPDATE conversations SET topic_id = topic.id FROM topic WHERE conversations.id = $1"#,
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let path = "/api/summaries?language=en&q=translated%20summary";
+    let response = send(&app, get(path, Some(&actors.teacher))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = json_body(response).await;
+    assert_eq!(ids(std::slice::from_ref(&page)), vec![id.to_string()]);
+    assert_eq!(page["items"][0]["title"], "Translated summary title");
+    assert_eq!(page["items"][0]["language"], "zh-TW");
+}
+
+#[sqlx::test]
 async fn cursor_only_works_with_the_filters_that_produced_it(pool: PgPool) {
     let app = test_app(pool.clone());
     let a = seed_actors(&app).await;

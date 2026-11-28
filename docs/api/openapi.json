@@ -9843,6 +9843,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "description": "題名顯示語言",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11248,6 +11257,17 @@
         ],
         "summary": "個人儀表板",
         "operationId": "personal",
+        "parameters": [
+          {
+            "name": "language",
+            "in": "query",
+            "description": "題名顯示語言",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "個人統計",
@@ -12053,7 +12073,16 @@
           {
             "name": "q",
             "in": "query",
-            "description": "搜尋學生姓名、電子郵件或題目標題（不分大小寫的子字串，最多 100 字元），涵蓋所有頁",
+            "description": "搜尋學生姓名、電子郵件或題目標題與譯名（不分大小寫的子字串，最多 100 字元），涵蓋所有頁",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "description": "題名顯示語言，省略時使用保存的題名",
             "required": false,
             "schema": {
               "type": "string"
@@ -12176,6 +12205,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "description": "題名顯示語言",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -14726,6 +14764,9 @@
               "format": "uuid"
             },
             "description": "活動題目清單（S-04.7、F-29.1）"
+          },
+          "translations": {
+            "$ref": "#/components/schemas/BTreeMap"
           }
         }
       },
@@ -18123,6 +18164,7 @@
         "required": [
           "conversation_id",
           "title",
+          "title_pending",
           "stage",
           "turn_count"
         ],
@@ -18157,6 +18199,9 @@
           },
           "title": {
             "type": "string"
+          },
+          "title_pending": {
+            "type": "boolean"
           },
           "turn_count": {
             "type": "integer",
@@ -18645,6 +18690,8 @@
           {
             "type": "object",
             "required": [
+              "title_pending",
+              "description_pending",
               "classroom_name",
               "topics",
               "completed"
@@ -18657,6 +18704,12 @@
               "completed": {
                 "type": "boolean",
                 "description": "每一題都有已產生總結的對話才算完成（S-04.7）"
+              },
+              "description_pending": {
+                "type": "boolean"
+              },
+              "title_pending": {
+                "type": "boolean"
               },
               "topics": {
                 "type": "array",

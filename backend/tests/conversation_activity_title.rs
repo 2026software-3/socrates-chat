@@ -50,6 +50,36 @@ async fn activity_conversation_carries_the_activity_title_next_to_the_topic_titl
 }
 
 #[sqlx::test]
+async fn activity_source_and_transcript_use_saved_titles_when_requested(pool: PgPool) {
+    let app = test_app(pool.clone());
+    let actors = seed_actors(&app).await;
+    let topic = seed_topic("原題名").await;
+    let activity = publish_activity(&app, &actors, "原活動", &topic).await;
+    let conversation = start_from_activity(&app, &actors.student, &activity).await;
+    sqlx::query(r#"UPDATE activities SET translations = '{"en":{"title":"Localized activity"}}' WHERE id = $1::uuid"#)
+        .bind(&activity).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE topics SET translations = '{"en":{"title":"Localized topic"}}' WHERE id = $1::uuid"#)
+        .bind(&topic).execute(&pool).await.unwrap();
+
+    let items = all_items(&app, "/api/conversations?language=en", &actors.student).await;
+    assert_eq!(items[0]["activity_title"], "Localized activity");
+    let items = all_items(&app, "/api/conversations?language=es", &actors.student).await;
+    assert_eq!(items[0]["activity_title"], "原活動");
+
+    sqlx::query("UPDATE conversations SET status = 'ended', ended_at = now() WHERE id = $1::uuid")
+        .bind(&conversation)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let path = format!("/api/summaries/{conversation}/messages?language=en");
+    let response = send(&app, get(&path, Some(&actors.teacher))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let transcript = json_body(response).await;
+    assert_eq!(transcript["title"], "Localized topic");
+    assert_eq!(transcript["language"], "zh-TW");
+}
+
+#[sqlx::test]
 async fn personal_practice_has_no_activity_title(pool: PgPool) {
     let app = test_app(pool);
     let a = seed_actors(&app).await;

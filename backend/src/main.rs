@@ -96,6 +96,7 @@ async fn main() {
     .with_reasoning_effort(config.openai_reasoning_effort.clone());
     let state = AppState::new(pool, config, Arc::new(identity), Arc::new(ai));
     state.spawn_housekeeping();
+    socrates_chat_backend::topic_translations::spawn_worker(&state);
     service_monitor::spawn(&state);
     // 重啟前寄到一半的客訴通知信：把逾時仍是 pending 的重新排入寄信
     match complaints::requeue_stale(&state).await {

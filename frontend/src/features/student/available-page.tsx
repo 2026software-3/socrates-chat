@@ -278,9 +278,11 @@ function ActivityCard({ activity, startingKey, onStart }: ActivityCardProps) {
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="font-medium">{activity.title}</span>
+          {activity.title_pending && <small>{t('admin.dimensions.translationPending')}</small>}
           {activity.description ? (
             <span className="text-muted-foreground text-xs whitespace-pre-line">{activity.description}</span>
           ) : null}
+          {activity.description_pending && <small>{t('admin.dimensions.translationPending')}</small>}
         </div>
         <span className="text-muted-foreground shrink-0 text-xs">
           {t(activity.completed ? 'student.available.completed' : 'student.available.openNow')}
