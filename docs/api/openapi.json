@@ -2796,6 +2796,58 @@
         }
       }
     },
+    "/api/admin/metrics": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "匯出 Prometheus 系統指標",
+        "description": "以 Prometheus 文字格式（0.0.4）匯出 HTTP、AI、背景工作、連線池與周邊服務的 Counter／Gauge／Histogram 指標。限系統管理者或設定了 `METRICS_TOKEN` 的 Bearer 憑證使用，不含任何個資或對話原文。",
+        "operationId": "scrape",
+        "responses": {
+          "200": {
+            "description": "Prometheus 文字格式指標",
+            "content": {
+              "text/plain; version=0.0.4; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登入或 Bearer token 無效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "非系統管理者",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "系統錯誤（`internal`）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/parts": {
       "get": {
         "tags": [

@@ -15,7 +15,6 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{Acquire, FromRow, PgExecutor, Postgres, Transaction, types::Json as SqlJson};
-use tracing::Instrument;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -264,22 +263,30 @@ pub(crate) async fn claim_after_summary(
 
 /// 在背景執行已登記的計算。
 pub(crate) fn spawn_claimed(state: AppState, id: Uuid, claimed: Claimed) {
-    tokio::spawn(diagnostics::inherit_request(
-        async move { run_claimed(&state, id, claimed.attempt, claimed.job).await }
-            .in_current_span(),
-    ));
+    tokio::spawn(diagnostics::inherit_request(async move {
+        run_claimed(&state, id, claimed.attempt, claimed.job).await;
+    }));
 }
 
 /// 執行已取得的那一代計算；記帳失敗時盡力標記為失敗，避免停在 pending。
 async fn run_claimed(state: &AppState, id: Uuid, attempt: i32, job: Job) {
-    if let Err(e) = run(state, id, attempt, &job).await {
-        // 不記錄資料庫錯誤訊息：約束錯誤可能帶出資料列內容
-        tracing::error!(class = %db_error_class(&e), "radar scoring bookkeeping failed");
-        let _ = radar_store::fail(&state.pool, id, attempt).await;
-    }
+    crate::telemetry::in_component_span("background_job", "radar_scoring", async {
+        let job_metric = state.metrics.track_background_job("radar_scoring");
+        match run(state, id, attempt, &job).await {
+            Ok(true) => job_metric.finish("ok"),
+            Ok(false) => job_metric.finish("failed"),
+            Err(e) => {
+                // 不記錄資料庫錯誤訊息：約束錯誤可能帶出資料列內容
+                tracing::error!(class = %db_error_class(&e), "radar scoring bookkeeping failed");
+                let _ = radar_store::fail(&state.pool, id, attempt).await;
+                job_metric.finish("failed");
+            }
+        }
+    })
+    .await;
 }
 
-async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), sqlx::Error> {
+async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<bool, sqlx::Error> {
     let turns = crate::summary::load_messages_for(state, id).await?;
     let rubric = radar_scoring::rubric_for(&job.dimensions);
     let request =
@@ -316,7 +323,7 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
     }
     let Some(scores) = scores else {
         radar_store::fail(&state.pool, id, attempt).await?;
-        return Ok(());
+        return Ok(false);
     };
     // 分數與成就判定在同一個交易內（S-07.3：雷達圖分數寫入後判定）
     let mut tx = state.pool.begin().await?;
@@ -325,16 +332,17 @@ async fn run(state: &AppState, id: Uuid, attempt: i32, job: &Job) -> Result<(), 
             let values: Vec<i32> = scores.values().map(|score| i32::from(*score)).collect();
             crate::achievements::record_dimension_score_in_tx(&mut tx, job.owner, &values).await?;
             tx.commit().await?;
+            Ok(true)
         }
         // 這一代已被新的嘗試取代，或總結已不是 ready：不寫入
-        Ok(false) => {}
-        Err(CompleteError::Db(e)) => return Err(e),
+        Ok(false) => Ok(true),
+        Err(CompleteError::Db(e)) => Err(e),
         Err(CompleteError::Invalid(_)) => {
             drop(tx);
             radar_store::fail(&state.pool, id, attempt).await?;
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 #[utoipa::path(
@@ -392,20 +400,17 @@ pub(crate) async fn retry(
     // 這一代仍會提交並執行，不會停在 pending 卻沒有工作在跑。
     // 回應用提交前讀到的資料組出，所以很快的 AI 也不會讓 202 的內容變成 ready。
     let (committed, outcome) = tokio::sync::oneshot::channel();
-    tokio::spawn(diagnostics::inherit_request(
-        async move {
-            match tx.commit().await {
-                Ok(()) => {
-                    let _ = committed.send(Ok(()));
-                    run_claimed(&state, id, attempt, job).await;
-                }
-                Err(e) => {
-                    let _ = committed.send(Err(e));
-                }
+    tokio::spawn(diagnostics::inherit_request(async move {
+        match tx.commit().await {
+            Ok(()) => {
+                let _ = committed.send(Ok(()));
+                run_claimed(&state, id, attempt, job).await;
+            }
+            Err(e) => {
+                let _ = committed.send(Err(e));
             }
         }
-        .in_current_span(),
-    ));
+    }));
     outcome.await.map_err(|_| ApiError::internal())??;
     Ok((StatusCode::ACCEPTED, Json(pending)))
 }

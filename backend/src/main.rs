@@ -6,18 +6,15 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{
     AppState, ai::OpenAiProvider, ai_job_store, app, auth_store, catalog, complaints,
-    config::Config, demo, identity::GoogleIdentity, logging, password, radar_store,
+    config::Config, demo, error, identity::GoogleIdentity, logging, password, radar_store,
     service_monitor, summary, summary_translation,
 };
 use sqlx::postgres::PgPoolOptions;
 
 #[tokio::main]
 async fn main() {
-    logging::json_subscriber()
-        .with_env_filter(logging::env_filter(
-            std::env::var("RUST_LOG").ok().as_deref(),
-        ))
-        .init();
+    logging::init_from_env().expect("invalid logging configuration");
+    logging::install_panic_hook();
 
     let config = Config::from_env().expect("invalid configuration");
     let retired = socrates_chat_backend::config::retired_key_variables(|name| {
@@ -45,37 +42,47 @@ async fn main() {
     match summary::recover_orphaned(&pool).await {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned summaries as failed"),
-        Err(_) => tracing::error!("failed to recover orphaned summaries"),
+        Err(e) => {
+            tracing::error!(class = %error::db_error_class(&e), "failed to recover orphaned summaries")
+        }
     }
     // 重啟前卡住的雷達圖計算同樣標記為失敗；還在時限內的留給可能仍在執行的實例
     match radar_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned radar results as failed"),
-        Err(_) => tracing::error!("failed to recover orphaned radar results"),
+        Err(e) => {
+            tracing::error!(class = %error::db_error_class(&e), "failed to recover orphaned radar results")
+        }
     }
     // 重啟前卡住的背景 AI 工作（S-20）同樣標記為失敗，使用者可以重試
     match ai_job_store::recover_orphaned(&pool, config.generation_stale_secs()).await {
         Ok(0) => {}
         Ok(n) => tracing::warn!(count = n, "marked orphaned AI jobs as failed"),
-        Err(_) => tracing::error!("failed to recover orphaned AI jobs"),
+        Err(e) => {
+            tracing::error!(class = %error::db_error_class(&e), "failed to recover orphaned AI jobs")
+        }
     }
     // 內建題目（電車難題）：已存在時不動它
-    if catalog::seed_builtin_topics(&pool).await.is_err() {
-        tracing::error!("failed to seed built-in topics");
+    if let Err(e) = catalog::seed_builtin_topics(&pool).await {
+        tracing::error!(class = %error::db_error_class(&e), "failed to seed built-in topics");
     }
     // 首位管理者的內建帳號：初始密碼來自環境變數，已存在的帳號不會被重設（S-01.3）
     if let Some(initial) = &config.admin_initial_password {
         let hash = password::hash(initial).expect("failed to hash ADMIN_INITIAL_PASSWORD");
         match auth_store::bootstrap_admins(&pool, &config.admin_emails, &hash).await {
             Ok(n) => tracing::info!(created = n, "bootstrapped admin accounts"),
-            Err(_) => tracing::error!("failed to bootstrap admin accounts"),
+            Err(e) => {
+                tracing::error!(class = %error::db_error_class(&e), "failed to bootstrap admin accounts")
+            }
         }
     }
     // 示範模式：固定密碼的示範教師與學生（不含管理者）；每次啟動都重設回公開的密碼
     if config.demo_mode {
         match demo::seed_accounts(&pool).await {
             Ok(()) => tracing::warn!("DEMO_MODE is on: public demo accounts are active"),
-            Err(_) => tracing::error!("failed to seed demo accounts"),
+            Err(e) => {
+                tracing::error!(class = %error::db_error_class(&e), "failed to seed demo accounts")
+            }
         }
     }
     let identity = GoogleIdentity::discover(

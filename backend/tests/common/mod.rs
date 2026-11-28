@@ -127,6 +127,7 @@ pub fn test_config() -> Config {
         monitored_services: vec![],
         service_probe_interval: socrates_chat_backend::service_monitor::DEFAULT_PROBE_INTERVAL,
         database_max_connections: socrates_chat_backend::config::DEFAULT_DATABASE_MAX_CONNECTIONS,
+        metrics_token: None,
     }
 }
 

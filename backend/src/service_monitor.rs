@@ -297,10 +297,19 @@ pub(crate) struct Monitor {
     services: Vec<Service>,
     /// 即時語音節點（S-19）：隨登錄表增減，由 `sync_voice_nodes` 維護。
     voice: std::sync::Mutex<Vec<std::sync::Arc<Service>>>,
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
 }
 
 impl Monitor {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(config: &[MonitoredService]) -> Self {
+        Self::with_metrics(config, std::sync::Arc::default())
+    }
+
+    pub(crate) fn with_metrics(
+        config: &[MonitoredService],
+        metrics: std::sync::Arc<crate::metrics::Metrics>,
+    ) -> Self {
         let database = Service::new(
             DATABASE.into(),
             ServiceText::Text("PostgreSQL".into()),
@@ -333,45 +342,74 @@ impl Monitor {
             http,
             services,
             voice: std::sync::Mutex::default(),
+            metrics,
         }
     }
 
     async fn probe(&self, service: &Service, pool: &PgPool) -> ProbeResult {
-        let start = Instant::now();
-        let elapsed = || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let failure = if let Some(url) = &service.endpoint {
-            match self.http.get(url.clone()).send().await {
-                Ok(response) => {
-                    return ProbeResult {
-                        failure: (!response.status().is_success())
-                            .then_some(ServiceFailure::Non2xx),
-                        response_time_ms: Some(elapsed()),
-                    };
-                }
-                Err(error) if error.is_timeout() => ServiceFailure::Timeout,
-                Err(_) => ServiceFailure::ConnectionFailed,
-            }
-        } else {
-            match crate::probe_database(pool).await {
-                Ok(Ok(_)) => {
-                    return ProbeResult {
-                        failure: None,
-                        response_time_ms: Some(elapsed()),
-                    };
-                }
-                Err(_) | Ok(Err(sqlx::Error::PoolTimedOut)) => ServiceFailure::Timeout,
-                Ok(Err(_)) => ServiceFailure::ConnectionFailed,
-            }
-        };
-        ProbeResult {
-            failure: Some(failure),
-            response_time_ms: None,
-        }
+        crate::telemetry::in_component_span_with_target(
+            "service_probe",
+            "health_check",
+            Some(&service.name),
+            async {
+                let start = Instant::now();
+                let elapsed_ms = || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let result = if let Some(url) = &service.endpoint {
+                    let mut req = self.http.get(url.clone());
+                    // 只透傳 W3C traceparent（不帶 cookie 或授權標頭，S-09.3）
+                    if let Some(tp) = crate::telemetry::current_traceparent() {
+                        req = req.header(crate::telemetry::TRACEPARENT_HEADER, tp);
+                    }
+                    match req.send().await {
+                        Ok(response) => ProbeResult {
+                            failure: (!response.status().is_success())
+                                .then_some(ServiceFailure::Non2xx),
+                            response_time_ms: Some(elapsed_ms()),
+                        },
+                        Err(error) if error.is_timeout() => ProbeResult {
+                            failure: Some(ServiceFailure::Timeout),
+                            response_time_ms: None,
+                        },
+                        Err(_) => ProbeResult {
+                            failure: Some(ServiceFailure::ConnectionFailed),
+                            response_time_ms: None,
+                        },
+                    }
+                } else {
+                    match crate::probe_database(pool).await {
+                        Ok(Ok(_)) => ProbeResult {
+                            failure: None,
+                            response_time_ms: Some(elapsed_ms()),
+                        },
+                        Err(_) | Ok(Err(sqlx::Error::PoolTimedOut)) => ProbeResult {
+                            failure: Some(ServiceFailure::Timeout),
+                            response_time_ms: None,
+                        },
+                        Ok(Err(_)) => ProbeResult {
+                            failure: Some(ServiceFailure::ConnectionFailed),
+                            response_time_ms: None,
+                        },
+                    }
+                };
+                let outcome = match result.failure {
+                    None => "ok",
+                    Some(ServiceFailure::ConnectionFailed) => "connection_failed",
+                    Some(ServiceFailure::Timeout) => "timeout",
+                    Some(ServiceFailure::Non2xx) => "non_2xx",
+                };
+                self.metrics
+                    .record_service_probe(&service.name, outcome, start.elapsed());
+                result
+            },
+        )
+        .await
     }
 
     // The caller serializes checks for this service, including event persistence.
-    async fn check(&self, service: &Service, pool: &PgPool, trigger: Trigger) {
+    /// 回傳這次探測是否成功（無 failure），供排程輪次決定背景工作指標的結果標籤。
+    async fn check(&self, service: &Service, pool: &PgPool, trigger: Trigger) -> bool {
         let result = self.probe(service, pool).await;
+        let ok = result.failure.is_none();
         let pending = {
             let mut state = lock(&service.state);
             state.observe(result, Utc::now(), trigger);
@@ -391,16 +429,24 @@ impl Monitor {
             match tokio::time::timeout(HISTORY_TIMEOUT, record_event(pool, event)).await {
                 Ok(Ok(())) => written += 1,
                 Ok(Err(error)) => {
-                    tracing::warn!(class = %crate::error::db_error_class(&error), "service status event write failed");
+                    tracing::warn!(
+                        service = %service.name,
+                        class = %crate::error::db_error_class(&error),
+                        "service status event write failed"
+                    );
                     break;
                 }
                 Err(_) => {
-                    tracing::warn!("service status event write timed out");
+                    tracing::warn!(
+                        service = %service.name,
+                        "service status event write timed out"
+                    );
                     break;
                 }
             }
         }
         lock(&service.outbox).drain(..written);
+        ok
     }
 
     /// 周邊服務（不含資料庫）的狀態摘要，給首頁健康度使用。
@@ -415,6 +461,21 @@ impl Monitor {
             }
         }
         summary
+    }
+
+    /// 各監控服務與語音節點目前的健康狀態（供 Prometheus `socrates_service_up` gauge 使用）。
+    pub(crate) fn statuses(&self) -> Vec<(String, bool)> {
+        let voice = self.voice_services();
+        self.services
+            .iter()
+            .chain(voice.iter().map(|service| &**service))
+            .map(|service| {
+                (
+                    service.name.clone(),
+                    lock(&service.state).current.status == Status::Healthy,
+                )
+            })
+            .collect()
     }
 
     async fn view(&self, pool: &PgPool, period_days: i64) -> ServicesView {
@@ -550,28 +611,41 @@ pub fn parse_probe_interval(raw: Option<&str>) -> Result<Duration, ConfigError> 
         })
 }
 
+async fn run_scheduled_cycle(state: &AppState) {
+    crate::telemetry::in_component_span("background_job", "service_monitor_cycle", async {
+        let job_metric = state.metrics.track_background_job("service_monitor");
+        let monitor = &state.service_monitor;
+        monitor.sync_voice_nodes(&state.voice_nodes.all(state).await);
+        let voice = monitor.voice_services();
+        let all = monitor
+            .services
+            .iter()
+            .chain(voice.iter().map(|service| &**service));
+        let results = join_all(all.map(|service| async {
+            if let Ok(_guard) = service.in_flight.try_lock() {
+                monitor
+                    .check(service, &state.pool, Trigger::Scheduled)
+                    .await
+            } else {
+                true
+            }
+        }))
+        .await;
+        let all_ok = results.into_iter().all(std::convert::identity);
+        job_metric.finish(if all_ok { "ok" } else { "degraded" });
+    })
+    .await;
+}
+
 pub fn spawn(state: &AppState) {
     let state = state.clone();
     let probe_interval = state.config.service_probe_interval;
     tokio::spawn(async move {
-        let monitor = state.service_monitor.clone();
-        let pool = state.pool.clone();
         let mut interval = tokio::time::interval(probe_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            monitor.sync_voice_nodes(&state.voice_nodes.all(&state).await);
-            let voice = monitor.voice_services();
-            let all = monitor
-                .services
-                .iter()
-                .chain(voice.iter().map(|service| &**service));
-            join_all(all.map(|service| async {
-                if let Ok(_guard) = service.in_flight.try_lock() {
-                    monitor.check(service, &pool, Trigger::Scheduled).await;
-                }
-            }))
-            .await;
+            run_scheduled_cycle(&state).await;
         }
     });
 }
@@ -1029,5 +1103,232 @@ mod tests {
         .unwrap();
         assert_eq!(statuses, ["healthy", "unhealthy", "healthy"]);
         assert!(lock(&service.outbox).is_empty());
+    }
+
+    #[tokio::test]
+    async fn scheduled_cycle_shares_trace_across_probes_and_records_background_job_metrics() {
+        use std::{io, sync::Mutex as StdMutex};
+
+        use axum::http::HeaderMap;
+        use serde_json::Value;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        use crate::{
+            ai::{AiError, AiProvider, AiRequest, AiStream},
+            config::Config,
+            identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
+            key_pool::KeyPool,
+        };
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<StdMutex<Vec<u8>>>);
+        struct Sink(Arc<StdMutex<Vec<u8>>>);
+        impl io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Captured {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                Sink(self.0.clone())
+            }
+        }
+
+        struct DummyId;
+        #[async_trait::async_trait]
+        impl IdentityProvider for DummyId {
+            fn start(&self) -> AuthRequest {
+                AuthRequest {
+                    url: String::new(),
+                    state: String::new(),
+                    nonce: String::new(),
+                    pkce_verifier: String::new(),
+                }
+            }
+            async fn finish(&self, _: &str, _: &str, _: &str) -> Result<Identity, IdentityError> {
+                Err(IdentityError)
+            }
+        }
+
+        struct DummyAi;
+        #[async_trait::async_trait]
+        impl AiProvider for DummyAi {
+            async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+                Err(AiError::unclassified())
+            }
+        }
+
+        let captured = Captured::default();
+        let subscriber = crate::logging::json_subscriber()
+            .with_env_filter(crate::logging::env_filter(Some("info")))
+            .with_writer(captured.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let received = Arc::new(StdMutex::new(BTreeMap::<String, String>::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let server = {
+            let received = Arc::clone(&received);
+            tokio::spawn(async move {
+                let record =
+                    |name: &'static str, received: Arc<StdMutex<BTreeMap<String, String>>>| {
+                        move |headers: HeaderMap| async move {
+                            if let Some(tp) = headers
+                                .get(crate::telemetry::TRACEPARENT_HEADER)
+                                .and_then(|v| v.to_str().ok())
+                            {
+                                received
+                                    .lock()
+                                    .unwrap()
+                                    .insert(name.to_string(), tp.to_string());
+                            }
+                            StatusCode::OK
+                        }
+                    };
+                let app = Router::new()
+                    .route("/a", get(record("svc-a", Arc::clone(&received))))
+                    .route("/b", get(record("svc-b", received)));
+                axum::serve(listener, app).await.unwrap();
+            })
+        };
+
+        let monitored_services = MonitoredService::parse(&format!(
+            r#"[
+                {{"name":"svc-a","label":"A","impact":"Voice","url":"http://{endpoint}/a"}},
+                {{"name":"svc-b","label":"B","impact":"Voice","url":"http://{endpoint}/b"}}
+            ]"#
+        ))
+        .unwrap();
+
+        let closed_pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+            .unwrap();
+        closed_pool.close().await;
+
+        let config = Config {
+            database_url: String::new(),
+            app_base_url: "https://app.test".into(),
+            google_client_id: "c".into(),
+            google_client_secret: "s".into(),
+            google_redirect_url: "https://app.test/cb".into(),
+            google_translation_api_key: None,
+            google_books_api_key: None,
+            admin_emails: vec![],
+            admin_initial_password: None,
+            cookie_secure: true,
+            listen_addr: "127.0.0.1:0".into(),
+            trusted_proxies: vec![],
+            login_rate_burst: 10,
+            login_rate_replenish: Duration::from_secs(1),
+            ai_usage_max: 10,
+            ai_usage_window: Duration::from_secs(60),
+            frontend_dir: None,
+            openai_keys: Arc::new(KeyPool::empty()),
+            openai_model: "m".into(),
+            openai_fallback_models: vec![],
+            openai_reasoning_effort: None,
+            openai_base_url: "http://127.0.0.1:1".into(),
+            openai_stt_base_url: None,
+            openai_tts_base_url: None,
+            openai_stt_model: None,
+            openai_tts_model: None,
+            openai_tts_voice: "alloy".into(),
+            cascade_realtime_url: None,
+            cascade_llm_token: None,
+            cascade_max_sessions: None,
+            internal_listen_addr: None,
+            wrap_up_turn: 3,
+            max_turns: 5,
+            ai_first_token_timeout: Duration::from_millis(50),
+            ai_total_timeout: Duration::from_millis(50),
+            argument_tree_timeout: Duration::from_millis(50),
+            request_timeout: Duration::from_secs(5),
+            demo_mode: false,
+            smtp: None,
+            teacher_key_cipher: None,
+            classroom_ai_routing: false,
+            monitored_services,
+            service_probe_interval: Duration::from_secs(30),
+            database_max_connections: 1,
+            metrics_token: None,
+        };
+        let state = AppState::new(closed_pool, config, Arc::new(DummyId), Arc::new(DummyAi));
+
+        // 第一輪：含失效的 database 探測 → outcome="degraded"
+        run_scheduled_cycle(&state).await;
+
+        // 1. 同一輪次內的所有 HTTP 探測共用同一個 trace_id，且各自擁有不同的子 span_id
+        let cycle_trace_id = {
+            let headers = received.lock().unwrap();
+            let tp_a: Vec<&str> = headers["svc-a"].split('-').collect();
+            let tp_b: Vec<&str> = headers["svc-b"].split('-').collect();
+            assert_eq!(tp_a.len(), 4);
+            assert_eq!(tp_b.len(), 4);
+            assert_eq!(
+                tp_a[1], tp_b[1],
+                "probes in the same scheduled cycle must share one trace_id"
+            );
+            assert_ne!(
+                tp_a[2], tp_b[2],
+                "each service probe must have its own child span_id"
+            );
+            tp_a[1].to_owned()
+        };
+
+        // 2. 輪次內產生的警告日誌歸屬在 background_job / service_monitor_cycle span 下並帶相同 trace_id 與 service 名稱
+        let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let warn_entry: Value = out
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|e| e["fields"]["message"] == "service status event write failed")
+            .expect("expected DB write warning inside cycle");
+        assert_eq!(warn_entry["span"]["component"], "background_job");
+        assert_eq!(warn_entry["span"]["operation"], "service_monitor_cycle");
+        assert_eq!(warn_entry["span"]["trace_id"], cycle_trace_id);
+        assert!(warn_entry["fields"]["service"].is_string());
+
+        // 3. 第二輪：全部服務健康時記錄 outcome="ok" 且產生全新的 cycle trace_id
+        let mut ok_monitor =
+            Monitor::with_metrics(&state.config.monitored_services, state.metrics.clone());
+        ok_monitor.services.retain(|s| s.name != DATABASE);
+        let mut ok_state = state.clone();
+        ok_state.service_monitor = Arc::new(ok_monitor);
+        run_scheduled_cycle(&ok_state).await;
+        server.abort();
+
+        let headers_after = received.lock().unwrap();
+        let tp_a_2: Vec<&str> = headers_after["svc-a"].split('-').collect();
+        assert_ne!(
+            tp_a_2[1], cycle_trace_id,
+            "each scheduled cycle must start a fresh trace_id"
+        );
+
+        // 4. 背景工作（degraded 與 ok 兩條分支）與個別服務探測指標皆正確記錄
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains(
+            "socrates_background_jobs_total{job=\"service_monitor\",outcome=\"degraded\"} 1"
+        ));
+        assert!(
+            prom.contains(
+                "socrates_background_jobs_total{job=\"service_monitor\",outcome=\"ok\"} 1"
+            )
+        );
+        assert!(prom.contains("socrates_background_jobs_in_flight{job=\"service_monitor\"} 0"));
+        assert!(
+            prom.contains(
+                "socrates_background_job_duration_seconds_count{job=\"service_monitor\"} 2"
+            )
+        );
+        assert!(prom.contains("socrates_service_probes_total{service=\"svc-a\",outcome=\"ok\"} 2"));
+        assert!(prom.contains("socrates_service_probes_total{service=\"svc-b\",outcome=\"ok\"} 2"));
+        assert!(prom.contains(
+            "socrates_service_probes_total{service=\"database\",outcome=\"connection_failed\"} 1"
+        ));
     }
 }

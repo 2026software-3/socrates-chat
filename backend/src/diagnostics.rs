@@ -90,16 +90,23 @@ pub(crate) fn scope_request<F: Future>(
     )
 }
 
-/// Tokio tasks do not inherit task-local state. Capture the initiating request
-/// before spawning a reply or summary, without copying any request data.
+pub(crate) fn current_route() -> Option<String> {
+    CONTEXT.try_with(|ctx| ctx.route.clone()).ok()
+}
+
+/// Tokio tasks do not inherit task-local state. Capture the initiating request,
+/// W3C trace context, and active tracing span before spawning a background task,
+/// without copying any request body or PII.
 pub(crate) fn inherit_request<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    // 先放到堆上，避免 `match` 分支內嵌多份 future 而在未最佳化的建置裡撐爆堆疊。
+    let future = Box::pin(future);
     let context = CONTEXT.try_with(Clone::clone).ok();
-    async move {
+    crate::telemetry::inherit_trace(async move {
         match context {
             Some(context) => CONTEXT.scope(context, future).await,
             None => future.await,
         }
-    }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
@@ -228,7 +235,7 @@ fn safe_model(model: &str) -> bool {
 }
 
 /// 在背景寫入事件；請求不等待，也不受寫入結果影響。
-fn insert(pool: &PgPool, event: Event) {
+fn insert(state: &AppState, event: Event) {
     let context = CONTEXT
         .try_with(Clone::clone)
         .unwrap_or_else(|_| RequestContext {
@@ -243,11 +250,12 @@ fn insert(pool: &PgPool, event: Event) {
         &PENDING_WRITES
     };
     let Ok(permit) = queue.try_acquire() else {
+        state.metrics.record_diagnostic_write_dropped(anonymous);
         tracing::warn!(class = "backlog", anonymous, "diagnostic write dropped");
         return;
     };
-    let pool = pool.clone();
-    tokio::spawn(async move {
+    let pool = state.pool.clone();
+    tokio::spawn(crate::telemetry::inherit_trace(async move {
         let _permit = permit;
         let model = event
             .ai
@@ -287,12 +295,13 @@ fn insert(pool: &PgPool, event: Event) {
             }
             Err(_) => tracing::warn!(class = "timeout", "diagnostic write failed"),
         }
-    });
+    }));
 }
 
-pub(crate) fn login_success(pool: &PgPool, function: &'static str, user: Uuid) {
+pub(crate) fn login_success(state: &AppState, function: &'static str, user: Uuid) {
+    state.metrics.record_auth_event(function, "ok");
     insert(
-        pool,
+        state,
         Event {
             kind: Kind::Login,
             failure: None,
@@ -307,15 +316,16 @@ pub(crate) fn login_success(pool: &PgPool, function: &'static str, user: Uuid) {
 }
 
 pub(crate) fn login_failure(
-    pool: &PgPool,
+    state: &AppState,
     function: &'static str,
     user: Option<Uuid>,
     failure: Failure,
     status: StatusCode,
     code: &'static str,
 ) {
+    state.metrics.record_auth_event(function, failure.code());
     insert(
-        pool,
+        state,
         Event {
             kind: Kind::Login,
             failure: Some(failure),
@@ -331,13 +341,16 @@ pub(crate) fn login_failure(
 
 /// 帳號層級的鎖定：只在剛達到鎖定門檻的那一次記錄。
 pub(crate) fn account_lock(
-    pool: &PgPool,
+    state: &AppState,
     user: Option<Uuid>,
     status: StatusCode,
     code: &'static str,
 ) {
+    state
+        .metrics
+        .record_auth_event("password_login", Failure::AccountLocked.code());
     insert(
-        pool,
+        state,
         Event {
             kind: Kind::AccountLock,
             failure: Some(Failure::AccountLocked),
@@ -353,7 +366,7 @@ pub(crate) fn account_lock(
 
 /// 外部書目查詢失敗（Google Books／Open Library）：記錄失敗分類與請求 ID，不含金鑰與查詢內容。
 pub(crate) fn book_source_failure(
-    pool: &PgPool,
+    state: &AppState,
     function: &'static str,
     user: Uuid,
     failure: Failure,
@@ -361,7 +374,7 @@ pub(crate) fn book_source_failure(
     code: &'static str,
 ) {
     insert(
-        pool,
+        state,
         Event {
             kind: Kind::BookSource,
             failure: Some(failure),
@@ -428,10 +441,13 @@ impl AiActivity {
         retry: i32,
         future: impl Future<Output = Result<T, crate::ai::AiError>>,
     ) -> Result<T, crate::ai::AiError> {
-        let started = Instant::now();
-        let (result, trace) = traced(future).await;
-        self.record(state, model, retry, started, result.as_ref().err(), &trace);
-        result
+        crate::telemetry::in_component_span("ai", self.function, async {
+            let started = Instant::now();
+            let (result, trace) = traced(future).await;
+            self.record(state, model, retry, started, result.as_ref().err(), &trace);
+            result
+        })
+        .await
     }
 
     pub(crate) fn record(
@@ -443,21 +459,49 @@ impl AiActivity {
         error: Option<&crate::ai::AiError>,
         trace: &AiSnapshot,
     ) {
+        let elapsed = started.elapsed();
         // 失敗帶有自己的嘗試次數與模型；成功時取供應商回報的追蹤，沒有就用呼叫端給的模型
         let attempts = error
             .map(|error| error.provider_attempts)
             .filter(|attempts| *attempts > 0)
             .unwrap_or(trace.attempts);
+        let retries = retry + (attempts - 1).max(0);
+        let resolved_model = error
+            .and_then(|error| error.model.clone())
+            .or_else(|| trace.model.clone())
+            .or_else(|| model.map(str::to_owned));
+        let duration_ms = elapsed.as_millis().min(i64::MAX as u128) as i64;
+        let outcome = error.map_or("ok", |e| e.class.code());
+        let logged_model = resolved_model.as_deref().filter(|m| safe_model(m));
+        state
+            .metrics
+            .record_ai(self.function, outcome, retries, elapsed);
+        if error.is_some() {
+            tracing::warn!(
+                function = self.function,
+                outcome,
+                duration_ms,
+                retries,
+                model = logged_model,
+                "ai call completed"
+            );
+        } else {
+            tracing::debug!(
+                function = self.function,
+                outcome,
+                duration_ms,
+                retries,
+                model = logged_model,
+                "ai call completed"
+            );
+        }
         let ai = AiDetails {
-            duration_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-            retries: retry + (attempts - 1).max(0),
-            model: error
-                .and_then(|error| error.model.clone())
-                .or_else(|| trace.model.clone())
-                .or_else(|| model.map(str::to_owned)),
+            duration_ms,
+            retries,
+            model: resolved_model,
         };
         insert(
-            &state.pool,
+            state,
             Event {
                 kind: Kind::Ai,
                 failure: error.map(|error| error.class),
@@ -777,20 +821,37 @@ pub async fn purge_expired(pool: &PgPool) -> Result<u64, sqlx::Error> {
 }
 
 pub fn spawn_retention(pool: PgPool, last_success: std::sync::Arc<std::sync::atomic::AtomicI64>) {
+    spawn_retention_with_metrics(pool, last_success, std::sync::Arc::default());
+}
+
+pub(crate) fn spawn_retention_with_metrics(
+    pool: PgPool,
+    last_success: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
+) {
     tokio::spawn(async move {
         let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
         daily.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             daily.tick().await;
-            match purge_expired(&pool).await {
-                Ok(_) => last_success.store(
-                    chrono::Utc::now().timestamp(),
-                    std::sync::atomic::Ordering::Relaxed,
-                ),
-                Err(error) => {
-                    tracing::warn!(class = %crate::error::db_error_class(&error), "diagnostic retention cleanup failed");
+            crate::telemetry::in_component_span("background_job", "diagnostic_cleanup", async {
+                let job_metric = metrics.track_background_job("diagnostic_cleanup");
+                match purge_expired(&pool).await {
+                    Ok(deleted) => {
+                        last_success.store(
+                            chrono::Utc::now().timestamp(),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        tracing::info!(deleted, "diagnostic retention cleanup completed");
+                        job_metric.finish("ok");
+                    }
+                    Err(error) => {
+                        tracing::warn!(class = %crate::error::db_error_class(&error), "diagnostic retention cleanup failed");
+                        job_metric.finish("failed");
+                    }
                 }
-            }
+            })
+            .await;
         }
     });
 }

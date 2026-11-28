@@ -148,6 +148,7 @@ impl Modify for SessionCookie {
         crate::service_monitor::list,
         crate::service_monitor::check,
         crate::admin_health::health,
+        crate::metrics::scrape,
         summary::end, summary::get_summary, summary::retry, summary::list, summary::transcript, summary::translate,
         crate::radar::read, crate::radar::retry,
         dashboard::personal, dashboard::class, claims::regroup,

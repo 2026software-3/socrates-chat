@@ -156,6 +156,11 @@ pub enum OpenError {
 pub struct VoiceSessions(Mutex<Sessions>);
 
 impl VoiceSessions {
+    /// 目前進行中的語音對話場次數（供指標使用）。
+    pub(crate) fn active_count(&self) -> usize {
+        lock(&self.0).by_token.len()
+    }
+
     /// 一位學生同時一場；已有進行中的就回 `None`。綁在環境節點、不受場次上限限制。
     pub fn open(self: &Arc<Self>, user: Uuid, conversation: Uuid) -> Option<VoiceSession> {
         let mut sessions = lock(&self.0);
@@ -563,20 +568,49 @@ type CascadeSocket =
 /// 連上場次綁定的節點（每次最多等 `CONNECT_TIMEOUT`）。失敗就立即把該節點標為不健康，換下一個候選
 /// 重試一次；仍失敗才放棄。
 async fn connect(session: &mut VoiceSession, state: &AppState) -> Option<CascadeSocket> {
+    use tokio_tungstenite::tungstenite::{
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue},
+    };
+
     let mut failed = Vec::new();
     for attempt in 0..2 {
         let node = session.node();
         let url = session.url.clone();
-        let connecting = tokio_tungstenite::connect_async(url.as_str());
-        match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
-            Ok(Ok((socket, _))) => return Some(socket),
-            _ => {
-                // 日誌只記節點識別，不含網址
-                tracing::warn!(%node, "cannot reach the voice cascade");
-                state.voice_nodes.mark_unhealthy(node);
-                failed.push(node);
+        let connected = crate::telemetry::in_component_span("voice_cascade", "connect", async {
+            let Ok(mut req) = url.as_str().into_client_request() else {
+                return None;
+            };
+            if let Some(tp) = crate::telemetry::current_traceparent()
+                && let Ok(val) = HeaderValue::from_str(&tp)
+            {
+                req.headers_mut().insert(
+                    HeaderName::from_static(crate::telemetry::TRACEPARENT_HEADER),
+                    val,
+                );
             }
+            if let Ok(rid) = crate::error::REQUEST_ID.try_with(Clone::clone)
+                && let Ok(val) = HeaderValue::from_str(&rid)
+            {
+                req.headers_mut().insert(
+                    HeaderName::from_static(crate::telemetry::REQUEST_ID_HEADER),
+                    val,
+                );
+            }
+            match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(req)).await
+            {
+                Ok(Ok((socket, _))) => Some(socket),
+                _ => None,
+            }
+        })
+        .await;
+        if let Some(socket) = connected {
+            return Some(socket);
         }
+        // 日誌只記節點識別，不含網址
+        tracing::warn!(%node, "cannot reach the voice cascade");
+        state.voice_nodes.mark_unhealthy(node);
+        failed.push(node);
         if attempt == 0 {
             let candidates = state.voice_nodes.candidates(state, &failed).await;
             if !state.voice_sessions.rebind(session, &candidates) {

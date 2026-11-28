@@ -216,33 +216,47 @@ pub(crate) async fn retry(
 
 /// 背景產生；結果在 `topics.dimensions`，工作本身只記成功或固定錯誤代碼。
 async fn run_generation(state: AppState, job: Uuid, id: Uuid, language: String) {
-    let _ = ai_job_store::mark_running(&state.pool, job).await;
-    let outcome = match generate(&state, id, &language).await {
-        Err(error) => {
-            tracing::warn!(topic_id = %id, ?error, "topic dimensions job failed");
-            Err("internal")
-        }
-        Ok(()) => {
-            let done: Result<bool, sqlx::Error> =
-                sqlx::query_scalar("SELECT dimensions IS NOT NULL FROM topics WHERE id = $1")
-                    .bind(id)
-                    .fetch_optional(&state.pool)
-                    .await
-                    .map(|v| v.unwrap_or(false));
-            match done {
-                Ok(true) => Ok(()),
-                Ok(false) => Err("ai_unavailable"),
-                Err(_) => Err("internal"),
+    crate::telemetry::in_component_span("background_job", "topic_dimensions", async {
+        let job_metric = state.metrics.track_background_job("topic_dimensions");
+        let _ = ai_job_store::mark_running(&state.pool, job).await;
+        let outcome = match generate(&state, id, &language).await {
+            Err(error) => {
+                tracing::warn!(
+                    topic_id = %id,
+                    code = error.code,
+                    status = error.status.as_u16(),
+                    "topic dimensions job failed"
+                );
+                Err("internal")
             }
+            Ok(()) => {
+                let done: Result<bool, sqlx::Error> =
+                    sqlx::query_scalar("SELECT dimensions IS NOT NULL FROM topics WHERE id = $1")
+                        .bind(id)
+                        .fetch_optional(&state.pool)
+                        .await
+                        .map(|v| v.unwrap_or(false));
+                match done {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err("ai_unavailable"),
+                    Err(_) => Err("internal"),
+                }
+            }
+        };
+        let status = if outcome.is_ok() { "ok" } else { "failed" };
+        let finished = match outcome {
+            Ok(()) => ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await,
+            Err(code) => ai_job_store::finish_failed(&state.pool, job, code).await,
+        };
+        if let Err(error) = finished {
+            tracing::error!(
+                class = %crate::error::db_error_class(&error),
+                "topic dimensions job bookkeeping failed"
+            );
         }
-    };
-    let finished = match outcome {
-        Ok(()) => ai_job_store::finish_ready(&state.pool, job, &serde_json::json!({})).await,
-        Err(code) => ai_job_store::finish_failed(&state.pool, job, code).await,
-    };
-    if let Err(error) = finished {
-        tracing::error!(?error, "topic dimensions job bookkeeping failed");
-    }
+        job_metric.finish(status);
+    })
+    .await;
 }
 
 #[utoipa::path(patch, path = "/api/topics/{id}/dimensions", tag = "topics",
@@ -363,11 +377,24 @@ pub fn parse_generation(raw: &str) -> Option<[Draft; 6]> {
 pub fn spawn(state: &AppState, id: Uuid, source: &str) {
     let state = state.clone();
     let source = source.to_owned();
-    tokio::spawn(async move {
-        if let Err(error) = generate(&state, id, &source).await {
-            tracing::warn!(topic_id = %id, ?error, "failed to generate topic dimensions");
-        }
-    });
+    tokio::spawn(crate::diagnostics::inherit_request(
+        crate::telemetry::in_component_span("background_job", "topic_dimensions", async move {
+            let job_metric = state.metrics.track_background_job("topic_dimensions");
+            match generate_inner(&state, id, &source).await {
+                Ok(true) => job_metric.finish("ok"),
+                Ok(false) => job_metric.finish("failed"),
+                Err(error) => {
+                    tracing::warn!(
+                        topic_id = %id,
+                        code = error.code,
+                        status = error.status.as_u16(),
+                        "failed to generate topic dimensions"
+                    );
+                    job_metric.finish("failed");
+                }
+            }
+        }),
+    ));
 }
 
 /// Rubric text is written in the topic author's language; fall back to
@@ -384,9 +411,14 @@ fn source_language(language: &str) -> &'static str {
 /// immutable to generation, even if another request already filled it. Only one
 /// generation per topic runs at a time; a concurrent call returns immediately.
 pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), ApiError> {
+    let _ = generate_inner(state, id, source).await?;
+    Ok(())
+}
+
+async fn generate_inner(state: &AppState, id: Uuid, source: &str) -> Result<bool, ApiError> {
     let source = source_language(source);
     let Some(_job) = state.dimension_jobs.start(id) else {
-        return Ok(());
+        return Ok(true);
     };
     // A second pass picks up a title or guiding questions edited while the first ran.
     for _ in 0..2 {
@@ -395,10 +427,10 @@ pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), Ap
             load(&mut conn, id).await?
         };
         if topic.dimensions.is_some() {
-            return Ok(());
+            return Ok(true);
         }
         let Some((dimensions, pending)) = prepare(state, &topic, source).await else {
-            return Ok(());
+            return Ok(false);
         };
         // Discard a stale result instead of attaching it to a different question.
         let stored = sqlx::query(
@@ -416,10 +448,10 @@ pub async fn generate(state: &AppState, id: Uuid, source: &str) -> Result<(), Ap
         .execute(&state.pool)
         .await?;
         if stored.rows_affected() > 0 {
-            return Ok(());
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn prepare(
@@ -516,13 +548,16 @@ pub fn build_request(title: &str, guiding_questions: &[String], source: &str) ->
 }
 
 async fn ask(state: &AppState, request: AiRequest) -> Result<String, crate::ai::AiError> {
-    let system = state.system_route().await;
-    collect(
-        system.ai.as_ref(),
-        request,
-        state.config.ai_first_token_timeout,
-        state.config.ai_total_timeout,
-    )
+    crate::telemetry::in_component_span("ai", "topic_dimensions", async {
+        let system = state.system_route().await;
+        collect(
+            system.ai.as_ref(),
+            request,
+            state.config.ai_first_token_timeout,
+            state.config.ai_total_timeout,
+        )
+        .await
+    })
     .await
 }
 
@@ -550,9 +585,18 @@ async fn translate(
     {
         return Some(translated);
     }
+    let started = std::time::Instant::now();
     let request = build_translation_request(source, target, text);
-    let raw = ask(state, request).await.ok()?;
-    parse_translation(&raw)
+    let result = ask(state, request)
+        .await
+        .ok()
+        .and_then(|raw| parse_translation(&raw));
+    state.metrics.record_translation(
+        "ai",
+        if result.is_some() { "ok" } else { "error" },
+        started.elapsed(),
+    );
+    result
 }
 
 pub fn build_translation_request(source: &str, target: &str, text: [&str; 12]) -> AiRequest {

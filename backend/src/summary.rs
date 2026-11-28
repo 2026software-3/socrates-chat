@@ -18,7 +18,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection, Postgres, Transaction};
-use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -93,22 +92,27 @@ pub async fn recover_orphaned(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
 /// 在背景產生第 `attempt` 代的總結（呼叫端已把總結列設為 pending）。
 pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
     tokio::spawn(diagnostics::inherit_request(
-        async move {
-            if let Err(e) = generate(&state, id, attempt).await {
-                // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
-                tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
-                // 盡力把這一代標記為失敗，避免永遠停在 pending
-                let _ = sqlx::query(
-                    "UPDATE summaries SET status = 'failed', completed_at = now()
-                     WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
-                )
-                .bind(id)
-                .bind(attempt)
-                .execute(&state.pool)
-                .await;
+        crate::telemetry::in_component_span("background_job", "summary", async move {
+            let job_metric = state.metrics.track_background_job("summary");
+            match generate(&state, id, attempt).await {
+                Ok(true) => job_metric.finish("ok"),
+                Ok(false) => job_metric.finish("failed"),
+                Err(e) => {
+                    // 不記錄資料庫錯誤訊息：約束錯誤可能帶出整列總結內容
+                    tracing::error!(class = %db_error_class(&e), "summary generation bookkeeping failed");
+                    // 盡力把這一代標記為失敗，避免永遠停在 pending
+                    let _ = sqlx::query(
+                        "UPDATE summaries SET status = 'failed', completed_at = now()
+                         WHERE conversation_id = $1 AND attempt = $2 AND status = 'pending'",
+                    )
+                    .bind(id)
+                    .bind(attempt)
+                    .execute(&state.pool)
+                    .await;
+                    job_metric.finish("failed");
+                }
             }
-        }
-        .in_current_span(),
+        }),
     ));
 }
 
@@ -147,7 +151,7 @@ struct SummarySource {
     classroom: Option<Uuid>,
 }
 
-async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::Error> {
+async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<bool, sqlx::Error> {
     let (SummarySource { owner, title, guiding_questions, activity_id, language, classroom }, turns) = tokio::try_join!(
         sqlx::query_as::<_, SummarySource>(
             "SELECT user_id AS owner, title, COALESCE((SELECT t.guiding_questions FROM topics t WHERE t.id = conversations.topic_id), '{}') AS guiding_questions, activity_id, language, classroom_id AS classroom
@@ -232,6 +236,7 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             if let (Some(claim), Some(activity)) = (s.claim.as_deref(), activity_id) {
                 crate::claims::assign_group(state, id, activity, &title, claim).await;
             }
+            Ok(true)
         }
         None => {
             sqlx::query(
@@ -242,9 +247,9 @@ async fn generate(state: &AppState, id: Uuid, attempt: i32) -> Result<(), sqlx::
             .bind(attempt)
             .execute(&state.pool)
             .await?;
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 pub(crate) async fn load_messages_for(
@@ -552,9 +557,7 @@ pub(crate) async fn translate(
         reasons,
         slot,
     };
-    tokio::spawn(diagnostics::inherit_request(
-        run_translation(state, task).in_current_span(),
-    ));
+    tokio::spawn(diagnostics::inherit_request(run_translation(state, task)));
     Ok((
         StatusCode::ACCEPTED,
         Json(crate::ai_jobs::JobAccepted::pending(job)),
@@ -591,18 +594,26 @@ struct TranslateTask {
 
 /// 背景翻譯並保存；結果在 `summary_translations`，工作本身只記成功或固定錯誤代碼。失敗時退回兩種額度。
 async fn run_translation(state: AppState, task: TranslateTask) {
-    let _ = ai_job_store::mark_running(&state.pool, task.job).await;
-    let outcome = translate_and_store(&state, &task).await;
-    let finished = match outcome {
-        Ok(()) => ai_job_store::finish_ready(&state.pool, task.job, &serde_json::json!({})).await,
-        Err(code) => {
-            state.translation_limit.refund(task.user, task.slot);
-            ai_job_store::finish_failed(&state.pool, task.job, code).await
+    crate::telemetry::in_component_span("background_job", "summary_translation", async {
+        let job_metric = state.metrics.track_background_job("summary_translation");
+        let _ = ai_job_store::mark_running(&state.pool, task.job).await;
+        let outcome = translate_and_store(&state, &task).await;
+        let status = if outcome.is_ok() { "ok" } else { "failed" };
+        let finished = match outcome {
+            Ok(()) => {
+                ai_job_store::finish_ready(&state.pool, task.job, &serde_json::json!({})).await
+            }
+            Err(code) => {
+                state.translation_limit.refund(task.user, task.slot);
+                ai_job_store::finish_failed(&state.pool, task.job, code).await
+            }
+        };
+        if let Err(e) = finished {
+            tracing::error!(class = %db_error_class(&e), "translation job bookkeeping failed");
         }
-    };
-    if let Err(e) = finished {
-        tracing::error!(class = %db_error_class(&e), "translation job bookkeeping failed");
-    }
+        job_metric.finish(status);
+    })
+    .await;
 }
 
 async fn translate_and_store(state: &AppState, task: &TranslateTask) -> Result<(), &'static str> {

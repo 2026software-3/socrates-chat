@@ -88,6 +88,7 @@ pub mod logging;
 pub mod login_rate_limit;
 pub mod mail;
 pub mod main_argument_tree;
+pub mod metrics;
 pub(crate) mod mutex;
 pub mod openapi;
 pub mod pagination;
@@ -113,6 +114,7 @@ pub mod teacher_key_crypto;
 pub mod teacher_key_store;
 pub mod teacher_key_usage;
 pub mod teacher_keys;
+pub mod telemetry;
 pub mod topic_dimensions;
 mod topic_translations;
 pub mod usage_api;
@@ -201,6 +203,8 @@ pub struct AppState {
     pub(crate) service_monitor: Arc<service_monitor::Monitor>,
     /// 全站請求統計的記憶體累加（F-39.2）；每分鐘由背景工作寫入資料庫。
     pub(crate) request_stats: Arc<request_stats::RequestStats>,
+    /// 聚合指標登錄（Counter／Gauge／Histogram，供 `GET /api/admin/metrics` 匯出）。
+    pub(crate) metrics: Arc<metrics::Metrics>,
     pub(crate) process_started_at: chrono::DateTime<chrono::Utc>,
     /// 每日清理最近一次成功的時間（Unix 秒，0 表示尚未成功過）。
     pub(crate) last_cleanup: Arc<std::sync::atomic::AtomicI64>,
@@ -219,18 +223,25 @@ impl AppState {
         let book_source = Arc::new(book_sources::HttpBookSource::new(
             config.google_books_api_key.clone(),
         ));
+        let metrics = Arc::new(metrics::Metrics::new());
         let google_translation = config
             .google_translation_api_key
             .as_deref()
-            .and_then(google_translation::GoogleTranslation::new);
+            .and_then(|key| {
+                google_translation::GoogleTranslation::with_metrics(key, metrics.clone())
+            });
         let ai_usage = Arc::new(user_limit::UserLimiter::new(
             config.ai_usage_max,
             config.ai_usage_window,
         ));
         Self {
             pool,
-            service_monitor: Arc::new(service_monitor::Monitor::new(&config.monitored_services)),
+            service_monitor: Arc::new(service_monitor::Monitor::with_metrics(
+                &config.monitored_services,
+                metrics.clone(),
+            )),
             request_stats: Arc::default(),
+            metrics,
             process_started_at: chrono::Utc::now(),
             last_cleanup: Arc::default(),
             version: version_from(std::env::var("GIT_COMMIT").ok().as_deref()),
@@ -274,7 +285,11 @@ impl AppState {
 
     /// 啟動每日清理與請求統計的每分鐘寫入（F-39.2）。
     pub fn spawn_housekeeping(&self) {
-        diagnostics::spawn_retention(self.pool.clone(), self.last_cleanup.clone());
+        diagnostics::spawn_retention_with_metrics(
+            self.pool.clone(),
+            self.last_cleanup.clone(),
+            self.metrics.clone(),
+        );
         request_stats::spawn(self);
     }
 
@@ -289,7 +304,8 @@ impl AppState {
     }
 
     pub fn with_google_translation(mut self, key: &str) -> Self {
-        self.google_translation = google_translation::GoogleTranslation::new(key);
+        self.google_translation =
+            google_translation::GoogleTranslation::with_metrics(key, self.metrics.clone());
         self
     }
 
@@ -356,6 +372,483 @@ mod version_tests {
     }
 }
 
+#[cfg(test)]
+mod timeout_observability_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::{
+        ai::{AiError, AiProvider, AiRequest, AiStream},
+        identity::{AuthRequest, Identity, IdentityError, IdentityProvider},
+        key_pool::KeyPool,
+    };
+
+    struct DummyId;
+    #[async_trait::async_trait]
+    impl IdentityProvider for DummyId {
+        fn start(&self) -> AuthRequest {
+            AuthRequest {
+                url: String::new(),
+                state: String::new(),
+                nonce: String::new(),
+                pkce_verifier: String::new(),
+            }
+        }
+        async fn finish(&self, _: &str, _: &str, _: &str) -> Result<Identity, IdentityError> {
+            Err(IdentityError)
+        }
+    }
+
+    struct DummyAi;
+    #[async_trait::async_trait]
+    impl AiProvider for DummyAi {
+        async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+            Err(AiError::unclassified())
+        }
+    }
+
+    fn dummy_state(request_timeout: Duration) -> AppState {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+            .unwrap();
+        let config = Config {
+            database_url: String::new(),
+            app_base_url: "https://app.test".into(),
+            google_client_id: "c".into(),
+            google_client_secret: "s".into(),
+            google_redirect_url: "https://app.test/cb".into(),
+            google_translation_api_key: None,
+            google_books_api_key: None,
+            admin_emails: vec![],
+            admin_initial_password: None,
+            cookie_secure: true,
+            listen_addr: "127.0.0.1:0".into(),
+            trusted_proxies: vec![],
+            login_rate_burst: 10,
+            login_rate_replenish: Duration::from_secs(1),
+            ai_usage_max: 10,
+            ai_usage_window: Duration::from_secs(60),
+            frontend_dir: None,
+            openai_keys: Arc::new(KeyPool::empty()),
+            openai_model: "m".into(),
+            openai_fallback_models: vec![],
+            openai_reasoning_effort: None,
+            openai_base_url: "http://127.0.0.1:1".into(),
+            openai_stt_base_url: None,
+            openai_tts_base_url: None,
+            openai_stt_model: None,
+            openai_tts_model: None,
+            openai_tts_voice: "alloy".into(),
+            cascade_realtime_url: None,
+            cascade_llm_token: None,
+            cascade_max_sessions: None,
+            internal_listen_addr: None,
+            wrap_up_turn: 3,
+            max_turns: 5,
+            ai_first_token_timeout: Duration::from_millis(50),
+            ai_total_timeout: Duration::from_millis(50),
+            argument_tree_timeout: Duration::from_millis(50),
+            request_timeout,
+            demo_mode: false,
+            smtp: None,
+            teacher_key_cipher: None,
+            classroom_ai_routing: false,
+            monitored_services: vec![],
+            service_probe_interval: Duration::from_secs(30),
+            database_max_connections: 1,
+            metrics_token: None,
+        };
+        AppState::new(pool, config, Arc::new(DummyId), Arc::new(DummyAi))
+    }
+
+    #[tokio::test]
+    async fn request_timeout_returns_408_traceparent_and_increments_metrics() {
+        let state = dummy_state(Duration::from_millis(5));
+        let router = with_layers(
+            Router::new().route("/api/hang", get(std::future::pending::<StatusCode>)),
+            state.clone(),
+        );
+
+        let res = router
+            .oneshot(Request::get("/api/hang").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+        assert!(res.headers().contains_key(telemetry::TRACEPARENT_HEADER));
+
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_http_request_timeouts_total{route=\"/api/hang\"} 1"));
+        assert!(prom.contains(
+            "socrates_http_request_errors_total{route=\"/api/hang\",error_code=\"request_timeout\"} 1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn sse_stream_tracks_in_flight_errors_and_client_disconnects() {
+        use std::convert::Infallible;
+
+        use axum::response::sse::{Event, Sse};
+        use tokio::sync::mpsc;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let state = dummy_state(Duration::from_secs(5));
+
+        let (tx_ok, rx_ok) = mpsc::channel::<Result<Event, Infallible>>(4);
+        let rx_ok = Arc::new(tokio::sync::Mutex::new(Some(rx_ok)));
+
+        let (tx_err, rx_err) = mpsc::channel::<Result<Event, Infallible>>(4);
+        let rx_err = Arc::new(tokio::sync::Mutex::new(Some(rx_err)));
+
+        let (_tx_drop, rx_drop) = mpsc::channel::<Result<Event, Infallible>>(4);
+        let rx_drop = Arc::new(tokio::sync::Mutex::new(Some(rx_drop)));
+
+        let router = with_layers(
+            Router::new()
+                .route(
+                    "/api/sse-ok",
+                    get({
+                        let rx_ok = Arc::clone(&rx_ok);
+                        move || async move {
+                            let rx = rx_ok.lock().await.take().unwrap();
+                            Sse::new(ReceiverStream::new(rx))
+                        }
+                    }),
+                )
+                .route(
+                    "/api/sse-err",
+                    get({
+                        let rx_err = Arc::clone(&rx_err);
+                        move || async move {
+                            let rx = rx_err.lock().await.take().unwrap();
+                            Sse::new(ReceiverStream::new(rx))
+                        }
+                    }),
+                )
+                .route(
+                    "/api/sse-drop",
+                    get({
+                        let rx_drop = Arc::clone(&rx_drop);
+                        move || async move {
+                            let rx = rx_drop.lock().await.take().unwrap();
+                            Sse::new(ReceiverStream::new(rx))
+                        }
+                    }),
+                ),
+            state.clone(),
+        );
+
+        // 1. Normal SSE stream: in_flight == 1 while open, drops to 0 when drained
+        let res = router
+            .clone()
+            .oneshot(Request::get("/api/sse-ok").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().contains_key(telemetry::TRACEPARENT_HEADER));
+        assert!(
+            state
+                .metrics
+                .render(&state)
+                .contains("socrates_http_requests_in_flight 1")
+        );
+        tx_ok
+            .send(Ok(Event::default().event("done").data("{}")))
+            .await
+            .unwrap();
+        drop(tx_ok);
+        let _ = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_http_requests_in_flight 0"));
+        assert!(prom.contains(
+            "socrates_http_requests_total{method=\"GET\",route=\"/api/sse-ok\",status_class=\"2xx\"} 1"
+        ));
+
+        // 2. SSE stream ending with an error event records error_code in metrics
+        let res = router
+            .clone()
+            .oneshot(Request::get("/api/sse-err").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            state
+                .metrics
+                .render(&state)
+                .contains("socrates_http_requests_in_flight 1")
+        );
+        tx_err
+            .send(Ok(Event::default()
+                .event("error")
+                .data(r#"{"code":"ai_unavailable"}"#)))
+            .await
+            .unwrap();
+        drop(tx_err);
+        let _ = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_http_requests_in_flight 0"));
+        assert!(prom.contains(
+            "socrates_http_request_errors_total{route=\"/api/sse-err\",error_code=\"ai_unavailable\"} 1"
+        ));
+
+        // 3. Mid-stream client disconnect still releases in_flight gauge back to 0
+        let res = router
+            .oneshot(Request::get("/api/sse-drop").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            state
+                .metrics
+                .render(&state)
+                .contains("socrates_http_requests_in_flight 1")
+        );
+        drop(res);
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_http_requests_in_flight 0"));
+        assert!(prom.contains(
+            "socrates_http_requests_total{method=\"GET\",route=\"/api/sse-drop\",status_class=\"2xx\"} 1"
+        ));
+        assert!(
+            !prom.contains("socrates_http_requests_aborted_total{"),
+            "SSE handoff must disarm RequestGuard and never record pre-response aborts: {prom}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_non_sse_request_logs_warning_and_increments_aborted_metric() {
+        use std::{io, sync::Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Captured {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                Sink(self.0.clone())
+            }
+        }
+
+        let captured = Captured::default();
+        let subscriber = crate::logging::json_subscriber()
+            .with_env_filter(crate::logging::env_filter(Some("info")))
+            .with_writer(captured.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let state = dummy_state(Duration::from_secs(30));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let entered_tx = Arc::new(tokio::sync::Mutex::new(Some(entered_tx)));
+        let router = with_layers(
+            Router::new().route(
+                "/api/slow-non-sse",
+                get({
+                    let entered_tx = Arc::clone(&entered_tx);
+                    move || async move {
+                        if let Some(tx) = entered_tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        std::future::pending::<StatusCode>().await
+                    }
+                }),
+            ),
+            state.clone(),
+        );
+
+        let upstream_trace = "4bf92f3577b34da6a3ce929d0e0e4736";
+        let req = Request::get("/api/slow-non-sse")
+            .header(
+                telemetry::TRACEPARENT_HEADER,
+                format!("00-{upstream_trace}-00f067aa0ba902b7-01"),
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        let mut fut = Box::pin(router.oneshot(req));
+        tokio::select! {
+            _ = &mut fut => panic!("pending handler should not complete"),
+            res = entered_rx => res.unwrap(),
+        }
+        assert!(
+            state
+                .metrics
+                .render(&state)
+                .contains("socrates_http_requests_in_flight 1")
+        );
+
+        // 模擬用戶端在回應產生前斷線，丟棄進行中的請求 future
+        drop(fut);
+
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_http_requests_in_flight 0"));
+        assert!(prom.contains(
+            "socrates_http_requests_aborted_total{method=\"GET\",route=\"/api/slow-non-sse\"} 1"
+        ));
+        assert!(
+            !prom.contains(
+                "socrates_http_requests_total{method=\"GET\",route=\"/api/slow-non-sse\""
+            )
+        );
+
+        let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(
+            out.lines()
+                .find(|l| l.contains("request aborted"))
+                .expect("request aborted log line"),
+        )
+        .unwrap();
+        assert_eq!(entry["level"], "WARN");
+        assert_eq!(entry["fields"]["message"], "request aborted");
+        assert_eq!(entry["fields"]["reason"], "client_disconnected");
+        assert_eq!(entry["fields"]["method"], "GET");
+        assert_eq!(entry["fields"]["route"], "/api/slow-non-sse");
+        assert_eq!(entry["fields"]["trace_id"], upstream_trace);
+        assert!(entry["fields"]["span_id"].is_string());
+        assert!(entry["fields"]["request_id"].is_string());
+        assert!(entry["fields"]["duration_ms"].is_u64());
+        assert_eq!(entry["span"]["name"], "http_request");
+        assert_eq!(entry["span"]["trace_id"], upstream_trace);
+        assert_eq!(entry["span"]["parent_span_id"], "00f067aa0ba902b7");
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_logs_error_abort_without_leaking_payload_and_releases_in_flight() {
+        use std::{io, panic::AssertUnwindSafe, sync::Mutex};
+
+        use futures_util::FutureExt;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Captured {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                Sink(self.0.clone())
+            }
+        }
+
+        const PANIC_SECRET: &str = "SENSITIVE-HANDLER-PANIC-PAYLOAD-42";
+
+        let captured = Captured::default();
+        let subscriber = crate::logging::json_subscriber()
+            .with_env_filter(crate::logging::env_filter(Some("info")))
+            .with_writer(captured.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let state = dummy_state(Duration::from_secs(30));
+        let router = with_layers(
+            Router::new().route(
+                "/api/boom",
+                get(|| async {
+                    panic!("{PANIC_SECRET}");
+                    #[allow(unreachable_code)]
+                    StatusCode::OK
+                }),
+            ),
+            state.clone(),
+        );
+
+        let upstream_trace = "abcdef0123456789abcdef0123456789";
+        let req = Request::get("/api/boom")
+            .header(
+                telemetry::TRACEPARENT_HEADER,
+                format!("00-{upstream_trace}-1122334455667788-01"),
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        let panicked = AssertUnwindSafe(router.oneshot(req)).catch_unwind().await;
+        assert!(panicked.is_err());
+
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_http_requests_in_flight 0"));
+        assert!(prom.contains(
+            "socrates_http_requests_aborted_total{method=\"GET\",route=\"/api/boom\"} 1"
+        ));
+
+        let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(!out.contains(PANIC_SECRET));
+        let entry: serde_json::Value = serde_json::from_str(
+            out.lines()
+                .find(|l| l.contains("request aborted"))
+                .expect("panic request aborted log line"),
+        )
+        .unwrap();
+        assert_eq!(entry["level"], "ERROR");
+        assert_eq!(entry["fields"]["message"], "request aborted");
+        assert_eq!(entry["fields"]["reason"], "panic");
+        assert_eq!(entry["fields"]["route"], "/api/boom");
+        assert_eq!(entry["fields"]["trace_id"], upstream_trace);
+        assert_eq!(entry["span"]["name"], "http_request");
+        assert_eq!(entry["span"]["trace_id"], upstream_trace);
+        assert_eq!(entry["span"]["parent_span_id"], "1122334455667788");
+    }
+
+    #[tokio::test]
+    async fn ai_translation_fallback_records_translation_metrics() {
+        struct StubAi(Result<String, AiError>);
+        #[async_trait::async_trait]
+        impl AiProvider for StubAi {
+            async fn stream_chat(&self, _: AiRequest) -> Result<AiStream, AiError> {
+                let res = self.0.clone();
+                Ok(futures_util::stream::once(async move { res }).boxed())
+            }
+        }
+
+        let mut state = dummy_state(Duration::from_secs(5));
+        state.ai = Arc::new(StubAi(Ok(
+            r#"{"stance":"Keep rule","reasons":"Fairness"}"#.into()
+        )));
+        let translated = summary_translation::via_ai(&state, "en", ["守規則", "公平"])
+            .await
+            .expect("ok AI summary translation");
+        assert_eq!(translated.stance, "Keep rule");
+
+        state.ai = Arc::new(StubAi(Err(AiError::unclassified())));
+        assert!(
+            summary_translation::via_ai(&state, "en", ["守規則", "公平"])
+                .await
+                .is_err()
+        );
+
+        let prom = state.metrics.render(&state);
+        assert!(prom.contains("socrates_translations_total{provider=\"ai\",outcome=\"ok\"} 1"));
+        assert!(prom.contains("socrates_translations_total{provider=\"ai\",outcome=\"error\"} 1"));
+        assert!(prom.contains("socrates_translation_duration_seconds_count{provider=\"ai\"} 2"));
+    }
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct Health {
     #[schema(example = "ok")]
@@ -410,6 +903,7 @@ fn public_routes(state: &AppState) -> Router<AppState> {
         .merge(diagnostics::routes())
         .merge(service_monitor::routes())
         .merge(admin_health::routes())
+        .merge(metrics::routes())
         .merge(admin_voice_nodes::routes())
         .merge(summary::routes())
         .merge(argument_tree::routes())
@@ -519,9 +1013,13 @@ pub(crate) async fn ready(State(state): State<AppState>) -> Response {
 async fn probe_database(
     pool: &PgPool,
 ) -> Result<Result<i32, sqlx::Error>, tokio::time::error::Elapsed> {
-    tokio::time::timeout(
-        READY_DB_TIMEOUT,
-        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool),
+    telemetry::in_component_span(
+        "database",
+        "readiness_probe",
+        tokio::time::timeout(
+            READY_DB_TIMEOUT,
+            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool),
+        ),
     )
     .await
 }
@@ -573,10 +1071,16 @@ async fn fallback(State(state): State<AppState>, req: Request) -> Response {
     res
 }
 
-/// 為每個請求產生 request ID，並以不含原始 URL 或本文的結構化欄位記錄結果。
+/// 為每個請求產生 request ID 與 W3C Trace Context，並以不含原始 URL 或本文的結構化欄位記錄結果與指標。
 async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let request_uuid = uuid::Uuid::new_v4();
     let id = request_uuid.to_string();
+    let trace = telemetry::TraceContext::from_traceparent(
+        req.headers()
+            .get(telemetry::TRACEPARENT_HEADER)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let traceparent = trace.traceparent();
     let method = req.method().clone();
     // 只記錄路由模板；原始 URL 可能含 email 等個資。
     let route = req
@@ -588,43 +1092,67 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
     let span = tracing::info_span!(
         "http_request",
         request_id = %id,
+        trace_id = %trace.trace_id,
+        span_id = %trace.span_id,
+        parent_span_id = trace.parent_span_id.as_deref(),
         method = %method,
         route = %route
     );
+    let in_flight = state.metrics.track_http_in_flight();
     let started = Instant::now();
+    let guard = access_log::RequestGuard::new(
+        span.clone(),
+        started,
+        access_log::RequestLogEntry {
+            request_id: id.clone(),
+            trace_id: trace.trace_id.clone(),
+            span_id: trace.span_id.clone(),
+            method: method.to_string(),
+            route: route.clone(),
+            status: 0,
+            duration_ms: 0,
+            error_code: None,
+        },
+        state.metrics.clone(),
+        in_flight,
+    );
     let mut res = error::REQUEST_ID
         .scope(
-            id.clone(),
-            diagnostics::scope_request(
-                request_uuid,
-                &route,
-                next.run(req).instrument(span.clone()),
+            id,
+            telemetry::scope_trace(
+                trace,
+                diagnostics::scope_request(
+                    request_uuid,
+                    &route,
+                    next.run(req).instrument(span.clone()),
+                ),
             ),
         )
         .await;
-    if let Ok(v) = HeaderValue::from_str(&id) {
-        res.headers_mut().insert("x-request-id", v);
+    let (in_flight, mut entry) = guard.disarm();
+    if let Ok(v) = HeaderValue::from_str(&entry.request_id) {
+        res.headers_mut().insert(telemetry::REQUEST_ID_HEADER, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&traceparent) {
+        res.headers_mut().insert(telemetry::TRACEPARENT_HEADER, v);
     }
     let status = res.status().as_u16();
-    let duration_ms = started.elapsed().as_millis() as u64;
+    let elapsed = started.elapsed();
+    let duration_ms = elapsed.as_millis() as u64;
     // 只累加全站合計；寫入在背景進行，不影響這個請求
     state.request_stats.record(status, duration_ms);
     let error_code = res
         .extensions()
         .get::<error::ErrorCode>()
         .map(|code| code.0.to_string());
-    let entry = access_log::RequestLogEntry {
-        request_id: id,
-        method: method.to_string(),
-        route,
-        status,
-        duration_ms: started.elapsed().as_millis() as u64,
-        error_code,
-    };
+    entry.status = status;
+    entry.duration_ms = duration_ms;
+    entry.error_code = error_code;
     if is_event_stream(&res) {
-        // 串流的結果（最後的 done／error 事件）要等本文讀完才知道，因此記錄延後到本文結束或被丟棄時。
+        // 串流的結果（最後的 done／error 事件）要等本文讀完才知道，因此記錄與指標延後到本文結束或被丟棄時。
         let (parts, body) = res.into_parts();
-        let mut log = access_log::StreamLog::new(span, started, entry);
+        let mut log =
+            access_log::StreamLog::new(span, started, entry, state.metrics.clone(), in_flight);
         let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
             if let Ok(bytes) = &chunk {
                 log.observe(bytes);
@@ -633,7 +1161,15 @@ async fn request_id(State(state): State<AppState>, req: Request, next: Next) -> 
         }));
         return Response::from_parts(parts, body);
     }
+    state.metrics.record_http_request(
+        &entry.method,
+        &entry.route,
+        status,
+        elapsed,
+        entry.error_code.as_deref(),
+    );
     access_log::record(&span, &entry);
+    drop(in_flight);
     res
 }
 
@@ -669,7 +1205,11 @@ async fn maintenance_gate(State(state): State<AppState>, req: Request, next: Nex
 
     let path = req.uri().path();
     let gated = is_api_path(path) || path.starts_with("/internal/");
-    if !gated || maintenance_exempt(path) || !state.maintenance.is_on(&state.pool).await {
+    if !gated
+        || maintenance_exempt(path)
+        || (path == "/api/admin/metrics" && metrics::has_valid_metrics_token(&state, req.headers()))
+        || !state.maintenance.is_on(&state.pool).await
+    {
         return next.run(req).await;
     }
     let (mut parts, body) = req.into_parts();
@@ -724,19 +1264,29 @@ async fn api_rejections(req: Request, next: Next) -> Response {
 /// 避免慢速送出 body 的連線（slow-loris）長時間占用。逾時時中止 handler（交易未提交即回滾），
 /// 回 `408 request_timeout`。
 async fn request_timeout(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let limit = if req
+    let route = req
         .extensions()
         .get::<MatchedPath>()
-        .is_some_and(|p| LONG_RUNNING_ROUTES.contains(&p.as_str()))
-    {
+        .map(MatchedPath::as_str)
+        .unwrap_or(access_log::FALLBACK_ROUTE)
+        .to_string();
+    let limit = if LONG_RUNNING_ROUTES.contains(&route.as_str()) {
         state.config.long_request_timeout()
     } else {
         state.config.request_timeout
     };
     match tokio::time::timeout(limit, next.run(req)).await {
         Ok(res) => res,
-        Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout", "請求逾時")
-            .into_response(),
+        Err(_) => {
+            state.metrics.record_http_timeout(&route);
+            tracing::warn!(
+                route = %route,
+                timeout_ms = limit.as_millis() as u64,
+                "request timed out"
+            );
+            ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout", "請求逾時")
+                .into_response()
+        }
     }
 }
 
@@ -754,6 +1304,13 @@ async fn check_origin(
             .get(header::ORIGIN)
             .and_then(|v| v.to_str().ok());
         if origin != Some(state.config.app_base_url.as_str()) {
+            let route = req
+                .extensions()
+                .get::<MatchedPath>()
+                .map(MatchedPath::as_str)
+                .unwrap_or(access_log::FALLBACK_ROUTE);
+            // 不記錄未受信任的 Origin 原文，只記錄方法與路由模板
+            tracing::warn!(method = %req.method(), route, "csrf origin rejected");
             return Err(ApiError::forbidden("csrf", "請求來源不被允許"));
         }
     }

@@ -13,7 +13,6 @@
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::Deserialize;
 use sqlx::PgPool;
-use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -257,9 +256,7 @@ pub(crate) async fn regroup(
         rows,
         usage_slot,
     };
-    tokio::spawn(diagnostics::inherit_request(
-        run_regroup(state, task).in_current_span(),
-    ));
+    tokio::spawn(diagnostics::inherit_request(run_regroup(state, task)));
     Ok((
         StatusCode::ACCEPTED,
         Json(crate::ai_jobs::JobAccepted::pending(job)),
@@ -280,25 +277,31 @@ struct RegroupTask {
 
 /// 背景執行重新分組；結果寫進資料庫與 `ai_jobs`。失敗時退回 AI 額度。
 async fn run_regroup(state: AppState, task: RegroupTask) {
-    let _ = ai_job_store::mark_running(&state.pool, task.job).await;
-    let outcome = regroup_groups(&state, &task).await;
-    let finished = match &outcome {
-        Ok(count) => {
-            ai_job_store::finish_ready(
-                &state.pool,
-                task.job,
-                &serde_json::json!({ "groups": count }),
-            )
-            .await
+    crate::telemetry::in_component_span("background_job", "claims_regroup", async {
+        let job_metric = state.metrics.track_background_job("claims_regroup");
+        let _ = ai_job_store::mark_running(&state.pool, task.job).await;
+        let outcome = regroup_groups(&state, &task).await;
+        let status = if outcome.is_ok() { "ok" } else { "failed" };
+        let finished = match &outcome {
+            Ok(count) => {
+                ai_job_store::finish_ready(
+                    &state.pool,
+                    task.job,
+                    &serde_json::json!({ "groups": count }),
+                )
+                .await
+            }
+            Err(code) => {
+                state.refund_ai(task.user, task.usage_slot);
+                ai_job_store::finish_failed(&state.pool, task.job, code).await
+            }
+        };
+        if let Err(e) = finished {
+            tracing::error!(class = %db_error_class(&e), "regroup job bookkeeping failed");
         }
-        Err(code) => {
-            state.refund_ai(task.user, task.usage_slot);
-            ai_job_store::finish_failed(&state.pool, task.job, code).await
-        }
-    };
-    if let Err(e) = finished {
-        tracing::error!(class = %db_error_class(&e), "regroup job bookkeeping failed");
-    }
+        job_metric.finish(status);
+    })
+    .await;
 }
 
 /// AI 分組並寫入；回傳群組數，或固定的錯誤代碼。

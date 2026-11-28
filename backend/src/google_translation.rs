@@ -1,7 +1,12 @@
-use std::time::Duration;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use reqwest::{Client, StatusCode, header::HeaderValue, redirect::Policy};
 use serde::Deserialize;
+
+use crate::metrics::Metrics;
 
 const ENDPOINT: &str = "https://translation.googleapis.com/language/translate/v2";
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,10 +65,16 @@ fn classify_forbidden(body: &str) -> Failure {
 pub(crate) struct GoogleTranslation {
     http: Client,
     key: HeaderValue,
+    metrics: Arc<Metrics>,
 }
 
 impl GoogleTranslation {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(key: &str) -> Option<Self> {
+        Self::with_metrics(key, Arc::default())
+    }
+
+    pub(crate) fn with_metrics(key: &str, metrics: Arc<Metrics>) -> Option<Self> {
         let key = key.trim();
         if key.is_empty() {
             return None;
@@ -73,6 +84,7 @@ impl GoogleTranslation {
         Some(Self {
             http: Client::builder().redirect(Policy::none()).build().ok()?,
             key,
+            metrics,
         })
     }
 
@@ -82,17 +94,48 @@ impl GoogleTranslation {
         target: &str,
         text: [&str; N],
     ) -> Option<[String; N]> {
-        match self.translate_at(ENDPOINT, source, target, text).await {
-            Ok(translated) => Some(translated),
-            Err(Failure::Quota) => {
-                tracing::warn!("google translation quota exceeded; falling back to AI");
-                None
+        self.translate_endpoint(ENDPOINT, source, target, text)
+            .await
+    }
+
+    async fn translate_endpoint<const N: usize>(
+        &self,
+        endpoint: &str,
+        source: &str,
+        target: &str,
+        text: [&str; N],
+    ) -> Option<[String; N]> {
+        crate::telemetry::in_component_span("translation", "google_translate", async {
+            let started = Instant::now();
+            let result = self.translate_at(endpoint, source, target, text).await;
+            let outcome = match &result {
+                Ok(_) => "ok",
+                Err(Failure::Quota) => "quota",
+                Err(Failure::Other) => "error",
+            };
+            self.metrics
+                .record_translation("google", outcome, started.elapsed());
+            match result {
+                Ok(translated) => Some(translated),
+                Err(Failure::Quota) => {
+                    tracing::warn!(
+                        provider = "google",
+                        outcome = "quota",
+                        "google translation quota exceeded; falling back to AI"
+                    );
+                    None
+                }
+                Err(Failure::Other) => {
+                    tracing::warn!(
+                        provider = "google",
+                        outcome = "error",
+                        "google translation failed; falling back to AI"
+                    );
+                    None
+                }
             }
-            Err(Failure::Other) => {
-                tracing::warn!("google translation failed; falling back to AI");
-                None
-            }
-        }
+        })
+        .await
     }
 
     async fn translate_at<const N: usize>(
@@ -296,5 +339,166 @@ mod tests {
             Err(Failure::Other)
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn translate_endpoint_emits_component_span_metrics_and_pii_free_logs() {
+        use std::{io, sync::Mutex};
+        use tracing::Instrument;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Captured {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                Sink(self.0.clone())
+            }
+        }
+
+        let captured = Captured::default();
+        let subscriber = crate::logging::json_subscriber()
+            .with_env_filter(crate::logging::env_filter(Some("info")))
+            .with_writer(captured.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        const SECRET_API_KEY: &str = "synthetic-google-api-key-999";
+        const SECRET_EMAIL: &str = "student-secret@example.com";
+        const SECRET_UPSTREAM_BODY: &str = "UPSTREAM-ERROR-DETAIL-SHOULD-NOT-LOG";
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/translate", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/translate",
+            post(|Json(body): Json<Value>| async move {
+                match body["target"].as_str().unwrap_or_default() {
+                    "en" => Json(json!({"data": {"translations": [
+                        {"translatedText": "Contact [EMAIL]"}
+                    ]}}))
+                    .into_response(),
+                    "es" => (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"error": {
+                            "code": 403,
+                            "message": "Daily Limit Exceeded",
+                            "errors": [{"reason": "dailyLimitExceeded"}],
+                        }})),
+                    )
+                        .into_response(),
+                    _ => (StatusCode::BAD_GATEWAY, SECRET_UPSTREAM_BODY).into_response(),
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let metrics = Arc::new(Metrics::new());
+        let mut key = HeaderValue::from_str(SECRET_API_KEY).unwrap();
+        key.set_sensitive(true);
+        let client = GoogleTranslation {
+            http: Client::builder()
+                .redirect(Policy::none())
+                .no_proxy()
+                .build()
+                .unwrap(),
+            key,
+            metrics: metrics.clone(),
+        };
+
+        let parent_trace = crate::telemetry::TraceContext::new_root();
+        let expected_trace_id = parent_trace.trace_id.clone();
+        let expected_parent_span = parent_trace.span_id.clone();
+        let req_id = uuid::Uuid::new_v4().to_string();
+        let expected_req_id = req_id.clone();
+        let root_span = tracing::info_span!(
+            "http_request",
+            request_id = %req_id,
+            trace_id = %parent_trace.trace_id,
+            span_id = %parent_trace.span_id,
+            method = "POST",
+            route = "/api/summaries/{id}/translation"
+        );
+
+        let input = [format!("聯絡 {SECRET_EMAIL}")];
+        crate::error::REQUEST_ID
+            .scope(
+                req_id,
+                crate::telemetry::scope_trace(
+                    parent_trace,
+                    async {
+                        assert_eq!(
+                            client
+                                .translate_endpoint(&endpoint, "zh-TW", "en", [input[0].as_str()])
+                                .await,
+                            Some(["Contact [EMAIL]".to_string()])
+                        );
+                        assert_eq!(
+                            client
+                                .translate_endpoint(&endpoint, "zh-TW", "es", [input[0].as_str()])
+                                .await,
+                            None
+                        );
+                        assert_eq!(
+                            client
+                                .translate_endpoint(&endpoint, "zh-TW", "ja", [input[0].as_str()])
+                                .await,
+                            None
+                        );
+                    }
+                    .instrument(root_span),
+                ),
+            )
+            .await;
+
+        server.abort();
+
+        let prom = metrics.render_recorded();
+        assert!(prom.contains("socrates_translations_total{provider=\"google\",outcome=\"ok\"} 1"));
+        assert!(
+            prom.contains("socrates_translations_total{provider=\"google\",outcome=\"quota\"} 1")
+        );
+        assert!(
+            prom.contains("socrates_translations_total{provider=\"google\",outcome=\"error\"} 1")
+        );
+        assert!(
+            prom.contains("socrates_translation_duration_seconds_count{provider=\"google\"} 3")
+        );
+
+        let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(!out.contains(SECRET_API_KEY));
+        assert!(!out.contains(SECRET_EMAIL));
+        assert!(!out.contains(SECRET_UPSTREAM_BODY));
+
+        let lines: Vec<Value> = out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["level"], "WARN");
+        assert_eq!(lines[0]["fields"]["outcome"], "quota");
+        assert_eq!(lines[1]["level"], "WARN");
+        assert_eq!(lines[1]["fields"]["outcome"], "error");
+        for line in &lines {
+            assert_eq!(line["span"]["component"], "translation");
+            assert_eq!(line["span"]["operation"], "google_translate");
+            assert_eq!(line["span"]["trace_id"], expected_trace_id);
+            assert_eq!(line["span"]["parent_span_id"], expected_parent_span);
+            assert_eq!(line["span"]["request_id"], expected_req_id);
+            let spans = line["spans"].as_array().expect("span tree");
+            assert_eq!(spans.len(), 2);
+            assert_eq!(spans[0]["name"], "http_request");
+            assert_eq!(spans[1]["name"], "component");
+            assert_eq!(spans[1]["component"], "translation");
+        }
     }
 }

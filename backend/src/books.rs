@@ -342,21 +342,50 @@ pub(crate) async fn search(
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<Vec<crate::book_sources::BookCandidate>>, ApiError> {
     let q = query_text(&query, true)?.ok_or_else(ApiError::invalid_filter)?;
-    state.book_source.search(q).await.map(Json).map_err(|err| {
-        crate::diagnostics::book_source_failure(
-            &state.pool,
-            "book_search",
-            cu.user.id,
-            err.class,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "book_source_unavailable",
-        );
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "book_source_unavailable",
-            "外部服務暫時無法使用",
-        )
-    })
+    let result = crate::telemetry::in_component_span(
+        "book_source",
+        "book_search",
+        state.book_source.search(q),
+    )
+    .await;
+    match result {
+        Ok(items) => {
+            let provider = items
+                .first()
+                .map(|b| normalize_book_provider(&b.source))
+                .unwrap_or("none");
+            state.metrics.record_book_source_lookup(provider, "ok");
+            Ok(Json(items))
+        }
+        Err(err) => {
+            state
+                .metrics
+                .record_book_source_lookup(err.provider.as_str(), err.class.code());
+            crate::diagnostics::book_source_failure(
+                &state,
+                "book_search",
+                cu.user.id,
+                err.class,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "book_source_unavailable",
+            );
+            Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "book_source_unavailable",
+                "外部服務暫時無法使用",
+            ))
+        }
+    }
+}
+
+fn normalize_book_provider(source: &str) -> &'static str {
+    if source.eq_ignore_ascii_case("google books") || source == "google_books" {
+        crate::book_sources::BookProvider::GoogleBooks.as_str()
+    } else if source.eq_ignore_ascii_case("open library") || source == "open_library" {
+        crate::book_sources::BookProvider::OpenLibrary.as_str()
+    } else {
+        "other"
+    }
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -464,4 +493,27 @@ pub(crate) async fn replace_activity_list(
     let rows = book_store::activity_books(&mut *tx, id, topic).await?;
     tx.commit().await?;
     Ok(Json(rows))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book_sources::BookProvider;
+
+    #[test]
+    fn normalize_book_provider_matches_error_provider_labels() {
+        assert_eq!(
+            normalize_book_provider("Google Books"),
+            BookProvider::GoogleBooks.as_str()
+        );
+        assert_eq!(
+            normalize_book_provider("Open Library"),
+            BookProvider::OpenLibrary.as_str()
+        );
+        assert_eq!(
+            normalize_book_provider("google_books"),
+            BookProvider::GoogleBooks.as_str()
+        );
+        assert_eq!(normalize_book_provider("Unknown"), "other");
+    }
 }
