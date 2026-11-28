@@ -113,7 +113,7 @@ pub fn spawn_generation(state: AppState, id: Uuid, attempt: i32) {
 }
 
 /// 完成對話入帳的點數（S-07.2 2.2，不設每日上限）。
-const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).unwrap();
+const COMPLETION_POINTS: NonZeroU32 = NonZeroU32::new(10).expect("10 is non-zero");
 
 /// 對話完成（總結剛從 pending 變成 ready）的副作用，與總結狀態變更在同一個交易內執行（S-07.2 2.2）。
 ///

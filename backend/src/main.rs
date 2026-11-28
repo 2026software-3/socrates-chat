@@ -1,3 +1,7 @@
+// 伺服器程式碼：輸出一律走 tracing，不用 print；不 unwrap，改用 expect 寫明為何不會失敗。
+// tests/ 的壓測輸出與 bin/import-books 的命令列輸出不受此限。
+#![warn(clippy::print_stdout, clippy::print_stderr, clippy::unwrap_used)]
+
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use socrates_chat_backend::{

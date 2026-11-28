@@ -89,7 +89,7 @@ pub async fn record_dimension_score_in_tx(
         tx,
         user_id,
         "dimension_score",
-        i64::from(*scores.iter().max().unwrap()),
+        i64::from(*scores.iter().max().expect("scores has six entries")),
         None,
     )
     .await
