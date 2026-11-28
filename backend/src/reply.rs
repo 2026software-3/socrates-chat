@@ -475,9 +475,25 @@ async fn generate(
     } else {
         None
     };
+    // 維度規則：已收斂但覆蓋未完成時，模型常直接收尾而被擋下（學生看到收尾卻無法結束），
+    // 所以在模型最後讀到的地方列出缺少的維度並要求改問。提醒包在這次請求的隨機標籤裡，
+    // 系統提示只信任這個標籤，學生無法在自己的訊息裡假冒；只在請求裡，不寫進紀錄
+    let coverage_note = dimension_context
+        .as_ref()
+        .filter(|_| conv.converge_ready)
+        .and_then(|(dimensions, covered, _)| {
+            crate::dimension_dialogue::coverage_reminder(&conv.language, dimensions, covered)
+        })
+        .map(|reminder| (crate::dimension_dialogue::new_note_tag(), reminder));
     let mut req = AiRequest {
         system: if let Some((dimensions, covered, asked)) = &dimension_context {
-            crate::dimension_dialogue::prompt(conv, dimensions, covered, asked)
+            crate::dimension_dialogue::prompt_with_note(
+                conv,
+                dimensions,
+                covered,
+                asked,
+                coverage_note.as_ref().map(|(tag, _)| tag.as_str()),
+            )
         } else {
             build_system_prompt(&PromptContext {
                 title: &conv.title,
@@ -503,6 +519,13 @@ async fn generate(
     {
         last.content.push_str("\n\n");
         last.content.push_str(closing_instruction(&conv.language));
+    }
+    if let Some((tag, reminder)) = &coverage_note
+        && let Some(last) = req.messages.last_mut()
+    {
+        last.content.push_str("\n\n");
+        last.content
+            .push_str(&crate::dimension_dialogue::wrap_note(tag, reminder));
     }
 
     // 自動重試 1 次，但只在尚未串流出任何內容給學生時（S-03.5）

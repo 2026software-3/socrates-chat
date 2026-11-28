@@ -359,3 +359,71 @@ async fn forward_migration_retains_existing_results_and_rule_versions(pool: PgPo
     assert!(!rules);
     assert_eq!(scale, "legacy");
 }
+
+const STUDENT_TEXT: &str = "我認為如此，因為這是我的理由。";
+
+/// 方案 1 的共用流程：設定收斂與覆蓋狀態、學生說一句，回傳（系統提示, 送給模型的最後一則訊息）。
+async fn last_message_sent(pool: &PgPool, converged: bool, covered: &[&str]) -> (String, String) {
+    let wrap = r#"謝謝你的思考。<<<META>>>{"question_type":"wrap_up","advance":true,"reason":"r","answered_dimensions":[],"question_dimensions":[],"response_kind":"answered"}"#;
+    let ai = FakeAi::with(vec![Reply(vec![wrap])]);
+    let app = test_app_with_ai(pool.clone(), ai.clone());
+    let actors = seed_actors(&app).await;
+    let conversation = start_conversation(&app, &actors).await;
+    enable(pool, &conversation).await;
+    sqlx::query(
+        "UPDATE conversations SET stage=3, converge_ready=$2, covered_dimensions=$3 WHERE id=$1",
+    )
+    .bind(conversation.parse::<Uuid>().unwrap())
+    .bind(converged)
+    .bind(covered.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    .execute(pool)
+    .await
+    .unwrap();
+    say(&app, &actors, &conversation).await;
+    // 提醒只在請求裡：學生訊息的紀錄不變
+    let saved: String = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE conversation_id=$1 AND role='student' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(conversation.parse::<Uuid>().unwrap())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(saved, STUDENT_TEXT);
+    // 第一個請求是對話回覆；收尾後的總結請求排在後面
+    let requests = ai.requests.lock().unwrap().clone();
+    let request = requests.first().expect("the reply request");
+    let last = request.messages.last().unwrap();
+    assert!(last.content.starts_with(STUDENT_TEXT), "{}", last.content);
+    (request.system.clone(), last.content.clone())
+}
+
+#[sqlx::test]
+async fn converged_but_uncovered_turn_reminds_the_model_which_dimensions_are_missing(pool: PgPool) {
+    let (system, last) = last_message_sent(&pool, true, &["d2", "d3", "d4", "d5"]).await;
+    assert!(last.contains("不要收尾"), "{last}");
+    assert!(
+        last.contains("d1「立場1」") && last.contains("d6「立場6」"),
+        "{last}"
+    );
+    assert!(!last.contains("d2「"), "{last}");
+    // 提醒包在這次請求的隨機標籤裡，系統提示只信任同一個標籤
+    let start = last.find("[system-note-").expect(&last);
+    let tag = &last[start + 1..start + 1 + last[start + 1..].find(']').unwrap()];
+    assert!(last.trim_end().ends_with(&format!("[/{tag}]")), "{last}");
+    assert!(system.contains(&format!("[{tag}]")), "{system}");
+}
+
+#[sqlx::test]
+async fn fully_covered_turn_gets_no_coverage_reminder(pool: PgPool) {
+    let (system, last) =
+        last_message_sent(&pool, true, &["d1", "d2", "d3", "d4", "d5", "d6"]).await;
+    assert_eq!(last, STUDENT_TEXT);
+    assert!(!system.contains("system-note-"), "{system}");
+}
+
+#[sqlx::test]
+async fn not_yet_converged_turn_gets_no_coverage_reminder(pool: PgPool) {
+    let (system, last) = last_message_sent(&pool, false, &["d2", "d3", "d4", "d5"]).await;
+    assert_eq!(last, STUDENT_TEXT);
+    assert!(!system.contains("system-note-"), "{system}");
+}

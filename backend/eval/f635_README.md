@@ -1,6 +1,6 @@
 # #635 六維覆蓋與立場評估
 
-版本：`dialogue-dimensions-v2`（v2 補回 META 格式防呆）、`topic-stance-dimensions-v1`、`radar-stance-v1`。
+版本：`dialogue-dimensions-v3`（v2 補回 META 格式防呆；v3 已收斂但覆蓋未完成時提醒缺少的維度）、`topic-stance-dimensions-v1`、`radar-stance-v1`。
 只使用合成情境；不指定新的正式模型。
 
 ## 自動測試
