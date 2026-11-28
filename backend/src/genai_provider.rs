@@ -215,16 +215,30 @@ impl AiProvider for GenaiProvider {
 
 fn classify(error: &genai::Error) -> AiError {
     if let Some(status) = error.status() {
-        let class = status_class(status.as_u16(), failed_body(error));
-        let retry_after = error
-            .headers()
-            .and_then(|h| h.get("retry-after"))
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .map(Duration::from_secs);
+        let body = failed_body(error);
+        let class = status_class(status.as_u16(), body);
+        let header_number = |name: &str| {
+            error
+                .headers()
+                .and_then(|h| h.get(name))
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+        };
+        let retry_after = header_number("retry-after").map(Duration::from_secs);
+        // 只取 `error.code` 的字串值；本文其餘部分（含 message）不看也不留
+        let code = body_json(body).and_then(|v| {
+            v.pointer("/error/code")
+                .and_then(|c| c.as_str())
+                .map(str::to_owned)
+        });
         return AiError::classified(class)
             .with_retry_after(retry_after)
-            .with_http_status(status.as_u16());
+            .with_http_status(status.as_u16())
+            .with_rate_limit_details(
+                code.as_deref(),
+                header_number("x-ratelimit-remaining-requests"),
+                header_number("x-ratelimit-remaining-tokens"),
+            );
     }
     AiError::classified(match error {
         genai::Error::WebModelCall { webc_error, .. }

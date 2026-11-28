@@ -406,6 +406,12 @@ impl Routed {
             model = %target.model,
             class = error.class.code(),
             status = status.as_str(),
+            // 供應商拒絕的原因（只有狀態碼、秒數、固定代碼與剩餘額度，不含 key 或本文）
+            http_status = error.http_status(),
+            retry_after_secs = error.retry_after().map(|d| d.as_secs()),
+            provider_code = error.provider_code(),
+            ratelimit_remaining_requests = error.ratelimit_remaining_requests(),
+            ratelimit_remaining_tokens = error.ratelimit_remaining_tokens(),
             "API key failed; trying the next"
         );
         self.mark(key, status, error.retry_after()).await;
