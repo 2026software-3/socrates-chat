@@ -237,6 +237,8 @@ describe('DiagnosticsPage', () => {
     await user.type(screen.getByLabelText('迄（不含）'), '2026-11-01T08:00')
     await user.click(screen.getByRole('button', { name: '查詢' }))
     expect(await screen.findByText('起始時間必須早於結束時間。')).toBeInTheDocument()
+    expect(screen.getByLabelText('起（含）')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('迄（不含）')).toHaveAttribute('aria-invalid', 'true')
     expect(queries).toHaveLength(before)
   })
 
@@ -360,5 +362,46 @@ describe('DiagnosticsPage', () => {
     renderApp(<DiagnosticsPage />, { route: '/admin/diagnostics?request_id=oops' })
 
     expect(await screen.findByText('篩選條件不正確。')).toBeInTheDocument()
+  })
+
+  it('names argument_tree failures instead of showing the raw function code', async () => {
+    mockMe(makeMe({ admin: true }))
+    mockDiagnostics(() => pageOf([{ ...aiEvent, function: 'argument_tree' }]))
+
+    renderApp(<DiagnosticsPage />, { route: '/admin/diagnostics' })
+
+    const table = await screen.findByRole('table', { name: '診斷事件' })
+    const row = within(table).getAllByRole('row')[1]
+    expect(within(row).getByText('思考脈絡分析')).toBeInTheDocument()
+    expect(within(row).queryByText('argument_tree')).not.toBeInTheDocument()
+  })
+
+  it('renders diagnostic events as cards without a table on mobile/tablet viewports (< 1024px)', async () => {
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: !query.includes('min-width: 1024px'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    try {
+      mockMe(makeMe({ admin: true }))
+      mockDiagnostics()
+      const user = userEvent.setup()
+
+      renderApp(<DiagnosticsPage />, { route: '/admin/diagnostics' })
+
+      const list = await screen.findByRole('list', { name: '診斷事件' })
+      expect(screen.queryByRole('table', { name: '診斷事件' })).not.toBeInTheDocument()
+      expect(within(list).getByText('對話回覆')).toBeInTheDocument()
+      await user.click(within(list).getAllByRole('button', { name: '詳情' })[0])
+      expect(within(list).getByText('synthetic-model')).toBeInTheDocument()
+    } finally {
+      window.matchMedia = original
+    }
   })
 })

@@ -111,6 +111,7 @@ export const FUNCTION_LABEL: Record<string, MessageKey> = {
   chat_reply: 'admin.diag.fn.chat_reply',
   summary: 'admin.diag.fn.summary',
   summary_translation: 'admin.diag.fn.summary_translation',
+  argument_tree: 'admin.diag.fn.argument_tree',
   claim_group: 'admin.diag.fn.claim_group',
   claim_regroup: 'admin.diag.fn.claim_regroup',
   achievement_translation: 'admin.diag.fn.achievement_translation',

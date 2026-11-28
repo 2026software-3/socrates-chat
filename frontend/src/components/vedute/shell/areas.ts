@@ -161,6 +161,7 @@ export const AREAS_BY_ROLE: Record<ShellRole, ShellArea[]> = {
       subTabs: [
         { to: '/admin/diagnostics', labelKey: 'admin.nav.diagnostics' },
         { to: '/admin/services', labelKey: 'admin.nav.services' },
+        { to: '/admin/metrics', labelKey: 'admin.nav.metrics' },
         { to: '/admin/complaints', labelKey: 'complaints.admin.nav' },
       ],
     },
@@ -241,6 +242,7 @@ export function resolveCurrentArea(role: ShellRole, pathname: string, hash: stri
   if (
     matchesPrefix(pathname, '/admin/diagnostics') ||
     matchesPrefix(pathname, '/admin/services') ||
+    matchesPrefix(pathname, '/admin/metrics') ||
     matchesPrefix(pathname, '/admin/complaints')
   ) {
     return byId('logs')

@@ -144,7 +144,7 @@ describe('app shell', () => {
     expect(await screen.findByRole('heading', { name: '你沒有權限執行這個操作。' })).toBeInTheDocument()
   })
 
-  it.each(['/admin/diagnostics', '/admin'])(
+  it.each(['/admin/diagnostics', '/admin/services', '/admin/metrics', '/admin'])(
     'blocks a teacher who types the admin URL %s, without asking the backend for diagnostics',
     async (route) => {
       mockMe(makeMe({ teacher: true }))
@@ -158,6 +158,14 @@ describe('app shell', () => {
           requested.push(new URL(request.url).pathname)
           return HttpResponse.json({ items: [], next_cursor: null })
         }),
+        http.get('/api/admin/services', ({ request }) => {
+          requested.push(new URL(request.url).pathname)
+          return HttpResponse.json({ services: [], voice_nodes: [], history_available: true, period_days: 1 })
+        }),
+        http.get('/api/admin/metrics', ({ request }) => {
+          requested.push(new URL(request.url).pathname)
+          return new HttpResponse('')
+        }),
       )
       renderApp(null, { route })
 
@@ -165,7 +173,18 @@ describe('app shell', () => {
       expect(screen.queryByRole('heading', { name: '系統維運' })).not.toBeInTheDocument()
       expect(screen.queryByRole('heading', { name: '系統概況' })).not.toBeInTheDocument()
       expect(screen.queryByRole('heading', { name: '診斷紀錄' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: '服務' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: '系統指標' })).not.toBeInTheDocument()
       expect(requested).toEqual([])
+    },
+  )
+
+  it.each(['/admin/diagnostics', '/admin/services', '/admin/metrics', '/admin'])(
+    'blocks a student who types the admin URL %s without querying admin endpoints',
+    async (route) => {
+      mockMe(makeMe({ student: true }))
+      renderApp(null, { route })
+      expect(await screen.findByRole('heading', { name: '你沒有權限執行這個操作。' })).toBeInTheDocument()
     },
   )
 

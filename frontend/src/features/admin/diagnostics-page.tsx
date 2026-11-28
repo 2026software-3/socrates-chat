@@ -1,21 +1,30 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router'
-import { LoadMore } from '@/components/load-more'
-import { EmptyBlock, ErrorBlock, LoadingBlock, Page } from '@/components/page'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  Cpu,
+  Eye,
+  Hash,
+  Search,
+  Tag,
+  X,
+} from 'lucide-react'
+import { PageHeader } from '@/components/page'
+import { Alert } from '@/components/vedute/alert'
+import { Button } from '@/components/vedute/button'
+import { Field } from '@/components/vedute/field'
+import { Meta } from '@/components/vedute/meta'
+import { Skeleton, SkeletonRegion } from '@/components/vedute/skeleton'
+import {
+  AdminCard,
+  AdminEmptyState,
+  AdminErrorAlert,
+  AdminStatusBadge,
+  type AdminTone,
+} from '@/features/admin/admin-ui'
 import {
   ALL_CLASSES,
   CLASSES_BY_KIND,
@@ -32,33 +41,29 @@ import {
   type DiagnosticEvent,
   type Filters,
 } from '@/features/admin/diagnostics-model'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n, useT } from '@/i18n'
 import type { Page as PageResult } from '@/lib/types'
 import { usePagedFetch } from '@/lib/use-fetch'
 
 const PAGE_SIZE = 50
 
-const selectClass =
-  'border-input bg-background h-9 w-full rounded-md border px-3 text-sm shadow-xs focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none'
-
-/** 表頭固定在捲動區頂端，捲動長清單時仍看得到欄位名稱。 */
-const STICKY_HEAD = 'sticky top-0 z-10 bg-background'
-
 /** 網址上的篩選用 RFC 3339（UTC）；表單裡的時間是本地時間。 */
 function toDraft(applied: Filters): Filters {
   return { ...applied, from: isoToLocal(applied.from), to: isoToLocal(applied.to) }
 }
 
-function statusVariant(status: number): 'destructive' | 'outline' | 'secondary' {
-  if (status >= 500) return 'destructive'
-  if (status >= 400) return 'outline'
-  return 'secondary'
+function statusTone(status: number): AdminTone {
+  if (status >= 500) return 'error'
+  if (status >= 400) return 'draft'
+  return 'active'
 }
 
 /** 管理者診斷頁：依時間、類型、失敗分類與 request ID 查詢最近 30 天的失敗事件（S-09.3）。 */
 export function DiagnosticsPage() {
   const t = useT()
   const { lang } = useI18n()
+  const isDesktop = useMediaQuery('(min-width: 1024px)', true)
   const [params, setParams] = useSearchParams()
   const applied = useMemo(() => filtersFromParams(params), [params])
   const [draft, setDraft] = useState<Filters>(() => toDraft(applied))
@@ -99,100 +104,119 @@ export function DiagnosticsPage() {
   const filtered = Object.values(applied).some(Boolean)
 
   return (
-    <Page title={t('admin.diag.title')}>
-      <div className="text-muted-foreground space-y-1 text-sm">
-        <p>{t('admin.diag.intro')}</p>
-        <p>{t('admin.diag.lookup')}</p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader title={t('admin.diag.title')} description={t('admin.diag.intro')} />
 
-      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" noValidate>
-        <div className="space-y-1.5">
-          <Label htmlFor="diag-from">{t('admin.diag.from')}</Label>
-          <Input
+      <p className="type-note border-l border-caeruleum py-1 pl-3 text-ink-soft">{t('admin.diag.lookup')}</p>
+
+      <AdminCard className="p-5">
+        <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" noValidate>
+          <Field
             id="diag-from"
+            label={t('admin.diag.from')}
             type="datetime-local"
             value={draft.from}
+            aria-invalid={formError === 'range' || undefined}
             onChange={(e) => setDraft({ ...draft, from: e.target.value })}
           />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="diag-to">{t('admin.diag.to')}</Label>
-          <Input
+          <Field
             id="diag-to"
+            label={t('admin.diag.to')}
             type="datetime-local"
             value={draft.to}
+            aria-invalid={formError === 'range' || undefined}
             onChange={(e) => setDraft({ ...draft, to: e.target.value })}
           />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="diag-kind">{t('admin.diag.kind')}</Label>
-          <select
-            id="diag-kind"
-            className={selectClass}
-            value={draft.kind}
-            onChange={(e) => {
-              const kind = e.target.value as Filters['kind']
-              const keep = kind === '' || CLASSES_BY_KIND[kind].includes(draft.failure_class as never)
-              setDraft({ ...draft, kind, failure_class: keep ? draft.failure_class : '' })
-            }}
-          >
-            <option value="">{t('admin.diag.any')}</option>
-            {KINDS.map((kind) => (
-              <option key={kind} value={kind}>
-                {t(KIND_LABEL[kind])}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="diag-class">{t('admin.diag.failureClass')}</Label>
-          <select
-            id="diag-class"
-            className={selectClass}
-            value={draft.failure_class}
-            onChange={(e) => setDraft({ ...draft, failure_class: e.target.value as Filters['failure_class'] })}
-          >
-            <option value="">{t('admin.diag.any')}</option>
-            {classOptions.map((c) => (
-              <option key={c} value={c}>
-                {t(CLASS_LABEL[c])}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
-          <Label htmlFor="diag-request">{t('admin.diag.requestId')}</Label>
-          <Input
-            id="diag-request"
-            value={draft.request_id}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="00000000-0000-4000-8000-000000000000"
-            aria-invalid={formError === 'requestId'}
-            onChange={(e) => setDraft({ ...draft, request_id: e.target.value })}
-          />
-        </div>
-        <div className="flex items-end gap-2">
-          <Button type="submit">{t('admin.diag.apply')}</Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setDraft(EMPTY_FILTERS)
-              setFormError(undefined)
-              apply(EMPTY_FILTERS)
-            }}
-          >
-            {t('admin.diag.reset')}
-          </Button>
-        </div>
-      </form>
+          <div className="grid gap-1">
+            <label htmlFor="diag-kind" className="type-note text-ink-soft">
+              {t('admin.diag.kind')}
+            </label>
+            <div className="relative">
+              <select
+                id="diag-kind"
+                className="vedute-input appearance-none pr-8"
+                value={draft.kind}
+                onChange={(e) => {
+                  const kind = e.target.value as Filters['kind']
+                  const keep = kind === '' || CLASSES_BY_KIND[kind].includes(draft.failure_class as never)
+                  setDraft({ ...draft, kind, failure_class: keep ? draft.failure_class : '' })
+                }}
+              >
+                <option value="">{t('admin.diag.any')}</option>
+                {KINDS.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {t(KIND_LABEL[kind])}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                className="pointer-events-none absolute right-0 top-1/2 size-4 -translate-y-1/2 text-ink-soft"
+                strokeWidth={1.5}
+                aria-hidden="true"
+              />
+            </div>
+          </div>
+          <div className="grid gap-1">
+            <label htmlFor="diag-class" className="type-note text-ink-soft">
+              {t('admin.diag.failureClass')}
+            </label>
+            <div className="relative">
+              <select
+                id="diag-class"
+                className="vedute-input appearance-none pr-8"
+                value={draft.failure_class}
+                onChange={(e) => setDraft({ ...draft, failure_class: e.target.value as Filters['failure_class'] })}
+              >
+                <option value="">{t('admin.diag.any')}</option>
+                {classOptions.map((c) => (
+                  <option key={c} value={c}>
+                    {t(CLASS_LABEL[c])}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                className="pointer-events-none absolute right-0 top-1/2 size-4 -translate-y-1/2 text-ink-soft"
+                strokeWidth={1.5}
+                aria-hidden="true"
+              />
+            </div>
+          </div>
+          <div className="sm:col-span-2 lg:col-span-1">
+            <Field
+              id="diag-request"
+              label={t('admin.diag.requestId')}
+              value={draft.request_id}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="00000000-0000-4000-8000-000000000000"
+              aria-invalid={formError === 'requestId' || undefined}
+              onChange={(e) => setDraft({ ...draft, request_id: e.target.value })}
+            />
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <Button type="submit" variant="primary">
+              <Search className="size-4" strokeWidth={1.5} aria-hidden="true" />
+              {t('admin.diag.apply')}
+            </Button>
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => {
+                setDraft(EMPTY_FILTERS)
+                setFormError(undefined)
+                apply(EMPTY_FILTERS)
+              }}
+            >
+              <X className="size-4" strokeWidth={1.5} aria-hidden="true" />
+              {t('admin.diag.reset')}
+            </Button>
+          </div>
+        </form>
+      </AdminCard>
 
       {formError ? (
-        <Alert variant="destructive" role="alert">
-          <AlertDescription>
-            {formError === 'requestId' ? t('admin.diag.invalidRequestId') : t('admin.diag.invalidRange')}
-          </AlertDescription>
+        <Alert kind="error">
+          {formError === 'requestId' ? t('admin.diag.invalidRequestId') : t('admin.diag.invalidRange')}
         </Alert>
       ) : null}
 
@@ -215,76 +239,213 @@ export function DiagnosticsPage() {
         </div>
       ) : null}
 
-      {list.loading && !list.items ? <LoadingBlock /> : null}
-      {list.error ? <ErrorBlock error={list.error} onRetry={list.reload} /> : null}
+      {list.loading && !list.items ? <DiagnosticsSkeleton isDesktop={isDesktop} /> : null}
+      {list.error ? <AdminErrorAlert error={list.error} onRetry={list.reload} /> : null}
       {list.items?.length === 0 ? (
-        <EmptyBlock>{filtered ? t('admin.diag.emptyFiltered') : t('admin.diag.empty')}</EmptyBlock>
+        <AdminEmptyState>{filtered ? t('admin.diag.emptyFiltered') : t('admin.diag.empty')}</AdminEmptyState>
       ) : null}
+
       {list.items?.length ? (
-        <ScrollArea type="auto" className="max-h-[65vh] rounded-md border">
-          <Table aria-label={t('admin.diag.table')}>
-            <TableHeader>
-              <TableRow>
-                <TableHead className={STICKY_HEAD}>{t('admin.diag.time')}</TableHead>
-                <TableHead className={STICKY_HEAD}>{t('admin.diag.kind')}</TableHead>
-                <TableHead className={STICKY_HEAD}>{t('admin.diag.failureClass')}</TableHead>
-                <TableHead className={STICKY_HEAD}>{t('admin.diag.function')}</TableHead>
-                <TableHead className={STICKY_HEAD}>{t('admin.diag.status')}</TableHead>
-                <TableHead className={STICKY_HEAD}>{t('admin.diag.requestId')}</TableHead>
-                <TableHead className={STICKY_HEAD}>
-                  <span className="sr-only">{t('admin.diag.details')}</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {list.items.map((event, index) => {
-                const key = `${event.request_id}-${event.occurred_at}-${index}`
-                const open = expanded === key
-                return (
-                  <Fragment key={key}>
-                    <TableRow>
-                      <TableCell>
-                        <time dateTime={event.occurred_at}>{date.format(new Date(event.occurred_at))}</time>
-                      </TableCell>
-                      <TableCell>{t(KIND_LABEL[event.kind])}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{t(CLASS_LABEL[event.failure_class])}</Badge>
-                      </TableCell>
-                      <TableCell>{functionName(t, event.function)}</TableCell>
-                      <TableCell>
-                        <Badge variant={statusVariant(event.status)}>{event.status}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <code>{event.request_id}</code>
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          aria-expanded={open}
-                          onClick={() => setExpanded(open ? undefined : key)}
-                        >
-                          {open ? t('admin.diag.collapse') : t('admin.diag.details')}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+        isDesktop ? (
+          <div className="overflow-hidden rounded-sm border border-ink-faint bg-surface">
+            <table aria-label={t('admin.diag.table')} className="w-full border-collapse text-left">
+              <thead>
+                <tr className="border-b border-ink-faint bg-paper-deep">
+                  <th scope="col" className="type-body-strong px-5 py-3 text-ink">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Clock className="size-4 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+                      {t('admin.diag.time')}
+                    </span>
+                  </th>
+                  <th scope="col" className="type-body-strong px-4 py-3 text-ink">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Tag className="size-4 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+                      {t('admin.diag.kind')}
+                    </span>
+                  </th>
+                  <th scope="col" className="type-body-strong px-4 py-3 text-ink">
+                    <span className="inline-flex items-center gap-1.5">
+                      <AlertCircle className="size-4 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+                      {t('admin.diag.failureClass')}
+                    </span>
+                  </th>
+                  <th scope="col" className="type-body-strong px-4 py-3 text-ink">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Cpu className="size-4 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+                      {t('admin.diag.function')}
+                    </span>
+                  </th>
+                  <th scope="col" className="type-body-strong px-4 py-3 text-ink">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Activity className="size-4 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+                      {t('admin.diag.status')}
+                    </span>
+                  </th>
+                  <th scope="col" className="type-body-strong px-4 py-3 text-ink">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Hash className="size-4 text-ink-soft" strokeWidth={1.5} aria-hidden="true" />
+                      {t('admin.diag.requestId')}
+                    </span>
+                  </th>
+                  <th scope="col" className="px-4 py-3">
+                    <span className="sr-only">{t('admin.diag.details')}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-faint">
+                {list.items.map((event, index) => {
+                  const key = `${event.request_id}-${event.occurred_at}-${index}`
+                  const open = expanded === key
+                  return (
+                    <Fragment key={key}>
+                      <tr className="align-middle">
+                        <td className="type-body px-5 py-3 text-ink whitespace-nowrap">
+                          <time dateTime={event.occurred_at}>{date.format(new Date(event.occurred_at))}</time>
+                        </td>
+                        <td className="type-body-strong px-4 py-3 text-ink whitespace-nowrap">
+                          {t(KIND_LABEL[event.kind])}
+                        </td>
+                        <td className="px-4 py-3">
+                          <AdminStatusBadge tone={event.failure_class === 'invalid_output' ? 'draft' : 'error'}>
+                            {t(CLASS_LABEL[event.failure_class])}
+                          </AdminStatusBadge>
+                        </td>
+                        <td className="type-body px-4 py-3 text-ink">{functionName(t, event.function)}</td>
+                        <td className="px-4 py-3">
+                          <AdminStatusBadge tone={statusTone(event.status)}>{String(event.status)}</AdminStatusBadge>
+                        </td>
+                        <td className="type-note max-w-44 break-all px-4 py-3 text-ink-soft tabular-nums">
+                          {event.request_id}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            aria-expanded={open}
+                            onClick={() => setExpanded(open ? undefined : key)}
+                          >
+                            <Eye className="size-4" strokeWidth={1.5} aria-hidden="true" />
+                            {open ? t('admin.diag.collapse') : t('admin.diag.details')}
+                          </Button>
+                        </td>
+                      </tr>
+                      {open ? (
+                        <tr className="bg-paper/45">
+                          <td colSpan={7} className="px-5 py-4">
+                            <EventDetails event={event} onFilter={(next) => apply({ ...applied, ...next })} />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <ul aria-label={t('admin.diag.table')} className="space-y-3">
+            {list.items.map((event, index) => {
+              const key = `${event.request_id}-${event.occurred_at}-${index}`
+              const open = expanded === key
+              return (
+                <li key={key}>
+                  <AdminCard className="space-y-3 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <h2 className="type-h3 text-ink">{functionName(t, event.function)}</h2>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <AdminStatusBadge tone={event.failure_class === 'invalid_output' ? 'draft' : 'error'}>
+                          {t(CLASS_LABEL[event.failure_class])}
+                        </AdminStatusBadge>
+                        <AdminStatusBadge tone={statusTone(event.status)}>{String(event.status)}</AdminStatusBadge>
+                      </div>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Meta
+                        icon={Clock}
+                        label={t('admin.diag.time')}
+                        value={<time dateTime={event.occurred_at}>{date.format(new Date(event.occurred_at))}</time>}
+                      />
+                      <Meta icon={Tag} label={t('admin.diag.kind')} value={t(KIND_LABEL[event.kind])} />
+                      <Meta
+                        icon={Hash}
+                        label={t('admin.diag.requestId')}
+                        value={<span className="break-all tabular-nums">{event.request_id}</span>}
+                      />
+                    </div>
                     {open ? (
-                      <TableRow>
-                        <TableCell colSpan={7} className="bg-muted/40">
-                          <EventDetails event={event} onFilter={(next) => apply({ ...applied, ...next })} />
-                        </TableCell>
-                      </TableRow>
+                      <div className="border-t border-ink-faint pt-3">
+                        <EventDetails event={event} onFilter={(next) => apply({ ...applied, ...next })} />
+                      </div>
                     ) : null}
-                  </Fragment>
-                )
-              })}
-            </TableBody>
-          </Table>
-        </ScrollArea>
+                    <div className="border-t border-ink-faint pt-2">
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        className="w-full"
+                        aria-expanded={open}
+                        onClick={() => setExpanded(open ? undefined : key)}
+                      >
+                        <Eye className="size-4" strokeWidth={1.5} aria-hidden="true" />
+                        {open ? t('admin.diag.collapse') : t('admin.diag.details')}
+                      </Button>
+                    </div>
+                  </AdminCard>
+                </li>
+              )
+            })}
+          </ul>
+        )
       ) : null}
-      <LoadMore hasMore={list.hasMore} loading={list.loadingMore} error={list.moreError} onLoadMore={list.loadMore} />
-    </Page>
+
+      {list.moreError ? (
+        <AdminErrorAlert error={list.moreError} onRetry={list.loadMore} />
+      ) : list.hasMore ? (
+        <div>
+          <Button type="button" variant="quiet" disabled={list.loadingMore} onClick={list.loadMore}>
+            {list.loadingMore ? t('common.loadingMore') : t('common.loadMore')}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function DiagnosticsSkeleton({ isDesktop }: { isDesktop: boolean }) {
+  const t = useT()
+  return (
+    <SkeletonRegion loadingLabel={t('common.loading')}>
+      {isDesktop ? (
+        <div className="overflow-hidden rounded-sm border border-ink-faint bg-surface">
+          <div className="h-12 bg-paper-deep" />
+          <div className="divide-y divide-ink-faint">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="grid grid-cols-6 gap-4 px-5 py-3.5">
+                <Skeleton className="h-5 w-28" />
+                <Skeleton className="h-5 w-14" />
+                <Skeleton className="h-5 w-20" />
+                <Skeleton className="h-5 w-24" />
+                <Skeleton className="h-5 w-12" />
+                <Skeleton className="h-5 w-32" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div key={i} className="space-y-3 rounded-sm border border-ink-faint bg-surface p-4">
+              <div className="flex justify-between gap-2">
+                <Skeleton className="h-6 w-28" />
+                <Skeleton className="h-5 w-16" />
+              </div>
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-11 w-full" />
+            </div>
+          ))}
+        </div>
+      )}
+    </SkeletonRegion>
   )
 }
 
@@ -295,9 +456,10 @@ function functionName(t: ReturnType<typeof useT>, code: string): string {
 
 function RelatedChip({ label, clear, onClear }: { label: string; clear: string; onClear: () => void }) {
   return (
-    <span className="bg-muted inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm">
-      <span>{label}</span>
-      <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+    <span className="inline-flex items-center gap-2 rounded-sm border border-ink-faint bg-paper px-3 py-1">
+      <span className="type-note text-ink break-all">{label}</span>
+      <Button type="button" variant="ghost" onClick={onClear}>
+        <X className="size-4" strokeWidth={1.5} aria-hidden="true" />
         {clear}
       </Button>
     </span>
@@ -314,42 +476,41 @@ function EventDetails({
 }) {
   const t = useT()
   const none = '—'
-  const rows: [string, React.ReactNode][] = [
-    [t('admin.diag.route'), <code key="r">{event.route}</code>],
-    [t('admin.diag.errorCode'), <code key="e">{event.error_code}</code>],
+  const rows: [string, string][] = [
+    [t('admin.diag.route'), event.route],
+    [t('admin.diag.errorCode'), event.error_code],
     [t('admin.diag.duration'), event.duration_ms === null ? none : `${event.duration_ms} ms`],
     [t('admin.diag.retries'), event.retry_count === null ? none : String(event.retry_count)],
-    [t('admin.diag.model'), event.model ? <code key="m">{event.model}</code> : none],
-    [t('admin.diag.userId'), event.user_id ? <code key="u">{event.user_id}</code> : t('admin.diag.noAccount')],
-    [t('admin.diag.classroomId'), event.classroom_id ? <code key="c">{event.classroom_id}</code> : none],
+    [t('admin.diag.model'), event.model ?? none],
+    [t('admin.diag.userId'), event.user_id ?? t('admin.diag.noAccount')],
+    [t('admin.diag.classroomId'), event.classroom_id ?? none],
   ]
   return (
-    <div className="space-y-3">
-      <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+    <div className="space-y-4">
+      <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
         {rows.map(([label, value]) => (
           <div key={label} className="flex gap-2">
-            <dt className="text-muted-foreground shrink-0">{label}</dt>
-            <dd className="min-w-0 break-all">{value}</dd>
+            <dt className="type-note shrink-0 text-ink-soft">{label}</dt>
+            <dd className="type-note min-w-0 break-all text-ink tabular-nums">{value}</dd>
           </div>
         ))}
       </dl>
       <div className="flex flex-wrap gap-2">
         {event.user_id ? (
-          <Button type="button" variant="outline" size="sm" onClick={() => onFilter({ user_id: event.user_id ?? '' })}>
+          <Button type="button" variant="quiet" onClick={() => onFilter({ user_id: event.user_id ?? '' })}>
             {t('admin.diag.sameAccount')}
           </Button>
         ) : null}
         {event.classroom_id ? (
           <Button
             type="button"
-            variant="outline"
-            size="sm"
+            variant="quiet"
             onClick={() => onFilter({ classroom_id: event.classroom_id ?? '' })}
           >
             {t('admin.diag.sameClassroom')}
           </Button>
         ) : null}
-        <Button type="button" variant="outline" size="sm" onClick={() => onFilter({ request_id: event.request_id })}>
+        <Button type="button" variant="quiet" onClick={() => onFilter({ request_id: event.request_id })}>
           {t('admin.diag.sameRequest')}
         </Button>
       </div>

@@ -9,14 +9,17 @@ export class ApiError extends Error {
   readonly requestId: string
   /** 與錯誤有關的欄位（例如教室 AI 設定的 `primary`、`fallback_1`），沒有就是 `undefined`。 */
   readonly target?: string
+  /** 後端回傳的 W3C `traceparent` 追蹤識別標頭，用於對應容器追蹤日誌。 */
+  readonly traceparent?: string
 
-  constructor(status: number, code: string, requestId: string, target?: string) {
+  constructor(status: number, code: string, requestId: string, target?: string, traceparent?: string) {
     super(code)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.requestId = requestId
     this.target = target
+    this.traceparent = traceparent
   }
 }
 
@@ -63,6 +66,7 @@ async function send<T>(method: Method, path: string, body?: unknown, signal?: Ab
 export async function apiErrorFrom(res: Response): Promise<ApiError> {
   let code = 'internal'
   let requestId = res.headers.get('x-request-id') ?? ''
+  const traceparent = res.headers.get('traceparent') ?? undefined
   let target: string | undefined
   try {
     const data = await res.json()
@@ -72,11 +76,30 @@ export async function apiErrorFrom(res: Response): Promise<ApiError> {
   } catch {
     // 非 JSON 錯誤（例如反向代理的 502）
   }
-  return new ApiError(res.status, code, requestId, target)
+  return new ApiError(res.status, code, requestId, target, traceparent)
+}
+
+/** 讀取純文字端點（例如 Prometheus 指標 `GET /api/admin/metrics`），失敗時同樣轉成 `ApiError`。 */
+async function getText(path: string, signal?: AbortSignal): Promise<string> {
+  let res: Response
+  try {
+    res = await fetch(path, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'text/plain, application/json' },
+      signal,
+    })
+  } catch (e) {
+    if (isAbortError(e)) throw e
+    throw new ApiError(0, 'network', '')
+  }
+  if (res.ok) return await res.text()
+  throw await apiErrorFrom(res)
 }
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
+  getText,
   post: <T>(path: string, body?: unknown, signal?: AbortSignal) => request<T>('POST', path, body, signal),
   put: <T = void>(path: string, body?: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),

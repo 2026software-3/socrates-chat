@@ -10,8 +10,10 @@ export type FetchState<T> = {
   reload: () => void
 }
 
-/** GET 一個 JSON 端點；`path` 為 `null` 時不發請求。 */
-export function useFetch<T>(path: string | null): FetchState<T> {
+function useAsyncFetch<T>(
+  path: string | null,
+  load: (path: string, signal: AbortSignal) => Promise<T>,
+): FetchState<T> {
   const [data, setData] = useState<T>()
   const [error, setError] = useState<ApiError>()
   const [loading, setLoading] = useState(path !== null)
@@ -21,8 +23,7 @@ export function useFetch<T>(path: string | null): FetchState<T> {
     if (path === null) return
     const ctrl = new AbortController()
     setLoading(true)
-    api
-      .get<T>(path, ctrl.signal)
+    load(path, ctrl.signal)
       .then((d) => {
         setData(d)
         setError(undefined)
@@ -35,7 +36,7 @@ export function useFetch<T>(path: string | null): FetchState<T> {
         if (!ctrl.signal.aborted) setLoading(false)
       })
     return () => ctrl.abort()
-  }, [path, tick])
+  }, [path, tick, load])
 
   const reload = useCallback(() => {
     // 與 tick 同批更新，呼叫端在同一次 render 就會看到 loading，不會出現刷新前的空檔
@@ -43,6 +44,16 @@ export function useFetch<T>(path: string | null): FetchState<T> {
     setTick((n) => n + 1)
   }, [path])
   return { data, error, loading, reload }
+}
+
+/** GET 一個 JSON 端點；`path` 為 `null` 時不發請求。 */
+export function useFetch<T>(path: string | null): FetchState<T> {
+  return useAsyncFetch<T>(path, api.get)
+}
+
+/** GET 一個純文字端點（例如 Prometheus 指標）；`path` 為 `null` 時不發請求。 */
+export function useTextFetch(path: string | null): FetchState<string> {
+  return useAsyncFetch<string>(path, api.getText)
 }
 
 export type PagedState<T, P extends Page<T>> = {

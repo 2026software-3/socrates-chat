@@ -132,6 +132,7 @@ describe('shell area definitions and route resolution', () => {
     expect(resolveCurrentArea('admin', '/admin/tasks', '')?.id).toBe('settings')
     expect(resolveCurrentArea('admin', '/admin/parts', '')?.id).toBe('settings')
     expect(resolveCurrentArea('admin', '/admin/services', '')?.id).toBe('logs')
+    expect(resolveCurrentArea('admin', '/admin/metrics', '')?.id).toBe('logs')
     expect(resolveCurrentArea('admin', '/admin/complaints', '')?.id).toBe('logs')
   })
 

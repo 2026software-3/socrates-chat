@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { AdminStatusBadge, type AdminTone } from '@/features/admin/admin-ui'
 import { useT, type MessageKey } from '@/i18n'
 
 export type Health = 'ok' | 'unavailable' | 'unknown'
@@ -16,13 +16,15 @@ const HEALTH_LABEL: Record<Health, MessageKey> = {
   unknown: 'admin.overview.state.unknown',
 }
 
+const HEALTH_TONE: Record<Health, AdminTone> = {
+  ok: 'active',
+  unavailable: 'error',
+  unknown: 'inactive',
+}
+
 export function HealthBadge({ state }: { state: Health }) {
   const t = useT()
-  return (
-    <Badge variant={state === 'ok' ? 'secondary' : state === 'unavailable' ? 'destructive' : 'outline'}>
-      {t(HEALTH_LABEL[state])}
-    </Badge>
-  )
+  return <AdminStatusBadge tone={HEALTH_TONE[state]}>{t(HEALTH_LABEL[state])}</AdminStatusBadge>
 }
 
 /**
@@ -54,9 +56,8 @@ export function useBasicHealth(enabled: boolean): { service: Health; database: H
 export function HealthItem({ label, state }: { label: string; state: Health }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-muted-foreground text-sm">{label}</span>
+      <span className="type-note text-ink-soft">{label}</span>
       <HealthBadge state={state} />
     </div>
   )
 }
-
