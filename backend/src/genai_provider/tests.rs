@@ -571,6 +571,113 @@ async fn a_connection_cut_mid_stream_is_an_error_after_the_text_already_sent() {
     }
 }
 
+// ---- 錯誤種類（只給日誌分辨原因，不含本文）----
+
+/// Gemini 的第一段文字之後接一個 SSE 影格。
+fn gemini_text_then(frame: Value) -> String {
+    sse(
+        None,
+        json!({"candidates":[{"content":{"role":"model","parts":[{"text":"你"}]}}]}),
+    ) + &sse(None, frame)
+}
+
+/// staging 的 Gemini 回覆常以 service_error 失敗：分得出是一開始就回 HTTP 錯誤，
+/// 還是串流中途送了錯誤事件、斷線或送出無法解讀的影格。
+#[tokio::test]
+async fn gemini_failures_carry_their_kind_without_the_body() {
+    // 一開始就回 HTTP 503
+    let (endpoint, _) = spawn(Reply::failure(
+        503,
+        vec![],
+        json!({"error":{"code":503,"message":PROVIDER_BODY,"status":"UNAVAILABLE"}}).to_string(),
+    ))
+    .await;
+    let (text, error) = drain(&provider(Family::Gemini, &endpoint)).await;
+    let error = error.expect("503 is an error");
+    assert_eq!(text, "");
+    assert_eq!(error.kind(), Some("http_status"));
+    assert_eq!(error.http_status(), Some(503));
+    assert_clean(&error, "http 503");
+
+    // 串流中途送出錯誤事件：只留固定的狀態代碼與數字代碼
+    let (endpoint, _) = spawn(Reply::stream(gemini_text_then(
+        json!({"error":{"code":503,"message":PROVIDER_BODY,"status":"UNAVAILABLE"}}),
+    )))
+    .await;
+    let (text, error) = drain(&provider(Family::Gemini, &endpoint)).await;
+    let error = error.expect("error event");
+    assert_eq!(text, "你");
+    assert_eq!(error.class, Failure::ServiceError);
+    assert_eq!(error.kind(), Some("stream_error_event"));
+    assert_eq!(error.provider_status(), Some("UNAVAILABLE"));
+    assert_eq!(error.event_code(), Some(503));
+    assert_eq!(error.http_status(), None);
+    assert_clean(&error, "error event");
+
+    // 狀態代碼不是固定格式時不留
+    let (endpoint, _) = spawn(Reply::stream(gemini_text_then(
+        json!({"error":{"code":500,"status":format!("{PROVIDER_BODY} 自由文字")}}),
+    )))
+    .await;
+    let (_, error) = drain(&provider(Family::Gemini, &endpoint)).await;
+    let error = error.expect("error event");
+    assert_eq!(error.kind(), Some("stream_error_event"));
+    assert_eq!(error.provider_status(), None);
+    assert_eq!(error.event_code(), Some(500));
+    assert_clean(&error, "free-text status");
+
+    // 沒有內容、沒有結束原因的影格
+    let (endpoint, _) = spawn(Reply::stream(gemini_text_then(json!({"x":1})))).await;
+    let (_, error) = drain(&provider(Family::Gemini, &endpoint)).await;
+    assert_eq!(
+        error.expect("empty frame").kind(),
+        Some("stream_no_content")
+    );
+
+    // 不是 JSON 的影格
+    let (endpoint, _) = spawn(Reply::stream(
+        sse(
+            None,
+            json!({"candidates":[{"content":{"role":"model","parts":[{"text":"你"}]}}]}),
+        ) + "data: not-json\n\n",
+    ))
+    .await;
+    let (_, error) = drain(&provider(Family::Gemini, &endpoint)).await;
+    assert_eq!(error.expect("bad frame").kind(), Some("stream_parse"));
+}
+
+#[tokio::test]
+async fn a_mid_stream_disconnect_is_a_stream_transport_error_for_every_family() {
+    for family in FAMILIES {
+        let first = family
+            .stream_body(false)
+            .split("\n\n")
+            .take(match family {
+                Family::Anthropic => 3,
+                _ => 1,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+            + "\n\n";
+        let (endpoint, _) = spawn(Reply::StreamThenAbort(first)).await;
+        let (_, error) = drain(&provider(family, &endpoint)).await;
+        let error = error.unwrap_or_else(|| panic!("{family:?}"));
+        assert_eq!(error.kind(), Some("stream_transport"), "{family:?}");
+        assert_eq!(error.http_status(), None, "{family:?}");
+    }
+}
+
+#[tokio::test]
+async fn http_failures_are_http_status_kind_for_every_family() {
+    for family in FAMILIES {
+        let (endpoint, _) = spawn(Reply::failure(503, vec![], "{}".into())).await;
+        let (_, error) = drain(&provider(family, &endpoint)).await;
+        let error = error.unwrap_or_else(|| panic!("{family:?}"));
+        assert_eq!(error.kind(), Some("http_status"), "{family:?}");
+        assert_eq!(error.http_status(), Some(503), "{family:?}");
+    }
+}
+
 // ---- 日誌不洩漏 ----
 
 #[derive(Clone, Default)]

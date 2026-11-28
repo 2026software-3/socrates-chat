@@ -224,17 +224,20 @@ fn classify(error: &genai::Error) -> AiError {
             .map(Duration::from_secs);
         return AiError::classified(class)
             .with_retry_after(retry_after)
-            .with_http_status(status.as_u16());
+            .with_http_status(status.as_u16())
+            .with_kind("http_status");
     }
-    AiError::classified(match error {
+    let (class, kind) = match error {
         genai::Error::WebModelCall { webc_error, .. }
         | genai::Error::WebAdapterCall { webc_error, .. } => match webc_error {
-            webc::Error::Reqwest(e) if e.is_timeout() => Failure::Timeout,
-            webc::Error::Reqwest(e) if e.is_connect() => Failure::ConnectionFailed,
+            webc::Error::Reqwest(e) if e.is_timeout() => (Failure::Timeout, "timeout"),
+            webc::Error::Reqwest(e) if e.is_connect() => (Failure::ConnectionFailed, "connect"),
             // 供應商正常回應，但內容不是 JSON
             webc::Error::ResponseFailedNotJson { .. }
-            | webc::Error::ResponseFailedInvalidJson { .. } => Failure::InvalidOutput,
-            _ => Failure::ServiceError,
+            | webc::Error::ResponseFailedInvalidJson { .. } => {
+                (Failure::InvalidOutput, "invalid_json_response")
+            }
+            _ => (Failure::ServiceError, "web_call"),
         },
         // 串流是惰性的：HTTP 錯誤與連線錯誤都包在這裡的 `BoxError` 裡
         genai::Error::WebStream { error, .. } => {
@@ -242,20 +245,34 @@ fn classify(error: &genai::Error) -> AiError {
                 return classify(inner);
             }
             if is_connection_error(error.as_ref()) {
-                Failure::ConnectionFailed
+                (Failure::ConnectionFailed, "stream_transport")
             } else {
-                Failure::ServiceError
+                (Failure::ServiceError, "stream_transport")
             }
         }
+        // 串流中途的錯誤事件（例如 Gemini 的 `{"error":{"code":503,"status":"UNAVAILABLE"}}`）：
+        // 只留固定的狀態代碼與數字代碼，訊息本文丟掉
+        genai::Error::ChatResponse { body, .. } => {
+            let Some(event) = body.get("error") else {
+                return AiError::classified(Failure::ServiceError).with_kind("stream_no_content");
+            };
+            return AiError::classified(Failure::ServiceError)
+                .with_kind("stream_error_event")
+                .with_error_event(
+                    event.get("status").and_then(|v| v.as_str()),
+                    event.get("code").and_then(|v| v.as_u64()),
+                );
+        }
+        genai::Error::StreamParse { .. } => (Failure::InvalidOutput, "stream_parse"),
         // 供應商正常回應，但內容無法解析成預期格式
-        genai::Error::NoChatResponse { .. }
-        | genai::Error::ChatResponseGeneration { .. }
+        genai::Error::NoChatResponse { .. } => (Failure::InvalidOutput, "no_response"),
+        genai::Error::ChatResponseGeneration { .. }
         | genai::Error::InvalidJsonResponseElement { .. }
-        | genai::Error::StreamParse { .. }
         | genai::Error::JsonValueExt(_)
-        | genai::Error::SerdeJson(_) => Failure::InvalidOutput,
-        _ => Failure::ServiceError,
-    })
+        | genai::Error::SerdeJson(_) => (Failure::InvalidOutput, "response_format"),
+        _ => (Failure::ServiceError, "other"),
+    };
+    AiError::classified(class).with_kind(kind)
 }
 
 /// 沿 `source()` 鏈找 io 層的連線失敗；不具名 genai 內部使用的 reqwest 版本。
