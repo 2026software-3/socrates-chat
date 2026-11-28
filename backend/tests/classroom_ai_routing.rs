@@ -379,12 +379,34 @@ async fn rejected_limited_or_exhausted_key_is_recorded_and_the_next_key_is_tried
 }
 
 /// `#[sqlx::test]` 每個測試只給一個資料庫；迴圈裡要重新開始時清掉上一輪的資料。
+/// 上一輪請求觸發的背景寫入（例如金鑰狀態）可能還在跑，先等它們結束，免得和 TRUNCATE 互相鎖死（40P01）。
 async fn pool_clone(pool: &PgPool) -> PgPool {
+    wait_until_no_other_db_activity(pool).await;
     sqlx::query("TRUNCATE users, classrooms, teachers RESTART IDENTITY CASCADE")
         .execute(pool)
         .await
         .unwrap();
     pool.clone()
+}
+
+/// 等這個資料庫上除了自己以外沒有進行中或交易中的連線（輪詢實際狀態，最多 10 秒）。
+/// 這裡的 `world()` 直接建 app，沒有 `TASKS_AT_START` 基準，所以不能用 `wait_until_background_idle`。
+async fn wait_until_no_other_db_activity(pool: &PgPool) {
+    for _ in 0..1000 {
+        let busy: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND pid <> pg_backend_pid()
+               AND state IN ('active', 'idle in transaction')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if busy == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("上一輪的背景寫入沒有在時限內結束");
 }
 
 #[sqlx::test]
