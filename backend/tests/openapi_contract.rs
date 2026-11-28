@@ -503,6 +503,80 @@ mod schema_names {
         }
     }
 
+    /// 一段原始碼裡，`ToSchema` 型別在 OpenAPI 裡註冊的名稱（`#[schema(as = path::Name)]` 會改名）。
+    /// 逐行掃描：認得多行 `#[derive(…)]`、`pub(crate)`／`pub(super)`／`pub(in …)`，不需要額外的解析套件。
+    fn schema_names_in(text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let mut names = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let mut declaration = *line;
+            if let Some(rest) = declaration.strip_prefix("pub") {
+                declaration = rest.trim_start();
+                if declaration.starts_with('(') {
+                    declaration = declaration
+                        .split_once(')')
+                        .map_or("", |(_, rest)| rest)
+                        .trim_start();
+                }
+            }
+            let Some(rest) = declaration
+                .strip_prefix("struct ")
+                .or_else(|| declaration.strip_prefix("enum "))
+            else {
+                continue;
+            };
+            let ident: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            // 往回收集緊鄰的屬性與註解，直到上一個項目結束
+            let mut attributes = String::new();
+            for previous in lines[..i].iter().rev() {
+                if previous.ends_with('}') || previous.ends_with(';') || previous.ends_with('{') {
+                    break;
+                }
+                attributes.push_str(previous);
+                attributes.push('\n');
+            }
+            if !attributes.contains("ToSchema") {
+                continue;
+            }
+            let renamed = attributes.split("as = ").nth(1).and_then(|after| {
+                let path = after.split([')', ',', ' ', '\n']).next()?;
+                path.rsplit("::")
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+            });
+            names.push(renamed.unwrap_or(ident));
+        }
+        names
+    }
+
+    #[test]
+    fn scanner_understands_multiline_derives_and_renames() {
+        let source = "\
+#[derive(
+    Serialize,
+    ToSchema,
+)]
+pub(super) struct A {}
+
+/// doc
+#[derive(ToSchema)]
+#[schema(as = other::B)]
+pub struct C;
+
+// comment
+#[derive(Debug)]
+struct NotSchema {}
+
+#[derive(utoipa::ToSchema)]
+pub(in crate::x) enum D { One }
+";
+        assert_eq!(schema_names_in(source), ["A", "B", "D"]);
+    }
+
     #[test]
     fn to_schema_type_names_are_unique() {
         let mut files = Vec::new();
@@ -513,33 +587,13 @@ mod schema_names {
         let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for file in files {
             let text = fs::read_to_string(&file).unwrap();
-            let mut derives_schema = false;
-            for line in text.lines().map(str::trim) {
-                if line.starts_with("#[derive(") {
-                    derives_schema = line.contains("ToSchema");
-                    continue;
-                }
-                if line.starts_with("#[") || line.starts_with("///") {
-                    continue;
-                }
-                let declaration = line
-                    .trim_start_matches("pub(crate) ")
-                    .trim_start_matches("pub ");
-                let name = declaration
-                    .strip_prefix("struct ")
-                    .or_else(|| declaration.strip_prefix("enum "));
-                if let (true, Some(rest)) = (derives_schema, name) {
-                    let name: String = rest
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    seen.entry(name)
-                        .or_default()
-                        .push(file.file_name().unwrap().to_string_lossy().into_owned());
-                }
-                derives_schema = false;
+            for name in schema_names_in(&text) {
+                seen.entry(name)
+                    .or_default()
+                    .push(file.file_name().unwrap().to_string_lossy().into_owned());
             }
         }
+        // 同一個檔案裡不同 `mod` 的同名型別，utoipa 一樣只認名稱，所以同樣算重複
         let duplicated: Vec<_> = seen
             .iter()
             .filter(|(name, files)| files.len() > 1 && !IDENTICAL.contains(&name.as_str()))
@@ -571,10 +625,14 @@ mod snapshot {
             return;
         }
 
-        let committed: serde_json::Value = serde_json::from_str(
+        let mut committed: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&path).expect("缺少 docs/api/openapi.json 快照"),
         )
         .expect("快照不是合法 JSON");
+        // `info.version` 來自 Cargo.toml；改版本號不是 API 變動，不該讓這個測試失敗
+        let mut actual = actual;
+        committed["info"]["version"] = serde_json::Value::Null;
+        actual["info"]["version"] = serde_json::Value::Null;
         assert!(
             committed == actual,
             "API 契約與 docs/api/openapi.json 不一致；確認變動符合預期後，\

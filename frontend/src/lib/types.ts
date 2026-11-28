@@ -209,7 +209,7 @@ export type StudentRow = {
   /** 學號（大寫）；學生的帳號 UUID 是 `id` */
   student_number: string
   display_name: string | null
-  /** 已有帳號（登入過，或管理者匯入時建立了內建帳號） */
+  /** 已有帳號（登入過，或管理者匯入時建立了內建帳號）。目前後端對名單上的學生一律回 true；前端仍依它決定連結與停用等操作 */
   has_account: boolean
   disabled: boolean
   completed_conversations: number

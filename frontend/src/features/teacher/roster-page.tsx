@@ -430,7 +430,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                   {students.map((s) => {
                     const status = statusOf(s)
                     return (
-                      <li key={s.id} className="space-y-3 rounded-lg border p-3">
+                      <li key={s.email ?? s.student_number} className="space-y-3 rounded-lg border p-3">
                         <div className="space-y-1">
                           <p className="font-medium break-all">{studentLink(s)}</p>
                           {s.display_name ? <p className="text-muted-foreground text-sm">{s.display_name}</p> : null}
@@ -459,7 +459,7 @@ export function ClassroomRoster({ classroom }: { classroom: Classroom }) {
                     </TableHeader>
                     <TableBody>
                       {students.map((s) => (
-                        <TableRow key={s.id}>
+                        <TableRow key={s.email ?? s.student_number}>
                           <TableCell className="break-all">
                             {studentLink(s)}
                             {s.display_name ? <span className="text-muted-foreground block text-xs">{s.display_name}</span> : null}

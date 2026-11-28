@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, configure } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, expect } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, expect } from 'vitest'
 import { server } from '@/test/server'
 import { CONTRACT_ENFORCED, CONTRACT_EXEMPT_FILES, contractViolations, requestViolations } from '@/test/contract'
 
@@ -25,29 +25,54 @@ if (typeof Element.prototype.scrollIntoView !== 'function') {
   Element.prototype.scrollIntoView = () => {}
 }
 
-// 前後端契約：每個 MSW 假回應與前端送出的 JSON 請求本文，都用 docs/api/openapi.json 驗證；納入 CONTRACT_ENFORCED 的測試檔有不符就失敗
+// 前後端契約：每個 MSW 假回應與前端送出的 JSON 請求本文，都用 docs/api/openapi.json 驗證；
+// 測試檔路徑在 CONTRACT_ENFORCED（且不在豁免清單）時有不符就失敗。
+// 限制：只檢查 JSON（非 JSON 的回應、語音音檔等請求本文不檢查），也不涵蓋 Playwright 用的瀏覽器 MSW（src/test/browser.ts）。
 const pendingChecks: Promise<string[]>[] = []
+// 測試結束、元件卸載之後才完成的回應（被中止的請求）不歸給任何測試，否則會算到下一個測試頭上
+let accepting = false
+beforeEach(() => {
+  accepting = true
+})
+
+/** 檢查器自己丟的例外（契約或程式本身的問題）當成違反回報，不可悄悄通過。 */
+const guarded = (run: () => Promise<string[]>) => run().catch((e: unknown) => [`契約檢查器內部錯誤：${String(e)}`])
+
 server.events.on('request:start', ({ request }) => {
   const { pathname } = new URL(request.url)
-  if (!pathname.startsWith('/api/') || !(request.headers.get('content-type') ?? '').includes('json')) return
+  if (!accepting || !pathname.startsWith('/api/') || !(request.headers.get('content-type') ?? '').includes('json')) return
   // 在 handler 讀走本文之前複製
+  const copy = request.clone()
   pendingChecks.push(
-    request
-      .clone()
-      .text()
-      .then((text) => (text === '' ? [] : requestViolations(request.method, pathname, JSON.parse(text))))
-      .catch(() => []),
+    guarded(async () => {
+      const text = await copy.text()
+      if (text === '') return []
+      let body: unknown
+      try {
+        body = JSON.parse(text)
+      } catch {
+        return [`${request.method} ${pathname} 的請求：宣告為 JSON 但無法解析`]
+      }
+      return requestViolations(request.method, pathname, body)
+    }),
   )
 })
 server.events.on('response:mocked', ({ request, response }) => {
   const { pathname } = new URL(request.url)
-  if (!pathname.startsWith('/api/') || !(response.headers.get('content-type') ?? '').includes('json')) return
+  if (!accepting || !pathname.startsWith('/api/') || !(response.headers.get('content-type') ?? '').includes('json')) return
+  const copy = response.clone()
   pendingChecks.push(
-    response
-      .clone()
-      .json()
-      .then((body) => contractViolations(request.method, pathname, response.status, body))
-      .catch(() => []),
+    guarded(async () => {
+      const text = await copy.text()
+      if (text === '') return []
+      let body: unknown
+      try {
+        body = JSON.parse(text)
+      } catch {
+        return [`${request.method} ${pathname}：回應宣告為 JSON 但無法解析`]
+      }
+      return contractViolations(request.method, pathname, response.status, body)
+    }),
   )
 })
 
@@ -55,11 +80,15 @@ server.events.on('response:mocked', ({ request, response }) => {
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(async () => {
   const violations = [...new Set((await Promise.all(pendingChecks.splice(0))).flat())]
-  const file = expect.getState().testPath?.replaceAll('\\', '/') ?? ''
+  accepting = false
+  const testPath = expect.getState().testPath
   cleanup()
   server.resetHandlers()
   localStorage.clear()
   sessionStorage.clear()
+  // 取不到測試檔路徑就無法判斷要不要強制檢查；寧可大聲失敗，不能悄悄略過
+  if (testPath === undefined) throw new Error('取不到 testPath，無法套用 MSW 契約檢查')
+  const file = testPath.replaceAll('\\', '/')
   if (violations.length > 0 && CONTRACT_ENFORCED.some((dir) => file.includes(dir)) && !CONTRACT_EXEMPT_FILES.some((f) => file.endsWith(f))) {
     throw new Error(`MSW 假回應不符合 docs/api/openapi.json：\n${violations.join('\n')}`)
   }

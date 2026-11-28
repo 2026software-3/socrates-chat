@@ -53,10 +53,10 @@ jobs:
           frontend=false
           scripts=false
 
-          if grep -qE '^(backend/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+          if grep -qE '^(backend/|docs/api/openapi\.json$|\.github/workflows/ci\.yml$)' <<< "$files"; then
             backend=true
           fi
-          if grep -qE '^(frontend/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+          if grep -qE '^(frontend/|docs/api/openapi\.json$|\.github/workflows/ci\.yml$)' <<< "$files"; then
             frontend=true
           fi
           if grep -qE '^(\.github/scripts/|\.github/workflows/ci\.yml$)' <<< "$files"; then
