@@ -308,3 +308,27 @@ test('Vedute print components interactions, equal card heights, and semantics', 
 
   await expectNoA11yViolations(page)
 })
+
+// Tailwind v4 preflight resets <button> to `cursor: default`; Vedute controls set their own (prototypes/c-interior/shared.css .btn / .tab).
+test('Vedute clickable controls show a pointer cursor and disabled ones show not-allowed', async ({ page }) => {
+  await page.goto('/__design')
+  const pointer = [
+    page.getByRole('button', { name: '建立活動', exact: true }),
+    page.getByRole('button', { name: '取消', exact: true }),
+    page.getByRole('button', { name: '編輯', exact: true }),
+    page.getByRole('navigation', { name: '教室頁碼' }).getByRole('button', { name: '第 2 頁' }),
+    page.getByRole('tab', { name: '進行中' }),
+    page.getByRole('switch', { name: '活動通知' }),
+    page.getByText('活動通知', { exact: true }),
+    page.getByRole('combobox', { name: '教室' }),
+  ]
+  for (const control of pointer) await expect(control).toHaveCSS('cursor', 'pointer')
+
+  const notAllowed = [
+    page.getByRole('button', { name: '儲存中…' }),
+    page.getByRole('navigation', { name: '教室頁碼' }).getByRole('button', { name: '上一頁' }),
+    page.getByRole('switch', { name: '公開反思' }),
+    page.getByText('公開反思', { exact: true }),
+  ]
+  for (const control of notAllowed) await expect(control).toHaveCSS('cursor', 'not-allowed')
+})

@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { expect, expectNoA11yViolations, expectScreenshot, test } from './fixtures'
 
 test.describe('Vedute work shell across roles and viewports', () => {
@@ -126,6 +127,33 @@ test.describe('Vedute work shell across roles and viewports', () => {
     await expectScreenshot(page, 'shell-admin.png')
   })
 
+  test('topbar location: pointer cursor on the phone trigger and no trailing letter-spacing after the inscription', async ({
+    page,
+    loginAs,
+  }, testInfo) => {
+    await loginAs('student')
+    const banner = page.getByRole('banner')
+    const inscription = banner.locator('[data-vedute-inscription]').filter({ visible: true })
+    await expect(inscription).toHaveCount(1)
+    // letter-spacing is added after every glyph, including the last one; cancel it so the inscription's box
+    // ends at its ink and the gaps to the pin and to the area label (or ⌄) match Figma Page/Topbar 2269:1573.
+    const tracking = await inscription.evaluate((el) => {
+      const cs = getComputedStyle(el)
+      return { letterSpacing: parseFloat(cs.letterSpacing), marginRight: parseFloat(cs.marginRight) }
+    })
+    expect(tracking.letterSpacing).toBeGreaterThan(0)
+    expect(tracking.marginRight).toBeCloseTo(-tracking.letterSpacing, 2)
+
+    if (testInfo.project.name === 'mobile') {
+      await expect(banner.getByRole('button', { name: /目前位置/ })).toHaveCSS('cursor', 'pointer')
+    } else {
+      await expect(banner.getByRole('button', { name: /合成學生/ })).toHaveCSS('cursor', 'pointer')
+    }
+    if (testInfo.project.name === 'tablet') {
+      await expect(banner.getByRole('button', { name: '開啟導覽' })).toHaveCSS('cursor', 'pointer')
+    }
+  })
+
   test('focus shell on conversation page shows BackHeader with title and round count without sidebar, tab bar, or colophon', async ({
     page,
     loginAs,
@@ -185,5 +213,88 @@ test.describe('Vedute work shell across roles and viewports', () => {
       )
       expect(focusedInsideSheet).toBe(false)
     }
+  })
+})
+
+// 頂欄中央的對齊以「墨跡」量，不看行框（2026-11-29 @whyhugo 決定）：
+// 銘文大寫字的中心對齊紅圈中心（手機沒有紅圈，對齊頂欄中心）、紅圈數字在圈內置中、中文區名的字底對齊銘文的字底。
+// 文字會對齊整數像素，所以容差 0.5px；修正前的偏差是 0.6–2.2px。
+test.describe('topbar location optical alignment', () => {
+  test.use({ deviceScaleFactor: 4 })
+
+  // Vertical ink extent (CSS px, page coordinates) inside a clip, from a device-scale screenshot.
+  async function inkRows(page: Page, clip: { x: number; y: number; width: number; height: number }) {
+    const png = await page.screenshot({ clip, scale: 'device' })
+    return page.evaluate(
+      async ({ b64, clip }) => {
+        const img = new Image()
+        img.src = `data:image/png;base64,${b64}`
+        await img.decode()
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(img, 0, 0)
+        const data = ctx.getImageData(0, 0, img.width, img.height).data
+        const luma = (i: number) => 0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2]
+        const paper = luma(0)
+        let top = Infinity
+        let bottom = -1
+        for (let y = 0; y < img.height; y++)
+          for (let x = 0; x < img.width; x++)
+            if (paper - luma((y * img.width + x) * 4) > 60) {
+              top = Math.min(top, y)
+              bottom = Math.max(bottom, y)
+            }
+        const scale = img.width / clip.width
+        return { top: clip.y + top / scale, bottom: clip.y + (bottom + 1) / scale }
+      },
+      { b64: png.toString('base64'), clip },
+    )
+  }
+  const mid = (r: { top: number; bottom: number }) => (r.top + r.bottom) / 2
+
+  test('inscription centres on the pin, numeral centres in the pin, area label shares the inscription bottom', async ({
+    page,
+    loginAs,
+  }, testInfo) => {
+    await loginAs('student')
+    const banner = page.getByRole('banner')
+    const inscription = banner.locator('[data-vedute-inscription]').filter({ visible: true })
+    await expect(inscription).toBeVisible()
+    await page.evaluate(() => document.fonts.ready)
+
+    const header = (await banner.boundingBox())!
+    const insc = (await inscription.boundingBox())!
+    // 頂欄高 52 含 1px 下框線
+    let centre = header.y + (header.height - 1) / 2
+    const inkClip = { x: insc.x, y: header.y, width: insc.width, height: header.height - 1 }
+
+    if (testInfo.project.name !== 'mobile') {
+      const pin = (await banner.locator('.vedute-pin').filter({ visible: true }).boundingBox())!
+      centre = pin.y + pin.height / 2
+      // 圈線 1.2px：往內縮 7px 只留下數字
+      const numeral = await inkRows(page, { x: pin.x + 7, y: pin.y + 7, width: pin.width - 14, height: pin.height - 14 })
+      expect(Math.abs(mid(numeral) - centre), 'numeral centred in the pin').toBeLessThanOrEqual(0.5)
+    }
+
+    const latin = await inkRows(page, inkClip)
+    expect(Math.abs(mid(latin) - centre), 'inscription centred on the pin').toBeLessThanOrEqual(0.5)
+
+    if (testInfo.project.name === 'desktop') {
+      const label = (await banner.getByText('我的教室', { exact: true }).boundingBox())!
+      const zh = await inkRows(page, { x: label.x, y: header.y, width: label.width, height: header.height - 1 })
+      expect(Math.abs(zh.bottom - latin.bottom), 'area label bottom on the inscription bottom').toBeLessThanOrEqual(0.5)
+    }
+
+    // 頁首右上角的大圓章（Page/Header 28px / 14px）也是數字在圈內置中
+    const headerPin = (await page.locator('.vedute-pin-lg').filter({ visible: true }).first().boundingBox())!
+    const headerNumeral = await inkRows(page, {
+      x: headerPin.x + 7,
+      y: headerPin.y + 7,
+      width: headerPin.width - 14,
+      height: headerPin.height - 14,
+    })
+    expect(Math.abs(mid(headerNumeral) - (headerPin.y + headerPin.height / 2)), 'numeral centred in the header pin').toBeLessThanOrEqual(0.5)
   })
 })
